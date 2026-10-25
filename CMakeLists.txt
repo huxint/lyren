@@ -81,8 +81,26 @@ add_wayland_protocols(lyren_lib
 )
 add_shaders(lyren_lib shaders/ui.vert shaders/ui.frag)
 
+# Network and audio; the app links it from M4 on.
+pkg_check_modules(MEDIA REQUIRED IMPORTED_TARGET libcurl libmpg123 flac fdk-aac vorbisfile libpipewire-0.3)
+add_library(lyren_media STATIC
+    src/net/http.cpp
+    src/audio/spool.cpp
+    src/audio/decoder.cpp
+    src/audio/dec_mp3.cpp
+    src/audio/dec_flac.cpp
+    src/audio/dec_vorbis.cpp
+    src/audio/dec_mp4.cpp
+    src/audio/output.cpp
+    src/audio/player.cpp
+)
+target_link_libraries(lyren_media PUBLIC lyren_lib PkgConfig::MEDIA)
+
 add_executable(lyren src/main.cpp)
 target_link_libraries(lyren PRIVATE lyren_lib)
+
+add_executable(lyren-probe tools/lyren-probe.cpp)
+target_link_libraries(lyren-probe PRIVATE lyren_media)
 
 enable_testing()
 add_executable(lyren_tests
@@ -91,7 +109,9 @@ add_executable(lyren_tests
     tests/test_config.cpp
     tests/test_utf8.cpp
     tests/test_ui.cpp
+    tests/test_audio.cpp
 )
-target_link_libraries(lyren_tests PRIVATE lyren_lib doctest)
+target_link_libraries(lyren_tests PRIVATE lyren_media doctest)
+target_compile_definitions(lyren_tests PRIVATE LYREN_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data")
 add_test(NAME unit COMMAND lyren_tests)
-add_test(NAME no_alsa COMMAND sh -c "! ldd $<TARGET_FILE:lyren> | grep -q asound")
+add_test(NAME no_alsa COMMAND sh -c "! ldd $<TARGET_FILE:lyren> $<TARGET_FILE:lyren-probe> | grep -q asound")

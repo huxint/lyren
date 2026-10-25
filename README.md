@@ -1,10 +1,12 @@
 # Lyren
 
-Lyren（弦间）是面向 Wayland 桌面的 C++26 音乐播放器，使用 Vulkan 绘制窗口和界面。
+Lyren（弦间）是面向 Wayland 桌面的 C++26 音乐播放器，使用 Vulkan 绘制窗口和界面。音频通过 PipeWire 输出。
+
+支持 MP3、FLAC、AAC 和 Vorbis 解码、渐进下载、进度跳转及音量控制。播放地址与可用音质由平台响应决定。
 
 ## 运行环境
 
-需要支持 C++26 的 GCC 16 工具链、CMake 4.0 或更新版本、Ninja 和 `glslc`。运行环境需提供 Wayland 会话和 Vulkan 驱动。
+需要支持 C++26 的 GCC 16 工具链、CMake 4.0 或更新版本、Ninja 和 `glslc`。运行环境需提供 Wayland 会话和 Vulkan 驱动。播放需要 PipeWire 服务。
 
 系统库由 `pkg-config` 检测；完整依赖和固定下载版本见 [CMakeLists.txt](CMakeLists.txt) 与 [cmake/Deps.cmake](cmake/Deps.cmake)。
 
@@ -40,6 +42,8 @@ dbus-run-session -- env \
   ./build/lyren --script .scratch/session.txt
 ```
 
+`lyren-probe` 提供接口诊断和音频检查；命令及参数见 [lyren-probe.cpp](tools/lyren-probe.cpp)。
+
 ## 项目结构
 
 | 目录 | 职责 |
@@ -49,6 +53,8 @@ dbus-run-session -- env \
 | [src/gfx/](src/gfx/) | Vulkan 渲染与图像处理 |
 | [src/text/](src/text/) | 字体、文字整形和字形缓存 |
 | [src/ui/](src/ui/) | 界面组件、主题与动效 |
+| [src/net/](src/net/) | HTTP 请求与下载 |
+| [src/audio/](src/audio/) | 缓冲、音频解码与 PipeWire 输出 |
 | [src/sys/](src/sys/) | 配置、凭据与桌面服务 |
 | [src/app/](src/app/) | 应用状态、导航与页面 |
 
