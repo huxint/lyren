@@ -47,6 +47,24 @@ struct KeyEvent {
     uint32_t serial = 0;
 };
 
+// One text-input-v3 "done" batch from the input method.
+struct TextInputEvent {
+    std::string preedit;
+    int preedit_cursor = -1;  // byte offset in preedit, -1 hides the cursor
+    std::string commit;
+    uint32_t delete_before = 0, delete_after = 0;
+};
+
+// What the focused text field tells the input method. The caret is surface-local; cursor and anchor are byte
+// offsets into surrounding.
+struct TextInputState {
+    bool enabled = false;
+    int x = 0, y = 0, w = 0, h = 0;
+    std::string surrounding;
+    int cursor = 0, anchor = 0;
+    bool operator==(const TextInputState&) const = default;
+};
+
 // Implemented by the owner of a wl_surface; found through the surface's user data.
 class SurfaceSink {
 public:
@@ -54,6 +72,7 @@ public:
     virtual void on_pointer(const PointerEvent&) = 0;
     virtual void on_key(const KeyEvent&) {}
     virtual void on_keyboard_focus(bool) {}
+    virtual void on_text_input(const TextInputEvent&) {}
 };
 
 class Input {
@@ -62,6 +81,8 @@ public:
     ~Input();
 
     void set_cursor(Cursor c);
+    // Only real changes are committed: the compositor answers every commit with a done event.
+    void set_text_input(TextInputState s);
     // Latest input serial, for move/resize/menu requests.
     uint32_t serial() const { return serial_; }
     uint32_t mods() const { return mods_; }
@@ -86,11 +107,16 @@ public:
         repeat_delay_ = delay;
     }
     void capabilities(uint32_t caps);
+    void text_input_enter(wl_surface* s);
+    void text_input_leave();
+    void text_input_done();
+    TextInputEvent pending_text_;
 
 private:
     void emit_key(uint32_t key, bool pressed, bool repeat);
     void repeat_tick();
     void stop_repeat();
+    void flush_text_input();
 
     Display& display_;
     wl_pointer* pointer_ = nullptr;
@@ -105,6 +131,10 @@ private:
     int axis120_[2]{};
     uint32_t axis_source_ = 0;
     bool axis_stop_ = false, has_axis_ = false;
+
+    zwp_text_input_v3* text_input_ = nullptr;
+    SurfaceSink* text_focus_ = nullptr;
+    TextInputState ti_want_, ti_sent_;
 
     xkb_context* xkb_ = nullptr;
     xkb_keymap* keymap_ = nullptr;

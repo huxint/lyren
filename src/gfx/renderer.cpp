@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <utility>
 
 #include "core/log.hpp"
 
@@ -267,7 +268,7 @@ void Renderer::recreate(Target& t) {
         .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
         .imageExtent = extent,
         .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = caps.currentTransform,
         .compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) ? VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR
@@ -379,8 +380,28 @@ void Renderer::draw(Target& t, std::span<const Prim> prims, const float clear[4]
         vkCmdDraw(cmd, 4, uint32_t(prims.size()), 0, 0);
     }
     vkCmdEndRendering(cmd);
-    image_barrier(cmd, t.images[index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    VkBuffer readback = VK_NULL_HANDLE;
+    VkDeviceMemory readback_mem = VK_NULL_HANDLE;
+    if (capture_) {
+        VkBufferCreateInfo bci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                               .size = VkDeviceSize(t.width) * t.height * 4,
+                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VK_CHECK(vkCreateBuffer(dev, &bci, nullptr, &readback));
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(dev, readback, &req);
+        readback_mem = ctx_.allocate(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(dev, readback, readback_mem, 0);
+        image_barrier(cmd, t.images[index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                      VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy region{.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {t.width, t.height, 1}};
+        vkCmdCopyImageToBuffer(cmd, t.images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &region);
+        image_barrier(cmd, t.images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COPY_BIT,
+                      VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    } else {
+        image_barrier(cmd, t.images[index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    }
     vkEndCommandBuffer(cmd);
 
     VkSemaphoreSubmitInfo wait{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -418,6 +439,15 @@ void Renderer::draw(Target& t, std::span<const Prim> prims, const float clear[4]
     VkResult r = vkQueuePresentKHR(ctx_.queue, &pi);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) t.stale = true;
     else VK_CHECK(r);
+    if (readback) {
+        VK_CHECK(vkWaitForFences(dev, 1, &s.fence, VK_TRUE, UINT64_MAX));
+        void* map;
+        vkMapMemory(dev, readback_mem, 0, VK_WHOLE_SIZE, 0, &map);
+        std::exchange(capture_, nullptr)(static_cast<const uint8_t*>(map), t.width, t.height);
+        vkUnmapMemory(dev, readback_mem);
+        vkDestroyBuffer(dev, readback, nullptr);
+        vkFreeMemory(dev, readback_mem, nullptr);
+    }
 }
 
 TextureId Renderer::create_texture(uint32_t width, uint32_t height, VkFormat format, bool smooth) {

@@ -53,7 +53,8 @@ Theme Theme::from(const Config& config, std::string& errors) {
     apply(t.colors.danger, th.danger, "danger");
 
     Color accent = hex("#e5484d");
-    if (t.accent != "auto") {
+    th.auto_accent = t.accent == "auto";
+    if (!th.auto_accent) {
         if (auto c = parse_color(t.accent)) accent = *c;
         else errors += std::format("theme.accent: 无效颜色 \"{}\"\n", t.accent);
     }

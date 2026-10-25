@@ -8,7 +8,7 @@
 
 namespace lyren::gfx {
 
-enum class Kind : uint32_t { rect = 0, shadow = 1, glyph = 2, image = 3 };
+enum class Kind : uint32_t { rect = 0, shadow = 1, glyph = 2, image = 3, arc = 4, wave = 5 };
 enum Flag : uint32_t { flag_gradient = 1, flag_cutout = 2 };
 
 // One instanced quad; layout matches shaders/prim.glsl. Coordinates are buffer pixels, colours premultiplied.
@@ -19,7 +19,9 @@ struct Prim {
     float color[4];
     float color2[4];
     float radii[4];
-    float params[4];  // border width, shadow sigma
+    // rect: border width; shadow: _, sigma; arc: thickness, start, sweep (radians, clockwise from 12 o'clock);
+    // wave: thickness, amplitude, wavelength, phase
+    float params[4];
     uint32_t info[4];  // kind, texture, flags
 };
 static_assert(sizeof(Prim) == 128);
@@ -75,6 +77,9 @@ public:
 
     void wait_idle() { vkDeviceWaitIdle(ctx_.device); }
 
+    // The next draw also reads the image back and hands fn premultiplied BGRA rows, tightly packed.
+    void capture_next(std::function<void(const uint8_t* bgra, uint32_t width, uint32_t height)> fn) { capture_ = std::move(fn); }
+
 private:
     struct Texture {
         VkImage image = VK_NULL_HANDLE;
@@ -124,6 +129,7 @@ private:
     Staging staging_;
     std::vector<Retired> retired_;
     uint64_t submitted_ = 0, completed_ = 0;
+    std::function<void(const uint8_t*, uint32_t, uint32_t)> capture_;
 };
 
 }  // namespace lyren::gfx

@@ -40,6 +40,23 @@ static const wl_keyboard_listener keyboard_listener{
     .repeat_info = [](void* d, wl_keyboard*, int32_t rate, int32_t delay) { self(d)->repeat_info(rate, delay); },
 };
 
+static const zwp_text_input_v3_listener text_input_listener{
+    .enter = [](void* d, zwp_text_input_v3*, wl_surface* s) { self(d)->text_input_enter(s); },
+    .leave = [](void* d, zwp_text_input_v3*, wl_surface*) { self(d)->text_input_leave(); },
+    .preedit_string =
+        [](void* d, zwp_text_input_v3*, const char* text, int32_t begin, int32_t) {
+            self(d)->pending_text_.preedit = text ? text : "";
+            self(d)->pending_text_.preedit_cursor = begin;
+        },
+    .commit_string = [](void* d, zwp_text_input_v3*, const char* text) { self(d)->pending_text_.commit = text ? text : ""; },
+    .delete_surrounding_text =
+        [](void* d, zwp_text_input_v3*, uint32_t before, uint32_t after) {
+            self(d)->pending_text_.delete_before = before;
+            self(d)->pending_text_.delete_after = after;
+        },
+    .done = [](void* d, zwp_text_input_v3*, uint32_t) { self(d)->text_input_done(); },
+};
+
 static const wl_seat_listener seat_listener{
     .capabilities = [](void* d, wl_seat*, uint32_t caps) { self(d)->capabilities(caps); },
     .name = [](void*, wl_seat*, const char*) {},
@@ -49,10 +66,15 @@ static SurfaceSink* sink(wl_surface* s) { return s ? static_cast<SurfaceSink*>(w
 
 Input::Input(Display& display) : display_(display), xkb_(xkb_context_new(XKB_CONTEXT_NO_FLAGS)) {
     wl_seat_add_listener(display_.seat, &seat_listener, this);
+    if (display_.text_input) {
+        text_input_ = zwp_text_input_manager_v3_get_text_input(display_.text_input, display_.seat);
+        zwp_text_input_v3_add_listener(text_input_, &text_input_listener, this);
+    }
 }
 
 Input::~Input() {
     stop_repeat();
+    if (text_input_) zwp_text_input_v3_destroy(text_input_);
     if (cursor_device_) wp_cursor_shape_device_v1_destroy(cursor_device_);
     if (pointer_) wl_pointer_release(pointer_);
     if (keyboard_) wl_keyboard_release(keyboard_);
@@ -71,6 +93,46 @@ void Input::capabilities(uint32_t caps) {
         keyboard_ = wl_seat_get_keyboard(display_.seat);
         wl_keyboard_add_listener(keyboard_, &keyboard_listener, this);
     }
+}
+
+void Input::set_text_input(TextInputState s) {
+    ti_want_ = s.enabled ? std::move(s) : TextInputState{};
+    flush_text_input();
+}
+
+void Input::flush_text_input() {
+    if (!text_input_ || !text_focus_ || ti_want_ == ti_sent_) return;
+    if (ti_want_.enabled) {
+        if (!ti_sent_.enabled) {
+            zwp_text_input_v3_enable(text_input_);
+            zwp_text_input_v3_set_content_type(text_input_, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
+        }
+        // The protocol caps surrounding text below 4000 bytes.
+        if (ti_want_.surrounding.size() < 4000)
+            zwp_text_input_v3_set_surrounding_text(text_input_, ti_want_.surrounding.c_str(), ti_want_.cursor, ti_want_.anchor);
+        zwp_text_input_v3_set_cursor_rectangle(text_input_, ti_want_.x, ti_want_.y, ti_want_.w, ti_want_.h);
+    } else {
+        zwp_text_input_v3_disable(text_input_);
+    }
+    zwp_text_input_v3_commit(text_input_);
+    ti_sent_ = ti_want_;
+}
+
+void Input::text_input_enter(wl_surface* s) {
+    text_focus_ = sink(s);
+    ti_sent_ = {};
+    flush_text_input();
+}
+
+void Input::text_input_leave() {
+    text_focus_ = nullptr;
+    ti_sent_ = {};
+}
+
+void Input::text_input_done() {
+    TextInputEvent e = std::move(pending_text_);
+    pending_text_ = {};
+    if (text_focus_) text_focus_->on_text_input(e);
 }
 
 void Input::set_cursor(Cursor c) {

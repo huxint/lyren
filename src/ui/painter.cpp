@@ -5,14 +5,15 @@
 
 namespace lyren::ui {
 
-static void premul(float out[4], Color c) {
-    out[0] = c.r * c.a, out[1] = c.g * c.a, out[2] = c.b * c.a, out[3] = c.a;
+void Painter::premul(float out[4], Color c) const {
+    float a = c.a * alpha_;
+    out[0] = c.r * a, out[1] = c.g * a, out[2] = c.b * a, out[3] = a;
 }
 
 void Painter::begin(float scale, float origin_x, float origin_y) {
     prims_.clear();
     clips_.assign(1, {0, 0, 1e9f, 1e9f});
-    scale_ = scale, ox_ = origin_x, oy_ = origin_y;
+    scale_ = scale, ox_ = origin_x, oy_ = origin_y, alpha_ = 1;
 }
 
 float Painter::snap(float v) const { return std::round(v * scale_); }
@@ -82,6 +83,21 @@ void Painter::image(Rect r, gfx::TextureId tex, float radius, Color tint) {
     std::fill_n(p.radii, 4, radius * scale_);
     p.uv[2] = p.uv[3] = 1;
     p.info[1] = tex;
+}
+
+void Painter::arc(Rect r, float thickness, float start, float sweep, Color color) {
+    float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_;
+    auto& p = emit(gfx::Kind::arc, x0, y0, x0 + r.w * scale_, y0 + r.h * scale_);
+    premul(p.color, color);
+    p.params[0] = thickness * scale_, p.params[1] = start, p.params[2] = sweep;
+}
+
+void Painter::wave(float x, float y, float w, float thickness, float amplitude, float wavelength, float phase, Color color) {
+    float h = amplitude + thickness;
+    auto& p = emit(gfx::Kind::wave, (x + ox_ - thickness / 2) * scale_, (y + oy_ - h) * scale_, (x + ox_ + w + thickness / 2) * scale_,
+                   (y + oy_ + h) * scale_);
+    premul(p.color, color);
+    p.params[0] = thickness * scale_, p.params[1] = amplitude * scale_, p.params[2] = wavelength * scale_, p.params[3] = phase;
 }
 
 void Painter::glyphs(const text::Shaped& shaped, size_t count, float x, float baseline, float size, Color color) {

@@ -35,4 +35,4 @@ target_include_directories(doctest SYSTEM INTERFACE ${doctest_SOURCE_DIR})
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SYSLIBS REQUIRED IMPORTED_TARGET
-    vulkan wayland-client xkbcommon freetype2 harfbuzz fontconfig)
+    vulkan wayland-client xkbcommon freetype2 harfbuzz fontconfig libpng)

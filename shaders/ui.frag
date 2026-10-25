@@ -42,6 +42,12 @@ float rounded_box_shadow(vec2 p, vec2 half_size, float sigma, float corner) {
     return value;
 }
 
+// Arc of radius ra and half-thickness rb with round caps, symmetric around +y; sc = sin/cos of half the aperture.
+float sd_arc(vec2 p, vec2 sc, float ra, float rb) {
+    p.x = abs(p.x);
+    return ((sc.y * p.x > sc.x * p.y) ? length(p - sc * ra) : abs(length(p) - ra)) - rb;
+}
+
 void main() {
     Prim p = pc.prims.p[v_index];
     if (v_pos.x < p.clip.x || v_pos.y < p.clip.y || v_pos.x >= p.clip.z || v_pos.y >= p.clip.w) discard;
@@ -65,6 +71,21 @@ void main() {
         o = p.color * a;
     } else if (kind == KIND_GLYPH) {
         o = p.color * texture(textures[nonuniformEXT(p.info.y)], v_uv).r;
+    } else if (kind == KIND_ARC) {
+        // Rotate so the middle of the arc points up (+y with y flipped to point up).
+        float mid = p.params.y + p.params.z * 0.5, half_sweep = min(p.params.z * 0.5, 3.14159265);
+        vec2 q = vec2(local.x, -local.y);
+        q = vec2(cos(mid) * q.x - sin(mid) * q.y, sin(mid) * q.x + cos(mid) * q.y);
+        float d = sd_arc(q, vec2(sin(half_sweep), cos(half_sweep)), min(half_size.x, half_size.y) - p.params.x * 0.5, p.params.x * 0.5);
+        o = p.color * clamp(0.5 - d, 0.0, 1.0);
+    } else if (kind == KIND_WAVE) {
+        // Sine line from x0 to x1 around the vertical centre, with round caps past the ends.
+        float th = p.params.x, amp = p.params.y, k = 6.2831853 / p.params.z;
+        float x0 = p.rect.x + th * 0.5, x1 = p.rect.x + p.rect.z - th * 0.5;
+        float x = clamp(v_pos.x, x0, x1), s = (x - x0) * k + p.params.w;
+        float y = p.rect.y + half_size.y - amp * sin(s);
+        float d = x != v_pos.x ? length(v_pos - vec2(x, y)) : abs(v_pos.y - y) / sqrt(1.0 + pow(amp * k * cos(s), 2.0));
+        o = p.color * clamp(0.5 - (d - th * 0.5), 0.0, 1.0);
     } else {
         float cov = clamp(0.5 - sd_rrect(local, half_size, p.radii), 0.0, 1.0);
         o = texture(textures[nonuniformEXT(p.info.y)], v_uv) * p.color * cov;

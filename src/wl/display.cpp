@@ -6,6 +6,7 @@
 
 #include "core/log.hpp"
 #include "core/loop.hpp"
+#include "wl/clipboard.hpp"
 #include "wl/input.hpp"
 
 namespace lyren::wl {
@@ -29,6 +30,7 @@ static void on_global(void* data, wl_registry* reg, uint32_t name, const char* i
     else if (is(xdg_activation_v1_interface)) bind(reg, name, &xdg_activation_v1_interface, ver, 1, d->activation);
     else if (is(zwlr_layer_shell_v1_interface)) bind(reg, name, &zwlr_layer_shell_v1_interface, ver, 4, d->layer_shell);
     else if (is(ext_background_effect_manager_v1_interface)) bind(reg, name, &ext_background_effect_manager_v1_interface, ver, 1, d->background_effect);
+    else if (is(wl_data_device_manager_interface)) bind(reg, name, &wl_data_device_manager_interface, ver, 3, d->data_device_manager);
 }
 static void on_global_remove(void*, wl_registry*, uint32_t) {}
 static const wl_registry_listener registry_listener{on_global, on_global_remove};
@@ -57,6 +59,7 @@ Display::Display(Loop& l) : loop(l) {
     xdg_wm_base_add_listener(wm_base, &wm_listener, this);
     if (background_effect) ext_background_effect_manager_v1_add_listener(background_effect, &effect_listener, this);
     input = std::make_unique<Input>(*this);
+    clipboard = std::make_unique<Clipboard>(*this);
     wl_display_roundtrip(display);
 
     loop.set_poll_hook({
@@ -79,6 +82,7 @@ Display::Display(Loop& l) : loop(l) {
 }
 
 Display::~Display() {
+    clipboard.reset();
     input.reset();
     wl_display_flush(display);
     wl_display_disconnect(display);

@@ -1,26 +1,26 @@
 #include "app/app.hpp"
 
 #include <linux/input-event-codes.h>
+#include <png.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <fstream>
+#include <spawn.h>
+#include <sstream>
+#include <sys/wait.h>
 
 #include "core/log.hpp"
 #include "core/memstat.hpp"
-#include "text/icons.hpp"
+#include "wl/clipboard.hpp"
 #include "wl/input.hpp"
 
 namespace lyren {
 
-constexpr float titlebar_h = 40;
+constexpr float titlebar_h = 52;
 constexpr int shadow_margin = 28, resize_border = 8;
-
-static ui::Rect button_rect(float window_w, int i) {
-    constexpr float w = 36, h = 28, gap = 4;
-    return {window_w - 8 - float(3 - i) * w - float(2 - i) * gap, (titlebar_h - h) / 2, w, h};
-}
 
 static wl::Cursor cursor_for(uint32_t edges) {
     switch (edges) {
@@ -33,6 +33,16 @@ static wl::Cursor cursor_for(uint32_t edges) {
         case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT: return wl::Cursor::sw_resize;
         default: return wl::Cursor::se_resize;
     }
+}
+
+// Resize edges for a point in the band outside the w×h geometry; corners take 16 px along each side.
+static uint32_t edges_at(float x, float y, float w, float h) {
+    constexpr float corner = 16;
+    bool l = x < 0, r = x >= w, t = y < 0, b = y >= h;
+    if (t || b) l |= x < corner, r |= x >= w - corner;
+    if (l || r) t |= y < corner, b |= y >= h - corner;
+    return (t ? XDG_TOPLEVEL_RESIZE_EDGE_TOP : 0) | (b ? XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM : 0) | (l ? XDG_TOPLEVEL_RESIZE_EDGE_LEFT : 0) |
+           (r ? XDG_TOPLEVEL_RESIZE_EDGE_RIGHT : 0);
 }
 
 // glaze reports "line:col: code" followed by the offending line.
@@ -50,13 +60,14 @@ static std::string describe_config_error(const std::string& err) {
     return std::format("配置第 {} 行有误（{}）：{}，已保留之前的设置", line, code, context);
 }
 
-App::App(Loop& loop, ConfigFile config, bool show_overlay)
+App::App(Loop& loop, ConfigFile config, bool show_overlay, std::vector<std::string> script)
     : loop_(loop),
       config_(std::move(config)),
       display_(loop),
       gpu_(display_.display),
       renderer_(gpu_),
-      watcher_(loop, config_.path, [this] { reload_config(); }) {
+      watcher_(loop, config_.path, [this] { reload_config(); }),
+      script_(std::move(script)) {
     std::string errors;
     theme_ = ui::Theme::from(config_.config, errors);
     load_text(config_.config.theme.font);
@@ -64,7 +75,9 @@ App::App(Loop& loop, ConfigFile config, bool show_overlay)
     wl::Window::Callbacks cb{
         .configure =
             [this] {
-                if (window_) request_redraw();
+                if (!window_) return;
+                note_input();
+                request_redraw();
             },
         .close = [this] { loop_.quit(); },
         .frame =
@@ -77,8 +90,9 @@ App::App(Loop& loop, ConfigFile config, bool show_overlay)
         .pointer = [this](const wl::PointerEvent& e) { on_pointer(e); },
         .key = [this](const wl::KeyEvent& e) { on_key(e); },
         .focus = [this](bool) { request_redraw(); },
+        .text_input = [this](const wl::TextInputEvent& e) { on_text_input(e); },
     };
-    window_ = std::make_unique<wl::Window>(display_, std::move(cb), config_.config.window.decorations == Decorations::client, 1100, 720);
+    window_ = std::make_unique<wl::Window>(display_, std::move(cb), config_.config.window.decorations == Decorations::client, 1180, 760);
     window_->set_title("Lyren");
     target_ = renderer_.create_target(display_.display, window_->surface());
     apply_config(true);
@@ -89,11 +103,13 @@ App::App(Loop& loop, ConfigFile config, bool show_overlay)
         sample_overlay();
     }
     request_redraw();
+    if (!script_.empty()) loop_.after(500ms, [this] { run_script(0); });
 }
 
 App::~App() {
     renderer_.destroy_target(target_);
-    loop_.cancel(toast_timer_);
+    loop_.cancel(pace_timer_);
+    loop_.cancel(wake_timer_);
     loop_.cancel(overlay_timer_);
     loop_.cancel(idle_timer_);
 }
@@ -136,13 +152,7 @@ void App::reload_config() {
 
 void App::toast(std::string message) {
     log::warn("{}", message);
-    toast_ = std::move(message);
-    loop_.cancel(toast_timer_);
-    toast_timer_ = loop_.after(6s, [this] {
-        toast_.clear();
-        toast_timer_ = 0;
-        request_redraw();
-    });
+    ui_.toast(std::move(message), "triangle-alert", true);
     request_redraw();
 }
 
@@ -154,29 +164,48 @@ void App::request_redraw() {
     }
 }
 
-void App::render() {
-    scheduled_ = false;
-    if (!dirty_ || window_->frame_pending()) return;
-    dirty_ = false;
-    auto start = Clock::now();
-    renderer_.resize(*target_, window_->buffer_width(), window_->buffer_height());
-    for (int pass = 0; pass < 2; ++pass) {
-        atlas_->begin_frame();
-        build(*painter_);
-        if (!atlas_->reset()) break;
-    }
-    shaper_->end_frame();
-    const float clear[4] = {0, 0, 0, 0};
-    renderer_.draw(*target_, painter_->prims(), clear, [this] { window_->prepare_present(); });
-    frame_ms_ = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
-    // Once nothing has been drawn for a while, give back font pages and freed heap; glyphs live in the atlas.
+// Once input stops for a while, give back font pages and freed heap; glyphs live in the atlas.
+void App::note_input() {
     loop_.cancel(idle_timer_);
     idle_timer_ = loop_.after(5s, [this] {
         idle_timer_ = 0;
         fonts_->trim();
         mem_trim();
     });
+}
+
+void App::render() {
+    scheduled_ = false;
+    if (!dirty_ || window_->frame_pending()) return;
+    dirty_ = false;
+    loop_.cancel(pace_timer_);
+    loop_.cancel(wake_timer_);
+    pace_timer_ = wake_timer_ = 0;
+    auto start = Clock::now();
+    double now = std::chrono::duration<double>(start - start_).count();
+    renderer_.resize(*target_, window_->buffer_width(), window_->buffer_height());
+    input_.mods = display_.input->mods();
+    // A full atlas is cleared mid-frame; the second pass redraws with the events already handled.
+    for (int pass = 0; pass < 2; ++pass) {
+        atlas_->begin_frame();
+        build(now);
+        input_.consumed();
+        if (!atlas_->reset()) break;
+    }
+    shaper_->end_frame();
+    // Pointer motion over static areas rebuilds an identical frame; skip presenting it.
+    auto prims = painter_->prims();
+    uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char*>(prims.data()), prims.size_bytes()}) ^
+                    (uint64_t(window_->buffer_width()) << 32 | window_->buffer_height());
+    if (hash != frame_hash_ || window_->configure_pending()) {
+        const float clear[4] = {0, 0, 0, 0};
+        renderer_.draw(*target_, prims, clear, [this] { window_->prepare_present(); });
+        frame_hash_ = hash;
+    }
+    frame_ms_ = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+    after_frame(start);
     if (++frames_ == 1) {
+        note_input();
         mem_trim();
         auto m = mem_sample();
         log::info("first frame in {:.1f} ms: RSS {:.1f} MB (anon {:.1f}, file {:.1f}), GPU {:.1f} MB", frame_ms_, m.rss / 1024.0, m.anon / 1024.0,
@@ -184,189 +213,181 @@ void App::render() {
     }
 }
 
-void App::build(ui::Painter& p) {
+void App::build(double now) {
     float m = float(window_->margin()), w = float(window_->width()), h = float(window_->height());
+    auto& p = *painter_;
     p.begin(float(window_->scale()), m, m);
+    frame_theme_ = theme_;
+    bool accent_moving = false;
+    if (theme_.auto_accent) frame_theme_.accent = shell_.accent(now, theme_.dark, accent_moving);
+
     bool floating = window_->client_side() && m > 0;
     float radius = floating ? theme_.radius_l() : 0;
     if (floating) p.shadow({0, 6, w, h}, radius, 20, theme_.shadow, theme_.opacity < 1);
     p.rect({0, 0, w, h}, theme_.bg.with_alpha(theme_.opacity), radius, floating ? theme_.border : ui::Color{}, floating ? 1 : 0);
 
-    float top = 0;
+    ui_.window_radius = radius;
+    ui_.toast_bottom = Shell::player_h + 20;
+    ui_.begin(p, frame_theme_, w, h, now, input_);
+    if (accent_moving) ui_.keep_animating();
+    ui::Rect area{0, 0, w, h};
+    titlebar(ui::cut_top(area, titlebar_h));
+    shell_.draw(ui_, area);
+    ui_.end();
+    for (auto& a : input_.actions)
+        if (a.press && !a.consumed) caption_press(a);
+    overlay_.draw(p, theme_, w - 12, titlebar_h + 8);
+}
+
+void App::titlebar(ui::Rect bar) {
+    auto& p = *painter_;
+    const auto& t = frame_theme_;
+    ui::Rect r = bar;
     if (window_->client_side()) {
-        draw_titlebar(p);
-        top = titlebar_h;
+        ui::Rect ctl = ui::cut_right(r, 3 * 36 + 2 * 4 + 16);
+        float x = ctl.x + 4, y = bar.y + (bar.h - 28) / 2;
+        if (window_button(ui_.id("win-min"), {x, y, 36, 28}, "minus", 16, false)) window_->minimize();
+        if (window_button(ui_.id("win-max"), {x + 40, y, 36, 28}, window_->maximized() ? "copy" : "square", 14, false)) window_->toggle_maximize();
+        if (window_button(ui_.id("win-close"), {x + 80, y, 36, 28}, "x", 16, true)) loop_.quit();
+        float name_w = p.measure("Lyren", {.size = t.fs(15)});
+            ui::Rect mark = ui::cut_left(r, 60 + name_w);
+        p.icon("disc-3", {mark.x + 20, bar.y + (bar.h - 20) / 2, 20, 20}, t.accent);
+        p.text_in({mark.x + 48, bar.y, name_w, bar.h}, "Lyren", {.size = t.fs(15), .color = window_->activated() ? t.text : t.text_dim});
+    } else {
+        ui::cut_left(r, 8);
     }
-    p.push_clip({0, top, w, h - top});
-    draw_demo(p, {0, top, w, h - top});
-    overlay_.draw(p, theme_, w - 12, top + 8);
-    p.pop_clip();
+    shell_.top_bar(ui_, r, bar.w / 2);
+}
 
-    if (!toast_.empty()) {
-        ui::TextStyle style{.size = theme_.fs(13), .color = theme_.text};
-        float tw = std::min(p.measure(toast_, style), w - 120);
-        ui::Rect r{(w - tw - 56) / 2, h - 72, tw + 56, 40};
-        p.shadow(r, theme_.radius, 24, theme_.shadow);
-        p.rect(r, theme_.elevated, theme_.radius, theme_.border, 1);
-        p.icon("triangle-alert", {r.x + 14, r.y + 12, 16, 16}, theme_.danger);
-        p.text_in({r.x + 40, r.y, tw, r.h}, toast_, style);
+bool App::window_button(ui::Id id, ui::Rect r, std::string_view icon, float size, bool close) {
+    auto& p = *painter_;
+    const auto& t = frame_theme_;
+    auto it = ui_.interact(id, r);
+    float hot = ui_.anim(id, it.hovered ? 1 : 0, 150);
+    bool down = it.held && it.hovered;
+    ui::Color fg = window_->activated() ? t.text : t.text_dim;
+    if (hot > 0) p.rect(r, close ? t.danger.with_alpha(hot * (down ? 0.8f : 1)) : (down ? t.press : t.hover).with_alpha(hot), t.radius_s());
+    if (close) fg = fg.mix({1, 1, 1, 1}, hot);
+    p.icon(icon, ui::center(r, size, size), fg);
+    return it.clicked;
+}
+
+// Presses no widget took: empty title bar space moves, maximizes or opens the window menu.
+void App::caption_press(const ui::PointerAction& a) {
+    if (!window_->client_side() || a.y >= titlebar_h) return;
+    if (a.button == BTN_LEFT) {
+        if (a.double_click) window_->toggle_maximize();
+        else window_->move();
+    } else if (a.button == BTN_RIGHT) {
+        int m = window_->margin();
+        window_->show_menu(int(a.x) + m, int(a.y) + m);
     }
 }
 
-void App::draw_titlebar(ui::Painter& p) {
-    float w = float(window_->width());
-    ui::Color fg = window_->activated() ? theme_.text : theme_.text_dim;
-    p.icon("disc-3", {14, 10, 20, 20}, theme_.accent);
-    p.text_in({42, 0, 200, titlebar_h}, "Lyren", {.size = theme_.fs(14), .color = fg});
-    const char* icons[] = {"minus", window_->maximized() ? "copy" : "square", "x"};
-    const Hit hits[] = {Hit::minimize, Hit::maximize, Hit::close};
-    for (int i = 0; i < 3; ++i) {
-        ui::Rect r = button_rect(w, i);
-        bool hot = hover_ == hits[i], down = hot && pressed_ == hits[i];
-        bool close = hits[i] == Hit::close;
-        if (hot) p.rect(r, close ? theme_.danger.with_alpha(down ? 0.8f : 1) : down ? theme_.press : theme_.hover, theme_.radius_s());
-        float s = i == 1 ? 14 : 16;
-        p.icon(icons[i], {r.x + (r.w - s) / 2, r.y + (r.h - s) / 2, s, s}, hot && close ? ui::Color{1, 1, 1, 1} : fg);
+void App::after_frame(Clock::time_point frame_start) {
+    display_.input->set_cursor(resize_edges_ ? cursor_for(resize_edges_) : ui_.cursor);
+    wl::TextInputState ti = ui_.text_input;
+    if (ti.enabled) ti.x += window_->margin(), ti.y += window_->margin();
+    display_.input->set_text_input(std::move(ti));
+    if (ui_.copy) {
+        display_.clipboard->set_text(std::move(*ui_.copy), display_.input->serial());
+        ui_.copy.reset();
     }
-}
+    if (std::exchange(ui_.want_paste, false))
+        display_.clipboard->get_text([this](std::string s) {
+            input_.paste = std::move(s);
+            request_redraw();
+        });
 
-void App::draw_demo(ui::Painter& p, ui::Rect a) {
-    const ui::Color white{1, 1, 1, 1};
-    float x = a.x + 32, y = a.y + 20;
-    ui::TextStyle h1{.size = theme_.fs(28), .color = theme_.text};
-    ui::TextStyle sub{.size = theme_.fs(16), .color = theme_.text_dim};
-    ui::TextStyle body{.size = theme_.fs(14), .color = theme_.text};
-    ui::TextStyle small{.size = theme_.fs(12), .color = theme_.text_dim, .features = text::tabular_nums};
-
-    p.text(x, y + p.ascent(h1.size), "双源音乐播放器", h1);
-    y += h1.size * 1.45f;
-    p.text(x, y + p.ascent(sub.size), "网易云音乐 · QQ 音乐 —— 在一个窗口里搜索、播放、看歌词", sub, a.w - 64);
-    y += sub.size * 2.4f;
-
-    ui::Rect card{x, y, std::min(a.w - 64, 580.f), 120};
-    p.shadow({card.x, card.y + 4, card.w, card.h}, theme_.radius, 24, theme_.shadow.with_alpha(0.7f));
-    p.rect(card, theme_.surface, theme_.radius, theme_.border, 1);
-    ui::Rect cover{card.x + 16, card.y + 16, 88, 88};
-    p.gradient(cover, theme_.accent, theme_.accent.mix(theme_.surface, 0.65f), theme_.radius_s());
-    p.icon("music", {cover.x + 28, cover.y + 28, 32, 32}, white.with_alpha(0.9f));
-    float tx = cover.right() + 16, tw = card.right() - 16 - tx;
-    p.text(tx, card.y + 18 + p.ascent(theme_.fs(16)), "晴天", {.size = theme_.fs(16), .color = theme_.text}, tw - 140);
-    p.text(tx, card.y + 44 + p.ascent(theme_.fs(13)), "周杰伦 · 叶惠美", {.size = theme_.fs(13), .color = theme_.text_dim}, tw - 140);
-    const char* controls[] = {"shuffle", "skip-back", "pause", "skip-forward", "repeat"};
-    for (int i = 0; i < 5; ++i) {
-        ui::Rect r{card.right() - 16 - float(5 - i) * 28, card.y + 18, 20, 20};
-        p.icon(controls[i], r, i == 2 ? theme_.text : theme_.text_dim);
+    // Input-driven frames follow the compositor; animation frames are capped at render.max_fps.
+    if (ui_.needs_redraw()) {
+        request_redraw();
+    } else if (ui_.animating()) {
+        int fps = config_.config.render.max_fps;
+        auto due = frame_start + std::chrono::nanoseconds(fps > 0 ? 1'000'000'000 / fps : 0);
+        if (Clock::now() >= due) request_redraw();
+        else
+            pace_timer_ = loop_.at(due, [this] {
+                pace_timer_ = 0;
+                request_redraw();
+            });
+    } else if (std::isfinite(ui_.wake_at())) {
+        auto at = start_ + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(ui_.wake_at()));
+        wake_timer_ = loop_.at(at, [this] {
+            wake_timer_ = 0;
+            request_redraw();
+        });
     }
-    ui::Rect bar{tx, card.y + 80, tw, 4};
-    p.rect(bar, theme_.text.with_alpha(0.12f), 2);
-    p.rect({bar.x, bar.y, bar.w * 0.31f, bar.h}, theme_.accent, 2);
-    p.text(tx, bar.bottom() + 8 + p.ascent(small.size), "01:23", small);
-    float dw = p.measure("04:29", small);
-    p.text(bar.right() - dw, bar.bottom() + 8 + p.ascent(small.size), "04:29", small);
-    y = card.bottom() + 32;
-
-    p.text(x, y + p.ascent(body.size), "混排：English · 日本語のかな · 한국어 · Ελληνικά · Русский · 0123456789 · ½ → ✓", body, a.w - 64);
-    y += body.size * 2;
-    ui::Rect narrow{x, y, 260, 32};
-    p.rect(narrow, theme_.surface, theme_.radius_s(), theme_.border, 1);
-    p.text_in(narrow.inset(12, 0), "很长的歌名会在这里被截断并显示省略号 (Long Title Ellipsis)", body);
-    y += 56;
-
-    float gx = x;
-    for (std::size_t i = 0; i < text::icon_source_count; ++i) {
-        if (gx + 20 > a.right() - 32) {
-            gx = x;
-            y += 32;
-        }
-        p.icon(text::icon_sources[i].name, {gx, y, 20, 20}, theme_.text_dim);
-        gx += 32;
-    }
-}
-
-App::Hit App::hit_test(float x, float y, uint32_t& edges) const {
-    float w = float(window_->width()), h = float(window_->height());
-    edges = 0;
-    if (x < 0 || y < 0 || x >= w || y >= h) {
-        if (!window_->margin()) return Hit::none;
-        constexpr float corner = 16;
-        bool l = x < 0, r = x >= w, t = y < 0, b = y >= h;
-        if (t || b) l |= x < corner, r |= x >= w - corner;
-        if (l || r) t |= y < corner, b |= y >= h - corner;
-        edges = (t ? XDG_TOPLEVEL_RESIZE_EDGE_TOP : 0) | (b ? XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM : 0) | (l ? XDG_TOPLEVEL_RESIZE_EDGE_LEFT : 0) |
-                (r ? XDG_TOPLEVEL_RESIZE_EDGE_RIGHT : 0);
-        return Hit::resize;
-    }
-    if (!window_->client_side() || y >= titlebar_h) return Hit::client;
-    const Hit hits[] = {Hit::minimize, Hit::maximize, Hit::close};
-    for (int i = 0; i < 3; ++i)
-        if (button_rect(w, i).contains(x, y)) return hits[i];
-    return Hit::caption;
 }
 
 void App::on_pointer(const wl::PointerEvent& e) {
-    float m = float(window_->margin());
-    mouse_x_ = e.x - m, mouse_y_ = e.y - m;
-    uint32_t edges = 0;
-    Hit hit = hit_test(mouse_x_, mouse_y_, edges);
+    float m = float(window_->margin()), w = float(window_->width()), h = float(window_->height());
+    float x = e.x - m, y = e.y - m;
     switch (e.type) {
-        case wl::PointerEvent::enter:
+        case wl::PointerEvent::enter: input_.left_down = false; [[fallthrough]];
         case wl::PointerEvent::motion:
-            display_.input->set_cursor(hit == Hit::resize ? cursor_for(edges) : wl::Cursor::arrow);
-            if (hit != hover_) {
-                hover_ = hit;
-                request_redraw();
-            }
+            input_.x = x, input_.y = y;
+            input_.inside = x >= 0 && y >= 0 && x < w && y < h;
+            resize_edges_ = input_.inside || input_.left_down ? 0 : edges_at(x, y, w, h);
+            display_.input->set_cursor(resize_edges_ ? cursor_for(resize_edges_) : ui_.cursor);
             break;
         case wl::PointerEvent::leave:
-            hover_ = pressed_ = Hit::none;
-            request_redraw();
+            input_.inside = input_.left_down = false;
+            resize_edges_ = 0;
             break;
-        case wl::PointerEvent::press:
-            if (e.button == BTN_LEFT) {
-                if (hit == Hit::resize) {
-                    window_->resize(edges);
-                } else if (hit == Hit::caption) {
-                    if (last_click_ && e.time - last_click_ < 400) {
-                        window_->toggle_maximize();
-                        last_click_ = 0;
-                    } else {
-                        last_click_ = e.time;
-                        window_->move();
-                    }
-                } else if (hit == Hit::minimize || hit == Hit::maximize || hit == Hit::close) {
-                    pressed_ = hit;
-                    request_redraw();
-                }
-            } else if (e.button == BTN_RIGHT && hit == Hit::caption) {
-                window_->show_menu(int(e.x), int(e.y));
+        case wl::PointerEvent::press: {
+            if (resize_edges_) {
+                if (e.button == BTN_LEFT) window_->resize(resize_edges_);
+                return;
             }
+            bool dbl = e.button == last_press_button_ && e.time - last_press_time_ < 400 && std::abs(x - last_press_x_) < 4 &&
+                       std::abs(y - last_press_y_) < 4;
+            last_press_time_ = dbl ? 0 : e.time, last_press_button_ = e.button;
+            last_press_x_ = x, last_press_y_ = y;
+            input_.actions.push_back({x, y, e.button, true, dbl});
+            if (e.button == BTN_LEFT) input_.left_down = true;
             break;
+        }
         case wl::PointerEvent::release:
-            if (e.button == BTN_LEFT && pressed_ != Hit::none) {
-                if (pressed_ == hit) {
-                    if (hit == Hit::minimize) window_->minimize();
-                    else if (hit == Hit::maximize) window_->toggle_maximize();
-                    else loop_.quit();
-                }
-                pressed_ = Hit::none;
-                request_redraw();
-            }
+            if (e.button == BTN_LEFT) input_.left_down = false;
+            input_.actions.push_back({x, y, e.button, false});
             break;
-        case wl::PointerEvent::scroll: break;
+        case wl::PointerEvent::scroll:
+            input_.scroll_x += e.dx, input_.scroll_y += e.dy;
+            input_.wheel |= e.wheel, input_.scroll_stop |= e.stop;
+            break;
     }
+    note_input();
+    request_redraw();
 }
 
 void App::on_key(const wl::KeyEvent& e) {
     if (!e.pressed) return;
+    note_input();
     if (e.keysym == XKB_KEY_F12 && !e.repeat) {
         overlay_.visible = !overlay_.visible;
         loop_.cancel(overlay_timer_);
         overlay_timer_ = 0;
         if (overlay_.visible) sample_overlay();
-        request_redraw();
     } else if ((e.mods & wl::mod_ctrl) && (e.keysym == XKB_KEY_q || e.keysym == XKB_KEY_Q)) {
         loop_.quit();
+        return;
+    } else {
+        input_.keys.push_back(e);
     }
+    request_redraw();
+}
+
+void App::on_text_input(const wl::TextInputEvent& e) {
+    log::debug("text input: preedit \"{}\" cursor {}, commit \"{}\", delete {}/{}", e.preedit, e.preedit_cursor, e.commit, e.delete_before,
+               e.delete_after);
+    input_.preedit = e.preedit;
+    input_.preedit_cursor = e.preedit_cursor;
+    input_.commit += e.commit;
+    input_.delete_before += e.delete_before;
+    input_.delete_after += e.delete_after;
+    note_input();
+    request_redraw();
 }
 
 void App::sample_overlay() {
@@ -397,6 +418,82 @@ void App::sample_overlay() {
         sample_overlay();
         request_redraw();
     });
+}
+
+static void write_png(const std::string& path, const uint8_t* bgra, uint32_t w, uint32_t h) {
+    std::vector<uint8_t> px(bgra, bgra + size_t(w) * h * 4);
+    for (size_t i = 0; i < px.size(); i += 4)
+        if (int a = px[i + 3]; a && a < 255)
+            for (int c = 0; c < 3; ++c) px[i + c] = uint8_t(std::min(255, px[i + c] * 255 / a));
+    png_image img{};
+    img.version = PNG_IMAGE_VERSION, img.width = w, img.height = h, img.format = PNG_FORMAT_BGRA;
+    if (!png_image_write_to_file(&img, path.c_str(), 0, px.data(), 0, nullptr)) log::warn("cannot write {}: {}", path, img.message);
+}
+
+void App::run_script(size_t i) {
+    while (waitpid(-1, nullptr, WNOHANG) > 0) {}
+    float m = float(window_->margin());
+    auto ms = [this] { return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start_).count()); };
+    while (i < script_.size()) {
+        std::istringstream in(script_[i++]);
+        std::string cmd, rest;
+        in >> cmd;
+        std::getline(in >> std::ws, rest);
+        std::istringstream args(rest);
+        if (cmd.empty() || cmd[0] == '#') continue;
+        if (cmd == "wait") {
+            int n = 0;
+            args >> n;
+            loop_.after(std::chrono::milliseconds(n), [this, i] { run_script(i); });
+            return;
+        }
+        float x = 0, y = 0;
+        std::string how;
+        if (cmd == "move" || cmd == "click") args >> x >> y >> how;
+        if (cmd == "move") {
+            on_pointer({.type = wl::PointerEvent::motion, .x = x + m, .y = y + m, .time = ms()});
+        } else if (cmd == "click") {
+            uint32_t button = how == "right" ? BTN_RIGHT : how == "back" ? BTN_SIDE : BTN_LEFT;
+            on_pointer({.type = wl::PointerEvent::motion, .x = x + m, .y = y + m, .time = ms()});
+            for (int k = how == "double" ? 2 : 1; k > 0; --k) {
+                on_pointer({.type = wl::PointerEvent::press, .x = x + m, .y = y + m, .button = button, .time = ms()});
+                on_pointer({.type = wl::PointerEvent::release, .x = x + m, .y = y + m, .button = button, .time = ms()});
+            }
+        } else if (cmd == "scroll") {
+            float dy = 0;
+            args >> dy >> how;
+            on_pointer({.type = wl::PointerEvent::scroll, .x = input_.x + m, .y = input_.y + m, .dy = dy, .wheel = how == "wheel"});
+        } else if (cmd == "key") {
+            // e.g. "key ctrl+shift+Left"
+            uint32_t mods = 0;
+            for (size_t plus; (plus = rest.find('+')) != std::string::npos && plus > 0; rest.erase(0, plus + 1)) {
+                std::string mod = rest.substr(0, plus);
+                mods |= mod == "ctrl" ? wl::mod_ctrl : mod == "shift" ? wl::mod_shift : mod == "alt" ? wl::mod_alt : 0;
+            }
+            wl::KeyEvent e{.keysym = xkb_keysym_from_name(rest.c_str(), XKB_KEYSYM_NO_FLAGS), .mods = mods, .pressed = true};
+            char buf[8];
+            if (!(mods & wl::mod_ctrl) && xkb_keysym_to_utf8(e.keysym, buf, sizeof buf) > 1 && static_cast<unsigned char>(buf[0]) >= 0x20)
+                e.text = buf;
+            on_key(e);
+        } else if (cmd == "commit" || cmd == "preedit") {
+            wl::TextInputEvent e;
+            (cmd == "commit" ? e.commit : e.preedit) = rest;
+            e.preedit_cursor = cmd == "preedit" ? int(rest.size()) : -1;
+            on_text_input(e);
+        } else if (cmd == "shot") {
+            renderer_.capture_next([path = rest](const uint8_t* px, uint32_t w, uint32_t h) { write_png(path, px, w, h); });
+            frame_hash_ = 0;
+            request_redraw();
+        } else if (cmd == "exec") {
+            pid_t pid;
+            const char* argv[] = {"sh", "-c", rest.c_str(), nullptr};
+            posix_spawnp(&pid, "sh", nullptr, nullptr, const_cast<char* const*>(argv), environ);
+        } else if (cmd == "quit") {
+            loop_.quit();
+        } else {
+            log::warn("script line {}: unknown command \"{}\"", i, cmd);
+        }
+    }
 }
 
 }  // namespace lyren

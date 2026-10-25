@@ -21,6 +21,7 @@ public:
         std::function<void(const PointerEvent&)> pointer;
         std::function<void(const KeyEvent&)> key;
         std::function<void(bool)> focus;
+        std::function<void(const TextInputEvent&)> text_input;
     };
 
     Window(Display& display, Callbacks cb, bool client_side, int width, int height);
@@ -41,6 +42,8 @@ public:
     bool activated() const { return activated_; }
     // True between presenting a frame and the compositor's frame callback.
     bool frame_pending() const { return frame_pending_; }
+    // A configure arrived that the next presented frame must acknowledge.
+    bool configure_pending() const { return needs_ack_ || geometry_dirty_; }
 
     void set_title(const std::string& title);
     void set_decorations(bool client_side);
@@ -60,10 +63,12 @@ public:
     void on_pointer(const PointerEvent& e) override { cb_.pointer(e); }
     void on_key(const KeyEvent& e) override { cb_.key(e); }
     void on_keyboard_focus(bool f) override { cb_.focus(f); }
+    void on_text_input(const TextInputEvent& e) override { cb_.text_input(e); }
 
     // Listener plumbing.
     void toplevel_configure(int w, int h, wl_array* states);
     void surface_configure(uint32_t serial);
+    void configure_bounds(int w, int h);
     void decoration_configure(uint32_t mode);
     void preferred_scale(uint32_t scale120);
     void frame_done();
@@ -90,7 +95,7 @@ private:
     int shadow_ = 0, resize_border_ = 0, radius_ = 0, margin_ = 0;
     uint32_t scale120_ = 120;
     uint32_t ack_serial_ = 0;
-    bool needs_ack_ = false, geometry_dirty_ = true, blur_ = false;
+    bool configured_ = false, needs_ack_ = false, geometry_dirty_ = true, blur_ = false;
     bool frame_pending_ = false;
 };
 

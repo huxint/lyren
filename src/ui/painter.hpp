@@ -44,19 +44,28 @@ public:
     void shadow(Rect r, float radius, float blur, Color color, bool cutout = false);
     void icon(std::string_view name, Rect r, Color color);
     void image(Rect r, gfx::TextureId tex, float radius, Color tint = {1, 1, 1, 1});
+    // Arc inscribed in r; angles in radians, clockwise from 12 o'clock.
+    void arc(Rect r, float thickness, float start, float sweep, Color color);
+    // Sine line from x to x + w around y; phase in radians at x.
+    void wave(float x, float y, float w, float thickness, float amplitude, float wavelength, float phase, Color color);
 
     // Draws one line with its baseline at y, ellipsized to max_width. Returns the drawn width.
     float text(float x, float baseline, std::string_view s, const TextStyle& style, float max_width = std::numeric_limits<float>::infinity());
     // Draws text vertically centred in r.
     float text_in(Rect r, std::string_view s, const TextStyle& style);
     float measure(std::string_view s, const TextStyle& style);
+    const text::Shaped& shape(std::string_view s, const TextStyle& style) { return shaper_.shape(s, style.features); }
     float ascent(float size) { return fonts_.face(0).ascender * size; }
     float descent(float size) { return fonts_.face(0).descender * size; }
 
     void push_clip(Rect r);
     void pop_clip();
+    // Multiplies the alpha of everything drawn afterwards (fades of popups and toasts).
+    void set_alpha(float a) { alpha_ = a; }
+    float alpha() const { return alpha_; }
 
 private:
+    void premul(float out[4], Color c) const;
     gfx::Prim& emit(gfx::Kind kind, float x0, float y0, float x1, float y1);
     float snap(float v) const;
     void glyphs(const text::Shaped& shaped, size_t count, float x, float baseline, float size, Color color);
@@ -66,7 +75,7 @@ private:
     text::Fonts& fonts_;
     std::vector<gfx::Prim> prims_;
     std::vector<std::array<float, 4>> clips_;
-    float scale_ = 1, ox_ = 0, oy_ = 0;
+    float scale_ = 1, ox_ = 0, oy_ = 0, alpha_ = 1;
 };
 
 }  // namespace lyren::ui

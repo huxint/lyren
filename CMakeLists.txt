@@ -45,6 +45,7 @@ add_library(lyren_lib STATIC
     src/sys/config.cpp
     src/wl/display.cpp
     src/wl/input.cpp
+    src/wl/clipboard.cpp
     src/wl/window.cpp
     src/gfx/context.cpp
     src/gfx/renderer.cpp
@@ -54,8 +55,14 @@ add_library(lyren_lib STATIC
     src/text/icons.cpp
     src/ui/theme.cpp
     src/ui/painter.cpp
+    src/ui/motion.cpp
+    src/ui/text_edit.cpp
+    src/ui/ui.cpp
+    src/ui/widgets.cpp
+    src/ui/text_box.cpp
     src/app/app.cpp
     src/app/overlay.cpp
+    src/app/shell.cpp
 )
 target_include_directories(lyren_lib PUBLIC src)
 target_link_libraries(lyren_lib PUBLIC PkgConfig::SYSLIBS vulkan_headers glaze nanosvg)
@@ -83,6 +90,7 @@ add_executable(lyren_tests
     tests/test_loop.cpp
     tests/test_config.cpp
     tests/test_utf8.cpp
+    tests/test_ui.cpp
 )
 target_link_libraries(lyren_tests PRIVATE lyren_lib doctest)
 add_test(NAME unit COMMAND lyren_tests)

@@ -26,6 +26,7 @@ struct Theme {
     float motion = 1;
     float opacity = 1;
     bool dark = true;
+    bool auto_accent = true;  // accent follows the cover of the current track
 
     float fs(float base14) const { return base14 * font_size / 14; }
     float radius_s() const { return radius * 0.6f; }

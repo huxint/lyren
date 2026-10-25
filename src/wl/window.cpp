@@ -1,5 +1,6 @@
 #include "wl/window.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
@@ -15,7 +16,7 @@ static const xdg_surface_listener xdg_surface_listener_{
 static const xdg_toplevel_listener toplevel_listener{
     .configure = [](void* d, xdg_toplevel*, int32_t w, int32_t h, wl_array* states) { self(d)->toplevel_configure(w, h, states); },
     .close = [](void* d, xdg_toplevel*) { self(d)->close_requested(); },
-    .configure_bounds = [](void*, xdg_toplevel*, int32_t, int32_t) {},
+    .configure_bounds = [](void* d, xdg_toplevel*, int32_t w, int32_t h) { self(d)->configure_bounds(w, h); },
     .wm_capabilities = [](void*, xdg_toplevel*, wl_array*) {},
 };
 static const zxdg_toplevel_decoration_v1_listener decoration_listener{
@@ -118,13 +119,18 @@ void Window::toplevel_configure(int w, int h, wl_array* states) {
     }
 }
 
+// The work area; only the initial size has to fit inside it.
+void Window::configure_bounds(int w, int h) {
+    if (!configured_ && w > 0 && h > 0) width_ = std::min(width_, w), height_ = std::min(height_, h);
+}
+
 void Window::decoration_configure(uint32_t mode) { csd_ = mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE; }
 
 void Window::surface_configure(uint32_t serial) {
     if (pending_w_ > 0 && pending_h_ > 0) width_ = pending_w_, height_ = pending_h_;
     maximized_ = pending_max_, fullscreen_ = pending_full_, activated_ = pending_act_, tiled_ = pending_tiled_;
     ack_serial_ = serial;
-    needs_ack_ = true;
+    needs_ack_ = configured_ = true;
     update_margin();
     geometry_dirty_ = true;
     if (cb_.configure) cb_.configure();

@@ -10,6 +10,7 @@ class Loop;
 namespace lyren::wl {
 
 class Input;
+class Clipboard;
 
 // Connection, globals and the seat. Integrates the display fd into the loop.
 class Display {
@@ -33,9 +34,11 @@ public:
     xdg_activation_v1* activation = nullptr;
     zwlr_layer_shell_v1* layer_shell = nullptr;
     ext_background_effect_manager_v1* background_effect = nullptr;
+    wl_data_device_manager* data_device_manager = nullptr;
     bool blur_supported = false;
 
     std::unique_ptr<Input> input;
+    std::unique_ptr<Clipboard> clipboard;
 };
 
 }  // namespace lyren::wl
