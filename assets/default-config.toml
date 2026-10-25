@@ -1,0 +1,53 @@
+# lyren 配置文件。保存后立即生效（gpu.device 需要重启）。
+# 删掉这个文件，下次启动会重新生成默认配置。
+
+[window]
+# client：自己画标题栏，搜索框在标题栏里；server：用 KDE 原生标题栏
+decorations = "client"
+# 窗口不透明度，小于 1 时开启 KWin 的背景模糊
+opacity = 1.0
+
+[gpu]
+# integrated：集显，省电，不唤醒独显；discrete：独显。重启后生效
+device = "integrated"
+
+[render]
+# 持续动画（逐字歌词、桌面歌词、进度条）的帧率上限，0 表示跟随屏幕刷新率
+max_fps = 60
+
+[playback]
+# 音质：standard | higher | exhigh | lossless | hires，账号没有权限时服务端自动降档
+quality = "lossless"
+# 只能试听的歌曲：skip 跳过并提示；play 播放试听片段
+trial = "skip"
+
+[theme]
+# dark | light
+mode = "dark"
+# 强调色："auto" 从封面取色，或者写颜色，例如 "#e5484d"
+accent = "auto"
+# fontconfig 字体名，例如 "sans-serif"、"Noto Sans CJK SC"
+font = "sans-serif"
+# 基础字号（逻辑像素），其他字号按比例缩放
+font_size = 14
+# 中等圆角（逻辑像素），小圆角和大圆角按比例缩放
+radius = 10
+# 动画速度倍数，0 关闭动画
+motion = 1.0
+
+# 覆盖主题颜色，不写的项用当前 mode 的默认值。格式 "#rrggbb" 或 "#rrggbbaa"
+[theme.colors]
+# bg = "#111113"
+# surface = "#1a1a1e"
+# elevated = "#232329"
+# border = "#2c2c33"
+# text = "#ececf1"
+# text_dim = "#9a9aa5"
+# danger = "#e5484d"
+
+[desktop_lyrics]
+font_size = 30
+# 已唱部分的颜色："accent" 跟随强调色，或者写颜色
+highlight = "accent"
+color = "#ffffff"
+outline = "#000000a0"

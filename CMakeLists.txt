@@ -1,0 +1,89 @@
+cmake_minimum_required(VERSION 4.0)
+project(lyren LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo)
+endif()
+
+include(cmake/Deps.cmake)
+include(cmake/WaylandProtocols.cmake)
+include(cmake/Shaders.cmake)
+
+# Icons: every SVG under assets/icons is embedded and looked up by file name.
+file(GLOB ICON_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/assets/icons/*.svg)
+set(icon_arrays "")
+set(icon_entries "")
+foreach(f ${ICON_FILES})
+    get_filename_component(name ${f} NAME_WE)
+    string(MAKE_C_IDENTIFIER ${name} id)
+    string(APPEND icon_arrays "static const unsigned char svg_${id}[] = {\n#embed \"icons/${name}.svg\" suffix(, 0)\n};\n")
+    string(APPEND icon_entries "    {\"${name}\", reinterpret_cast<const char*>(svg_${id})},\n")
+endforeach()
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/generated/icon_data.cpp CONTENT
+"// Generated from assets/icons by CMakeLists.txt.
+#include \"text/icons.hpp\"
+
+namespace lyren::text {
+${icon_arrays}
+const IconSource icon_sources[] = {
+${icon_entries}};
+const std::size_t icon_source_count = std::size(icon_sources);
+}
+" @ONLY)
+
+add_library(lyren_lib STATIC
+    ${CMAKE_BINARY_DIR}/generated/icon_data.cpp
+    src/core/log.cpp
+    src/core/loop.cpp
+    src/core/memstat.cpp
+    src/core/utf8.cpp
+    src/sys/paths.cpp
+    src/sys/config.cpp
+    src/wl/display.cpp
+    src/wl/input.cpp
+    src/wl/window.cpp
+    src/gfx/context.cpp
+    src/gfx/renderer.cpp
+    src/text/fonts.cpp
+    src/text/shaper.cpp
+    src/text/atlas.cpp
+    src/text/icons.cpp
+    src/ui/theme.cpp
+    src/ui/painter.cpp
+    src/app/app.cpp
+    src/app/overlay.cpp
+)
+target_include_directories(lyren_lib PUBLIC src)
+target_link_libraries(lyren_lib PUBLIC PkgConfig::SYSLIBS vulkan_headers glaze nanosvg)
+target_compile_options(lyren_lib PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
+add_wayland_protocols(lyren_lib
+    ${WP_DIR}/stable/xdg-shell/xdg-shell.xml
+    ${WP_DIR}/stable/viewporter/viewporter.xml
+    ${WP_DIR}/stable/tablet/tablet-v2.xml
+    ${WP_DIR}/staging/cursor-shape/cursor-shape-v1.xml
+    ${WP_DIR}/staging/fractional-scale/fractional-scale-v1.xml
+    ${WP_DIR}/staging/xdg-activation/xdg-activation-v1.xml
+    ${WP_DIR}/staging/ext-background-effect/ext-background-effect-v1.xml
+    ${WP_DIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
+    ${WP_DIR}/unstable/text-input/text-input-unstable-v3.xml
+    ${CMAKE_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml
+)
+add_shaders(lyren_lib shaders/ui.vert shaders/ui.frag)
+
+add_executable(lyren src/main.cpp)
+target_link_libraries(lyren PRIVATE lyren_lib)
+
+enable_testing()
+add_executable(lyren_tests
+    tests/main.cpp
+    tests/test_loop.cpp
+    tests/test_config.cpp
+    tests/test_utf8.cpp
+)
+target_link_libraries(lyren_tests PRIVATE lyren_lib doctest)
+add_test(NAME unit COMMAND lyren_tests)
+add_test(NAME no_alsa COMMAND sh -c "! ldd $<TARGET_FILE:lyren> | grep -q asound")
