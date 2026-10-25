@@ -65,7 +65,7 @@ void Ui::begin(Painter& painter, const Theme& theme, float w, float h, double no
 
 void Ui::end() {
     draw_modal();
-    if (modal_ && take_escape(in_->keys)) close_modal();
+    if (modal_open() && take_escape(in_->keys)) close_modal();
     draw_menu();
     draw_toasts();
     if (had_press_ && pressed_id_ != focus) focus = 0;
@@ -330,13 +330,12 @@ void Ui::draw_modal() {
         if (shown <= 0) {
             modal_ = nullptr;
             modal_closed_ = -1;
-            focus = 0;
             redraw_ = true;
             return;
         }
     }
     layer_ = Layer::modal;
-    layer_rects_.push_back({Layer::modal, all});
+    if (modal_closed_ < 0) layer_rects_.push_back({Layer::modal, all});
     p_->set_alpha(shown);
     p_->rect(all, {0, 0, 0, 0.5f}, window_radius);
     Rect panel = center(all, anim(id("modal-w"), modal_w_, 320, ease::emphasized), anim(id("modal-h"), modal_h_, 320, ease::emphasized));

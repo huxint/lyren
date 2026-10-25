@@ -2,6 +2,10 @@
 
 Lyren（弦间）是面向 Wayland 桌面的 C++26 音乐播放器，使用 Vulkan 绘制窗口和界面。音频通过 PipeWire 输出。
 
+## 功能
+
+平台适配模块支持网易云音乐，通过共享界面提供搜索、播放和音乐资料浏览。
+
 支持 MP3、FLAC、AAC 和 Vorbis 解码、渐进下载、进度跳转及音量控制。播放地址与可用音质由平台响应决定。
 
 ## 运行环境
@@ -27,6 +31,10 @@ ctest --test-dir build --output-on-failure
 ## 配置与数据
 
 首次运行会生成 `~/.config/lyren/config.toml`。配置项及默认值见 [default-config.toml](assets/default-config.toml)；配置目录遵循 `XDG_CONFIG_HOME`。
+
+播放状态保存在 `~/.local/state/lyren/state.json`，状态目录遵循 `XDG_STATE_HOME`。
+
+账号凭据通过 systemd 用户凭据接口加密保存。各平台会话独立管理。
 
 ## 开发
 

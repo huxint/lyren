@@ -3,8 +3,13 @@
 #include <string>
 #include <vector>
 
+#include "app/images.hpp"
 #include "app/overlay.hpp"
 #include "app/shell.hpp"
+#include "app/state.hpp"
+#include "audio/player.hpp"
+#include "ncm/netease.hpp"
+#include "net/http.hpp"
 #include "core/loop.hpp"
 #include "gfx/renderer.hpp"
 #include "sys/config.hpp"
@@ -21,7 +26,8 @@ namespace lyren {
 
 class App {
 public:
-    // select_driver() must already have run for config.gpu. script: lines for run_script(), may be empty.
+    // select_driver() must already have run for config.gpu. script: lines for run_script(), may be empty; a scripted
+    // run never makes a sound.
     App(Loop& loop, ConfigFile config, bool show_overlay, std::vector<std::string> script);
     ~App();
 
@@ -61,6 +67,11 @@ private:
     Overlay overlay_;
     ui::Ui ui_;
     ui::FrameInput input_;
+    SavedState saved_ = load_state();
+    net::Http http_;
+    audio::Player player_;
+    ncm::Netease ncm_;
+    Images images_;
     Shell shell_;
 
     Clock::time_point start_ = Clock::now();

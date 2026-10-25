@@ -67,6 +67,20 @@ App::App(Loop& loop, ConfigFile config, bool show_overlay, std::vector<std::stri
       gpu_(display_.display),
       renderer_(gpu_),
       watcher_(loop, config_.path, [this] { reload_config(); }),
+      player_(loop, http_),
+      ncm_(loop, http_),
+      images_(
+          loop, http_, renderer_, [this] { request_redraw(); }, [this] { return std::chrono::duration<double>(Clock::now() - start_).count(); }),
+      shell_(ShellDeps{.loop = loop,
+                       .http = http_,
+                       .player = player_,
+                       .ncm = ncm_,
+                       .images = images_,
+                       .config = config_.config,
+                       .redraw = [this] { request_redraw(); },
+                       .now = [this] { return std::chrono::duration<double>(Clock::now() - start_).count(); },
+                       .silent = !script.empty()},
+             saved_),
       script_(std::move(script)) {
     std::string errors;
     theme_ = ui::Theme::from(config_.config, errors);
@@ -92,7 +106,9 @@ App::App(Loop& loop, ConfigFile config, bool show_overlay, std::vector<std::stri
         .focus = [this](bool) { request_redraw(); },
         .text_input = [this](const wl::TextInputEvent& e) { on_text_input(e); },
     };
-    window_ = std::make_unique<wl::Window>(display_, std::move(cb), config_.config.window.decorations == Decorations::client, 1180, 760);
+    int w = saved_.width > 0 ? std::max(saved_.width, 720) : 1180, h = saved_.height > 0 ? std::max(saved_.height, 480) : 760;
+    saved_ = {};
+    window_ = std::make_unique<wl::Window>(display_, std::move(cb), config_.config.window.decorations == Decorations::client, w, h);
     window_->set_title("Lyren");
     target_ = renderer_.create_target(display_.display, window_->surface());
     apply_config(true);
@@ -107,6 +123,7 @@ App::App(Loop& loop, ConfigFile config, bool show_overlay, std::vector<std::stri
 }
 
 App::~App() {
+    shell_.save(window_->maximized() ? std::nullopt : std::optional{std::pair{window_->width(), window_->height()}});
     renderer_.destroy_target(target_);
     loop_.cancel(pace_timer_);
     loop_.cancel(wake_timer_);
@@ -157,6 +174,8 @@ void App::toast(std::string message) {
 }
 
 void App::request_redraw() {
+    // Async results can arrive while the window is still being set up.
+    if (!window_) return;
     dirty_ = true;
     if (!scheduled_ && !window_->frame_pending()) {
         scheduled_ = true;
@@ -411,6 +430,7 @@ void App::sample_overlay() {
     rows.emplace_back("字形图集", std::format("{}² · {:.0f}% · {} 项", atlas_->size(), atlas_->fill() * 100, atlas_->entries()));
     rows.emplace_back("整形缓存", std::format("{} 段 · {} 字形", shaper_->cached(), shaper_->cached_glyphs()));
     rows.emplace_back("纹理", std::format("{} 个 · {:.1f} MB", renderer_.texture_count(), renderer_.texture_bytes() / 1048576.0));
+    rows.emplace_back("  其中封面", std::format("{} 个 · {:.1f} MB", images_.count(), images_.bytes() / 1048576.0));
     rows.emplace_back("帧", std::format("{:.2f} ms · 第 {} 帧", frame_ms_, frames_));
     rows.emplace_back("缩放", std::format("{:.2f} · {}×{}", window_->scale(), window_->width(), window_->height()));
     overlay_.set(std::move(rows));

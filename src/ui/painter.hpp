@@ -43,7 +43,8 @@ public:
     void gradient(Rect r, Color top, Color bottom, float radius = 0);
     void shadow(Rect r, float radius, float blur, Color color, bool cutout = false);
     void icon(std::string_view name, Rect r, Color color);
-    void image(Rect r, gfx::TextureId tex, float radius, Color tint = {1, 1, 1, 1});
+    // uv selects the part of the texture that fills r.
+    void image(Rect r, gfx::TextureId tex, float radius, Color tint = {1, 1, 1, 1}, Rect uv = {0, 0, 1, 1});
     // Arc inscribed in r; angles in radians, clockwise from 12 o'clock.
     void arc(Rect r, float thickness, float start, float sweep, Color color);
     // Sine line from x to x + w around y; phase in radians at x.

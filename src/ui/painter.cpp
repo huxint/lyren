@@ -76,12 +76,12 @@ void Painter::icon(std::string_view name, Rect r, Color color) {
     p.info[1] = atlas_.texture();
 }
 
-void Painter::image(Rect r, gfx::TextureId tex, float radius, Color tint) {
+void Painter::image(Rect r, gfx::TextureId tex, float radius, Color tint, Rect uv) {
     float x0 = snap(r.x + ox_), y0 = snap(r.y + oy_), x1 = snap(r.right() + ox_), y1 = snap(r.bottom() + oy_);
     auto& p = emit(gfx::Kind::image, x0, y0, x1, y1);
     premul(p.color, tint);
     std::fill_n(p.radii, 4, radius * scale_);
-    p.uv[2] = p.uv[3] = 1;
+    p.uv[0] = uv.x, p.uv[1] = uv.y, p.uv[2] = uv.right(), p.uv[3] = uv.bottom();
     p.info[1] = tex;
 }
 
@@ -101,6 +101,7 @@ void Painter::wave(float x, float y, float w, float thickness, float amplitude, 
 }
 
 void Painter::glyphs(const text::Shaped& shaped, size_t count, float x, float baseline, float size, Color color) {
+    if (color.a * alpha_ == 0) return;
     float px = size * scale_;
     float bx = (x + ox_) * scale_, by = snap(baseline + oy_);
     float inv = 1.f / float(atlas_.size());

@@ -37,6 +37,7 @@ public:
     void seek(double seconds);
     void stop();
     void set_volume(float v);  // slider position 0..1; the stream gets v³
+    void set_title(std::string title) { out_.set_name(std::move(title)); }
 
     State state() const { return state_; }
     double position();  // seconds

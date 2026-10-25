@@ -48,6 +48,7 @@ public:
     long status() const;  // HTTP status of a failed download, 0 for network errors
     bool waiting() const;  // a reader is blocked on the network
     std::pair<uint64_t, uint64_t> progress() const;  // bytes present, size
+    std::vector<Ranges::Span> ranges() const;  // byte ranges present
 
 private:
     Spool() = default;

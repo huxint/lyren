@@ -98,7 +98,8 @@ bool Output::start(Format f) {
     // state.restore-props=false keeps WirePlumber from restoring an old volume over ours.
     pw_properties* props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback", PW_KEY_MEDIA_ROLE, "Music",
                                              PW_KEY_APP_NAME, "Lyren", PW_KEY_APP_ICON_NAME, "lyren", PW_KEY_NODE_NAME, "lyren",
-                                             PW_KEY_NODE_LATENCY, "2048/48000", "state.restore-props", "false", nullptr);
+                                             PW_KEY_NODE_LATENCY, "2048/48000", "state.restore-props", "false", PW_KEY_MEDIA_NAME,
+                                             name_.c_str(), nullptr);
     stream_ = pw_stream_new(core_, "Lyren", props);
     pw_stream_add_listener(stream_, &listener_, &StreamEvents::events, this);
     uint8_t buf[1024];
@@ -209,11 +210,23 @@ void Output::set_volume(float linear) {
     pw_thread_loop_unlock(loop_);
 }
 
+void Output::set_name(std::string name) {
+    pw_thread_loop_lock(loop_);
+    name_ = std::move(name);
+    if (stream_) {
+        spa_dict_item item = SPA_DICT_ITEM_INIT(PW_KEY_MEDIA_NAME, name_.c_str());
+        spa_dict dict = SPA_DICT_INIT(&item, 1);
+        pw_stream_update_properties(stream_, &dict);
+    }
+    pw_thread_loop_unlock(loop_);
+}
+
 void Output::apply_volume() {
     float v[SPA_AUDIO_MAX_CHANNELS];
     std::fill_n(v, fmt_.channels, volume_);
     volume_set_ = std::chrono::steady_clock::now();
     pw_stream_set_control(stream_, SPA_PROP_channelVolumes, fmt_.channels, v, 0);
+    log::debug("stream volume {:.3f}", volume_);
 }
 
 uint64_t Output::position() {

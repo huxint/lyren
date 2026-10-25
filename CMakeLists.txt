@@ -35,20 +35,45 @@ const std::size_t icon_source_count = std::size(icon_sources);
 }
 " @ONLY)
 
-add_library(lyren_lib STATIC
-    ${CMAKE_BINARY_DIR}/generated/icon_data.cpp
+# Everything below the window: loop, config, credentials, network, audio and the NetEase client.
+pkg_check_modules(MEDIA REQUIRED IMPORTED_TARGET libcurl libcrypto libmpg123 flac fdk-aac vorbisfile libpipewire-0.3)
+add_library(lyren_base STATIC
     src/core/log.cpp
     src/core/loop.cpp
     src/core/memstat.cpp
     src/core/utf8.cpp
     src/sys/paths.cpp
     src/sys/config.cpp
+    src/sys/creds.cpp
+    src/net/http.cpp
+    src/audio/spool.cpp
+    src/audio/decoder.cpp
+    src/audio/dec_mp3.cpp
+    src/audio/dec_flac.cpp
+    src/audio/dec_vorbis.cpp
+    src/audio/dec_mp4.cpp
+    src/audio/output.cpp
+    src/audio/player.cpp
+    src/ncm/crypto.cpp
+    src/ncm/client.cpp
+    src/ncm/netease.cpp
+    src/app/lyrics.cpp
+)
+target_include_directories(lyren_base PUBLIC src)
+target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA glaze)
+target_compile_options(lyren_base PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
+
+# Window, renderer, text, UI toolkit and the app.
+pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libqrencode)
+add_library(lyren_lib STATIC
+    ${CMAKE_BINARY_DIR}/generated/icon_data.cpp
     src/wl/display.cpp
     src/wl/input.cpp
     src/wl/clipboard.cpp
     src/wl/window.cpp
     src/gfx/context.cpp
     src/gfx/renderer.cpp
+    src/gfx/image.cpp
     src/text/fonts.cpp
     src/text/shaper.cpp
     src/text/atlas.cpp
@@ -62,11 +87,11 @@ add_library(lyren_lib STATIC
     src/ui/text_box.cpp
     src/app/app.cpp
     src/app/overlay.cpp
+    src/app/images.cpp
+    src/app/state.cpp
     src/app/shell.cpp
 )
-target_include_directories(lyren_lib PUBLIC src)
-target_link_libraries(lyren_lib PUBLIC PkgConfig::SYSLIBS vulkan_headers glaze nanosvg)
-target_compile_options(lyren_lib PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
+target_link_libraries(lyren_lib PUBLIC lyren_base PkgConfig::SYSLIBS PkgConfig::UILIBS vulkan_headers nanosvg)
 add_wayland_protocols(lyren_lib
     ${WP_DIR}/stable/xdg-shell/xdg-shell.xml
     ${WP_DIR}/stable/viewporter/viewporter.xml
@@ -81,26 +106,11 @@ add_wayland_protocols(lyren_lib
 )
 add_shaders(lyren_lib shaders/ui.vert shaders/ui.frag)
 
-# Network and audio; the app links it from M4 on.
-pkg_check_modules(MEDIA REQUIRED IMPORTED_TARGET libcurl libmpg123 flac fdk-aac vorbisfile libpipewire-0.3)
-add_library(lyren_media STATIC
-    src/net/http.cpp
-    src/audio/spool.cpp
-    src/audio/decoder.cpp
-    src/audio/dec_mp3.cpp
-    src/audio/dec_flac.cpp
-    src/audio/dec_vorbis.cpp
-    src/audio/dec_mp4.cpp
-    src/audio/output.cpp
-    src/audio/player.cpp
-)
-target_link_libraries(lyren_media PUBLIC lyren_lib PkgConfig::MEDIA)
-
 add_executable(lyren src/main.cpp)
 target_link_libraries(lyren PRIVATE lyren_lib)
 
 add_executable(lyren-probe tools/lyren-probe.cpp)
-target_link_libraries(lyren-probe PRIVATE lyren_media)
+target_link_libraries(lyren-probe PRIVATE lyren_base PkgConfig::UILIBS)
 
 enable_testing()
 add_executable(lyren_tests
@@ -110,8 +120,11 @@ add_executable(lyren_tests
     tests/test_utf8.cpp
     tests/test_ui.cpp
     tests/test_audio.cpp
+    tests/test_ncm.cpp
+    tests/test_lyrics.cpp
+    tests/test_image.cpp
 )
-target_link_libraries(lyren_tests PRIVATE lyren_media doctest)
+target_link_libraries(lyren_tests PRIVATE lyren_lib doctest)
 target_compile_definitions(lyren_tests PRIVATE LYREN_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data")
 add_test(NAME unit COMMAND lyren_tests)
 add_test(NAME no_alsa COMMAND sh -c "! ldd $<TARGET_FILE:lyren> $<TARGET_FILE:lyren-probe> | grep -q asound")

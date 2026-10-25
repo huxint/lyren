@@ -100,6 +100,7 @@ enum class TabStyle { underline, pill };
 struct SliderStyle {
     bool accent = true;  // accent fill, or a neutral one
     float wave = 0;      // amplitude (px) of the moving sine drawn over the filled part
+    std::span<const std::pair<float, float>> marked;  // ranges (0..1) drawn lighter on the track, e.g. what is buffered
 };
 
 struct Interaction {
@@ -191,11 +192,12 @@ public:
     void open_menu(float x, float y, std::vector<MenuItem> items);
     bool menu_open() const { return !menu_.empty(); }
     void open_modal(float w, float h, std::function<void(Ui&, Rect)> body);
-    bool modal_open() const { return bool(modal_); }
+    // A closing modal is still drawn while it fades out but no longer takes input.
+    bool modal_open() const { return modal_ && modal_closed_ < 0; }
     // Changes the size of the open modal; the panel animates to it.
     void resize_modal(float w, float h) { modal_w_ = w, modal_h_ = h; }
     void close_modal() {
-        if (modal_closed_ < 0) modal_closed_ = now;
+        if (modal_closed_ < 0) modal_closed_ = now, focus = 0, redraw_ = true;
     }
     void toast(std::string text, std::string icon = "info", bool error = false);
 

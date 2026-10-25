@@ -64,6 +64,10 @@ bool Ui::slider(Id id, Rect r, float& value, SliderStyle style) {
     float cy = r.y + r.h / 2, filled = r.w * value;
     Color fill = style.accent ? t.accent : t.text_dim.mix(t.text, hot);
     p_->rect({r.x + filled, cy - th / 2, r.w - filled, th}, t.text.with_alpha(0.14f), th / 2);
+    for (auto [a, b] : style.marked) {
+        float x0 = std::max(r.x + r.w * a, r.x + filled), x1 = r.x + r.w * b;
+        if (x1 - x0 > 0.5f) p_->rect({x0, cy - th / 2, x1 - x0, th}, t.text.with_alpha(0.12f), th / 2);
+    }
     if (style.wave > 0.05f && filled > th) {
         // The wave drifts right; its phase is pinned to the bar start so a growing fill does not shift it.
         p_->wave(r.x + th / 2, cy, filled - th / 2, th - 0.5f, style.wave, 26, -float(std::fmod(now * 1.4, 1.0)) * tau, fill);

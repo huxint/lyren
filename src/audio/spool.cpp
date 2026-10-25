@@ -212,6 +212,11 @@ bool Spool::waiting() const {
     return waiting_;
 }
 
+std::vector<Ranges::Span> Spool::ranges() const {
+    std::lock_guard lk(m_);
+    return have_.spans();
+}
+
 std::pair<uint64_t, uint64_t> Spool::progress() const {
     std::lock_guard lk(m_);
     return {have_.total(), size_ == unknown ? 0 : size_};

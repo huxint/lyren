@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -18,6 +19,19 @@ struct Get {
     uint64_t from = 0, end = 0;  // byte range [from, end); end 0 = to the end of the file
     std::vector<std::string> headers;
     std::chrono::milliseconds delay{0};  // start later, for retries
+};
+
+// A whole-body request: POST when body is set. Responses are decompressed (br, zstd, gzip).
+struct Request {
+    std::string url;
+    std::optional<std::string> body;
+    std::vector<std::string> headers;
+};
+
+struct Response {
+    long status = 0;          // 0 without a response
+    std::string body, error;  // error is empty when a response arrived
+    std::vector<std::string> cookies;  // Set-Cookie values
 };
 
 // Called on the network thread; keep them short.
@@ -41,6 +55,8 @@ public:
 
     // Any thread.
     Id stream(Get get, Stream cb);
+    // done runs on the network thread.
+    Id request(Request req, std::function<void(Response)> done);
     void cancel(Id id);
 
     struct Transfer;
@@ -48,6 +64,7 @@ public:
 private:
     void run();
     std::chrono::milliseconds apply();
+    Id add(std::unique_ptr<Transfer> t, std::chrono::milliseconds delay);
 
     void* multi_;
     std::thread thread_;

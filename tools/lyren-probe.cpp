@@ -1,6 +1,11 @@
 // Development CLI.
 //
 //   lyren-probe play <url|file> [step...]
+//   lyren-probe search <query> [tracks|albums|artists|playlists]
+//   lyren-probe url <song id> [standard|higher|exhigh|lossless|hires]
+//   lyren-probe lyrics <song id>
+//   lyren-probe login     QR login in the terminal; saves the credentials like the app does
+//   lyren-probe account
 //
 // Steps run in order: wait:MS  seek:SECONDS  pause  play  vol:0..1  open:URL|FILE  quit. Without steps it is interactive:
 // space pauses, ←/→ seek 10 s, ↑/↓ change the volume, q quits. Exits when the track fails, or ends after the last step.
@@ -10,16 +15,21 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <qrencode.h>
+
 #include <cstdio>
 #include <cstring>
 #include <print>
 #include <string>
 #include <vector>
 
+#include "app/lyrics.hpp"
 #include "audio/player.hpp"
 #include "core/log.hpp"
 #include "core/memstat.hpp"
+#include "ncm/netease.hpp"
 #include "net/http.hpp"
+#include "sys/creds.hpp"
 
 using namespace lyren;
 
@@ -159,6 +169,132 @@ static int play(std::string src, std::vector<std::string> steps) {
     return player.state() == audio::Player::State::failed ? 1 : 0;
 }
 
+// Two modules per character: the upper and lower half blocks.
+static void print_qr(const std::string &text) {
+    QRcode *q = QRcode_encodeString(text.c_str(), 0, QR_ECLEVEL_M, QR_MODE_8, 1);
+    int n = q->width;
+    auto on = [&](int x, int y) {
+        return x >= 0 && y >= 0 && x < n && y < n && (q->data[y * n + x] & 1);
+    };
+    for (int y = -2; y < n + 2; y += 2) {
+        std::string line;
+        for (int x = -2; x < n + 2; ++x) {
+            bool top = on(x, y), bottom = on(x, y + 1);
+            // Light modules are drawn, so the code reads on dark terminals.
+            line += !top && !bottom ? "█" : !top ? "▀" : !bottom ? "▄" : " ";
+        }
+        std::println("{}", line);
+    }
+    QRcode_free(q);
+}
+
+static int ncm_command(const std::vector<std::string> &args) {
+    Loop loop;
+    net::Http http;
+    ncm::Netease ncm(loop, http);
+    int rc = 0;
+    auto fail = [&](const std::string &e) {
+        std::println(stderr, "error: {}", e);
+        rc = 1;
+    };
+    auto run = [&]() -> Task<void> {
+        auto saved = co_await creds::load(loop);
+        if (!saved) {
+            fail(saved.error());
+        }
+        ncm.client.cookies = creds::from_json(saved.value_or("")).netease;
+        ncm.client.ensure_fingerprint();
+        const std::string &cmd = args[0];
+        if (cmd == "search") {
+            static constexpr const char *kinds[] = {"tracks", "albums", "artists", "playlists"};
+            int kind = 0;
+            for (int k = 0; k < 4; ++k) {
+                if (args.size() > 2 && args[2] == kinds[k]) {
+                    kind = k;
+                }
+            }
+            auto r = co_await ncm.search(args.at(1), SearchKind(kind), 0, 30);
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{} total", r->total);
+            for (auto &t : r->tracks) {
+                std::println("{:>12}  {} ({})  {} · {}  {}:{:02}", t.id, t.title, t.alias, t.artist, t.album, t.duration / 60, t.duration % 60);
+            }
+            for (auto &c : r->cards) {
+                std::println("{:>12}  {}  {}  {}", c.id, c.title, c.subtitle, c.cover);
+            }
+        } else if (cmd == "url") {
+            static constexpr const char *names[] = {"standard", "higher", "exhigh", "lossless", "hires"};
+            int q = 3;
+            for (int k = 0; k < 5; ++k) {
+                if (args.size() > 2 && args[2] == names[k]) {
+                    q = k;
+                }
+            }
+            auto r = co_await ncm.stream(Track{.id = args.at(1)}, Quality(q));
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{}\nlevel {}{}", r->url, r->level, r->trial ? std::format(", trial clip only (from {} s)", r->trial_start) : "");
+        } else if (cmd == "lyrics") {
+            auto r = co_await ncm.lyrics(Track{.id = args.at(1)});
+            if (!r) {
+                co_return fail(r.error());
+            }
+            for (auto &l : parse_lyrics(r->lrc, r->translation)) {
+                std::println("{:6.2f}  {}{}{}", l.time, l.text, l.translation.empty() ? "" : "  /  ", l.translation);
+            }
+        } else if (cmd == "login") {
+            auto url = co_await ncm.qr_start();
+            if (!url) {
+                co_return fail(url.error());
+            }
+            print_qr(*url);
+            std::println("用网易云音乐 App 扫码");
+            for (QrState last = QrState::waiting;;) {
+                co_await lyren::sleep{loop, 2s};
+                auto s = co_await ncm.qr_poll();
+                if (!s) {
+                    co_return fail(s.error());
+                }
+                if (s->state != last && s->state == QrState::scanned) {
+                    std::println("已扫码：{}，请在手机上确认", s->nickname);
+                }
+                last = s->state;
+                if (s->state == QrState::expired) {
+                    co_return fail("二维码已过期");
+                }
+                if (s->state == QrState::confirmed) {
+                    break;
+                }
+            }
+            auto saved = co_await creds::save(loop, creds::to_json({.netease = ncm.client.cookies}));
+            if (!saved) {
+                co_return fail(saved.error());
+            }
+            std::println("已登录，凭据已加密保存");
+            auto a = co_await ncm.account();
+            if (a) {
+                std::println("{} ({})", a->name, a->id);
+            }
+        } else if (cmd == "account") {
+            auto a = co_await ncm.account();
+            if (!a) {
+                co_return fail(a.error());
+            }
+            std::println("{} ({}) {}", a->name, a->id, a->avatar);
+        }
+    };
+    auto main_task = [&]() -> Task<void> {
+        co_await run();
+        loop.quit();
+    };
+    spawn(main_task());
+    loop.run();
+    return rc;
+}
+
 int main(int argc, char **argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
     std::erase_if(args, [](const std::string &a) {
@@ -171,6 +307,12 @@ int main(int argc, char **argv) {
     if (args.size() >= 2 && args[0] == "play") {
         return play(args[1], {args.begin() + 2, args.end()});
     }
-    std::println(stderr, "usage: lyren-probe [--debug] play <url|file> [wait:MS seek:S pause play vol:V open:SRC quit ...]");
+    for (const char *cmd : {"search", "url", "lyrics", "login", "account"}) {
+        if (!args.empty() && args[0] == cmd) {
+            return ncm_command(args);
+        }
+    }
+    std::println(stderr, "usage: lyren-probe [--debug] play <url|file> [wait:MS seek:S pause play vol:V open:SRC quit ...]\n"
+                         "       lyren-probe search <query> [tracks|albums|artists|playlists] | url <id> [quality] | lyrics <id> | login | account");
     return 2;
 }
