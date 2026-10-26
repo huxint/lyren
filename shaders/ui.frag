@@ -82,13 +82,26 @@ void main() {
         float d = sd_arc(q, vec2(sin(half_sweep), cos(half_sweep)), min(half_size.x, half_size.y) - p.params.x * 0.5, p.params.x * 0.5);
         o = p.color * clamp(0.5 - d, 0.0, 1.0);
     } else if (kind == KIND_WAVE) {
-        // Sine line from x0 to x1 around the vertical centre, with round caps past the ends.
+        // A single stroke joins the played wave to the flat tail, including when paused.
         float th = p.params.x, amp = p.params.y, k = 6.2831853 / p.params.z;
         float x0 = p.rect.x + th * 0.5, x1 = p.rect.x + p.rect.z - th * 0.5;
-        float x = clamp(v_pos.x, x0, x1), s = (x - x0) * k + p.params.w;
-        float y = p.rect.y + half_size.y - amp * sin(s);
-        float d = x != v_pos.x ? length(v_pos - vec2(x, y)) : abs(v_pos.y - y) / sqrt(1.0 + pow(amp * k * cos(s), 2.0));
-        o = p.color * clamp(0.5 - (d - th * 0.5), 0.0, 1.0);
+        float at = p.rect.x + p.uv.x, end = clamp(at, x0, x1), span = end - x0;
+        float x = clamp(v_pos.x, x0, x1), y = p.rect.y + half_size.y, slope = 0.0;
+        amp *= smoothstep(0.0, 2.0 * p.params.z, span);
+        if (amp > 0.0 && x < end) {
+            float taper = min(p.params.z, span * 0.5);
+            vec2 t = clamp(vec2(x - x0, end - x) / taper, 0.0, 1.0);
+            // Quintic smootherstep has zero first and second derivatives at both ends.
+            vec2 e = t * t * t * (t * (6.0 * t - 15.0) + 10.0);
+            vec2 de = 30.0 * t * t * (t - 1.0) * (t - 1.0) / taper;
+            float envelope = e.x * e.y, derivative = de.x * e.y - e.x * de.y;
+            float s = (x - x0) * k + p.params.w;
+            y -= amp * envelope * sin(s);
+            slope = amp * (derivative * sin(s) + envelope * k * cos(s));
+        }
+        float d = x != v_pos.x ? length(v_pos - vec2(x, y)) : abs(v_pos.y - y) / sqrt(1.0 + slope * slope);
+        float played = clamp(at - v_pos.x + 0.5, 0.0, 1.0);
+        o = mix(p.color2, p.color, played) * clamp(0.5 - (d - th * 0.5), 0.0, 1.0);
     } else {
         float cov = clamp(0.5 - sd_rrect(local, half_size, p.radii), 0.0, 1.0);
         o = texture(textures[nonuniformEXT(p.info.y)], v_uv) * p.color * cov;

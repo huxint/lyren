@@ -15,7 +15,7 @@ enum Flag : uint32_t { flag_gradient = 1, flag_cutout = 2 };
 struct Prim {
     float rect[4];
     float clip[4];
-    float uv[4];
+    float uv[4];  // texture coordinates; wave: x played width
     float color[4];
     float color2[4];
     float radii[4];

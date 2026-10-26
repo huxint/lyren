@@ -72,6 +72,7 @@ void Ui::end() {
     if (!in_->left_down) active_ = 0;
     if (consumed_) redraw_ = true;
     std::erase_if(anims_, [this](auto& kv) { return kv.second.frame + 2 < frame_; });
+    std::erase_if(springs_, [this](auto& kv) { return kv.second.frame + 2 < frame_; });
 }
 
 Layer Ui::layer_at(float x, float y) const {
@@ -140,6 +141,19 @@ float Ui::anim(Id id, float target, float ms, Bezier curve) {
     float v = value();
     if (v != a.to) animating_ = true;
     return v;
+}
+
+float Ui::spring(Id id, float target, float response_ms) {
+    auto [it, fresh] = springs_.try_emplace(id, Following{{target}, target, now, frame_});
+    Following& s = it->second;
+    float response = response_ms * theme_->motion / 1000;
+    if (response > 0) s.motion.advance(s.target, float(now - s.time), response);
+    s.target = target, s.time = now, s.frame = frame_;
+    if (response == 0 || (std::abs(s.motion.value - target) < 0.001f && std::abs(s.motion.velocity) < 0.01f))
+        s.motion = {target};
+    else
+        animating_ = true;
+    return s.motion.value;
 }
 
 float Ui::progress(double since, float ms, Bezier curve) {
@@ -339,7 +353,7 @@ void Ui::draw_modal() {
     if (modal_closed_ < 0) layer_rects_.push_back({Layer::modal, all});
     p_->set_alpha(shown);
     p_->rect(all, {0, 0, 0, 0.5f}, window_radius);
-    Rect panel = center(all, anim(id("modal-w"), modal_w_, 320, ease::emphasized), anim(id("modal-h"), modal_h_, 320, ease::emphasized));
+    Rect panel = center(all, spring(id("modal-w"), modal_w_, 300), spring(id("modal-h"), modal_h_, 300));
     panel = panel.inset((1 - shown) * 10);
     panel.y += (1 - shown) * 16;
     p_->shadow({panel.x, panel.y + 8, panel.w, panel.h}, t.radius_l(), 48, t.shadow);

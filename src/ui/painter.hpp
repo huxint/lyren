@@ -48,8 +48,8 @@ public:
     void image(Rect r, gfx::TextureId tex, float radius, Color tint = {1, 1, 1, 1}, Rect uv = {0, 0, 1, 1});
     // Arc inscribed in r; angles in radians, clockwise from 12 o'clock.
     void arc(Rect r, float thickness, float start, float sweep, Color color);
-    // Sine line from x to x + w around y; phase in radians at x.
-    void wave(float x, float y, float w, float thickness, float amplitude, float wavelength, float phase, Color color);
+    // One progress stroke in r: a tapered sine in the played part and a flat tail. phase is in radians.
+    void wave(Rect r, float filled, float amplitude, float wavelength, float phase, Color color, Color rest);
 
     // Draws one line with its baseline at y, ellipsized to max_width. Returns the drawn width.
     float text(float x, float baseline, std::string_view s, const TextStyle& style, float max_width = std::numeric_limits<float>::infinity());
@@ -69,10 +69,23 @@ public:
     // `soft` px (the sung and unsung parts of a lyric line).
     void set_wipe(float at, float soft, Color rest) { wipe_ = Wipe{at, soft, rest}; }
     void clear_wipe() { wipe_.reset(); }
+    // Text and icons drawn afterwards are scaled by s about (x, y), coordinates given to them and to set_wipe
+    // included. They keep the raster of their unscaled size and skip pixel snapping, so text that resizes over a
+    // few frames does not rasterize new glyphs every frame. 1 turns it off.
+    void set_zoom(float s, float x = 0, float y = 0) { zoom_ = s, zx_ = (x + ox_) * scale_, zy_ = (y + oy_) * scale_; }
+    float zoom() const { return zoom_; }
+    // Glyphs of text drawn afterwards rise by the dy of the last entry whose byte offset in that text they have
+    // reached (lyric words lifting as they are sung). Entries are in text order; the span must outlive the drawing.
+    struct Lift {
+        uint32_t from;
+        float dy;
+    };
+    void set_lifts(std::span<const Lift> lifts) { lifts_ = lifts; }
 
 private:
     void premul(float out[4], Color c) const;
     gfx::Prim& emit(gfx::Kind kind, float x0, float y0, float x1, float y1);
+    gfx::Prim& emit_zoomed(gfx::Kind kind, float x0, float y0, float w, float h);
     float snap(float v) const;
     void glyphs(const text::Shaped& shaped, size_t count, float x, float baseline, float size, Color color);
 
@@ -82,11 +95,13 @@ private:
     std::vector<gfx::Prim> prims_;
     std::vector<std::array<float, 4>> clips_;
     float scale_ = 1, ox_ = 0, oy_ = 0, alpha_ = 1;
+    float zoom_ = 1, zx_ = 0, zy_ = 0;  // zx_, zy_ in buffer pixels
     struct Wipe {
         float at, soft;
         Color rest;
     };
     std::optional<Wipe> wipe_;
+    std::span<const Lift> lifts_;
 };
 
 }  // namespace lyren::ui

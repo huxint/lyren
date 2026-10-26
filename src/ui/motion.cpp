@@ -4,6 +4,14 @@
 
 namespace lyren::ui {
 
+void Spring::advance(float target, float dt, float response) {
+    float omega = 6.64f / response;
+    float offset = value - target, carry = velocity + omega * offset;
+    float decay = std::exp(-omega * dt);
+    value = target + (offset + carry * dt) * decay;
+    velocity = (velocity - omega * carry * dt) * decay;
+}
+
 float Bezier::operator()(float x) const {
     if (x <= 0) return 0;
     if (x >= 1) return 1;

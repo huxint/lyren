@@ -17,7 +17,8 @@ struct AtlasEntry {
 };
 
 // R8 coverage atlas for glyphs and icons, shelf-packed. When full it grows once (1024² → 2048²), after that it is
-// cleared; reset() tells the frame builder to start the frame again.
+// cleared; reset() tells the frame builder to start the frame again. Sampled linearly: entries drawn at their own size
+// land on texel centres and stay exact, scaled ones (Painter::set_zoom) are filtered.
 class Atlas {
 public:
     Atlas(gfx::Renderer& renderer, Fonts& fonts);

@@ -9,6 +9,12 @@ struct Bezier {
     float operator()(float t) const;
 };
 
+// Critically damped motion: response is the time to cover 99% of a step, in seconds.
+struct Spring {
+    float value = 0, velocity = 0;
+    void advance(float target, float dt, float response);
+};
+
 namespace ease {
 inline constexpr Bezier standard{0.2f, 0, 0, 1};          // hover, toggles, sliding indicators
 inline constexpr Bezier emphasized{0.05f, 0.7f, 0.1f, 1};  // things arriving: pages, popups, panels

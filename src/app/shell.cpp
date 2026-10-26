@@ -5,9 +5,11 @@
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <ctime>
 #include <format>
+#include <numbers>
 #include <ranges>
 
 #include "core/log.hpp"
@@ -85,24 +87,63 @@ static Columns columns(Rect r) {
     return c;
 }
 
-// Equal columns of at least min_w.
+// Animate row/column changes; ordinary resizing and scrolling stay under the pointer.
 struct Grid {
     static constexpr float gap = 20;
+    static constexpr float reflow_ms = 280;
+    ui::Ui& ui;
+    ui::Id id;
     int cols;
     float cw, ch;
-    explicit Grid(float width, float min_w = 150) {
+    Grid(ui::Ui& ui, ui::Id id, float width, float min_w = 150) : ui(ui), id(id) {
         cols = std::max(1, int((width + gap) / (min_w + gap)));
-        cw = (width - gap * float(cols - 1)) / float(cols);
+        float count = ui.spring(ui::sub_id(id, 0xc0), float(cols), reflow_ms);
+        cw = (width + gap) / count - gap;
         ch = cw + 54;
     }
     float height(size_t n) const {
-        size_t rows = (n + size_t(cols) - 1) / size_t(cols);
-        return rows ? float(rows) * ch + float(rows - 1) * gap : 0;
+        if (!n) return 0;
+        float last = ui.spring(ui::sub_id(id, 0xc1), float((n - 1) / size_t(cols)), reflow_ms);
+        return last * (ch + gap) + ch;
     }
-    Rect cell(float x, float y, size_t i) const {
-        return {x + float(i % size_t(cols)) * (cw + gap), y + float(i / size_t(cols)) * (ch + gap), cw, ch};
+    Rect cell(float x, float y, size_t i, ui::Id item) const {
+        float col = ui.spring(ui::sub_id(item, 0xc0), float(i % size_t(cols)), reflow_ms);
+        float row = ui.spring(ui::sub_id(item, 0xc1), float(i / size_t(cols)), reflow_ms);
+        return {x + col * (cw + gap), y + row * (ch + gap), cw, ch};
     }
 };
+
+static Rect mix(Rect a, Rect b, float k) { return {std::lerp(a.x, b.x, k), std::lerp(a.y, b.y, k), std::lerp(a.w, b.w, k), std::lerp(a.h, b.h, k)}; }
+
+static float smooth01(float t) {
+    t = std::clamp(t, 0.f, 1.f);
+    return t * t * t * (t * (6 * t - 15) + 10);
+}
+
+// The now-playing view: wide, a large cover with the lyrics beside it; narrow, a small cover above them.
+struct NowPlayingLayout {
+    Rect cover, lyrics;
+};
+
+static NowPlayingLayout now_playing_layout(Rect r, bool wide) {
+    Rect body = r.inset(56, 44);
+    if (!wide) return {{body.x, body.y + 4, 64, 64}, {body.x, body.y + 96, body.w, body.h - 96}};
+    Rect left = ui::cut_left(body, std::round(body.w * 0.42f));
+    ui::cut_left(body, 40);
+    float cs = std::floor(std::min({left.w - 20, left.h - 120, 420.f}));
+    return {{left.x + (left.w - cs) / 2, left.y + (left.h - cs - 110) / 2, cs, cs}, body};
+}
+
+// The title's baseline origin, the two sizes, the artist's baseline below the title's, and the width the artist
+// line may take; the title leaves room for the heart.
+struct Caption {
+    float x, y, title, sub, gap, w;
+};
+
+static Caption mix(const Caption& a, const Caption& b, float k) {
+    return {std::lerp(a.x, b.x, k),     std::lerp(a.y, b.y, k),     std::lerp(a.title, b.title, k),
+            std::lerp(a.sub, b.sub, k), std::lerp(a.gap, b.gap, k), std::lerp(a.w, b.w, k)};
+}
 
 static void page_title(ui::Ui& ui, Rect body, float y, std::string_view title, std::string_view subtitle) {
     const auto& t = ui.theme();
@@ -340,6 +381,7 @@ void Shell::toggle_like(Track t) {
         if (on) liked_ids_[int(a.source)].insert(a.id);
         else liked_ids_[int(a.source)].erase(a.id);
     }
+    if (on) pop_key_ = key(t), pop_time_ = now_();
     auto list = route_.page == Page::liked ? route_.list : nullptr;
     if (list) {
         auto& v = list->tracks;
@@ -776,7 +818,6 @@ void Shell::open(ui::Ui& ui, const Card& card) {
 void Shell::back(ui::Ui& ui) {
     if (np_open_) {
         np_open_ = false;
-        np_time_ = ui.now;
         return;
     }
     if (history_.empty()) return;
@@ -988,7 +1029,7 @@ void Shell::play(const std::vector<Track>& list, int i) {
 
 void Shell::set_current(int i, bool replacing_queue) {
     if (i == current_ && !replacing_queue) return;
-    prev_cover_ = current() ? current()->cover : "";
+    prev_ = current() ? *current() : Track{};
     cover_time_ = now_();
     current_ = i;
 }
@@ -1209,6 +1250,8 @@ Task<void> Shell::load_lyrics(Track t) {
     lyrics_loading_ = false;
     if (r) lyrics_ = std::move(*r);
     lyric_layout_.clear();
+    lyric_y_.clear();
+    lyrics_since_ = now_();
     redraw_();
 }
 
@@ -1403,7 +1446,7 @@ void Shell::top_bar(ui::Ui& ui, Rect bar, float center_x) {
     float w = std::min(440.f, r.w - 32);
     float x = std::clamp(center_x - w / 2, r.x + 16, r.right() - 16 - w);
     if (ui.text_box(ui.id("search"), {x, bar.y + (bar.h - 34) / 2, w, 34}, query_, "搜索歌曲、歌手、专辑", "search")) {
-        if (np_open_) np_open_ = false, np_time_ = ui.now;
+        np_open_ = false;
         search(ui);
     }
 }
@@ -1433,11 +1476,13 @@ void Shell::draw(ui::Ui& ui, Rect area) {
     double dur = player_.duration() > 0 ? player_.duration() : current() ? current()->duration : 0;
 
     Rect player = ui::cut_bottom(area, player_h);
-    // Below 900 px the sidebar folds into an icon rail.
-    float side_w = ui.anim(ui.id("side-w"), area.w < 900 ? 72 : 220, 360, ease::emphasized);
+    // A small dead band keeps resizing near the breakpoint from repeatedly folding the sidebar.
+    if (area.w < 888) compact_ = true;
+    else if (area.w > 912) compact_ = false;
+    float side_w = ui.spring(ui.id("side-w"), compact_ ? 72 : 220, 320);
     Rect side = ui::cut_left(area, side_w);
     ui::cut_right(area, 8);
-    float qw = ui.anim(ui.id("queue-w"), queue_open_ ? 328 : 0, 380, ease::emphasized);
+    float qw = ui.spring(ui.id("queue-w"), queue_open_ ? 328 : 0, 340);
     if (qw > 0.5f) {
         Rect q = ui::cut_right(area, qw);
         ui.push_clip(q);
@@ -1446,7 +1491,7 @@ void Shell::draw(ui::Ui& ui, Rect area) {
     }
 
     // The now-playing view rises over the sidebar and the page; once it covers them they are not drawn.
-    float np = np_open_ ? ui.progress(np_time_, 460) : 1 - ui.progress(np_time_, 260, ease::exit);
+    float np = ui.spring(ui.id("np-open"), np_open_ ? 1 : 0, 400);
     if (!(np_open_ && np >= 1)) {
         // Content panel with a wash of the page's colour; the page slides in from the side it was reached from.
         p.rect(area, t.surface, t.radius_l());
@@ -1491,8 +1536,14 @@ void Shell::draw(ui::Ui& ui, Rect area) {
         ui.pop_clip();
         sidebar(ui, side);
     }
-    if (np > 0) now_playing(ui, {side.x + 8, area.y, area.right() - side.x - 8, area.h}, np);
+    Rect np_page{side.x + 8, area.y, area.right() - side.x - 8, area.h};
+    // Below 720 px of content the view turns narrow; the slack keeps resizing near it from flipping it back and forth.
+    if (np_page.w - 112 >= 732) np_wide_ = true;
+    else if (np_page.w - 112 < 708) np_wide_ = false;
+    float wide = ui.spring(ui.id("np-wide"), np_wide_ ? 1 : 0, 420);
+    if (np > 0) now_playing(ui, np_page, np, wide);
     player_bar(ui, player);
+    player_art(ui, player, np_page, np, wide);
     handle_keys(ui);
     images_.end_frame();
 
@@ -1516,7 +1567,7 @@ void Shell::handle_keys(ui::Ui& ui) {
     for (auto k = keys.begin(); k != keys.end();) {
         bool ctrl = k->mods & wl::mod_ctrl, alt = k->mods & wl::mod_alt, used = true;
         if (k->keysym == XKB_KEY_space && !k->repeat) toggle_play();
-        else if (k->keysym == XKB_KEY_Escape && np_open_ && !ui.menu_open()) np_open_ = false, np_time_ = ui.now;
+        else if (k->keysym == XKB_KEY_Escape && np_open_ && !ui.menu_open()) np_open_ = false;
         else if (ctrl && (k->keysym == XKB_KEY_f || k->keysym == XKB_KEY_F)) ui.focus = ui.id("search");
         else if (ctrl && k->keysym == XKB_KEY_Right) skip(1);
         else if (ctrl && k->keysym == XKB_KEY_Left) skip(-1);
@@ -1561,7 +1612,7 @@ void Shell::sidebar(ui::Ui& ui, Rect r) {
     Rect row0{r.x + 12, 0, r.w - 24, item_h};
 
     // One highlight glides to the selected entry.
-    float hy = ui.anim(ui.id("side-sel"), sel >= 0 ? item_y(size_t(sel)) : 0, 420, ease::emphasized);
+    float hy = ui.spring(ui.id("side-sel"), sel >= 0 ? item_y(size_t(sel)) : 0, 260);
     float ha = ui.anim(ui.id("side-sel-a"), sel >= 0 ? 1 : 0, 200);
     if (ha > 0) p.rect({row0.x, r.y + hy - off, row0.w, item_h}, t.text.with_alpha(0.09f * ha), t.radius_s());
 
@@ -1682,18 +1733,19 @@ bool Shell::card(ui::Ui& ui, ui::Id id, Rect r, const Card& c, bool round) {
 }
 
 int Shell::card_grid(ui::Ui& ui, Rect r, ui::Id id, const std::vector<Card>& cards, bool round, double since) {
-    Grid g(r.w, round ? 130 : 150);
+    Grid g(ui, id, r.w, round ? 130 : 150);
     Rect clip = ui.clip();
     int clicked = -1, shown = 0;
     ui.push_id(id);
     for (size_t i = 0; i < cards.size(); ++i) {
-        Rect c = g.cell(r.x, r.y, i);
+        ui::Id item = ui.id(key(cards[i]));
+        Rect c = g.cell(r.x, r.y, i, item);
         if (c.bottom() < clip.y || c.y > clip.bottom()) continue;
         // Cards arrive one after another.
         float a = ui.progress(since + 0.03 * std::min(shown++, 14), 420);
         Fade fade(ui.painter(), a);
         c.y += (1 - a) * 16;
-        if (card(ui, ui.id(key(cards[i])), c, cards[i], round)) clicked = int(i);
+        if (card(ui, item, c, cards[i], round)) clicked = int(i);
     }
     ui.pop_id();
     return clicked;
@@ -1702,9 +1754,10 @@ int Shell::card_grid(ui::Ui& ui, Rect r, ui::Id id, const std::vector<Card>& car
 void Shell::recommend_page(ui::Ui& ui, Rect r) {
     const auto& t = ui.theme();
     Rect body = r.inset(32, 0);
-    Grid g(body.w);
+    Grid daily(ui, ui.id("daily-cards"), body.w);
+    Grid g(ui, ui.id("rec-cards"), body.w);
     constexpr float hero_h = 136;
-    float daily_h = daily_lists_.empty() ? 0 : 44 + g.height(daily_lists_.size()) + 40;
+    float daily_h = daily_lists_.empty() ? 0 : 44 + daily.height(daily_lists_.size()) + 40;
     float content = 28 + 76 + hero_h + 40 + daily_h + 44 + std::max(g.height(recommended_.size()), 120.f) + 32;
     float off = ui.begin_scroll(ui.id("recommend"), r, content);
     float y = r.y + 28 - off;
@@ -1734,7 +1787,7 @@ void Shell::recommend_page(ui::Ui& ui, Rect r) {
 
 void Shell::toplist_page(ui::Ui& ui, Rect r) {
     Rect body = r.inset(32, 0);
-    Grid g(body.w);
+    Grid g(ui, ui.id("top-cards"), body.w);
     float off = ui.begin_scroll(ui.id("toplists"), r, 28 + 84 + g.height(toplists_.size()) + 32);
     float y = r.y + 28 - off;
     page_title(ui, body, y, "排行榜", "官方榜单，每天或每周更新");
@@ -1747,7 +1800,7 @@ void Shell::toplist_page(ui::Ui& ui, Rect r) {
 void Shell::square_page(ui::Ui& ui, Rect r) {
     const auto& t = ui.theme();
     Rect body = r.inset(32, 0);
-    Grid g(body.w);
+    Grid g(ui, ui.id("square-cards"), body.w);
     constexpr float chips_y = 84, grid_y = chips_y + 54;
     float content = 28 + grid_y + std::max(g.height(square_.cards.size()), 120.f) + (square_.more() ? 64 : 32);
     float off = ui.begin_scroll(ui.id("square"), r, content);
@@ -1815,7 +1868,7 @@ void Shell::fm_page(ui::Ui& ui, Rect r) {
         return;
     }
     bool like = liked(tr);
-    if (ui.icon_button(ui.id("fm-like"), {x0 + 52, by + 4, 40, 40}, like ? "heart-fill" : "heart", 20, like)) toggle_like(tr);
+    if (ui.icon_button(ui.id("fm-like"), {x0 + 52, by + 4, 40, 40}, like ? "heart-fill" : "heart", heart_size(ui, tr, 20), like)) toggle_like(tr);
     ui::Id pid = ui.id("fm-play");
     Rect play_r{x0 + 104, by, 48, 48};
     auto it = ui.interact(pid, play_r);
@@ -1951,7 +2004,7 @@ void Shell::search_page(ui::Ui& ui, Rect r) {
 
 int Shell::grid_view(ui::Ui& ui, Rect r, ui::Id id, const std::vector<Card>& cards, bool round, double since, bool loading, bool& near_end) {
     Rect inner = r.inset(12, 0);
-    Grid g(inner.w, round ? 130 : 150);
+    Grid g(ui, id, inner.w, round ? 130 : 150);
     float h = 12 + g.height(cards.size()) + (loading ? 64 : 20);
     float off = ui.begin_scroll(id, r, h);
     int i = card_grid(ui, {inner.x, r.y + 12 - off, inner.w, 0}, id, cards, round, since);
@@ -2052,13 +2105,16 @@ bool Shell::track_list(ui::Ui& ui, Rect r, ui::Id id, std::vector<Track>& tracks
     ui::cut_top(r, 4);
 
     float off = ui.begin_scroll(id, r, float(tracks.size()) * row_h + 8);
-    int first = int(off / row_h), last = int((off + r.h) / row_h) + 1;
-    ui.push_id(id);
+    // One row past the bottom keeps its place, so it slides in with the rest when a row above it goes.
+    int first = int(off / row_h), last = int((off + r.h) / row_h) + 2;
+    // Rows glide to a new place when the list changes under them; a list that arrives anew starts in place.
+    ui.push_id(ui::sub_id(id, std::bit_cast<uint64_t>(since)));
     for (int i = first; i <= last && i < int(tracks.size()); ++i) {
         // Rows cascade in when the list appears.
         float a = ui.progress(since + 0.022 * std::max(0, i - first), 380);
         Fade fade(p, a);
-        track_row(ui, {r.x, r.y + float(i) * row_h - off + (1 - a) * 14, r.w, row_h}, tracks, i);
+        float y = ui.spring(ui::sub_id(ui.id(key(tracks[size_t(i)])), 0x70), float(i) * row_h, 280);
+        track_row(ui, {r.x, r.y + y - off + (1 - a) * 14, r.w, row_h}, tracks, i);
     }
     ui.pop_id();
     ui.end_scroll();
@@ -2098,7 +2154,8 @@ void Shell::track_row(ui::Ui& ui, Rect r, std::vector<Track>& tracks, int i) {
     p.text(tx, r.y + 43, tr.artist, {.size = t.fs(12), .color = t.text_dim}, tw);
     if (c.album.w > 0) ui.label(c.album, tr.album, {.size = t.fs(13), .color = t.text_dim});
     bool like = liked(tr);
-    if ((hot || like) && ui.icon_button(ui.id("like"), ui::center(c.like, 32, 32), like ? "heart-fill" : "heart", 16, like)) toggle_like(tr);
+    if ((hot || like) && ui.icon_button(ui.id("like"), ui::center(c.like, 32, 32), like ? "heart-fill" : "heart", heart_size(ui, tr, 16), like))
+        toggle_like(tr);
     ui.label(c.duration, mmss(tr.duration), num, Align::right);
 
     auto it = ui.interact(row_id, r);
@@ -2233,6 +2290,10 @@ void Shell::queue_panel(ui::Ui& ui, Rect r) {
     Rect view{r.x + 8, r.y + 60, r.w - 16, r.h - 68};
     float off = ui.begin_scroll(ui.id("queue"), view, float(queue_.size()) * row_h);
     int remove = -1;
+    // One highlight glides to the playing row.
+    float hy = ui.spring(ui.id("queue-current"), float(current_) * row_h, 260);
+    float ha = ui.anim(ui.id("queue-current-a"), current_ >= 0 ? 1 : 0, 200);
+    if (ha > 0) p.rect({view.x + 2, view.y + hy - off + 2, view.w - 4, row_h - 4}, t.accent.with_alpha(0.14f * ha), t.radius_s());
     ui.push_id(ui.id("queue-rows"));
     int first = int(off / row_h), last = int((off + view.h) / row_h) + 1;
     for (int i = first; i <= last && i < int(queue_.size()); ++i) {
@@ -2242,8 +2303,7 @@ void Shell::queue_panel(ui::Ui& ui, Rect r) {
         ui::Id row_id = ui.id("row");
         bool hot = ui.hovering(row) || ui.is_active(row_id), cur = i == current_;
         float h = ui.anim(row_id, hot ? 1 : 0, 140);
-        if (cur) p.rect(row.inset(2), t.accent.with_alpha(0.14f), t.radius_s());
-        else if (h > 0) p.rect(row.inset(2), t.hover.with_alpha(h), t.radius_s());
+        if (!cur && h > 0) p.rect(row.inset(2), t.hover.with_alpha(h), t.radius_s());
         cover(ui, {row.x + 10, row.y + 9, 36, 36}, tr.cover, t.radius_s());
         float tw = row.w - 58 - (hot ? 40 : 12);
         p.text(row.x + 58, row.y + 23, tr.title, {.size = t.fs(13), .color = cur ? t.accent : t.text}, tw);
@@ -2277,49 +2337,11 @@ void Shell::queue_panel(ui::Ui& ui, Rect r) {
 void Shell::player_bar(ui::Ui& ui, Rect r) {
     auto& p = ui.painter();
     const auto& t = ui.theme();
-    bool compact = r.w < 900;
     float side_w = std::min(330.f, std::round(r.w * 0.3f));
-    Rect left = ui::cut_left(r, side_w), right = ui::cut_right(r, side_w), mid = r;
+    ui::cut_left(r, side_w);
+    Rect right = ui::cut_right(r, side_w), mid = r;
     const Track* tr = current();
     auto st = player_.state();
-
-    // Now playing; the cover cross-fades and the text rises in after a track change. The cover opens the
-    // now-playing view.
-    Rect cov{left.x + 16, left.y + 14, 56, 56};
-    bar_cover_px_ = cov.w * p.scale();
-    float k = ui.progress(cover_time_, 520);
-    if (tr) {
-        ui::Id cid = ui.id("bar-cover");
-        auto it = ui.interact(cid, cov);
-        float hot = ui.anim(cid, it.hovered ? 1 : 0, 150);
-        p.shadow({cov.x, cov.y + 4, cov.w, cov.h}, t.radius_s(), 12, t.shadow.with_alpha(0.6f));
-        if (k < 1 && !prev_cover_.empty()) cover(ui, cov, prev_cover_, t.radius_s());
-        {
-            Fade fade(p, k);
-            cover(ui, cov, tr->cover, t.radius_s());
-        }
-        if (hot > 0) {
-            p.rect(cov, ui::Color{0, 0, 0, 0.45f * hot}, t.radius_s());
-            p.icon(np_open_ ? "chevron-down" : "chevron-up", ui::center(cov, 22, 22), white.with_alpha(hot));
-        }
-        if (it.clicked) np_open_ = !np_open_, np_time_ = ui.now;
-        float tx = cov.right() + 14, tw = left.right() - tx - 48, dy = (1 - k) * 8;
-        Fade fade(p, k);
-        p.text(tx, left.y + 38 + dy, tr->title, {.size = t.fs(14), .color = t.text}, tw);
-        p.text(tx, left.y + 57 + dy, tr->artist, {.size = t.fs(12), .color = t.text_dim}, tw);
-    } else {
-        p.rect(cov, t.text.with_alpha(0.06f), t.radius_s());
-        p.icon("music", ui::center(cov, 22, 22), t.text_dim);
-        ui.label({cov.right() + 14, left.y, left.w - 100, left.h}, "没有正在播放的歌曲", {.size = t.fs(13), .color = t.text_dim});
-    }
-    if (tr) {
-        // The heart follows the end of the longer line.
-        float tx = cov.right() + 14;
-        float text_w = std::max(p.measure(tr->title, {.size = t.fs(14)}), p.measure(tr->artist, {.size = t.fs(12)}));
-        float hx = std::min(tx + text_w + 8, left.right() - 44);
-        bool like = liked(*tr);
-        if (ui.icon_button(ui.id("bar-like"), {hx, left.y + 26, 32, 32}, like ? "heart-fill" : "heart", 17, like)) toggle_like(*tr);
-    }
 
     // Transport; play and pause morph into each other, a ring turns while the track loads or buffers.
     float cx = std::round(mid.x + mid.w / 2), cy = mid.y + 30;
@@ -2358,7 +2380,7 @@ void Shell::player_bar(ui::Ui& ui, Rect r) {
         }
         if (it.clicked) toggle_play();
         if (ui.icon_button(ui.id("next"), {cx + 40, cy - 16, 32, 32}, "skip-forward", 18)) skip(1);
-        if (ui.icon_button(ui.id("lyrics"), {cx + 92, cy - 16, 32, 32}, "mic-vocal", 17, np_open_)) np_open_ = !np_open_, np_time_ = ui.now;
+        if (ui.icon_button(ui.id("lyrics"), {cx + 92, cy - 16, 32, 32}, "mic-vocal", 17, np_open_)) np_open_ = !np_open_;
     }
 
     // Progress: a sine wave runs through the played part while the music plays and settles flat on pause.
@@ -2376,7 +2398,8 @@ void Shell::player_bar(ui::Ui& ui, Rect r) {
             for (auto [b, e] : sp->ranges()) buffered.emplace_back(float(double(b) / double(size)), float(double(e) / double(size)));
     }
     ui::Id prog = ui.id("progress");
-    float v = dragging_ ? drag_v_ : dur > 0 ? float(std::min(pos / dur, 1.0)) : 0;
+    // A jump of the position (a seek, another track) glides; a drag follows the pointer.
+    float v = ui.spring(ui.id("progress-v"), dragging_ ? drag_v_ : dur > 0 ? float(std::min(pos / dur, 1.0)) : 0, dragging_ ? 0 : 260);
     float wave = ui.anim(ui.id("wave"), st == State::playing ? 3.f : 0.f, 600, ease::standard);
     bool moved = ui.slider(prog, bar, v, {.wave = wave, .marked = buffered});
     ui.disabled = false;
@@ -2396,7 +2419,7 @@ void Shell::player_bar(ui::Ui& ui, Rect r) {
     ui.label({bar.right() + 8, py - 8, 44, 16}, mmss(dur), ts);
 
     // Volume and panels; narrow windows keep only the icons.
-    float vol_w = ui.anim(ui.id("vol-w"), compact ? 0 : 100, 320, ease::emphasized);
+    float vol_w = ui.spring(ui.id("vol-w"), compact_ ? 0 : 100, 280);
     Rect vol{right.right() - 20 - vol_w, cy - 8, vol_w, 16};
     float shown = muted_ ? 0 : volume_;
     if (vol_w > 8) {
@@ -2419,7 +2442,151 @@ void Shell::player_bar(ui::Ui& ui, Rect r) {
         set_setting_("desktop_lyrics", "enabled", desktop ? "false" : "true");
 }
 
-void Shell::now_playing(ui::Ui& ui, Rect r, float k) {
+void Shell::player_art(ui::Ui& ui, Rect player, Rect page, float np, float wide) {
+    auto& p = ui.painter();
+    const auto& t = ui.theme();
+    Rect left{player.x, player.y, std::min(330.f, std::round(player.w * 0.3f)), player.h};
+    Rect small{left.x + 16, left.y + 14, 56, 56};
+    bar_cover_px_ = small.w * p.scale();
+    const Track* tr = current();
+    if (!tr) {
+        if (np == 0) {
+            p.rect(small, t.text.with_alpha(0.06f), t.radius_s());
+            p.icon("music", ui::center(small, 22, 22), t.text_dim);
+            ui.label({small.right() + 14, left.y, left.w - 100, left.h}, "没有正在播放的歌曲", {.size = t.fs(13), .color = t.text_dim});
+        }
+        return;
+    }
+
+    // In the view the text sits under a large cover and beside a small one; it goes round the cover's corner while
+    // the cover is small.
+    NowPlayingLayout wl = now_playing_layout(page, true), nl = now_playing_layout(page, false);
+    Rect body = page.inset(56, 44);
+    Rect vc = mix(nl.cover, wl.cover, wide);
+    float under = smooth01((vc.w - nl.cover.w) / (std::min(160.f, wl.cover.w) - nl.cover.w));
+    Caption beside{vc.right() + 20, vc.y + 22, t.fs(20), t.fs(13), 24, body.right() - vc.right() - 20};
+    Caption below{vc.x, vc.bottom() + 46, t.fs(22), t.fs(14), 26, vc.w};
+    Caption view = mix(beside, below, under);
+    view.x = std::lerp(beside.x, below.x, smooth01((under - 0.4f) / 0.6f));
+    view.y = std::lerp(beside.y, below.y, smooth01(under / 0.6f));
+
+    // From the bar to a small cover the text stays beside it. To a large one the cover first rises out of the bar
+    // and then grows, and the text sets off once the cover is out of its way.
+    Caption bar{small.right() + 14, small.y + 24, t.fs(14), t.fs(12), 19, left.right() - small.right() - 18};
+    float rise = std::lerp(np, 1 - (1 - np) * (1 - np), under), grow = std::lerp(np, np * np, under);
+    float size = std::lerp(small.w, vc.w, grow);
+    Rect cov{std::lerp(small.x, vc.x, rise), std::lerp(small.bottom(), vc.bottom(), rise) - size, size, size};
+    float late = smooth01((np - 0.35f) / 0.65f), f = std::lerp(np, late, under);
+    Caption cap = mix(bar, view, f);
+    float ax = cov.right() + std::lerp(14.f, 20.f, np) + (view.x - beside.x) * np;
+    float ay = cov.y + std::lerp(24.f, 22.f, np) + (view.y - beside.y) * np;
+    cap.x = std::lerp(ax, std::lerp(bar.x, view.x, late), under);
+    cap.y = std::lerp(ay, std::lerp(bar.y, view.y, late), under);
+
+    float depth = smooth01((size - 64) / 136);
+    float radius = std::lerp(t.radius_s(), t.radius_l(), depth);
+    p.shadow({cov.x, cov.y + std::lerp(4.f, 18.f, depth), cov.w, cov.h}, radius, std::lerp(12.f, 48.f, depth),
+             t.shadow.with_alpha(std::lerp(0.6f, 0.9f, depth)));
+
+    // The thumbnail stays through the move; the view's larger picture fades in over it once it has loaded.
+    float change = ui.progress(cover_time_, 520);
+    int preview_px = Images::tier(small.w * p.scale()), sharp_px = Images::tier((np_wide_ ? 420.f : nl.cover.w) * p.scale());
+    auto artwork = [&](const std::string& url) {
+        const auto& preview = images_.get(cover_url(url, preview_px), uint32_t(preview_px));
+        float shown = preview.ready ? ui.progress(preview.ready_at, 320, ease::standard) : 0;
+        if (shown < 1) {
+            p.rect(cov, t.text.with_alpha(0.07f), radius);
+            p.set_zoom(cov.w * 0.36f / 24, cov.x + cov.w / 2, cov.y + cov.h / 2);
+            p.icon("music", ui::center(cov, 24, 24), t.text_dim.with_alpha(0.5f * (1 - shown)));
+            p.set_zoom(1);
+        }
+        if (preview.ready) {
+            Fade fade(p, shown);
+            p.image(cov, preview.tex, radius);
+        }
+        if (np > 0 && sharp_px > preview_px) {
+            const auto& sharp = images_.get(cover_url(url, sharp_px), uint32_t(sharp_px));
+            if (sharp.ready) {
+                Fade fade(p, ui.progress(sharp.ready_at, 240, ease::standard));
+                p.image(cov, sharp.tex, radius);
+            }
+        }
+    };
+    if (change < 1 && !prev_.cover.empty()) artwork(prev_.cover);
+    {
+        Fade fade(p, change);
+        artwork(tr->cover);
+    }
+    if (np == 0) {
+        ui::Id id = ui.id("bar-cover");
+        auto it = ui.interact(id, cov);
+        float hot = ui.anim(id, it.hovered ? 1 : 0, 150);
+        if (hot > 0) {
+            p.rect(cov, ui::Color{0, 0, 0, 0.45f * hot}, radius);
+            p.icon("chevron-up", ui::center(cov, 22, 22), white.with_alpha(hot));
+        }
+        if (it.clicked) np_open_ = true;
+    }
+
+    // While it moves, the text is scaled from glyphs at the view's sizes instead of being rasterized at a new size
+    // every frame. A line that does not fit fades out at its end.
+    bool settled = np == 0 || (np == 1 && (under == 0 || under == 1));
+    auto line = [&](float x, float y, std::string_view s, float size, float raster, ui::Color c, float w) {
+        if (settled) raster = size;
+        float z = size / raster, limit = w / z;
+        p.set_zoom(z, x, y);
+        TextStyle st{.size = raster, .color = c};
+        float width = p.measure(s, st);
+        if (width > limit) p.set_wipe(x + limit - 16 / z, 32 / z, c.with_alpha(0));
+        p.text(x, y, s, st);
+        p.clear_wipe();
+        p.set_zoom(1);
+        return std::min(width, limit) * z;
+    };
+    // The album and the stream format belong to the view and come in as the text arrives there.
+    float detail = smooth01((f - 0.6f) / 0.4f);
+    auto caption = [&](const Track& track, float alpha, float dy, bool live) {
+        Fade fade(p, alpha);
+        float y = cap.y + dy, k = cap.sub / t.fs(14);
+        float tw = line(cap.x, y, track.title, cap.title, t.fs(22), t.text, cap.w - 44);
+        float aw = line(cap.x, y + cap.gap, track.artist, cap.sub, t.fs(14), t.text_dim, cap.w);
+        if (detail > 0 && under > 0 && !track.album.empty()) {
+            Fade more(p, detail * under);
+            line(cap.x + aw, y + cap.gap, std::format(" · {}", track.album), cap.sub, t.fs(14), t.text_dim, cap.w - aw);
+        }
+        if (detail > 0 && live && !player_.codec().empty()) {
+            Fade more(p, detail);
+            line(cap.x, y + cap.gap + 24 * k, std::format("{} · {:.1f} kHz", player_.codec(), player_.format().rate / 1000.0), t.fs(12) * k,
+                 t.fs(12), t.text_dim.with_alpha(0.7f), cap.w);
+        }
+        // The heart follows the title.
+        bool like = liked(track);
+        float hs = heart_size(ui, track, std::lerp(17.f, 20.f, f));
+        Rect hr{cap.x + std::min(tw + 10, cap.w - 34), y - 0.35f * cap.title - 16, 32, 32};
+        if (live && settled) {
+            if (ui.icon_button(ui.id("np-like"), hr, like ? "heart-fill" : "heart", hs, like)) toggle_like(track);
+            return;
+        }
+        p.set_zoom(hs / 20, hr.x + 16, hr.y + 16);
+        p.icon(like ? "heart-fill" : "heart", ui::center(hr, 20, 20), like ? t.accent : t.text_dim);
+        p.set_zoom(1);
+    };
+    // A new track's text rises in as the old one leaves upwards.
+    float out = smooth01(change / 0.45f), in = smooth01((change - 0.25f) / 0.75f);
+    if (out < 1 && !prev_.title.empty()) caption(prev_, 1 - out, -10 * out, false);
+    caption(*tr, in, 10 * (1 - in), true);
+}
+
+float Shell::heart_size(ui::Ui& ui, const Track& t, float size) const {
+    float k = float(ui.now - pop_time_) / (0.45f * ui.theme().motion);
+    if (!(k >= 0 && k < 1) || pop_key_ != key(t)) return size;
+    ui.keep_animating();
+    // Up past its size and back, then a little under it.
+    float s = k < 0.55f ? 1 + 0.32f * std::sin(std::numbers::pi_v<float> * k / 0.55f) : 1 - 0.06f * std::sin(std::numbers::pi_v<float> * (k - 0.55f) / 0.45f);
+    return size * s;
+}
+
+void Shell::now_playing(ui::Ui& ui, Rect r, float k, float wide) {
     auto& p = ui.painter();
     const auto& t = ui.theme();
     Fade fade(p, k);
@@ -2438,7 +2605,7 @@ void Shell::now_playing(ui::Ui& ui, Rect r, float k) {
         p.image(r, e.tex, radius, white, uv);
     };
     float change = ui.progress(cover_time_, 800, ease::standard);
-    if (change < 1 && !prev_cover_.empty()) backdrop(prev_cover_, 1 - change);
+    if (change < 1 && !prev_.cover.empty()) backdrop(prev_.cover, 1 - change);
     if (tr) backdrop(tr->cover, change);
     p.gradient(r, t.bg.with_alpha(0.42f), t.bg.with_alpha(0.78f), radius);
 
@@ -2452,42 +2619,18 @@ void Shell::now_playing(ui::Ui& ui, Rect r, float k) {
         p.icon(icon, ui::center(b, size - down * 1.5f, size - down * 1.5f), t.text);
         return it.clicked;
     };
-    if (backed("np-close", {r.x + 16, r.y + 16, 36, 36}, "chevron-down", 22)) np_open_ = false, np_time_ = ui.now;
+    if (backed("np-close", {r.x + 16, r.y + 16, 36, 36}, "chevron-down", 22)) np_open_ = false;
     if (tr && backed("np-comments", {r.right() - 52, r.y + 16, 36, 36}, "message-square", 18))
         open_comments(ui, tr->source, Subject::song, tr->id, std::format("{} · {}", tr->title, tr->artist));
     if (!tr) {
         ui.label(r, "没有正在播放的歌曲", {.size = t.fs(14), .color = t.text_dim}, Align::center);
         return;
     }
-
-    Rect body = r.inset(56, 44);
-    bool wide = body.w >= 720;
-    std::string format;
-    if (!player_.codec().empty())
-        format = std::format("{} · {:.1f} kHz", player_.codec(), player_.format().rate / 1000.0);
-    if (wide) {
-        Rect left = ui::cut_left(body, std::round(body.w * 0.42f));
-        ui::cut_left(body, 40);
-        float cs = std::floor(std::min({left.w - 20, left.h - 120, 420.f}));
-        Rect cov{left.x + (left.w - cs) / 2, left.y + (left.h - cs - 110) / 2, cs, cs};
-        float in = ui.progress(cover_time_, 520);
-        cov.y += (1 - in) * 10;
-        p.shadow({cov.x, cov.y + 18, cov.w, cov.h}, radius, 48, t.shadow.with_alpha(0.9f));
-        cover(ui, cov, tr->cover, radius);
-        Fade f(p, in);
-        p.text(cov.x, cov.bottom() + 46, tr->title, {.size = t.fs(22), .color = t.text}, cs);
-        p.text(cov.x, cov.bottom() + 72, tr->album.empty() ? tr->artist : std::format("{} · {}", tr->artist, tr->album),
-               {.size = t.fs(14), .color = t.text_dim}, cs);
-        if (!format.empty()) p.text(cov.x, cov.bottom() + 96, format, {.size = t.fs(12), .color = t.text_dim.with_alpha(0.7f)}, cs);
-        lyrics_view(ui, body, false);
-    } else {
-        ui.label({body.x, body.y - 4, body.w, 30}, tr->title, {.size = t.fs(20), .color = t.text}, Align::center);
-        ui.label({body.x, body.y + 28, body.w, 20}, tr->artist, {.size = t.fs(13), .color = t.text_dim}, Align::center);
-        lyrics_view(ui, {body.x, body.y + 76, body.w, body.h - 76}, true);
-    }
+    // The lyrics move between the column beside the cover and the space under it.
+    lyrics_view(ui, mix(now_playing_layout(r, false).lyrics, now_playing_layout(r, true).lyrics, wide), 1 - wide);
 }
 
-void Shell::lyrics_view(ui::Ui& ui, Rect r, bool centered) {
+void Shell::lyrics_view(ui::Ui& ui, Rect r, float centered) {
     auto& p = ui.painter();
     const auto& t = ui.theme();
     TextStyle main{.size = t.fs(20)}, sub{.size = t.fs(14)};
@@ -2497,7 +2640,9 @@ void Shell::lyrics_view(ui::Ui& ui, Rect r, bool centered) {
         return;
     }
     if (lyrics_.empty()) {
-        ui.label(r, "暂无歌词", {.size = t.fs(16), .color = t.text_dim}, centered ? Align::center : Align::left);
+        TextStyle st{.size = t.fs(16), .color = t.text_dim};
+        float w = p.measure("暂无歌词", st);
+        ui.label({r.x + (r.w - w) / 2 * centered, r.y, w + 1, r.h}, "暂无歌词", st);
         return;
     }
     if (lyric_layout_.size() != lyrics_.size() || lyric_layout_w_ != r.w || lyric_layout_size_ != main.size || lyric_layout_font_ != config_.theme.font) {
@@ -2519,58 +2664,135 @@ void Shell::lyrics_view(ui::Ui& ui, Rect r, bool centered) {
     // The line a little ahead, so its highlight lands with the voice rather than after it.
     const double now = clip_start_ + last_pos_, lead = 0.2;
     int cur = lyric_at(lyrics_, now + lead);
-    const LyricBlock& focus = blocks[size_t(std::max(cur, 0))];
+    // A long pause before a line, at the start or after a word-timed line (the others do not say where they end):
+    // three dots take the stage and fill up until the line comes.
+    int pause = -1;
+    double pause_from = 0, pause_to = 0;
+    if (size_t n = size_t(cur + 1); n < lyrics_.size()) {
+        const LyricLine* before = cur >= 0 ? &lyrics_[size_t(cur)] : nullptr;
+        double from = !before ? 0 : before->words.empty() ? -1 : before->words.back().time + before->words.back().duration + 0.3;
+        double to = lyrics_[n].time - lead;
+        if (from >= 0 && to - from >= 5 && now >= from) pause = int(n), pause_from = from, pause_to = to;
+    }
+    // What the view centres on: 2i is line i, 2i - 1 the dots before it, which push it and the lines after it down.
+    const float dots_h = main_lh, room = dots_h + gap;
+    int focus = pause >= 0 ? 2 * pause - 1 : 2 * std::max(cur, 0);
     float anchor = r.h * 0.4f;
-    float target = focus.y + focus.h / 2 - anchor;
+    auto aim = [&](int f, size_t i) {
+        int n = (f + 1) / 2;
+        const LyricBlock& b = blocks[size_t(n)];
+        float centre = (f % 2 ? b.y + dots_h / 2 : b.y + b.h / 2) - anchor;
+        return f % 2 && int(i) >= n ? centre - room : centre;
+    };
+    if (lyric_y_.size() != blocks.size()) {
+        lyric_y_.clear();
+        for (size_t i = 0; i < blocks.size(); ++i) lyric_y_.push_back({aim(focus, i)});
+        lyric_from_ = lyric_to_ = focus;
+    } else if (focus != lyric_to_) {
+        lyric_from_ = lyric_to_, lyric_to_ = focus, lyric_switch_ = ui.now;
+    }
 
     // The wheel browses freely for a few seconds, then the view glides back to the current line.
     if (ui.hovering(r) && ui.input().scroll_y != 0) {
-        lyric_y_ = std::clamp(lyric_y_ + ui.input().scroll_y, -anchor, total - anchor);
+        if (ui.now >= lyric_manual_until_) lyric_manual_ = lyric_y_[size_t((focus + 1) / 2)].value;
+        lyric_manual_ = std::clamp(lyric_manual_ + ui.input().scroll_y, -anchor, total - anchor);
         ui.input().scroll_y = 0;
         lyric_manual_until_ = ui.now + 3;
         ui.redraw();
     }
-    if (ui.now >= lyric_manual_until_) {
-        double dt = std::clamp(ui.now - lyric_last_, 0.0, 0.1);
-        lyric_y_ += (target - lyric_y_) * float(1 - std::exp(-dt / 0.14));
-        if (std::abs(target - lyric_y_) > 0.5f) ui.keep_animating();
-        else lyric_y_ = target;
-    } else {
-        ui.wake(lyric_manual_until_);
-    }
+    bool manual = ui.now < lyric_manual_until_;
+    if (manual) ui.wake(lyric_manual_until_);
+    // Each line switches to the new position at its own time; frames can be far apart, so the time before and after
+    // that moment is stepped separately.
+    double last = lyric_last_;
     lyric_last_ = ui.now;
+    bool moving = false;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        ui::Spring& s = lyric_y_[i];
+        float target = manual ? lyric_manual_ : aim(lyric_to_, i);
+        if (t.motion == 0) {
+            s = {target};
+            continue;
+        }
+        if (manual) {
+            s.advance(target, float(ui.now - last), 0.18f * t.motion);
+        } else {
+            double at = lyric_switch_ + 0.045 * std::clamp(int(i) - (lyric_to_ + 1) / 2, 0, 8) * t.motion;
+            if (at > last) s.advance(aim(lyric_from_, i), float(std::min(ui.now, at) - last), 0.56f * t.motion);
+            if (at < ui.now) s.advance(target, float(ui.now - std::max(last, at)), 0.56f * t.motion);
+            if (at > ui.now) target = aim(lyric_from_, i);
+        }
+        if (std::abs(s.value - target) < 0.25f && std::abs(s.velocity) < 4) s = {target};
+        else moving = true;
+    }
+    if (moving) ui.keep_animating();
 
     ui.push_clip({r.x - 12, r.y, r.w + 24, r.h});
     ui.push_id(ui.id("lyrics"));
+    int shown = 0;
+    std::vector<ui::Painter::Lift> lifts;
+    auto edge = [&](float top, float h) { return std::clamp(std::min(top - r.y, r.bottom() - top - h) / 80, 0.f, 1.f); };
     for (size_t i = 0; i < blocks.size(); ++i) {
         const LyricBlock& b = blocks[i];
-        float top = r.y + b.y - lyric_y_;
+        float top = r.y + b.y - lyric_y_[i].value;
+        if (int(i) == pause) {
+            // The dots grow in, breathe, light up one by one over the pause and shrink away just before the line.
+            float dt = float(now - pause_from), done = float((now - pause_from) / (pause_to - pause_from));
+            float show = std::min(smooth01(dt / 0.4f), smooth01(float(pause_to - now) / 0.45f));
+            float d = std::round(main.size * 0.5f), step = d * 1.75f, w = d + 2 * step;
+            float cy = top - gap - dots_h / 2;
+            float s = (0.6f + 0.4f * show) * (1 + (t.motion > 0 ? 0.06f : 0) * std::sin(dt * std::numbers::pi_v<float> * 1.25f));
+            float x0 = r.x + (r.w - w) / 2 * centered + d / 2;
+            for (int k = 0; k < 3; ++k) {
+                float fill = smooth01(done * 3 - float(k)), dd = d * s;
+                float cx = x0 + (float(k) * step) * s + (1 - s) * (w / 2 - d / 2) * centered;
+                p.rect({cx - dd / 2, cy - dd / 2, dd, dd}, t.text.with_alpha((0.3f + 0.65f * fill) * show * edge(cy - dots_h / 2, dots_h)), dd / 2);
+            }
+        }
         if (top + b.h < r.y || top > r.bottom()) continue;
+        // When the lyrics arrive, the lines come in one after another.
+        float in = ui.progress(lyrics_since_ + 0.03 * std::min(shown++, 12), 420);
+        top += (1 - in) * 14;
         ui::Id id = ui.id(uint64_t(i));
         Rect hit{r.x - 12, top - gap / 2, r.w + 24, b.h + gap};
         auto it = ui.interact(id, hit);
         float hot = ui.anim(id, it.hovered ? 1 : 0, 150);
-        float on = ui.anim(ui::sub_id(id, 1), int(i) == cur ? 1 : 0, 420, ease::standard);
+        bool current = int(i) == cur && pause < 0;
+        float on = ui.anim(ui::sub_id(id, 1), current ? 1 : 0, 420, ease::standard);
+        // The current line stands a little larger than the rest.
+        float scale = ui.spring(ui::sub_id(id, 2), current ? 1 : 0.94f, 480);
         // Lines fade with distance from the current one and towards the edges.
-        float d = float(std::abs(int(i) - std::max(cur, 0)));
+        float d = float(std::abs(int(i) - (focus + 1) / 2));
         float base = std::max(0.2f, 0.5f - 0.06f * (d - 1));
-        float edge = std::clamp(std::min(top - r.y, r.bottom() - top - b.h) / 80, 0.f, 1.f);
-        float a = (base + (1 - base) * on) * edge;
-        // A word-timed current line lights up as it is sung; the rest stays a little above the other lines.
+        float a = (base + (1 - base) * on) * edge(top, b.h) * in;
+        // A word-timed current line lights up as it is sung, and each word rises a little as it starts.
         const LyricLine& l = lyrics_[i];
-        bool wipe = int(i) == cur && !l.words.empty();
-        ui::Color unsung = t.text.with_alpha((base + (1 - base) * 0.25f * on) * edge);
+        bool wipe = current && !l.words.empty();
+        ui::Color unsung = t.text.with_alpha((base + (1 - base) * 0.25f * on) * edge(top, b.h) * in);
         if (hot > 0) p.rect(hit, t.text.with_alpha(0.06f * hot), t.radius_s());
+        p.set_zoom(scale, r.x + r.w / 2 * centered, top + b.h / 2);
         float y = top;
         auto line = [&](std::string_view s, const TextStyle& st, float lh, ui::Color c, bool wiped) {
-            float x = centered ? r.x + (r.w - std::min(p.measure(s, st), r.w)) / 2 : r.x;
+            float x = r.x + (r.w - std::min(p.measure(s, st), r.w)) / 2 * centered;
             if (wiped) p.set_wipe(x + sung_x(p, l, s, st.size, soft, now), soft, unsung);
+            lifts.clear();
+            if (on > 0 && &st == &main) {
+                auto from = uint32_t(s.data() - l.text.data());
+                for (const LyricWord& w : l.words) {
+                    if (w.to <= from || w.from >= from + s.size()) continue;
+                    double sung = w.duration > 0 ? std::clamp((now - w.time) / w.duration, 0.0, 1.0) : now >= w.time;
+                    lifts.push_back({w.from > from ? w.from - from : 0, main.size * 0.1f * on * float(1 - (1 - sung) * (1 - sung))});
+                }
+            }
+            p.set_lifts(lifts);
             p.text(x, y + lh * 0.72f, s, {.size = st.size, .color = c}, r.w);
+            p.set_lifts({});
             p.clear_wipe();
             y += lh;
         };
         for (auto s : b.lines) line(s, main, main_lh, t.text.with_alpha(a), wipe);
         for (auto s : b.translation) line(s, sub, sub_lh, t.text.with_alpha(a * 0.75f), false);
+        p.set_zoom(1);
         if (it.clicked) {
             seek(std::max(0.0, lyrics_[i].time - clip_start_));
             lyric_manual_until_ = 0;
@@ -2579,9 +2801,9 @@ void Shell::lyrics_view(ui::Ui& ui, Rect r, bool centered) {
     ui.pop_id();
     ui.pop_clip();
 
-    // A wipe moves with the music; otherwise nothing changes before the next line.
+    // A wipe or the dots move with the music; otherwise nothing changes before the next line.
     if (!playing()) return;
-    if (cur >= 0 && !lyrics_[size_t(cur)].words.empty()) ui.keep_animating();
+    if (pause >= 0 || (cur >= 0 && !lyrics_[size_t(cur)].words.empty())) ui.keep_animating();
     else if (size_t next = size_t(cur + 1); next < lyrics_.size()) ui.wake(ui.now + (lyrics_[next].time - lead - now));
 }
 

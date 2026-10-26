@@ -160,6 +160,8 @@ public:
 
     // Eased value that follows target over ms (scaled by theme motion). The first call returns target.
     float anim(Id id, float target, float ms = 160, Bezier curve = ease::standard);
+    // Position and velocity stay continuous when retargeted. response_ms reaches 99% of a step.
+    float spring(Id id, float target, float response_ms = 280);
     // Eased 0..1 for a transition that started at the given time.
     float progress(double since, float ms, Bezier curve = ease::emphasized);
     void keep_animating() { animating_ = true; }
@@ -210,6 +212,12 @@ private:
         Bezier curve;
         uint64_t frame;
     };
+    struct Following {
+        Spring motion;
+        float target;
+        double time;
+        uint64_t frame;
+    };
     struct Scroll {
         Rect view;
         float offset = 0, target = 0, velocity = 0, content = 0;
@@ -252,6 +260,7 @@ private:
     double wake_ = std::numeric_limits<double>::infinity();
     bool wheel_taken_ = false;
     std::unordered_map<Id, Anim> anims_;
+    std::unordered_map<Id, Following> springs_;
     std::unordered_map<Id, Scroll> scrolls_;
     std::vector<Id> scroll_stack_;
     std::unordered_map<Id, EditBox> edits_;

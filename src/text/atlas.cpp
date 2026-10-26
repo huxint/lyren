@@ -12,7 +12,7 @@ namespace lyren::text {
 constexpr uint32_t max_size = 2048;
 
 Atlas::Atlas(gfx::Renderer& renderer, Fonts& fonts)
-    : renderer_(renderer), fonts_(fonts), texture_(renderer.create_texture(size_, size_, VK_FORMAT_R8_UNORM, false)) {}
+    : renderer_(renderer), fonts_(fonts), texture_(renderer.create_texture(size_, size_, VK_FORMAT_R8_UNORM, true)) {}
 
 Atlas::~Atlas() { renderer_.destroy_texture(texture_); }
 
@@ -36,7 +36,7 @@ void Atlas::clear() {
     if (size_ < max_size) {
         renderer_.destroy_texture(texture_);
         size_ = max_size;
-        texture_ = renderer_.create_texture(size_, size_, VK_FORMAT_R8_UNORM, false);
+        texture_ = renderer_.create_texture(size_, size_, VK_FORMAT_R8_UNORM, true);
     }
     shelves_.clear();
     next_y_ = 0;

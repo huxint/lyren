@@ -135,8 +135,14 @@ private:
     bool page_status(ui::Ui& ui, ui::Rect r, bool loading, const std::string& error, bool needs_login);
     void queue_panel(ui::Ui& ui, ui::Rect r);
     void player_bar(ui::Ui& ui, ui::Rect r);
-    void now_playing(ui::Ui& ui, ui::Rect r, float k);
-    void lyrics_view(ui::Ui& ui, ui::Rect r, bool centered);
+    // The cover, title, artist and heart of the current track, which move between the player bar (np 0) and the
+    // now-playing view (np 1), whose layout is wide (1) or narrow (0).
+    void player_art(ui::Ui& ui, ui::Rect player, ui::Rect page, float np, float wide);
+    void now_playing(ui::Ui& ui, ui::Rect r, float k, float wide);
+    // centered: 0 lines start at the left, 1 they are centred.
+    void lyrics_view(ui::Ui& ui, ui::Rect r, float centered);
+    // The size of a heart that pops when its track has just been liked.
+    float heart_size(ui::Ui& ui, const Track& t, float size) const;
     // The buttons after "play all" and "shuffle" on album and playlist pages, from x.
     void list_actions(ui::Ui& ui, float x, float y);
     void account_modal(ui::Ui& ui, ui::Rect r);
@@ -257,6 +263,7 @@ private:
     std::vector<Route> history_;
     double page_time_ = -10, tab_time_ = -10;
     int page_dir_ = 1, tab_dir_ = 1;
+    bool compact_ = false;
     std::string today_;
     struct Toast {
         std::string text, icon;
@@ -327,8 +334,10 @@ private:
     uint64_t rng_ = 0x2545f4914f6cdd1dull;
     Loop::TimerId save_timer_ = 0;
     std::optional<std::pair<int, int>> window_;
-    std::string prev_cover_;
+    Track prev_;  // the track before a change, fading out
     double cover_time_ = -10;
+    std::string pop_key_;  // the track liked last, when
+    double pop_time_ = -10;
 
     std::unique_ptr<Mpris> mpris_;
 
@@ -337,8 +346,7 @@ private:
     std::string lyrics_id_;
     double clip_start_ = 0;  // where a trial clip sits in the song the lyrics are timed for
     bool lyrics_loading_ = false;
-    bool np_open_ = false;
-    double np_time_ = -10;
+    bool np_open_ = false, np_wide_ = true;
     struct LyricBlock {
         std::vector<std::string_view> lines, translation;  // wrapped, pointing into lyrics_
         float y = 0, h = 0;
@@ -346,8 +354,12 @@ private:
     std::vector<LyricBlock> lyric_layout_;
     float lyric_layout_w_ = 0, lyric_layout_size_ = 0;
     std::string lyric_layout_font_;
-    float lyric_y_ = 0;
-    double lyric_manual_until_ = 0, lyric_last_ = 0;
+    // Each line scrolls on its own spring. When the current line changes, the lines below it set off a little later
+    // than the ones above, so the change runs down the lyrics; the wheel moves them all at once.
+    std::vector<ui::Spring> lyric_y_;
+    float lyric_manual_ = 0;
+    int lyric_from_ = 0, lyric_to_ = 0;  // the line the view was centred on and the one it moves to
+    double lyric_switch_ = -10, lyric_manual_until_ = 0, lyric_last_ = 0, lyrics_since_ = -10;
 
     // Desktop lyrics: offset from the screen's centre, height above the bottom, click-through; the line shown and
     // the one fading out.

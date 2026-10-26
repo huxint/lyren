@@ -13,7 +13,7 @@ const uint FLAG_CUTOUT = 2u;
 struct Prim {
     vec4 rect;    // x, y, w, h in buffer pixels
     vec4 clip;    // x0, y0, x1, y1
-    vec4 uv;      // u0, v0, u1, v1
+    vec4 uv;      // u0, v0, u1, v1; wave: x played width in buffer pixels
     vec4 color;   // premultiplied
     vec4 color2;  // premultiplied border colour or gradient end
     vec4 radii;   // top-left, top-right, bottom-right, bottom-left

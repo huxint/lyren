@@ -63,17 +63,13 @@ bool Ui::slider(Id id, Rect r, float& value, SliderStyle style) {
     float th = 4 + hot;
     float cy = r.y + r.h / 2, filled = r.w * value;
     Color fill = style.accent ? t.accent : t.text_dim.mix(t.text, hot);
-    p_->rect({r.x + filled, cy - th / 2, r.w - filled, th}, t.text.with_alpha(0.14f), th / 2);
+    bool flowing = style.wave > 0 && filled > 0 && t.motion > 0;
+    float phase = flowing ? -float(std::fmod(now * 1.4, 1.0)) * tau : 0;
+    p_->wave({r.x, cy - th / 2, r.w, th}, filled, style.wave, 26, phase, fill, t.text.with_alpha(0.14f));
+    if (flowing) animating_ = true;
     for (auto [a, b] : style.marked) {
         float x0 = std::max(r.x + r.w * a, r.x + filled), x1 = r.x + r.w * b;
         if (x1 - x0 > 0.5f) p_->rect({x0, cy - th / 2, x1 - x0, th}, t.text.with_alpha(0.12f), th / 2);
-    }
-    if (style.wave > 0.05f && filled > th) {
-        // The wave drifts right; its phase is pinned to the bar start so a growing fill does not shift it.
-        p_->wave(r.x + th / 2, cy, filled - th / 2, th - 0.5f, style.wave, 26, -float(std::fmod(now * 1.4, 1.0)) * tau, fill);
-        animating_ = true;
-    } else {
-        p_->rect({r.x, cy - th / 2, filled, th}, fill, th / 2);
     }
     float knob = 13 * hot;
     if (knob > 0.5f) {
@@ -104,7 +100,7 @@ bool Ui::tabs(Id id, Rect r, std::span<const std::string_view> labels, int& sele
         return {x, r.y, p_->measure(labels[size_t(i)], st) + pad, r.h};
     };
     Rect sel = cell(selected);
-    float ix = anim(sub_id(id, 1), sel.x, 320, ease::emphasized), iw = anim(sub_id(id, 2), sel.w, 320, ease::emphasized);
+    float ix = spring(sub_id(id, 1), sel.x, 260), iw = spring(sub_id(id, 2), sel.w, 260);
     if (pill) {
         p_->rect(r, t.text.with_alpha(0.06f), r.h / 2);
         p_->shadow({ix + 2, r.y + 3, iw - 4, r.h - 4}, (r.h - 4) / 2, 6, t.shadow.with_alpha(0.5f));
@@ -127,7 +123,7 @@ bool Ui::toggle(Id id, Rect r, bool& on) {
     const Theme& t = *theme_;
     auto it = interact(id, r);
     if (it.clicked) on = !on;
-    float k = anim(id, on ? 1 : 0, 240, ease::emphasized);
+    float k = spring(id, on ? 1 : 0, 220);
     float hot = anim(sub_id(id, 1), it.hovered ? 1 : 0, 150);
     float down = anim(sub_id(id, 0xd0), it.held ? 1 : 0, 90);
     p_->rect(r, t.text.with_alpha(0.16f + 0.06f * hot).mix(t.accent, k), r.h / 2);

@@ -26,6 +26,47 @@ TEST_CASE("bezier curves hit their ends and follow the CSS reference values") {
     CHECK(ease::exit(0.2f) < 0.1f);        // accelerating: slow start
 }
 
+TEST_CASE("spring motion settles without oscillation and is independent of frame rate") {
+    Spring s;
+    float previous = 0;
+    for (int i = 0; i < 120; ++i) {
+        s.advance(1, 1.f / 120, 0.28f);
+        CHECK(s.value >= previous);
+        CHECK(s.value <= 1);
+        previous = s.value;
+    }
+    CHECK(s.value == doctest::Approx(1).epsilon(1e-5));
+    CHECK(std::abs(s.velocity) < 1e-5f);
+
+    Spring reference;
+    reference.advance(1, 0.28f, 0.28f);
+    CHECK(reference.value == doctest::Approx(0.99f).epsilon(1e-4));
+    for (int fps : {30, 60, 144}) {
+        Spring stepped;
+        for (int i = 0; i < fps; ++i) stepped.advance(1, 0.28f / float(fps), 0.28f);
+        CHECK(stepped.value == doctest::Approx(reference.value).epsilon(1e-5));
+        CHECK(stepped.velocity == doctest::Approx(reference.velocity).epsilon(1e-4));
+    }
+}
+
+TEST_CASE("spring retargeting preserves velocity and handles long frame gaps") {
+    Spring s;
+    s.advance(1, 0.07f, 0.28f);
+    float value = s.value, velocity = s.velocity;
+    s.advance(0, 0, 0.28f);
+    CHECK(s.value == value);
+    CHECK(s.velocity == velocity);
+    // Changing direction decelerates the old motion instead of immediately reversing it.
+    s.advance(0, 0.0001f, 0.28f);
+    CHECK(s.value > value);
+    CHECK(s.velocity > 0);
+    s.advance(0, 0.1f, 0.28f);
+    CHECK(s.velocity < 0);
+    s.advance(0, 10, 0.28f);
+    CHECK(s.value == doctest::Approx(0));
+    CHECK(s.velocity == doctest::Approx(0));
+}
+
 TEST_CASE("rect cuts take strips off the remaining rect") {
     Rect r{0, 0, 100, 50};
     Rect l = cut_left(r, 20), t = cut_top(r, 10), rr = cut_right(r, 30), b = cut_bottom(r, 5);
