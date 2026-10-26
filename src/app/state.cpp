@@ -19,6 +19,7 @@ SavedState load_state() {
         log::warn("state.json: {}", glz::format_error(e, text));
         return {};
     }
+    if (size_t(s.source) >= platforms.size()) s.source = platforms.front().source;
     if (s.current >= int(s.queue.size())) s.current = -1;
     return s;
 }

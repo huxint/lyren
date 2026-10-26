@@ -4,18 +4,17 @@
 
 namespace lyren::ncm {
 
-// Playlist square categories: the popular ones, then all of them under their headings.
-struct Categories {
-    std::vector<std::string> hot;
-    std::vector<std::pair<std::string, std::vector<std::string>>> groups;
-};
-
 // NetEase Cloud Music. Endpoints and their encodings follow api-enhanced's module/*.js.
 class Netease : public Provider {
 public:
-    Netease(Loop& loop, net::Http& http) : client(loop, http) {}
+    Netease(Loop& loop, net::Http& http);
 
     Client client;
+
+    std::map<std::string, std::string>& session() override { return client.cookies; }
+    void on_session_changed(std::function<void()> changed) override { client.on_cookies = std::move(changed); }
+    Task<Result<void>> initialize() override;
+    void cancel_qr() override { qr_key_.clear(); }
 
     Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) override;
     Task<Result<Stream>> stream(Track track, Quality quality) override;

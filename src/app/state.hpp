@@ -8,6 +8,7 @@ namespace lyren {
 // Non-secret state kept across runs in ~/.local/state/lyren/state.json.
 struct SavedState {
     int width = 0, height = 0;  // window, when it was not maximized
+    Source source = Source::netease;
     float volume = 0.7f;
     bool muted = false;
     int mode = 0;  // repeat list, repeat one, shuffle

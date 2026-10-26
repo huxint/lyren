@@ -12,6 +12,10 @@ public:
 
     Client client;
 
+    std::map<std::string, std::string>& session() override { return client.session; }
+    void on_session_changed(std::function<void()> changed) override { client.on_session = std::move(changed); }
+    Task<Result<void>> initialize() override;
+
     Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) override;
     Task<Result<Track>> song_detail(std::string mid);
     Task<Result<Stream>> stream(Track track, Quality quality) override;
@@ -45,7 +49,7 @@ public:
     Task<Result<Account>> account() override;
     Task<void> logout() override;
     Task<Result<void>> renew();
-    void cancel_qr() { ++qr_gen_; }
+    void cancel_qr() override { ++qr_gen_; }
 
 private:
     Loop& loop_;

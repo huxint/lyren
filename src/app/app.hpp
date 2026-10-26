@@ -10,6 +10,7 @@
 #include "app/state.hpp"
 #include "audio/player.hpp"
 #include "ncm/netease.hpp"
+#include "qq/qq.hpp"
 #include "net/http.hpp"
 #include "core/loop.hpp"
 #include "sys/bus.hpp"

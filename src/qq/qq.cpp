@@ -516,8 +516,16 @@ namespace lyren::qq {
     : client(loop, http),
       loop_(loop),
       http_(http) {
+        reload_after_edit = true;
         std::mt19937_64 rng{std::random_device{}()};
         guid_ = std::to_string(1000000000 + rng() % 9000000000);
+    }
+
+    Task<Result<void>> Qq::initialize() {
+        if (logged_in()) {
+            co_return co_await renew();
+        }
+        co_return Result<void>{};
     }
 
     Task<Result<Batch>> Qq::search(std::string query, SearchKind kind, int offset, int limit) {
@@ -1045,7 +1053,8 @@ namespace lyren::qq {
                                       .cover = p.dirPicUrl.value_or(""),
                                       .thread = p.tid ? std::to_string(p.tid) : "",
                                       .count = p.songNum,
-                                      .owned = true});
+                                      .owned = true,
+                                      .commentable = p.tid != 0});
             }
         }
         for (int offset = 0;;) {
@@ -1116,7 +1125,7 @@ namespace lyren::qq {
         if (!r->result || !r->result->dirId) {
             co_return std::unexpected("QQ 音乐没有返回新歌单的目录 ID");
         }
-        co_return Card{.source = Source::qq, .id = "dir:" + std::to_string(r->result->dirId), .title = std::move(name), .subtitle = "0 首", .owned = true};
+        co_return Card{.source = Source::qq, .id = "dir:" + std::to_string(r->result->dirId), .title = std::move(name), .subtitle = "0 首", .owned = true, .commentable = false};
     }
 
     Task<Result<void>> Qq::rename_playlist(std::string id, std::string name) {

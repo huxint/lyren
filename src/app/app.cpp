@@ -60,8 +60,7 @@ App::App(Loop& loop, Bus& bus, ConfigFile config, bool show_overlay, std::vector
       shell_(ShellDeps{.loop = loop,
                        .http = http_,
                        .player = player_,
-                       .ncm = ncm_,
-                       .qq = qq_,
+                       .providers = {&ncm_, &qq_},
                        .images = images_,
                        .config = config_.config,
                        .set_setting =

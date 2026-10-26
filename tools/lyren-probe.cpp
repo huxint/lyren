@@ -211,7 +211,7 @@ static int ncm_command(const std::vector<std::string> &args) {
             fail(saved.error());
         }
         auto credentials = creds::from_json(saved.value_or(""));
-        ncm.client.cookies = std::move(credentials.netease);
+        ncm.client.cookies = std::move(credentials["netease"]);
         ncm.client.ensure_fingerprint();
         const std::string &cmd = args[0];
         if (cmd == "search") {
@@ -279,7 +279,7 @@ static int ncm_command(const std::vector<std::string> &args) {
                     break;
                 }
             }
-            credentials.netease = ncm.client.cookies;
+            credentials["netease"] = ncm.client.cookies;
             auto saved = co_await creds::save(loop, creds::to_json(credentials));
             if (!saved) {
                 co_return fail(saved.error());
@@ -355,7 +355,7 @@ static int qq_command(const std::vector<std::string> &args) {
             co_return fail(saved.error());
         }
         auto credentials = creds::from_json(*saved);
-        q.client.session = credentials.qq;
+        q.client.session = credentials["qq"];
         const std::string &cmd = args.at(1);
         auto arg = [&](size_t i) {
             return args.size() > i ? args[i] : std::string{};
@@ -499,7 +499,7 @@ static int qq_command(const std::vector<std::string> &args) {
                     break;
                 }
             }
-            credentials.qq = q.client.session;
+            credentials["qq"] = q.client.session;
             auto stored = co_await creds::save(loop, creds::to_json(credentials));
             if (!stored) {
                 co_return fail(stored.error());
@@ -514,7 +514,7 @@ static int qq_command(const std::vector<std::string> &args) {
             if (!r) {
                 co_return fail(r.error());
             }
-            credentials.qq = q.client.session;
+            credentials["qq"] = q.client.session;
             auto stored = co_await creds::save(loop, creds::to_json(credentials));
             if (!stored) {
                 co_return fail(stored.error());

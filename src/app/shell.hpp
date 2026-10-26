@@ -11,9 +11,8 @@
 #include "app/provider.hpp"
 #include "app/state.hpp"
 #include "audio/player.hpp"
-#include "ncm/netease.hpp"
-#include "qq/qq.hpp"
 #include "sys/mpris.hpp"
+#include "sys/creds.hpp"
 #include "ui/ui.hpp"
 
 namespace lyren {
@@ -23,8 +22,7 @@ struct ShellDeps {
     Loop& loop;
     net::Http& http;
     audio::Player& player;
-    ncm::Netease& ncm;
-    qq::Qq& qq;
+    Providers providers;
     Images& images;
     const Config& config;
     // Changes a setting in the config file; value is TOML. config reflects it once this returns.
@@ -79,11 +77,34 @@ private:
         bool more() const { return !loaded || int(size()) < total; }
     };
     struct SearchResults : Results {
-        Batch sources[2];
+        std::array<Batch, platforms.size()> sources;
         int pending = 0;
-        bool done[2] = {};
-        std::string errors[2];
-        bool more() const { return !done[0] || !done[1]; }
+        std::array<bool, platforms.size()> done{};
+        std::array<std::string, platforms.size()> errors;
+        bool more() const { return std::ranges::find(done, false) != done.end(); }
+    };
+    // Each platform keeps its own account, cached pages and pagination state.
+    struct Library {
+        std::optional<Account> account;
+        uint64_t gen = 0;
+        std::vector<Card> playlists, daily_lists;
+        double daily_since = -10;
+        Card liked;
+        std::unordered_set<std::string> liked_ids;
+        Results recommended, toplists;
+        std::vector<Track> recent, fm;
+        int fm_pos = 0, recent_tab = 0;
+        bool fm_loading = false;
+        std::string fm_error;
+        Categories categories;
+        bool categories_loading = false;
+        std::string category = "全部";
+        Results square;
+        uint64_t square_gen = 0;
+        double square_time = -10;
+        Results collection[2];
+        int collection_tab = 0;
+        uint64_t collection_gen = 0;
     };
     // An artist's page: the head, songs and albums a page at a time, the introduction (intro holds only its status).
     struct ArtistPage {
@@ -168,23 +189,25 @@ private:
     // Navigation.
     void search(ui::Ui& ui);
     void load_results(int tab);
-    void open(ui::Ui& ui, Page page, const Card& card = {});
+    void switch_platform(ui::Ui& ui, Source source);
+    bool supports(Page page, Source source) const;
+    void open(ui::Ui& ui, Page page);
+    void open(ui::Ui& ui, Page page, const Card& card);
     void open(ui::Ui& ui, const Card& card);  // the page for a card
     void back(ui::Ui& ui);
     void enter(ui::Ui& ui, Route route, int direction);
     static bool needs_login(Page p);
-    bool signed_in(Page p) const;
-    bool signed_in() const { return ncm_.logged_in() || qq_.logged_in(); }
+    bool signed_in() const { return provider().logged_in(); }
     void ensure_route_data();
     Task<void> load_list(std::shared_ptr<List> list, Page page, Card card);
     Task<void> fetch_results(uint64_t gen, int tab, Source source, std::string query, int offset);
     Task<void> load_artist(std::shared_ptr<ArtistPage> page, Card card);
     void load_artist_tab(int tab);
     Task<void> fetch_artist(std::shared_ptr<ArtistPage> page, Card card, int tab, int offset);
-    Task<void> load_categories();
+    Task<void> load_categories(Source source);
     void load_square();
-    Task<void> fetch_square(uint64_t gen, std::string category, int offset);
-    Task<void> load_collection();
+    Task<void> fetch_square(Source source, uint64_t gen, std::string category, int offset);
+    Task<void> load_collection(Source source);
     void load_comments(int tab);
     Task<void> fetch_comments(uint64_t gen, int tab, int page, std::string cursor);
 
@@ -213,23 +236,27 @@ private:
     const Track* current() const { return current_ >= 0 ? &queue_[size_t(current_)] : nullptr; }
     bool is_current(const Track& t) const { return current() && same(*current(), t); }
     bool playing() const;
-    Provider& provider(Source source) {
-        if (source == Source::netease) return ncm_;
-        return qq_;
-    }
+    Provider& provider(Source source) const { return *providers_[size_t(source)]; }
+    Provider& provider() const { return provider(active_); }
     template <class T>
-    Provider& provider(const T& t) { return provider(t.source); }
-    static const Track* recording(const Track& track, Source source);
+    Provider& provider(const T& t) const { return provider(t.source); }
+    Library& library(Source source) { return libraries_[size_t(source)]; }
+    const Library& library(Source source) const { return libraries_[size_t(source)]; }
+    Library& library() { return library(active_); }
+    const Library& library() const { return library(active_); }
 
     // Library and account.
     Task<void> startup();
+    Task<void> initialize_platform(Source source);
     Task<void> load_library(Source source);
-    Task<void> load_recommended();
-    Task<void> load_daily_lists();
-    Task<void> load_toplists();
-    Task<void> load_fm();
+    Task<void> load_recommended(Source source);
+    Task<void> load_daily_lists(Source source);
+    Task<void> load_toplists(Source source);
+    Task<void> load_fm(Source source);
+    void refresh_recent();
     void next_fm();
     Task<void> qr_login();
+    void cancel_login();
     Task<void> logout(Source source);
     void save_credentials();
     bool liked(const Track& t) const;
@@ -250,8 +277,7 @@ private:
     Loop& loop_;
     net::Http& http_;
     audio::Player& player_;
-    ncm::Netease& ncm_;
-    qq::Qq& qq_;
+    Providers providers_;
     Images& images_;
     const Config& config_;
     std::function<void(std::string_view, std::string_view, std::string_view)> set_setting_;
@@ -260,6 +286,8 @@ private:
     bool silent_;
 
     Route route_{Page::recommend};
+    Source active_ = Source::netease, fm_source_ = Source::netease;
+    std::optional<Source> pending_source_;
     std::vector<Route> history_;
     double page_time_ = -10, tab_time_ = -10;
     int page_dir_ = 1, tab_dir_ = 1;
@@ -272,31 +300,11 @@ private:
     std::vector<Toast> toasts_;
 
     // Library.
-    std::optional<Account> accounts_[2];
-    uint64_t library_gen_[2] = {};
-    bool creds_loaded_ = false, can_save_creds_ = false;
+    std::array<Library, platforms.size()> libraries_;
+    bool can_save_creds_ = false;
+    creds::Credentials credentials_;
     Loop::TimerId creds_timer_ = 0;
-    std::vector<Card> playlists_, recommended_, toplists_, daily_lists_;
-    double daily_lists_since_ = -10;
-    Card liked_cards_[2];
-    bool recommended_loading_ = false, toplists_loading_ = false;
-    std::string recommended_error_, toplists_error_;
-    std::unordered_set<std::string> liked_ids_[2];
-    std::vector<Track> recent_, fm_;
-    int fm_pos_ = 0;
-    int recent_tab_ = 0;  // this machine's plays, or the account's
-    bool fm_loading_ = false;
-    std::string fm_error_;
-    ncm::Categories categories_;
-    bool categories_loading_ = false;
-    std::string square_category_ = "全部";
-    Results square_;
-    uint64_t square_gen_ = 0;
-    double square_time_ = -10;
-    Results collection_[2];  // albums, artists
-    int collection_tab_ = 0;
-    double collection_time_ = -10;
-    uint64_t collection_gen_ = 0;
+    std::vector<Track> recent_;
 
     // Search.
     std::string query_, searched_;
@@ -322,7 +330,6 @@ private:
     float drag_v_ = 0;
     struct Prefetched {
         std::string key;
-        Track track;
         std::shared_ptr<audio::Spool> spool;
         uint64_t gen = 0;
         Stream stream;
@@ -402,7 +409,6 @@ private:
     std::string edit_name_;
     bool edit_hidden_ = false, edit_focus_ = false;
     Source edit_source_ = Source::netease;
-    bool edit_choose_source_ = false;
     std::optional<Track> edit_track_;
 };
 

@@ -1,7 +1,9 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,8 +15,20 @@
 
 namespace lyren {
 
-// Only the data layer looks at the source, to pick the provider that plays a track.
+// Stable identities for persisted tracks and the platform registry below.
 enum class Source : uint8_t { netease, qq };
+
+struct Platform {
+    Source source;
+    std::string_view id, name, short_name, scan_hint;
+};
+
+inline constexpr std::array platforms{
+    Platform{Source::netease, "netease", "网易云音乐", "网易云", "用网易云音乐 App 扫一扫"},
+    Platform{Source::qq, "qq", "QQ 音乐", "QQ 音乐", "用 QQ 扫一扫，确认登录 QQ 音乐"},
+};
+
+inline const Platform& platform(Source source) { return platforms[size_t(source)]; }
 
 struct Track {
     Source source = Source::netease;
@@ -29,35 +43,12 @@ struct Track {
     int type = 0;      // QQ Music's song type, also used when editing a playlist
     bool cloud = false;  // uploaded to the user's NetEase cloud drive
     bool paid = false;   // the listing says more than a preview takes a membership or a purchase
-    std::vector<Track> alts;  // the same song on the other service, to fall back on
 };
 
-// The same song, also when one of them is the other's stand-in from the other service.
-inline bool same(const Track& a, const Track& b) {
-    auto one = [](const Track& x, const Track& y) { return x.source == y.source && x.id == y.id; };
-    return one(a, b) || std::ranges::any_of(a.alts, [&](const Track& x) { return one(x, b); }) ||
-           std::ranges::any_of(b.alts, [&](const Track& x) {
-               return one(a, x) || std::ranges::any_of(a.alts, [&](const Track& y) { return one(x, y); });
-           });
-}
+inline bool same(const Track& a, const Track& b) { return a.source == b.source && a.id == b.id; }
 
-inline std::string key(Source source, std::string_view id) { return (source == Source::netease ? "ncm:" : "qq:") + std::string(id); }
+inline std::string key(Source source, std::string_view id) { return std::string(platform(source).id) + ":" + std::string(id); }
 inline std::string key(const Track& t) { return key(t.source, t.id); }
-
-// Interleave the services' rankings, keeping each service's order.
-template <class T>
-std::vector<T> interleave(const std::vector<T>& a, const std::vector<T>& b) {
-    std::vector<T> out;
-    out.reserve(a.size() + b.size());
-    for (size_t i = 0; i < std::max(a.size(), b.size()); ++i) {
-        if (i < a.size()) out.push_back(a[i]);
-        if (i < b.size()) out.push_back(b[i]);
-    }
-    return out;
-}
-
-// Matching title, artists and duration (within 3 s); the other recording remains available for playback.
-std::vector<Track> merge_tracks(const std::vector<Track>& a, const std::vector<Track>& b);
 
 // A cover, avatar or playlist picture at the service's size closest to px.
 std::string cover_url(std::string_view url, int px);
@@ -72,6 +63,7 @@ struct Card {
     std::string thread;  // an owned QQ directory's public playlist id, for comments
     int count = 0;  // tracks behind it, if known
     bool owned = false;  // a playlist the signed-in user created, so it can be edited
+    bool commentable = true;  // private directories may not have a public comment thread
 };
 
 inline bool same(const Card& a, const Card& b) { return a.source == b.source && a.kind == b.kind && a.id == b.id; }
@@ -84,6 +76,25 @@ struct Batch {
     std::vector<Track> tracks;
     std::vector<Card> cards;
     int total = 0;
+};
+
+// Round-robin rankings from every registered platform, retaining each listing and its identity.
+template <class T, size_t N>
+std::vector<T> interleave(const std::array<Batch, N>& sources, std::vector<T> Batch::*rows) {
+    size_t count = 0;
+    for (const auto& source : sources) count += (source.*rows).size();
+    std::vector<T> out;
+    out.reserve(count);
+    for (size_t rank = 0; out.size() < count; ++rank)
+        for (const auto& source : sources)
+            if (rank < (source.*rows).size()) out.push_back((source.*rows)[rank]);
+    return out;
+}
+
+// Playlist square categories, under their headings.
+struct Categories {
+    std::vector<std::string> hot;
+    std::vector<std::pair<std::string, std::vector<std::string>>> groups;
 };
 
 // The head of an artist's page.
@@ -125,14 +136,6 @@ struct Stream {
     float peak = 0;      // sample peak, 0 when unknown
 };
 
-struct Playback {
-    Track track;  // the recording that actually plays, with its alternatives retained
-    Stream stream;
-};
-
-// Prefer a full stream; use a preview only after trying every available recording.
-Task<Result<Playback>> resolve_stream(Track track, Quality quality, std::function<Task<Result<Stream>>(Track, Quality)> fetch);
-
 struct Account {
     std::string id, name, avatar;
 };
@@ -149,10 +152,31 @@ struct QrCode {
     std::string image;  // QQ: the PNG returned by the login service
 };
 
-// What both services can do. Service-specific features are called on the concrete class.
+// Optional features expose both availability and the operation. Shared pages only offer installed features.
+struct Features {
+    std::function<Task<Result<std::vector<Track>>>()> daily, fm, cloud, recent_plays;
+    std::function<Task<Result<std::vector<Card>>>()> daily_playlists;
+    std::function<Task<Result<std::optional<Track>>>(std::string)> dislike_daily;
+    std::function<Task<Result<std::vector<Track>>>(std::string, std::string)> heartbeat;
+    std::function<Task<Result<std::vector<Track>>>(std::string)> similar;
+    std::function<Task<Result<void>>(std::string)> fm_trash;
+    std::function<Task<Result<Categories>>()> categories;
+    std::function<Task<Result<Batch>>(std::string, int)> square;
+    std::function<Task<void>(std::string, std::string)> report_start;
+    std::function<Task<void>(std::string, std::string, int)> report_play;
+};
+
+// The shared platform contract; adapters supply their optional features without changing the shell.
 class Provider {
 public:
     virtual ~Provider() = default;
+
+    Features features;
+    bool reload_after_edit = false;  // server-assigned playlist metadata and order need a readback
+    virtual std::map<std::string, std::string>& session() = 0;
+    virtual void on_session_changed(std::function<void()> changed) = 0;
+    virtual Task<Result<void>> initialize() = 0;
+    virtual void cancel_qr() = 0;
 
     virtual Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) = 0;
     virtual Task<Result<Stream>> stream(Track track, Quality quality) = 0;
@@ -190,5 +214,7 @@ public:
     virtual Task<Result<Account>> account() = 0;
     virtual Task<void> logout() = 0;
 };
+
+using Providers = std::array<Provider*, platforms.size()>;
 
 }  // namespace lyren

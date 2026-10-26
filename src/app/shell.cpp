@@ -69,16 +69,20 @@ struct Fade {
 };
 
 struct Columns {
-    Rect index, title, album, like, duration;
+    Rect index, title, album, source, like, duration;
 };
 
-static Columns columns(Rect r) {
+static Columns columns(Rect r, bool show_source = false) {
     Columns c;
     r = r.inset(12, 0);
     c.index = ui::cut_left(r, 40);
     ui::cut_left(r, 4);
     c.duration = ui::cut_right(r, 48);
     c.like = ui::cut_right(r, 44);
+    if (show_source) {
+        c.source = ui::cut_right(r, 86);
+        ui::cut_right(r, 12);
+    }
     if (r.w > 460) {
         c.album = ui::cut_right(r, std::round(r.w * 0.36f));
         ui::cut_right(r, 16);
@@ -174,31 +178,6 @@ static void place(std::vector<Card>& cards, const Card& c, bool on) {
     if (on) cards.insert(cards.begin(), c);
 }
 
-static Result<std::vector<Card>> combined(Result<std::vector<Card>> a, Result<std::vector<Card>> b) {
-    if (a && b) return interleave(*a, *b);
-    if (a) return std::move(*a);
-    if (b) return std::move(*b);
-    return std::unexpected(a.error() + "；" + b.error());
-}
-
-static Result<std::vector<Track>> combined(Result<std::vector<Track>> a, Result<std::vector<Track>> b) {
-    if (a && b) return merge_tracks(*a, *b);
-    if (a) return std::move(*a);
-    if (b) return std::move(*b);
-    return std::unexpected(a.error() + "；" + b.error());
-}
-
-static Task<Result<std::vector<Card>>> collection(Provider& p, bool albums) {
-    if (!p.logged_in()) co_return std::vector<Card>{};
-    if (albums) co_return co_await p.collected_albums();
-    co_return co_await p.followed_artists();
-}
-
-static Task<Result<std::vector<Track>>> library_tracks(Provider& p, Card card) {
-    if (card.id.empty()) co_return std::vector<Track>{};
-    co_return co_await p.tracks(std::move(card));
-}
-
 // A filter pill.
 static float chip_w(ui::Ui& ui, std::string_view label, bool icon = false) {
     return ui.painter().measure(label, {.size = ui.theme().fs(13)}) + 28 + (icon ? 18 : 0);
@@ -228,8 +207,7 @@ Shell::Shell(ShellDeps d, SavedState saved)
     : loop_(d.loop),
       http_(d.http),
       player_(d.player),
-      ncm_(d.ncm),
-      qq_(d.qq),
+      providers_(d.providers),
       images_(d.images),
       config_(d.config),
       set_setting_(std::move(d.set_setting)),
@@ -242,6 +220,8 @@ Shell::Shell(ShellDeps d, SavedState saved)
     today_ = std::format("{} 月 {} 日", lt.tm_mon + 1, lt.tm_mday);
 
     if (saved.width > 0) window_ = std::pair{saved.width, saved.height};
+    active_ = saved.source;
+    route_.card.source = active_;
     volume_ = std::clamp(saved.volume, 0.f, 1.f);
     muted_ = saved.muted;
     mode_ = Mode(std::clamp(saved.mode, 0, 2));
@@ -249,13 +229,13 @@ Shell::Shell(ShellDeps d, SavedState saved)
     current_ = saved.current;
     resume_at_ = last_pos_ = saved.position;
     recent_ = std::move(saved.recent);
+    refresh_recent();
     dl_x_ = saved.lyrics_x, dl_bottom_ = std::max(0.f, saved.lyrics_bottom), dl_locked_ = saved.lyrics_locked;
     rng_ ^= uint64_t(now);
 
     player_.on_change = [this] { on_player(); };
     apply_volume();
-    ncm_.client.on_cookies = [this] { save_credentials(); };
-    qq_.client.on_session = [this] { save_credentials(); };
+    for (auto* p : providers_) p->on_session_changed([this] { save_credentials(); });
     if (current()) spawn(load_lyrics(*current()));
     spawn(startup());
 
@@ -307,7 +287,8 @@ void Shell::changed() {
 
 void Shell::save(std::optional<std::pair<int, int>> window) {
     if (window) window_ = window;
-    SavedState s{.volume = volume_,
+    SavedState s{.source = active_,
+                 .volume = volume_,
                  .muted = muted_,
                  .mode = int(mode_),
                  .queue = queue_,
@@ -357,54 +338,37 @@ float Shell::special_hue(Page page) const {
     }
 }
 
-const Track* Shell::recording(const Track& t, Source source) {
-    if (t.source == source) return &t;
-    auto it = std::ranges::find(t.alts, source, &Track::source);
-    return it == t.alts.end() ? nullptr : &*it;
-}
-
-bool Shell::liked(const Track& t) const {
-    if (liked_ids_[int(t.source)].contains(t.id)) return true;
-    return std::ranges::any_of(t.alts, [&](const Track& a) { return liked_ids_[int(a.source)].contains(a.id); });
-}
+bool Shell::liked(const Track& t) const { return library(t.source).liked_ids.contains(t.id); }
 
 void Shell::toggle_like(Track t) {
+    if (!provider(t).logged_in()) return notify(std::format("登录{}后才能收藏这首歌", platform(t.source).name), "heart");
     bool on = !liked(t);
-    std::vector<Track> targets;
-    for (const Track& a : interleave(std::vector{t}, t.alts)) {
-        if (!provider(a).logged_in()) continue;
-        if (on || liked_ids_[int(a.source)].contains(a.id)) targets.push_back(a);
-        if (on && !targets.empty()) break;
-    }
-    if (targets.empty()) return notify("登录这首歌所属的账号后才能收藏", "heart");
-    for (const auto& a : targets) {
-        if (on) liked_ids_[int(a.source)].insert(a.id);
-        else liked_ids_[int(a.source)].erase(a.id);
-    }
+    auto& ids = library(t.source).liked_ids;
+    if (on) ids.insert(t.id);
+    else ids.erase(t.id);
     if (on) pop_key_ = key(t), pop_time_ = now_();
-    auto list = route_.page == Page::liked ? route_.list : nullptr;
+    auto list = route_.page == Page::liked && active_ == t.source ? route_.list : nullptr;
     if (list) {
         auto& v = list->tracks;
         if (on) v.insert(v.begin(), t);
         else std::erase_if(v, [&](const Track& x) { return same(x, t); });
     }
     notify(on ? "已添加到我喜欢的音乐" : "已取消喜欢", on ? "heart-fill" : "heart-off");
-    spawn([](Shell* self, Track t, std::vector<Track> targets, bool on, std::shared_ptr<List> list) -> Task<void> {
-        bool qq = false;
-        for (const auto& a : targets) {
-            auto r = co_await self->provider(a).like(a, on);
-            qq |= a.source == Source::qq;
-            if (r) continue;
-            if (on) self->liked_ids_[int(a.source)].erase(a.id);
-            else self->liked_ids_[int(a.source)].insert(a.id);
+    spawn([](Shell* self, Track t, bool on, std::shared_ptr<List> list) -> Task<void> {
+        auto r = co_await self->provider(t).like(t, on);
+        if (!r) {
+            auto& ids = self->library(t.source).liked_ids;
+            if (on) ids.erase(t.id);
+            else ids.insert(t.id);
             if (list) {
                 std::erase_if(list->tracks, [&](const Track& x) { return same(x, t); });
-                if (self->liked(t)) list->tracks.insert(list->tracks.begin(), t);
+                if (!on) list->tracks.insert(list->tracks.begin(), t);
             }
             self->notify(std::format("操作没有成功：{}", r.error()), "triangle-alert", true);
+        } else if (self->provider(t).reload_after_edit && list) {
+            co_await self->load_list(list, Page::liked, {.source = t.source});
         }
-        if (qq && list) co_await self->load_list(list, Page::liked, {});
-    }(this, std::move(t), std::move(targets), on, std::move(list)));
+    }(this, std::move(t), on, std::move(list)));
 }
 
 // Following, collecting and editing playlists show at once; a failed request puts things back.
@@ -413,13 +377,15 @@ void Shell::toggle_follow(std::shared_ptr<ArtistPage> page, Card artist) {
     if (!provider(artist).logged_in()) return notify("登录这位歌手所属的账号后才能关注", "user-plus");
     bool on = !page->info->followed;
     page->info->followed = on;
-    if (collection_[1].loaded) place(collection_[1].cards, artist, on);
+    auto& collection = library(artist.source).collection[1];
+    if (collection.loaded) place(collection.cards, artist, on);
     notify(on ? std::format("已关注{}", artist.title) : "已取消关注", on ? "user-check" : "user");
     spawn([](Shell* self, std::shared_ptr<ArtistPage> page, Card artist, bool on) -> Task<void> {
         auto r = co_await self->provider(artist).follow(artist.id, on);
         if (r) co_return;
         page->info->followed = !on;
-        if (self->collection_[1].loaded) place(self->collection_[1].cards, artist, !on);
+        auto& collection = self->library(artist.source).collection[1];
+        if (collection.loaded) place(collection.cards, artist, !on);
         self->notify(std::format("操作没有成功：{}", r.error()), "triangle-alert", true);
     }(this, std::move(page), std::move(artist), on));
 }
@@ -428,19 +394,21 @@ void Shell::toggle_collect(std::shared_ptr<List> list, Card album) {
     if (!provider(album).logged_in()) return notify("登录这张专辑所属的账号后才能收藏", "star");
     bool on = !list->album.collected;
     list->album.collected = on;
-    if (collection_[0].loaded) place(collection_[0].cards, album, on);
+    auto& collection = library(album.source).collection[0];
+    if (collection.loaded) place(collection.cards, album, on);
     notify(on ? "已收藏专辑" : "已取消收藏", on ? "star-fill" : "star");
     spawn([](Shell* self, std::shared_ptr<List> list, Card album, bool on) -> Task<void> {
         auto r = co_await self->provider(album).collect(album.id, on);
         if (r) co_return;
         list->album.collected = !on;
-        if (self->collection_[0].loaded) place(self->collection_[0].cards, album, !on);
+        auto& collection = self->library(album.source).collection[0];
+        if (collection.loaded) place(collection.cards, album, !on);
         self->notify(std::format("操作没有成功：{}", r.error()), "triangle-alert", true);
     }(this, std::move(list), std::move(album), on));
 }
 
 void Shell::recount(const Card& playlist, int delta) {
-    for (Card& c : playlists_)
+    for (Card& c : library(playlist.source).playlists)
         if (same(c, playlist)) {
             c.count = std::max(0, c.count + delta);
             c.subtitle = std::format("{} 首", c.count);
@@ -448,8 +416,6 @@ void Shell::recount(const Card& playlist, int delta) {
 }
 
 void Shell::add_to_playlist(Track t, Card playlist) {
-    Track chosen = *recording(t, playlist.source);
-    t = std::move(chosen);
     auto list = route_.page == Page::playlist && same(route_.card, playlist) ? route_.list : nullptr;
     if (list && std::ranges::any_of(list->tracks, [&](const Track& x) { return same(x, t); }))
         return notify("这首歌已经在歌单里了", "folder-plus");
@@ -460,9 +426,9 @@ void Shell::add_to_playlist(Track t, Card playlist) {
     spawn([](Shell* self, Track t, Card playlist, std::shared_ptr<List> list) -> Task<void> {
         auto r = co_await self->provider(playlist).edit_playlist(playlist.id, t, true);
         if (r) {
-            if (playlist.source == Source::qq) {
+            if (self->provider(playlist).reload_after_edit) {
                 if (list) co_await self->load_list(list, Page::playlist, playlist);
-                co_await self->load_library(Source::qq);
+                co_await self->load_library(playlist.source);
             }
             co_return;
         }
@@ -482,9 +448,9 @@ void Shell::remove_from_playlist(std::shared_ptr<List> list, Card playlist, Trac
     spawn([](Shell* self, std::shared_ptr<List> list, Card playlist, Track t, size_t at) -> Task<void> {
         auto r = co_await self->provider(playlist).edit_playlist(playlist.id, t, false);
         if (r) {
-            if (playlist.source == Source::qq) {
+            if (self->provider(playlist).reload_after_edit) {
                 co_await self->load_list(list, Page::playlist, playlist);
-                co_await self->load_library(Source::qq);
+                co_await self->load_library(playlist.source);
             }
             co_return;
         }
@@ -501,7 +467,7 @@ void Shell::dislike_daily(std::shared_ptr<List> list, Track t) {
     size_t at = size_t(it - list->tracks.begin());
     list->tracks.erase(it);
     spawn([](Shell* self, std::shared_ptr<List> list, Track t, size_t at) -> Task<void> {
-        auto r = co_await self->ncm_.dislike_daily(t.id);
+        auto r = co_await self->provider(t).features.dislike_daily(t.id);
         auto pos = list->tracks.begin() + std::min(at, list->tracks.size());
         if (!r) {
             list->tracks.insert(pos, std::move(t));
@@ -513,7 +479,7 @@ void Shell::dislike_daily(std::shared_ptr<List> list, Track t) {
 }
 
 Task<void> Shell::heartbeat(Track seed) {
-    auto r = co_await ncm_.heartbeat(seed.id, liked_cards_[0].id);
+    auto r = co_await provider(seed).features.heartbeat(seed.id, library(seed.source).liked.id);
     if (!r) co_return notify(std::format("心动模式没有开始：{}", r.error()), "triangle-alert", true);
     std::vector<Track> list = std::move(*r);
     std::erase_if(list, [&](const Track& x) { return same(x, seed); });
@@ -524,7 +490,7 @@ Task<void> Shell::heartbeat(Track seed) {
 }
 
 void Shell::retitle(const Card& playlist, const std::string& title) {
-    for (Card& c : playlists_)
+    for (Card& c : library(playlist.source).playlists)
         if (same(c, playlist)) c.title = title;
     if (same(route_.card, playlist)) route_.card.title = title;
     for (Route& r : history_)
@@ -536,24 +502,21 @@ void Shell::retitle(const Card& playlist, const std::string& title) {
 Task<void> Shell::startup() {
     auto saved = co_await creds::load(loop_);
     if (saved) {
-        auto c = creds::from_json(*saved);
-        ncm_.client.cookies = std::move(c.netease);
-        qq_.client.session = std::move(c.qq);
+        credentials_ = creds::from_json(*saved);
+        for (const auto& entry : platforms) provider(entry.source).session() = std::move(credentials_[std::string(entry.id)]);
         can_save_creds_ = true;
     } else {
         notify(std::format("无法读取保存的登录信息：{}", saved.error()), "triangle-alert", true);
     }
-    bool fresh = ncm_.client.cookies.empty();
-    ncm_.client.ensure_fingerprint();
-    creds_loaded_ = true;
-    if (fresh) save_credentials();
-    spawn(load_recommended());
-    spawn(load_library(Source::netease));
-    if (qq_.logged_in()) {
-        auto renewed = co_await qq_.renew();
-        if (!renewed) notify(renewed.error(), "user", true);
-        if (qq_.logged_in()) co_await load_library(Source::qq);
-    }
+    for (const auto& entry : platforms) spawn(initialize_platform(entry.source));
+    save_credentials();
+}
+
+Task<void> Shell::initialize_platform(Source source) {
+    auto r = co_await provider(source).initialize();
+    if (!r) notify(std::format("{}：{}", platform(source).name, r.error()), "user", true);
+    if (source == active_) ensure_route_data();
+    if (provider(source).logged_in()) co_await load_library(source);
 }
 
 void Shell::save_credentials() {
@@ -563,7 +526,8 @@ void Shell::save_credentials() {
     creds_timer_ = loop_.after(1s, [this] {
         creds_timer_ = 0;
         spawn([](Shell* self) -> Task<void> {
-            auto r = co_await creds::save(self->loop_, creds::to_json({.netease = self->ncm_.client.cookies, .qq = self->qq_.client.session}));
+            for (const auto& entry : platforms) self->credentials_[std::string(entry.id)] = self->provider(entry.source).session();
+            auto r = co_await creds::save(self->loop_, creds::to_json(self->credentials_));
             if (!r) self->notify(std::format("登录信息没有保存：{}", r.error()), "triangle-alert", true);
         }(this));
     });
@@ -572,98 +536,101 @@ void Shell::save_credentials() {
 Task<void> Shell::load_library(Source source) {
     Provider& p = provider(source);
     if (!p.logged_in()) co_return;
-    int i = int(source);
-    uint64_t gen = ++library_gen_[i];
+    Library& lib = library(source);
+    uint64_t gen = ++lib.gen;
     auto a = co_await p.account();
-    if (gen != library_gen_[i]) co_return;
+    if (gen != lib.gen) co_return;
     if (!a) {
         notify(a.error(), "user", true);
         if (!p.logged_in()) save_credentials();
         co_return;
     }
-    accounts_[i] = *a;
+    lib.account = *a;
     redraw_();
-    if (source == Source::netease) spawn(load_daily_lists());
+    if (p.features.daily_playlists) spawn(load_daily_lists(source));
     auto pl = co_await p.user_playlists(a->id);
-    if (gen != library_gen_[i]) co_return;
+    if (gen != lib.gen) co_return;
     if (pl) {
-        liked_cards_[i] = pl->first;
-        std::vector<Card> other;
-        for (auto& c : playlists_)
-            if (c.source != source) other.push_back(std::move(c));
-        if (source == Source::netease) playlists_ = interleave(pl->second, other);
-        else playlists_ = interleave(other, pl->second);
+        lib.liked = std::move(pl->first);
+        lib.playlists = std::move(pl->second);
     } else notify(pl.error(), "list-music", true);
     auto ids = co_await p.liked_ids(a->id);
-    if (gen != library_gen_[i]) co_return;
-    if (ids) liked_ids_[i] = {ids->begin(), ids->end()};
+    if (gen != lib.gen) co_return;
+    if (ids) lib.liked_ids = {ids->begin(), ids->end()};
     else notify(ids.error(), "heart", true);
     // A page that waited for the login loads now.
-    if (route_.page == Page::liked) route_.list.reset();
-    ensure_route_data();
+    if (source == active_) {
+        if (route_.page == Page::liked) route_.list.reset();
+        ensure_route_data();
+    }
     redraw_();
 }
 
-Task<void> Shell::load_recommended() {
-    recommended_loading_ = true;
-    auto [a, b] = co_await both(ncm_.recommended_playlists(), qq_.recommended_playlists());
-    if (!a && b) notify(a.error(), "cloud-off", true);
-    if (!b && a) notify(b.error(), "cloud-off", true);
-    auto r = combined(std::move(a), std::move(b));
-    recommended_loading_ = false;
-    if (r) recommended_ = std::move(*r);
-    else recommended_error_ = r.error();
-    page_time_ = route_.page == Page::recommend ? now_() : page_time_;
+Task<void> Shell::load_recommended(Source source) {
+    auto& res = library(source).recommended;
+    res.loading = true;
+    auto r = co_await provider(source).recommended_playlists();
+    Results fresh;
+    arrived(fresh, std::move(r).transform([](std::vector<Card> v) { return Batch{.cards = std::move(v)}; }), now_());
+    res = std::move(fresh);
     redraw_();
 }
 
-Task<void> Shell::load_daily_lists() {
-    auto r = co_await ncm_.daily_playlists();
-    if (!r) co_return;
-    daily_lists_ = std::move(*r);
-    daily_lists_since_ = now_();
+Task<void> Shell::load_daily_lists(Source source) {
+    auto& lib = library(source);
+    uint64_t gen = lib.gen;
+    auto r = co_await provider(source).features.daily_playlists();
+    if (gen != lib.gen || !r) co_return;
+    lib.daily_lists = std::move(*r);
+    lib.daily_since = now_();
     redraw_();
 }
 
-Task<void> Shell::load_toplists() {
-    toplists_loading_ = true;
-    toplists_error_.clear();
-    auto [a, b] = co_await both(ncm_.toplists(), qq_.toplists());
-    if (!a && b) notify(a.error(), "cloud-off", true);
-    if (!b && a) notify(b.error(), "cloud-off", true);
-    auto r = combined(std::move(a), std::move(b));
-    toplists_loading_ = false;
-    if (r) toplists_ = std::move(*r);
-    else toplists_error_ = r.error();
-    page_time_ = route_.page == Page::toplist ? now_() : page_time_;
+Task<void> Shell::load_toplists(Source source) {
+    auto& res = library(source).toplists;
+    res.loading = true;
+    auto r = co_await provider(source).toplists();
+    Results fresh;
+    arrived(fresh, std::move(r).transform([](std::vector<Card> v) { return Batch{.cards = std::move(v)}; }), now_());
+    res = std::move(fresh);
     redraw_();
 }
 
-Task<void> Shell::load_fm() {
-    fm_loading_ = true;
-    fm_error_.clear();
-    auto r = co_await ncm_.fm();
-    fm_loading_ = false;
-    if (r) fm_.insert(fm_.end(), r->begin(), r->end());
-    else fm_error_ = r.error();
+Task<void> Shell::load_fm(Source source) {
+    auto& lib = library(source);
+    uint64_t gen = lib.gen;
+    lib.fm_loading = true;
+    lib.fm_error.clear();
+    auto r = co_await provider(source).features.fm();
+    if (gen != lib.gen) co_return;
+    lib.fm_loading = false;
+    if (r) lib.fm.insert(lib.fm.end(), r->begin(), r->end());
+    else lib.fm_error = r.error();
     redraw_();
+}
+
+void Shell::refresh_recent() {
+    for (auto& lib : libraries_) lib.recent.clear();
+    for (const auto& track : recent_) library(track.source).recent.push_back(track);
 }
 
 void Shell::next_fm() {
-    if (fm_pos_ + 1 < int(fm_.size())) ++fm_pos_;
-    if (fm_pos_ + 2 >= int(fm_.size()) && !fm_loading_) spawn(load_fm());
+    Source source = fm_playing_ ? fm_source_ : active_;
+    auto& lib = library(source);
+    if (lib.fm_pos + 1 < int(lib.fm.size())) ++lib.fm_pos;
+    if (lib.fm_pos + 2 >= int(lib.fm.size()) && !lib.fm_loading) spawn(load_fm(source));
     page_time_ = now_(), page_dir_ = 1;
-    if (fm_playing_) play(fm_, fm_pos_);
+    if (fm_playing_) play(lib.fm, lib.fm_pos);
 }
 
 Task<void> Shell::qr_login() {
     uint64_t gen = ++qr_gen_;
     Source source = Source(login_step_);
     qr_active_ = true;
-    qq_.cancel_qr();
+    provider(source).cancel_qr();
     qr_.clear();
     qr_image_ = false;
-    images_.erase("qr:qq");
+    images_.erase("qr");
     qr_status_.reset();
     qr_error_.clear();
     auto code = co_await provider(source).qr_start();
@@ -675,7 +642,7 @@ Task<void> Shell::qr_login() {
     if (!code->image.empty()) {
         auto img = gfx::decode_square({reinterpret_cast<const uint8_t*>(code->image.data()), code->image.size()}, 512, qr_error_);
         if (!img.w) co_return redraw_();
-        images_.put("qr:qq", img);
+        images_.put("qr", img);
         qr_image_ = true;
     } else {
         QRcode* q = QRcode_encodeString(code->text.c_str(), 0, QR_ECLEVEL_H, QR_MODE_8, 1);
@@ -707,32 +674,39 @@ Task<void> Shell::qr_login() {
     if (gen != qr_gen_) co_return;
     login_step_ = -1;
     login_time_ = now_();
-    if (accounts_[int(source)]) notify(std::format("已登录：{}", accounts_[int(source)]->name), "circle-check");
+    if (library(source).account) notify(std::format("已登录：{}", library(source).account->name), "circle-check");
+}
+
+void Shell::cancel_login() {
+    ++qr_gen_;
+    provider(Source(login_step_)).cancel_qr();
+    qr_active_ = false;
+    images_.erase("qr");
+    qr_image_ = false;
 }
 
 Task<void> Shell::logout(Source source) {
-    ++library_gen_[int(source)];
-    ++collection_gen_;
+    auto& lib = library(source);
+    ++lib.gen;
+    ++lib.collection_gen;
     co_await provider(source).logout();
-    accounts_[int(source)].reset();
-    std::erase_if(playlists_, [&](const Card& c) { return c.source == source; });
-    liked_ids_[int(source)].clear();
-    liked_cards_[int(source)] = {};
-    if (source == Source::netease) {
-        daily_lists_.clear();
-        fm_.clear();
-        fm_pos_ = 0;
-        listen_.reset();
+    lib.account.reset();
+    lib.playlists.clear();
+    lib.liked_ids.clear();
+    lib.liked = {};
+    lib.daily_lists.clear();
+    lib.fm.clear();
+    lib.fm_pos = 0;
+    lib.fm_loading = false;
+    if (fm_source_ == source) fm_playing_ = false;
+    if (listen_ && listen_->source == source) listen_.reset();
+    for (auto& c : lib.collection) c = {};
+    if (source == active_) {
+        if (needs_login(route_.page)) route_.list.reset();
+        ensure_route_data();
     }
-    for (auto& c : collection_) {
-        std::erase_if(c.cards, [&](const Card& card) { return card.source == source; });
-        c.total = int(c.cards.size());
-        c.loading = false;
-    }
-    if (route_.page == Page::liked) route_.list.reset();
-    ensure_route_data();
     save_credentials();
-    notify(source == Source::netease ? "已退出网易云音乐" : "已退出 QQ 音乐", "log-out");
+    notify(std::format("已退出{}", platform(source).name), "log-out");
 }
 
 // Navigation.
@@ -754,11 +728,11 @@ void Shell::load_results(int tab) {
     if (res.loading || (res.loaded && (tab != 0 || !res.more() || !res.error.empty()))) return;
     res.loading = true;
     res.error.clear();
-    for (int i = 0; i < 2; ++i) {
+    res.pending = int(std::ranges::count(res.done, false));
+    for (size_t i = 0; i < platforms.size(); ++i) {
         if (res.done[i]) continue;
-        ++res.pending;
         int offset = int(res.sources[i].tracks.size() + res.sources[i].cards.size());
-        spawn(fetch_results(search_gen_, tab, Source(i), searched_, offset));
+        spawn(fetch_results(search_gen_, tab, platforms[i].source, searched_, offset));
     }
 }
 
@@ -780,22 +754,56 @@ Task<void> Shell::fetch_results(uint64_t gen, int tab, Source source, std::strin
     } else {
         res.done[i] = true;
         res.errors[i] = r.error();
-        notify(r.error(), "cloud-off", true);
+        notify(std::format("{}：{}", platform(source).name, r.error()), "cloud-off", true);
     }
     std::optional<Track> selected;
     if (tab == search_tab_ && selected_ >= 0 && selected_ < int(res.tracks.size())) selected = res.tracks[size_t(selected_)];
-    res.tracks = merge_tracks(res.sources[0].tracks, res.sources[1].tracks);
-    res.cards = interleave(res.sources[0].cards, res.sources[1].cards);
+    res.tracks = interleave(res.sources, &Batch::tracks);
+    res.cards = interleave(res.sources, &Batch::cards);
     if (selected) {
         auto at = std::ranges::find_if(res.tracks, [&](const Track& t) { return same(t, *selected); });
         selected_ = int(at - res.tracks.begin());
     }
-    int raw = int(res.sources[0].tracks.size() + res.sources[1].tracks.size() + res.sources[0].cards.size() + res.sources[1].cards.size());
-    res.total = res.more() ? std::max(int(res.size()), res.sources[0].total + res.sources[1].total - raw + int(res.size())) : int(res.size());
+    int total = 0;
+    for (const auto& part : res.sources) total += part.total;
+    res.total = res.more() ? std::max(int(res.size()), total) : int(res.size());
     if (!res.loading && res.size() == 0)
-        res.error = res.errors[0] + (res.errors[0].empty() || res.errors[1].empty() ? "" : "；") + res.errors[1];
+        for (size_t j = 0; j < platforms.size(); ++j)
+            if (!res.errors[j].empty()) {
+                if (!res.error.empty()) res.error += "；";
+                res.error += std::format("{}：{}", platforms[j].name, res.errors[j]);
+            }
     redraw_();
 }
+
+bool Shell::supports(Page page, Source source) const {
+    const auto& features = provider(source).features;
+    switch (page) {
+        case Page::daily: return bool(features.daily);
+        case Page::square: return bool(features.square);
+        case Page::fm: return bool(features.fm);
+        case Page::cloud: return bool(features.cloud);
+        case Page::similar: return bool(features.similar);
+        default: return true;
+    }
+}
+
+void Shell::switch_platform(ui::Ui& ui, Source source) {
+    pending_source_.reset();
+    if (source == active_) return;
+    // Search stays global, with its query, results and scroll position intact.
+    if (route_.page == Page::search) {
+        active_ = route_.card.source = source;
+        changed();
+        ui.redraw();
+        return;
+    }
+    Page page = route_.page;
+    if (page == Page::playlist || page == Page::album || page == Page::artist || page == Page::similar || !supports(page, source)) page = Page::recommend;
+    open(ui, page, {.source = source});
+}
+
+void Shell::open(ui::Ui& ui, Page page) { open(ui, page, {.source = active_}); }
 
 void Shell::open(ui::Ui& ui, Page page, const Card& card) {
     if (route_.page == page && same(route_.card, card) && page != Page::search) return;
@@ -828,32 +836,35 @@ void Shell::back(ui::Ui& ui) {
 
 void Shell::enter(ui::Ui& ui, Route route, int direction) {
     route_ = std::move(route);
+    if (active_ != route_.card.source) {
+        active_ = route_.card.source;
+        changed();
+        for (const char* id : {"recommend", "toplists", "square", "sidebar", "collection-albums", "collection-artists"}) ui.scroll_to(ui.id(id), 0);
+    }
     page_time_ = ui.now;
     page_dir_ = direction;
     selected_ = -1;
     for (const char* id : {"tracks", "artist-songs", "artist-albums", "artist-intro"}) ui.scroll_to(ui.id(id), 0);
     switch (route_.page) {
-        case Page::daily: route_.card = {.title = "每日推荐", .subtitle = std::format("{} · 根据你的口味生成", today_)}; break;
-        case Page::cloud: route_.card = {.title = "我的云盘", .subtitle = "上传到云端的歌曲"}; break;
-        case Page::liked: route_.card = {.title = "我喜欢的音乐"}; break;
-        case Page::recent: route_.card = {.title = "最近播放"}; break;
+        case Page::daily: route_.card = {.source = active_, .title = "每日推荐", .subtitle = std::format("{} · 根据你的口味生成", today_)}; break;
+        case Page::cloud: route_.card = {.source = active_, .title = "我的云盘", .subtitle = "上传到云端的歌曲"}; break;
+        case Page::liked: route_.card = {.source = active_, .title = "我喜欢的音乐"}; break;
+        case Page::recent: route_.card = {.source = active_, .title = "最近播放"}; break;
         default: break;
     }
+    if (needs_login(route_.page) && !signed_in()) route_.list.reset();
     ensure_route_data();
 }
 
 bool Shell::needs_login(Page p) { return p == Page::daily || p == Page::fm || p == Page::liked || p == Page::cloud || p == Page::collection; }
 
-bool Shell::signed_in(Page p) const { return p == Page::liked || p == Page::collection ? signed_in() : ncm_.logged_in(); }
-
 void Shell::ensure_route_data() {
     Page page = route_.page;
+    Library& lib = library();
     bool listed = page == Page::daily || page == Page::cloud || page == Page::liked || page == Page::playlist || page == Page::album ||
-                  page == Page::similar || (page == Page::recent && recent_tab_ == 1 && ncm_.logged_in());
-    if (listed && !route_.list && !(needs_login(page) && !signed_in(page))) {
-        if (page == Page::liked) {
-            if (liked_cards_[0].id.empty() && liked_cards_[1].id.empty()) return;
-        }
+                  page == Page::similar || (page == Page::recent && lib.recent_tab == 1 && signed_in());
+    if (listed && !route_.list && !(needs_login(page) && !signed_in())) {
+        if (page == Page::liked && lib.liked.id.empty()) return;
         route_.list = std::make_shared<List>();
         spawn(load_list(route_.list, page, route_.card));
     }
@@ -861,14 +872,15 @@ void Shell::ensure_route_data() {
         route_.artist = std::make_shared<ArtistPage>();
         spawn(load_artist(route_.artist, route_.card));
     }
-    if (page == Page::toplist && toplists_.empty() && !toplists_loading_) spawn(load_toplists());
+    if (page == Page::recommend && !lib.recommended.loaded && !lib.recommended.loading) spawn(load_recommended(active_));
+    if (page == Page::toplist && !lib.toplists.loaded && !lib.toplists.loading) spawn(load_toplists(active_));
     if (page == Page::square) {
-        if (categories_.groups.empty() && !categories_loading_) spawn(load_categories());
-        if (!square_.loaded) load_square();
+        if (provider().features.categories && lib.categories.groups.empty() && !lib.categories_loading) spawn(load_categories(active_));
+        if (!lib.square.loaded) load_square();
     }
-    if (page == Page::fm && fm_.empty() && !fm_loading_ && ncm_.logged_in()) spawn(load_fm());
+    if (page == Page::fm && lib.fm.empty() && !lib.fm_loading && signed_in()) spawn(load_fm(active_));
     // Collections can change elsewhere, so they reload whenever the page is entered.
-    if (page == Page::collection && signed_in() && !collection_[0].loading) spawn(load_collection());
+    if (page == Page::collection && signed_in() && !lib.collection[0].loading) spawn(load_collection(active_));
 }
 
 Task<void> Shell::load_list(std::shared_ptr<List> list, Page page, Card card) {
@@ -884,18 +896,15 @@ Task<void> Shell::load_list(std::shared_ptr<List> list, Page page, Card card) {
             r = std::unexpected(a.error());
         }
     } else if (page == Page::liked) {
-        auto [a, b] = co_await both(library_tracks(ncm_, liked_cards_[0]), library_tracks(qq_, liked_cards_[1]));
-        if (!a && b) notify(a.error(), "heart", true);
-        if (!b && a) notify(b.error(), "heart", true);
-        r = combined(std::move(a), std::move(b));
+        r = co_await provider(card).tracks(library(card.source).liked);
     } else if (page == Page::daily) {
-        r = co_await ncm_.daily();
+        r = co_await provider(card).features.daily();
     } else if (page == Page::cloud) {
-        r = co_await ncm_.cloud();
+        r = co_await provider(card).features.cloud();
     } else if (page == Page::recent) {
-        r = co_await ncm_.recent_plays();
+        r = co_await provider(card).features.recent_plays();
     } else if (page == Page::similar) {
-        r = co_await ncm_.similar(card.id);
+        r = co_await provider(card).features.similar(card.id);
     } else {
         r = co_await provider(card).tracks(card);
     }
@@ -944,53 +953,57 @@ Task<void> Shell::fetch_artist(std::shared_ptr<ArtistPage> page, Card card, int 
     redraw_();
 }
 
-Task<void> Shell::load_categories() {
-    categories_loading_ = true;
-    auto r = co_await ncm_.categories();
-    categories_loading_ = false;
-    if (r) categories_ = std::move(*r);
+Task<void> Shell::load_categories(Source source) {
+    auto& lib = library(source);
+    lib.categories_loading = true;
+    auto r = co_await provider(source).features.categories();
+    lib.categories_loading = false;
+    if (r) lib.categories = std::move(*r);
     redraw_();
 }
 
 void Shell::set_category(ui::Ui& ui, std::string category) {
-    if (category == square_category_) return;
-    square_category_ = std::move(category);
-    ++square_gen_;
-    square_ = {};
-    square_time_ = ui.now;
+    auto& lib = library();
+    if (category == lib.category) return;
+    lib.category = std::move(category);
+    ++lib.square_gen;
+    lib.square = {};
+    lib.square_time = ui.now;
     ui.scroll_to(ui.id("square"), 0);
     load_square();
 }
 
 void Shell::load_square() {
-    if (square_.loading || !square_.more() || (square_.loaded && !square_.error.empty())) return;
-    square_.loading = true;
-    square_.error.clear();
-    spawn(fetch_square(square_gen_, square_category_, int(square_.cards.size())));
+    auto& lib = library();
+    if (lib.square.loading || !lib.square.more() || (lib.square.loaded && !lib.square.error.empty())) return;
+    lib.square.loading = true;
+    lib.square.error.clear();
+    spawn(fetch_square(active_, lib.square_gen, lib.category, int(lib.square.cards.size())));
 }
 
-Task<void> Shell::fetch_square(uint64_t gen, std::string category, int offset) {
-    auto r = co_await ncm_.square(std::move(category), offset);
-    if (gen != square_gen_) co_return;
-    arrived(square_, std::move(r), now_());
+Task<void> Shell::fetch_square(Source source, uint64_t gen, std::string category, int offset) {
+    auto r = co_await provider(source).features.square(std::move(category), offset);
+    auto& lib = library(source);
+    if (gen != lib.square_gen) co_return;
+    arrived(lib.square, std::move(r), now_());
     redraw_();
 }
 
-Task<void> Shell::load_collection() {
-    uint64_t gen = ++collection_gen_;
-    for (auto& c : collection_) c.loading = true;
-    auto [a, b] = co_await both(both(collection(ncm_, true), collection(ncm_, false)), both(collection(qq_, true), collection(qq_, false)));
-    if (gen != collection_gen_) co_return;
-    auto albums = combined(std::move(a.first), std::move(b.first));
-    auto artists = combined(std::move(a.second), std::move(b.second));
+Task<void> Shell::load_collection(Source source) {
+    auto& lib = library(source);
+    uint64_t gen = ++lib.collection_gen;
+    for (auto& c : lib.collection) c.loading = true;
+    auto& p = provider(source);
+    auto [albums, artists] = co_await both(p.collected_albums(), p.followed_artists());
+    if (gen != lib.collection_gen) co_return;
     auto batch = [](std::vector<Card> v) { return Batch{.cards = std::move(v)}; };
     Results fresh[2];
-    arrived(fresh[0], albums.transform(batch), now_());
-    arrived(fresh[1], artists.transform(batch), now_());
+    arrived(fresh[0], std::move(albums).transform(batch), now_());
+    arrived(fresh[1], std::move(artists).transform(batch), now_());
     // A reload does not replay the cards' entrance.
     for (int i = 0; i < 2; ++i) {
-        if (collection_[i].loaded) fresh[i].since = collection_[i].since;
-        collection_[i] = std::move(fresh[i]);
+        if (lib.collection[i].loaded) fresh[i].since = lib.collection[i].since;
+        lib.collection[i] = std::move(fresh[i]);
     }
     redraw_();
 }
@@ -1017,7 +1030,9 @@ void Shell::apply_gain() {
 
 void Shell::play(const std::vector<Track>& list, int i) {
     if (i < 0 || i >= int(list.size())) return;
-    fm_playing_ = &list == &fm_;
+    Source source = list[size_t(i)].source;
+    fm_playing_ = &list == &library(source).fm;
+    if (fm_playing_) fm_source_ = source;
     set_current(i, &list != &queue_);
     if (&list != &queue_) {
         queue_ = list;
@@ -1070,7 +1085,7 @@ void Shell::report_listen(bool ended) {
     auto st = player_.state();
     if (!listen_ || !(ended || st == State::playing || st == State::paused)) return;
     int seconds = int(ended ? player_.duration() : player_.position());
-    if (ended || seconds >= 30) spawn(ncm_.report_play(listen_->id, listen_->album_id, seconds));
+    if (ended || seconds >= 30) spawn(provider(*listen_).features.report_play(listen_->id, listen_->album_id, seconds));
     listen_.reset();
 }
 
@@ -1102,7 +1117,7 @@ void Shell::publish() {
         using S = MprisState::Status;
         auto st = player_.state();
         s.status = playing() ? S::playing : st == State::idle && !fetching_ && resume_at_ == 0 ? S::stopped : S::paused;
-        s.track = std::format("/lyren/track/{}_{}", t->source == Source::netease ? "ncm" : "qq", t->id);
+        s.track = std::format("/lyren/track/{}_{}", platform(t->source).id, t->id);
         s.title = t->title, s.artist = t->artist, s.album = t->album;
         s.art = cover_url(t->cover, 512);
         s.length = player_.duration() > 0 ? player_.duration() : t->duration;
@@ -1145,6 +1160,7 @@ void Shell::skip(int delta, bool automatic) {
 
 void Shell::start(double at, bool play) {
     if (!current()) return;
+    pending_source_ = current()->source;
     uint64_t gen = ++play_gen_;
     retried_ = counted_ = false;
     want_play_ = play;
@@ -1169,14 +1185,11 @@ Task<void> Shell::load_track(uint64_t gen, Track t, double at) {
     if (prefetch_.spool && prefetch_.key == key(t)) {
         spool = std::move(prefetch_.spool);
         s = std::move(prefetch_.stream);
-        t = std::move(prefetch_.track);
         prefetch_ = {};
     } else {
-        auto r = co_await resolve_stream(t, config_.playback.quality, [this](Track track, Quality quality) {
-            return provider(track).stream(std::move(track), quality);
-        });
+        auto r = co_await provider(t).stream(t, config_.playback.quality);
         if (gen != play_gen_) co_return;
-        if (!r || (r->stream.trial && skip_trials())) {
+        if (!r || (r->trial && skip_trials())) {
             fetching_ = false;
             // A run of unplayable tracks is reported once, when one finally plays.
             if (!failures_) notify(r ? std::format("《{}》只能试听，已跳过", t.title) : std::format("《{}》{}", t.title, r.error()), "circle-alert", !r);
@@ -1188,18 +1201,9 @@ Task<void> Shell::load_track(uint64_t gen, Track t, double at) {
             }
             co_return redraw_();
         }
-        t = std::move(r->track);
-        s = std::move(r->stream);
+        s = std::move(*r);
         spool = audio::Spool::url(http_, s.url);
     }
-    if (key(t) != key(*current())) {
-        log::debug("recording: {} -> {}", key(*current()), key(t));
-        lyrics_id_ = key(t);
-        lyrics_.clear();
-        lyric_layout_.clear();
-        lyrics_loading_ = true;
-    }
-    queue_[size_t(current_)] = t;
     fetching_ = false;
     clip_start_ = s.trial_start;
     trial_ = s.trial;
@@ -1214,15 +1218,12 @@ Task<void> Shell::load_track(uint64_t gen, Track t, double at) {
 
 Task<void> Shell::prefetch(Track t) {
     uint64_t gen = play_gen_;
-    auto p = co_await resolve_stream(t, config_.playback.quality, [this](Track track, Quality quality) {
-        return provider(track).stream(std::move(track), quality);
-    });
-    if (gen != play_gen_ || !p || (p->stream.trial && skip_trials())) co_return;
+    auto p = co_await provider(t).stream(t, config_.playback.quality);
+    if (gen != play_gen_ || !p || (p->trial && skip_trials())) co_return;
     log::debug("prefetch: {}", t.title);
     prefetch_.key = key(t);
-    prefetch_.track = std::move(p->track);
-    prefetch_.spool = audio::Spool::url(http_, p->stream.url);
-    prefetch_.stream = std::move(p->stream);
+    prefetch_.spool = audio::Spool::url(http_, p->url);
+    prefetch_.stream = std::move(*p);
 }
 
 // Shortly before the end, fetch the next track's URL and first bytes. On a timer rather than in draw(), so it also
@@ -1265,10 +1266,11 @@ void Shell::on_player() {
             std::erase_if(recent_, [&](const Track& x) { return same(x, *current()); });
             recent_.insert(recent_.begin(), *current());
             if (recent_.size() > 200) recent_.pop_back();
+            refresh_recent();
             changed();
-            if (ncm_.logged_in() && !trial_ && current()->source == Source::netease) {
+            if (provider(*current()).logged_in() && !trial_ && provider(*current()).features.report_start) {
                 listen_ = *current();
-                spawn(ncm_.report_start(listen_->id, listen_->album_id));
+                spawn(provider(*listen_).features.report_start(listen_->id, listen_->album_id));
             }
         }
         if (s == State::paused) changed();
@@ -1421,17 +1423,41 @@ static float sung_x(ui::Painter& p, const LyricLine& l, std::string_view s, floa
 // Layout.
 
 void Shell::top_bar(ui::Ui& ui, Rect bar, float center_x) {
+    auto& p = ui.painter();
+    const auto& t = ui.theme();
     Rect r = bar;
     Rect nav = ui::cut_left(r, 40);
     {
         Fade fade(ui.painter(), ui.anim(ui.id("back-a"), history_.empty() && !np_open_ ? 0.3f : 1.f, 200));
         if (ui.icon_button(ui.id("back"), ui::center(nav, 32, 32), "chevron-left", 20)) back(ui);
     }
+    // A fixed-width platform capsule keeps the search field still when the name changes.
+    float platform_w = 0;
+    for (const auto& entry : platforms) platform_w = std::max(platform_w, p.measure(entry.short_name, {.size = t.fs(13)}));
+    Rect selector = ui::center(ui::cut_left(r, platform_w + 56), platform_w + 56, 32);
+    auto selected = ui.interact(ui.id("platform"), selector);
+    float hot = ui.anim(ui.id("platform"), selected.hovered ? 1 : 0, 150);
+    float down = ui.anim(ui.id("platform-down"), selected.held ? 1 : 0, 90);
+    Rect pill = selector.inset(down);
+    p.rect(pill, t.text.with_alpha(0.045f + 0.055f * hot), pill.h / 2, t.border.with_alpha(0.65f), 1);
+    p.icon("music", {pill.x + 11, pill.y + 9, 14, 14}, t.accent);
+    ui.label({pill.x + 32, pill.y, platform_w, pill.h}, platform(active_).short_name, {.size = t.fs(13), .color = t.text});
+    p.icon("chevron-down", {pill.right() - 19, pill.y + 11, 10, 10}, t.text_dim);
+    if (selected.clicked) {
+        std::vector<ui::MenuItem> items;
+        for (const auto& entry : platforms)
+            items.push_back({entry.source == active_ ? "check" : "music", std::string(entry.name), [this, &ui, source = entry.source] {
+                                 np_open_ = false;
+                                 switch_platform(ui, source);
+                             }});
+        ui.open_menu(selector.x, selector.bottom() + 7, std::move(items));
+    }
+    ui::cut_left(r, 8);
     Rect settings = ui::cut_right(r, 40);
     if (ui.icon_button(ui.id("settings"), ui::center(settings, 32, 32), "settings", 18))
         ui.open_modal(460, 384, [this](ui::Ui& u, Rect body) { settings_modal(u, body); });
     Rect account = ui::cut_right(r, 40);
-    const auto& profile = accounts_[0] ? accounts_[0] : accounts_[1];
+    const auto& profile = library().account;
     if (profile) {
         // Signed in: the avatar replaces the icon.
         Rect a = ui::center(account, 28, 28);
@@ -1445,7 +1471,7 @@ void Shell::top_bar(ui::Ui& ui, Rect bar, float center_x) {
     }
     float w = std::min(440.f, r.w - 32);
     float x = std::clamp(center_x - w / 2, r.x + 16, r.right() - 16 - w);
-    if (ui.text_box(ui.id("search"), {x, bar.y + (bar.h - 34) / 2, w, 34}, query_, "搜索歌曲、歌手、专辑", "search")) {
+    if (ui.text_box(ui.id("search"), {x, bar.y + (bar.h - 34) / 2, w, 34}, query_, "搜索所有平台的音乐", "search")) {
         np_open_ = false;
         search(ui);
     }
@@ -1453,10 +1479,11 @@ void Shell::top_bar(ui::Ui& ui, Rect bar, float center_x) {
 
 void Shell::open_account(ui::Ui& ui) {
     login_step_ = -1;
-    ui.open_modal(420, 330, [this](ui::Ui& u, Rect body) { account_modal(u, body); });
+    ui.open_modal(420, 186 + 72 * float(platforms.size()), [this](ui::Ui& u, Rect body) { account_modal(u, body); });
 }
 
 void Shell::draw(ui::Ui& ui, Rect area) {
+    if (pending_source_) switch_platform(ui, *pending_source_);
     auto& p = ui.painter();
     const auto& t = ui.theme();
     dark_ = t.dark;
@@ -1464,11 +1491,7 @@ void Shell::draw(ui::Ui& ui, Rect area) {
     toasts_.clear();
     // Closing the account dialog stops the QR polling.
     if (qr_active_ && !ui.modal_open()) {
-        ++qr_gen_;
-        qr_active_ = false;
-        qq_.cancel_qr();
-        images_.erase("qr:qq");
-        qr_image_ = false;
+        cancel_login();
     }
 
     auto st = player_.state();
@@ -1515,9 +1538,9 @@ void Shell::draw(ui::Ui& ui, Rect area) {
                 case Page::artist: artist_page(ui, r); break;
                 case Page::search: search_page(ui, r); break;
                 case Page::recent:
-                    if (recent_tab_ == 0 || !ncm_.logged_in()) {
-                        route_.card.subtitle = std::format("{} 首 · 保存在本机", recent_.size());
-                        list_page(ui, r, recent_, false, "", std::max(page_time_, tab_time_));
+                    if (library().recent_tab == 0 || !signed_in()) {
+                        route_.card.subtitle = std::format("{} 首 · 保存在本机", library().recent.size());
+                        list_page(ui, r, library().recent, false, "", std::max(page_time_, tab_time_));
                         break;
                     }
                     [[fallthrough]];
@@ -1569,6 +1592,11 @@ void Shell::handle_keys(ui::Ui& ui) {
         if (k->keysym == XKB_KEY_space && !k->repeat) toggle_play();
         else if (k->keysym == XKB_KEY_Escape && np_open_ && !ui.menu_open()) np_open_ = false;
         else if (ctrl && (k->keysym == XKB_KEY_f || k->keysym == XKB_KEY_F)) ui.focus = ui.id("search");
+        else if (ctrl && k->keysym == XKB_KEY_Tab) {
+            int count = int(platforms.size()), delta = k->mods & wl::mod_shift ? -1 : 1;
+            np_open_ = false;
+            switch_platform(ui, platforms[size_t((int(active_) + delta + count) % count)].source);
+        }
         else if (ctrl && k->keysym == XKB_KEY_Right) skip(1);
         else if (ctrl && k->keysym == XKB_KEY_Left) skip(-1);
         else if (alt && k->keysym == XKB_KEY_Left) back(ui);
@@ -1590,24 +1618,32 @@ void Shell::sidebar(ui::Ui& ui, Rect r) {
         const char* icon;
         const char* label;
     };
-    static constexpr Nav nav[] = {{Page::recommend, "compass", "推荐"},      {Page::toplist, "list-ordered", "排行榜"},
-                                  {Page::square, "layout-grid", "歌单广场"}, {Page::fm, "radio", "私人 FM"},
-                                  {Page::liked, "heart", "我喜欢的音乐"},    {Page::recent, "history", "最近播放"},
-                                  {Page::cloud, "cloud", "我的云盘"},        {Page::collection, "star", "我的收藏"}};
-    constexpr size_t mine = 4, lists = std::size(nav);  // where the sections start
+    static constexpr Nav entries[] = {{Page::recommend, "compass", "推荐"},      {Page::toplist, "list-ordered", "排行榜"},
+                                      {Page::square, "layout-grid", "歌单广场"}, {Page::fm, "radio", "私人 FM"},
+                                      {Page::liked, "heart", "我喜欢的音乐"},    {Page::recent, "history", "最近播放"},
+                                      {Page::cloud, "cloud", "我的云盘"},        {Page::collection, "star", "我的收藏"}};
+    std::vector<Nav> nav;
+    size_t mine = 0;
+    for (size_t k = 0; k < std::size(entries); ++k)
+        if (supports(entries[k].page, active_)) {
+            nav.push_back(entries[k]);
+            if (k < 4) ++mine;
+        }
+    size_t lists = nav.size();
+    const auto& playlists = library().playlists;
     constexpr float item_h = 38, step = 40, head_h = 36;
     // Labels fade as the sidebar folds into the rail.
     float labels = std::clamp((r.w - 72) / 148, 0.f, 1.f);
     auto item_y = [&](size_t k) { return 8 + head_h * float(1 + (k >= mine) + (k >= lists)) + step * float(k); };
 
     int sel = -1;
-    for (size_t k = 0; k < std::size(nav); ++k)
+    for (size_t k = 0; k < nav.size(); ++k)
         if (nav[k].page == route_.page || (route_.page == Page::daily && k == 0)) sel = int(k);
     if (route_.page == Page::playlist)
-        for (size_t i = 0; i < playlists_.size(); ++i)
-            if (same(playlists_[i], route_.card)) sel = int(lists + i);
+        for (size_t i = 0; i < playlists.size(); ++i)
+            if (same(playlists[i], route_.card)) sel = int(lists + i);
 
-    float content = item_y(lists + playlists_.size()) + 8 + (playlists_.empty() ? 40 : 0);
+    float content = item_y(lists + playlists.size()) + 8 + (playlists.empty() ? 40 : 0);
     float off = ui.begin_scroll(ui.id("sidebar"), r, content);
     Rect row0{r.x + 12, 0, r.w - 24, item_h};
 
@@ -1647,13 +1683,13 @@ void Shell::sidebar(ui::Ui& ui, Rect r) {
         float y = r.y + item_y(lists) - head_h - off;
         if (ui.icon_button(ui.id("new-playlist"), {r.right() - 46, y + 8, 26, 26}, "plus", 15)) open_editor(ui);
     }
-    for (size_t k = 0; k < std::size(nav); ++k)
+    for (size_t k = 0; k < nav.size(); ++k)
         if (item(ui.id(nav[k].label), k, nav[k].label, nav[k].icon, nullptr)) open(ui, nav[k].page);
     ui.push_id(ui.id("playlists"));
-    for (size_t i = 0; i < playlists_.size(); ++i)
-        if (item(ui.id(key(playlists_[i])), lists + i, playlists_[i].title, {}, &playlists_[i].cover)) open(ui, Page::playlist, playlists_[i]);
+    for (size_t i = 0; i < playlists.size(); ++i)
+        if (item(ui.id(key(playlists[i])), lists + i, playlists[i].title, {}, &playlists[i].cover)) open(ui, playlists[i]);
     ui.pop_id();
-    if (playlists_.empty() && labels > 0.01f)
+    if (playlists.empty() && labels > 0.01f)
         ui.label({r.x + 24, r.y + item_y(lists) - off, r.w - 48, 20}, signed_in() ? "还没有歌单" : "登录后显示你的歌单",
                  {.size = t.fs(12), .color = t.text_dim.with_alpha(0.7f * labels)});
     ui.end_scroll();
@@ -1670,11 +1706,9 @@ bool Shell::page_status(ui::Ui& ui, Rect r, bool loading, const std::string& err
         ui.label({c.x, c.y + 58, c.w, 22}, "登录账号后可用", {.size = t.fs(15), .color = t.text}, Align::center);
         if (ui.button(ui.id("page-login"), {c.x + (c.w - 120) / 2, c.y + 96, 120, 36}, "扫码登录", ui::ButtonKind::primary, "qr-code")) {
             open_account(ui);
-            if (route_.page != Page::liked && route_.page != Page::collection) {
-                login_step_ = 0;
-                login_time_ = ui.now;
-                spawn(qr_login());
-            }
+            login_step_ = int(active_);
+            login_time_ = ui.now;
+            spawn(qr_login());
         }
         return true;
     }
@@ -1719,6 +1753,13 @@ bool Shell::card(ui::Ui& ui, ui::Id id, Rect r, const Card& c, bool round) {
     float radius = round ? cov.w / 2 : t.radius;
     if (hot > 0) p.shadow({cov.x, cov.y + 8, cov.w, cov.h}, radius, 24, t.shadow.with_alpha(hot));
     cover(ui, cov, c.cover, radius, round ? "user" : c.kind == CardKind::album ? "disc-album" : "list-music");
+    if (route_.page == Page::search) {
+        TextStyle source_style{.size = t.fs(11), .color = t.text};
+        float width = p.measure(platform(c.source).short_name, source_style) + 16;
+        Rect badge{cov.right() - width - 8, cov.y + 8, width, 22};
+        p.rect(badge, t.elevated.with_alpha(0.94f), 11, t.border.with_alpha(0.6f), 1);
+        ui.label(badge, platform(c.source).short_name, source_style, Align::center);
+    }
     if (hot > 0 && !round) {
         // The play button rises into place.
         Rect b{cov.right() - 48, cov.bottom() - 48 + 8 * (1 - hot), 36, 36};
@@ -1753,71 +1794,82 @@ int Shell::card_grid(ui::Ui& ui, Rect r, ui::Id id, const std::vector<Card>& car
 
 void Shell::recommend_page(ui::Ui& ui, Rect r) {
     const auto& t = ui.theme();
+    auto& lib = library();
+    const auto& features = provider().features;
+    int hero_count = int(bool(features.daily)) + int(bool(features.fm));
     Rect body = r.inset(32, 0);
     Grid daily(ui, ui.id("daily-cards"), body.w);
     Grid g(ui, ui.id("rec-cards"), body.w);
     constexpr float hero_h = 136;
-    float daily_h = daily_lists_.empty() ? 0 : 44 + daily.height(daily_lists_.size()) + 40;
-    float content = 28 + 76 + hero_h + 40 + daily_h + 44 + std::max(g.height(recommended_.size()), 120.f) + 32;
+    float daily_h = lib.daily_lists.empty() ? 0 : 44 + daily.height(lib.daily_lists.size()) + 40;
+    float content = 28 + 76 + (hero_count ? hero_h + 40 : 0) + daily_h + 44 + std::max(g.height(lib.recommended.cards.size()), 120.f) + 32;
     float off = ui.begin_scroll(ui.id("recommend"), r, content);
     float y = r.y + 28 - off;
-    const auto& profile = accounts_[0] ? accounts_[0] : accounts_[1];
+    const auto& profile = lib.account;
     page_title(ui, body, y, "推荐", std::format("{}，{}", today_, profile ? std::format("{}，为你挑了这些", profile->name) : "为你挑了这些"));
     y += 76;
-    float hw = (body.w - Grid::gap) / 2;
-    std::string day = today_.substr(today_.find("月") + 4);
-    day.resize(day.find(' '));
-    if (hero(ui, ui.id("hero-daily"), {body.x, y, hw, hero_h}, day, "每日推荐", "根据你的口味生成，每天 6:00 更新", 0.98f)) open(ui, Page::daily);
-    if (hero(ui, ui.id("hero-fm"), {body.x + hw + Grid::gap, y, hw, hero_h}, "FM", "私人 FM", "听不腻的随机电台，不喜欢就跳过", 0.62f))
-        open(ui, Page::fm);
-    y += hero_h + 40;
-    if (!daily_lists_.empty()) {
+    if (hero_count) {
+        float hw = (body.w - Grid::gap * float(hero_count - 1)) / float(hero_count);
+        float hx = body.x;
+        if (features.daily) {
+            std::string day = today_.substr(today_.find("月") + 4);
+            day.resize(day.find(' '));
+            if (hero(ui, ui.id("hero-daily"), {hx, y, hw, hero_h}, day, "每日推荐", "根据你的口味生成，每天更新", 0.98f)) open(ui, Page::daily);
+            hx += hw + Grid::gap;
+        }
+        if (features.fm && hero(ui, ui.id("hero-fm"), {hx, y, hw, hero_h}, "FM", "私人 FM", "听不腻的随机电台，不喜欢就跳过", 0.62f)) open(ui, Page::fm);
+        y += hero_h + 40;
+    }
+    if (!lib.daily_lists.empty()) {
         ui.label({body.x, y, body.w, 28}, "每日推荐歌单", {.size = t.fs(18), .color = t.text});
-        if (int i = card_grid(ui, {body.x, y + 44, body.w, 0}, ui.id("daily-cards"), daily_lists_, false, std::max(page_time_ + 0.08, daily_lists_since_)); i >= 0)
-            open(ui, daily_lists_[size_t(i)]);
+        if (int i = card_grid(ui, {body.x, y + 44, body.w, 0}, ui.id("daily-cards"), lib.daily_lists, false, std::max(page_time_ + 0.08, lib.daily_since)); i >= 0)
+            open(ui, lib.daily_lists[size_t(i)]);
         y += daily_h;
     }
     ui.label({body.x, y, body.w, 28}, "推荐歌单", {.size = t.fs(18), .color = t.text});
     y += 44;
-    if (!page_status(ui, {body.x, y, body.w, 120}, recommended_loading_ && recommended_.empty(), recommended_error_, false))
-        if (int i = card_grid(ui, {body.x, y, body.w, 0}, ui.id("rec-cards"), recommended_, false, page_time_ + 0.08); i >= 0)
-            open(ui, Page::playlist, recommended_[size_t(i)]);
+    const Results& res = lib.recommended;
+    if (!page_status(ui, {body.x, y, body.w, 120}, res.loading && res.cards.empty(), res.error, false))
+        if (int i = card_grid(ui, {body.x, y, body.w, 0}, ui.id("rec-cards"), res.cards, false, std::max(page_time_ + 0.08, res.since)); i >= 0)
+            open(ui, res.cards[size_t(i)]);
     ui.end_scroll();
 }
 
 void Shell::toplist_page(ui::Ui& ui, Rect r) {
+    const Results& res = library().toplists;
     Rect body = r.inset(32, 0);
     Grid g(ui, ui.id("top-cards"), body.w);
-    float off = ui.begin_scroll(ui.id("toplists"), r, 28 + 84 + g.height(toplists_.size()) + 32);
+    float off = ui.begin_scroll(ui.id("toplists"), r, 28 + 84 + g.height(res.cards.size()) + 32);
     float y = r.y + 28 - off;
     page_title(ui, body, y, "排行榜", "官方榜单，每天或每周更新");
-    if (!page_status(ui, {body.x, y + 84, body.w, r.h - 140}, toplists_loading_, toplists_error_, false))
-        if (int i = card_grid(ui, {body.x, y + 84, body.w, 0}, ui.id("top-cards"), toplists_, false, page_time_ + 0.05); i >= 0)
-            open(ui, Page::playlist, toplists_[size_t(i)]);
+    if (!page_status(ui, {body.x, y + 84, body.w, r.h - 140}, res.loading, res.error, false))
+        if (int i = card_grid(ui, {body.x, y + 84, body.w, 0}, ui.id("top-cards"), res.cards, false, std::max(page_time_ + 0.05, res.since)); i >= 0)
+            open(ui, res.cards[size_t(i)]);
     ui.end_scroll();
 }
 
 void Shell::square_page(ui::Ui& ui, Rect r) {
+    auto& lib = library();
     const auto& t = ui.theme();
     Rect body = r.inset(32, 0);
     Grid g(ui, ui.id("square-cards"), body.w);
     constexpr float chips_y = 84, grid_y = chips_y + 54;
-    float content = 28 + grid_y + std::max(g.height(square_.cards.size()), 120.f) + (square_.more() ? 64 : 32);
+    float content = 28 + grid_y + std::max(g.height(lib.square.cards.size()), 120.f) + (lib.square.more() ? 64 : 32);
     float off = ui.begin_scroll(ui.id("square"), r, content);
     float y = r.y + 28 - off;
     page_title(ui, body, y, "歌单广场", "按分类浏览，最热的排在前面");
 
     // The popular categories as far as they fit, the picked one among them, the rest behind 更多分类.
     std::vector<std::string_view> names{"全部"};
-    if (square_category_ != "全部" && std::ranges::find(categories_.hot, square_category_) == categories_.hot.end()) names.push_back(square_category_);
-    names.insert(names.end(), categories_.hot.begin(), categories_.hot.end());
-    float x = body.x, more_w = categories_.groups.empty() ? 0 : chip_w(ui, "更多分类", true);
+    if (lib.category != "全部" && std::ranges::find(lib.categories.hot, lib.category) == lib.categories.hot.end()) names.push_back(lib.category);
+    names.insert(names.end(), lib.categories.hot.begin(), lib.categories.hot.end());
+    float x = body.x, more_w = lib.categories.groups.empty() ? 0 : chip_w(ui, "更多分类", true);
     std::optional<std::string> picked;
     ui.push_id(ui.id("square-chips"));
     for (auto name : names) {
         float w = chip_w(ui, name);
         if (x + w + 8 + more_w > body.right()) break;
-        if (chip(ui, x, y + chips_y, name, name == square_category_)) picked = std::string(name);
+        if (chip(ui, x, y + chips_y, name, name == lib.category)) picked = std::string(name);
         x += w + 8;
     }
     if (more_w > 0 && chip(ui, x, y + chips_y, "更多分类", false, "chevron-down"))
@@ -1826,25 +1878,26 @@ void Shell::square_page(ui::Ui& ui, Rect r) {
     if (picked) set_category(ui, *picked);
 
     float gy = y + grid_y;
-    if (!page_status(ui, {body.x, gy, body.w, 120}, square_.loading && square_.cards.empty(), square_.cards.empty() ? square_.error : "", false)) {
-        double since = std::max({page_time_ + 0.05, square_time_, square_.since});
-        if (int i = card_grid(ui, {body.x, gy, body.w, 0}, ui.id("square-cards"), square_.cards, false, since); i >= 0) open(ui, square_.cards[size_t(i)]);
-        float end = gy + g.height(square_.cards.size());
-        if (square_.loading) ui.spinner(ui::center({body.x, end, body.w, 64}, 20, 20), t.text_dim, 2);
+    if (!page_status(ui, {body.x, gy, body.w, 120}, lib.square.loading && lib.square.cards.empty(), lib.square.cards.empty() ? lib.square.error : "", false)) {
+        double since = std::max({page_time_ + 0.05, lib.square_time, lib.square.since});
+        if (int i = card_grid(ui, {body.x, gy, body.w, 0}, ui.id("square-cards"), lib.square.cards, false, since); i >= 0) open(ui, lib.square.cards[size_t(i)]);
+        float end = gy + g.height(lib.square.cards.size());
+        if (lib.square.loading) ui.spinner(ui::center({body.x, end, body.w, 64}, 20, 20), t.text_dim, 2);
         else if (end < r.bottom() + 400) load_square();
     }
     ui.end_scroll();
 }
 
 void Shell::fm_page(ui::Ui& ui, Rect r) {
+    auto& lib = library();
     auto& p = ui.painter();
     const auto& t = ui.theme();
     page_title(ui, r.inset(32, 0), r.y + 28, "私人 FM", "根据你的收听记录推荐，不喜欢的歌会少出现");
     Rect below{r.x, r.y + 100, r.w, r.h - 100};
-    if (page_status(ui, below, fm_loading_ && fm_.empty(), fm_.empty() ? fm_error_ : "", !ncm_.logged_in())) return;
-    if (fm_.empty()) return;
-    fm_pos_ = std::min(fm_pos_, int(fm_.size()) - 1);
-    const Track& tr = fm_[size_t(fm_pos_)];
+    if (page_status(ui, below, lib.fm_loading && lib.fm.empty(), lib.fm.empty() ? lib.fm_error : "", !signed_in())) return;
+    if (lib.fm.empty()) return;
+    lib.fm_pos = std::min(lib.fm_pos, int(lib.fm.size()) - 1);
+    const Track& tr = lib.fm[size_t(lib.fm_pos)];
     bool on_air = is_current(tr);
     float size = std::clamp(std::min(r.w * 0.4f, r.h - 310), 160.f, 280.f);
     Rect col = ui::center(r, size, size + 150);
@@ -1858,12 +1911,12 @@ void Shell::fm_page(ui::Ui& ui, Rect r) {
     float by = cov.bottom() + 90, cx = col.x + size / 2;
     // thumbs-down, like, play, next as one centred row
     float x0 = cx - 102;
-    if (ui.icon_button(ui.id("fm-trash"), {x0, by + 4, 40, 40}, "thumbs-down", 20)) {
-        spawn([](Shell* self, std::string id) -> Task<void> {
-            auto r = co_await self->ncm_.fm_trash(std::move(id));
+    if (provider().features.fm_trash && ui.icon_button(ui.id("fm-trash"), {x0, by + 4, 40, 40}, "thumbs-down", 20)) {
+        spawn([](Shell* self, Track track) -> Task<void> {
+            auto r = co_await self->provider(track).features.fm_trash(track.id);
             if (r) self->notify("以后会少推荐类似的歌", "thumbs-down");
             else self->notify(std::format("没有标记为不喜欢：{}", r.error()), "triangle-alert", true);
-        }(this, tr.id));
+        }(this, tr));
         next_fm();
         return;
     }
@@ -1878,34 +1931,36 @@ void Shell::fm_page(ui::Ui& ui, Rect r) {
     p.icon(on_air && playing() ? "pause-fill" : "play-fill", ui::center(pr, 20, 20), white);
     if (it.clicked) {
         if (on_air) toggle_play();
-        else play(fm_, fm_pos_);
+        else play(lib.fm, lib.fm_pos);
     }
     if (ui.icon_button(ui.id("fm-next"), {x0 + 164, by + 4, 40, 40}, "skip-forward", 20)) {
         fm_playing_ = fm_playing_ || on_air;
+        fm_source_ = active_;
         next_fm();
     }
 }
 
 void Shell::collection_page(ui::Ui& ui, Rect r) {
+    auto& lib = library();
     Rect body = r.inset(32, 0);
     page_title(ui, body, r.y + 28, "我的收藏", "收藏的专辑和关注的歌手");
     if (page_status(ui, {r.x, r.y + 100, r.w, r.h - 100}, false, "", !signed_in())) return;
     static constexpr std::string_view tabs[] = {"专辑", "歌手"};
-    int before = collection_tab_;
-    if (ui.tabs(ui.id("collection-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, collection_tab_)) {
+    int before = lib.collection_tab;
+    if (ui.tabs(ui.id("collection-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, lib.collection_tab)) {
         tab_time_ = ui.now;
-        tab_dir_ = collection_tab_ > before ? 1 : -1;
+        tab_dir_ = lib.collection_tab > before ? 1 : -1;
     }
     float enter = ui.progress(tab_time_, 380);
     Fade fade(ui.painter(), enter);
     Rect content{r.x + 16 + (1 - enter) * 36 * float(tab_dir_), r.y + 148, r.w - 32, r.h - 156};
-    const Results& res = collection_[collection_tab_];
+    const Results& res = lib.collection[lib.collection_tab];
     std::string error = res.cards.empty() ? res.error : "";
-    if (res.cards.empty() && res.loaded && error.empty()) error = collection_tab_ ? "还没有关注的歌手" : "还没有收藏的专辑";
+    if (res.cards.empty() && res.loaded && error.empty()) error = lib.collection_tab ? "还没有关注的歌手" : "还没有收藏的专辑";
     if (res.cards.empty() && page_status(ui, content, res.loading && !res.loaded, error, false)) return;
     bool near_end;
-    ui::Id id = ui.id(collection_tab_ ? "collection-artists" : "collection-albums");
-    if (int i = grid_view(ui, content, id, res.cards, collection_tab_ == 1, std::max({page_time_, tab_time_, res.since}), false, near_end); i >= 0)
+    ui::Id id = ui.id(lib.collection_tab ? "collection-artists" : "collection-albums");
+    if (int i = grid_view(ui, content, id, res.cards, lib.collection_tab == 1, std::max({page_time_, tab_time_, res.since}), false, near_end); i >= 0)
         open(ui, res.cards[size_t(i)]);
 }
 
@@ -1973,7 +2028,7 @@ void Shell::search_page(ui::Ui& ui, Rect r) {
     SearchResults& res = results_[search_tab_];
     static constexpr const char* kinds[] = {"首单曲", "张专辑", "位歌手", "个歌单"};
     page_title(ui, body, r.y + 28, std::format("“{}”", searched_),
-               res.loaded ? std::format("找到{} {} {}", res.more() ? "约" : "", res.total, kinds[search_tab_]) : "正在搜索");
+               res.loaded ? std::format("全部平台 · 找到{} {} {}", res.more() ? "约" : "", res.total, kinds[search_tab_]) : "正在搜索全部平台");
     static constexpr std::string_view tabs[] = {"单曲", "专辑", "歌手", "歌单"};
     int before = search_tab_;
     if (ui.tabs(ui.id("search-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, search_tab_)) {
@@ -2083,7 +2138,7 @@ void Shell::list_page(ui::Ui& ui, Rect r, std::vector<Track>& tracks, bool loadi
     }
     list_actions(ui, tx + 260, head.bottom() - 40);
     Rect body{r.x + 16, head.bottom() + 28, r.w - 32, r.bottom() - head.bottom() - 36};
-    bool login = needs_login(route_.page) && !signed_in(route_.page);
+    bool login = needs_login(route_.page) && !signed_in();
     std::string error = list_error;
     if (tracks.empty() && error.empty() && !loading && !login) error = route_.page == Page::similar ? "没有找到相似的歌" : "这里还没有歌曲";
     if (tracks.empty() && page_status(ui, body, loading, error, login)) return;
@@ -2095,11 +2150,12 @@ bool Shell::track_list(ui::Ui& ui, Rect r, ui::Id id, std::vector<Track>& tracks
     const auto& t = ui.theme();
     constexpr float row_h = 56;
     Rect head = ui::cut_top(r, 34);
-    Columns c = columns(head);
+    Columns c = columns(head, route_.page == Page::search);
     TextStyle hs{.size = t.fs(12), .color = t.text_dim};
     ui.label(c.index, "#", hs, Align::center);
     ui.label(c.title, "标题", hs);
     if (c.album.w > 0) ui.label(c.album, "专辑", hs);
+    if (c.source.w > 0) ui.label(c.source, "平台", hs, Align::center);
     ui.label(c.duration, "时长", hs, Align::right);
     p.rect({head.x + 12, head.bottom() - 1, head.w - 24, 1}, t.border);
     ui::cut_top(r, 4);
@@ -2134,10 +2190,11 @@ void Shell::track_row(ui::Ui& ui, Rect r, std::vector<Track>& tracks, int i) {
     Rect bg = r.inset(4, 2);
     if (h > 0 || s > 0) p.rect(bg, t.text.with_alpha(0.06f * h + 0.05f * s), t.radius_s());
 
-    Columns c = columns(r);
+    Columns c = columns(r, route_.page == Page::search);
     TextStyle num{.size = t.fs(13), .color = t.text_dim, .features = text::tabular_nums};
     if (hot) {
         if (ui.icon_button(ui.id("play"), ui::center(c.index, 30, 30), now_playing && playing() ? "pause-fill" : "play-fill", 14)) {
+            if (route_.page == Page::search) pending_source_ = tr.source;
             if (now_playing) toggle_play();
             else play(tracks, i);
         }
@@ -2153,16 +2210,21 @@ void Shell::track_row(ui::Ui& ui, Rect r, std::vector<Track>& tracks, int i) {
     if (!tr.alias.empty() && w + 24 < tw) p.text(tx + w + 6, r.y + 25, std::format("（{}）", tr.alias), {.size = t.fs(14), .color = t.text_dim}, tw - w - 6);
     p.text(tx, r.y + 43, tr.artist, {.size = t.fs(12), .color = t.text_dim}, tw);
     if (c.album.w > 0) ui.label(c.album, tr.album, {.size = t.fs(13), .color = t.text_dim});
+    if (c.source.w > 0) ui.label(c.source, platform(tr.source).short_name, {.size = t.fs(12), .color = t.text_dim}, Align::center);
     bool like = liked(tr);
-    if ((hot || like) && ui.icon_button(ui.id("like"), ui::center(c.like, 32, 32), like ? "heart-fill" : "heart", heart_size(ui, tr, 16), like))
+    if ((hot || like) && ui.icon_button(ui.id("like"), ui::center(c.like, 32, 32), like ? "heart-fill" : "heart", heart_size(ui, tr, 16), like)) {
+        if (route_.page == Page::search) pending_source_ = tr.source;
         toggle_like(tr);
+    }
     ui.label(c.duration, mmss(tr.duration), num, Align::right);
 
     auto it = ui.interact(row_id, r);
     if (it.pressed) selected_ = i;
+    if (it.clicked && route_.page == Page::search) pending_source_ = tr.source;
     if (it.double_clicked) play(tracks, i);
     if (it.right_clicked) {
         selected_ = i;
+        if (route_.page == Page::search) pending_source_ = tr.source;
         track_menu(ui, it.px, it.py, tracks, i);
     }
     ui.pop_id();
@@ -2183,27 +2245,23 @@ void Shell::list_actions(ui::Ui& ui, float x, float y) {
         x += 112;
         if (square("album-comments", "message-square")) open_comments(ui, c.source, Subject::album, route_.list->album.thread, c.title);
     } else if (route_.page == Page::liked) {
-        if (!ncm_.logged_in() || liked_cards_[0].id.empty() || !route_.list || route_.list->tracks.empty()) return;
-        std::vector<Track> seeds;
-        for (const Track& t : route_.list->tracks)
-            if (const Track* n = recording(t, Source::netease)) seeds.push_back(*n);
-        if (seeds.empty()) return;
+        if (!provider().features.heartbeat || !signed_in() || library().liked.id.empty() || !route_.list || route_.list->tracks.empty()) return;
         if (ui.button(ui.id("heartbeat"), {x, y, 124, 40}, "心动模式", ui::ButtonKind::secondary, "heart-pulse")) {
             // From the picked song, otherwise from any of them.
             const auto& v = route_.list->tracks;
-            const Track* chosen = selected_ >= 0 && selected_ < int(v.size()) ? recording(v[size_t(selected_)], Source::netease) : nullptr;
-            spawn(heartbeat(chosen ? *chosen : seeds[next(rng_) % seeds.size()]));
+            size_t seed = selected_ >= 0 && selected_ < int(v.size()) ? size_t(selected_) : next(rng_) % v.size();
+            spawn(heartbeat(v[seed]));
         }
     } else if (route_.page == Page::recent) {
         static constexpr std::string_view tabs[] = {"本机", "云端"};
-        if (ncm_.logged_in() && ui.tabs(ui.id("recent-tabs"), {x, y, 140, 40}, tabs, recent_tab_, ui::TabStyle::pill)) {
+        if (provider().features.recent_plays && signed_in() && ui.tabs(ui.id("recent-tabs"), {x, y, 140, 40}, tabs, library().recent_tab, ui::TabStyle::pill)) {
             tab_time_ = ui.now;
             selected_ = -1;
             ui.scroll_to(ui.id("tracks"), 0);
             ensure_route_data();
         }
     } else if (route_.page == Page::playlist) {
-        if (!(c.source == Source::qq && c.id.starts_with("dir:") && c.thread.empty()) && square("playlist-comments", "message-square"))
+        if (c.commentable && square("playlist-comments", "message-square"))
             open_comments(ui, c.source, Subject::playlist, c.thread.empty() ? c.id : c.thread, c.title);
         if (c.owned && square("playlist-more", "ellipsis"))
             ui.open_menu(x - 52, y + 46,
@@ -2248,8 +2306,7 @@ void Shell::track_menu(ui::Ui& ui, float x, float y, std::vector<Track>& tracks,
         {like ? "heart-off" : "heart", like ? "取消喜欢" : "喜欢", [this, tr] { toggle_like(tr); }},
         {"folder-plus", "添加到歌单",
          [this, &ui, tr] {
-             bool available = provider(tr).logged_in() || std::ranges::any_of(tr.alts, [&](const Track& a) { return provider(a).logged_in(); });
-             if (!available) return ui.toast("登录这首歌所属的账号后才能添加到歌单", "folder-plus");
+             if (!provider(tr).logged_in()) return ui.toast(std::format("登录{}后才能添加到歌单", platform(tr.source).name), "folder-plus");
              ui.open_modal(420, 480, [this, tr](ui::Ui& u, Rect r) { picker_modal(u, r, tr); });
          }},
         {"copy", "复制歌名和歌手",
@@ -2258,11 +2315,11 @@ void Shell::track_menu(ui::Ui& ui, float x, float y, std::vector<Track>& tracks,
              ui.toast("已复制到剪贴板", "copy");
          }},
     };
-    if (const Track* n = recording(tr, Source::netease))
+    if (provider(tr).features.similar)
         items.insert(items.begin() + 4, {"sparkles", "相似歌曲",
-                     [this, &ui, seed = *n] { open(ui, Page::similar, {.id = seed.id, .title = seed.title, .subtitle = seed.artist, .cover = seed.cover}); }});
+                     [this, &ui, tr] { open(ui, Page::similar, {.source = tr.source, .id = tr.id, .title = tr.title, .subtitle = tr.artist, .cover = tr.cover}); }});
     bool listed = route_.list && list == &route_.list->tracks;
-    if (route_.page == Page::daily && listed)
+    if (route_.page == Page::daily && listed && provider(tr).features.dislike_daily)
         items.push_back({"thumbs-down", "不感兴趣", [this, l = route_.list, tr] { dislike_daily(l, tr); }});
     // One's own playlist can take songs out.
     if (route_.page == Page::playlist && route_.card.owned && listed)
@@ -2307,7 +2364,7 @@ void Shell::queue_panel(ui::Ui& ui, Rect r) {
         cover(ui, {row.x + 10, row.y + 9, 36, 36}, tr.cover, t.radius_s());
         float tw = row.w - 58 - (hot ? 40 : 12);
         p.text(row.x + 58, row.y + 23, tr.title, {.size = t.fs(13), .color = cur ? t.accent : t.text}, tw);
-        p.text(row.x + 58, row.y + 41, tr.artist, {.size = t.fs(12), .color = t.text_dim}, tw);
+        p.text(row.x + 58, row.y + 41, std::format("{} · {}", platform(tr.source).short_name, tr.artist), {.size = t.fs(12), .color = t.text_dim}, tw);
         if (hot && ui.icon_button(ui.id("remove"), {row.right() - 38, row.y + 13, 28, 28}, "x", 14)) remove = i;
         if (ui.interact(row_id, row).double_clicked) play(queue_, i);
         ui.pop_id();
@@ -2920,36 +2977,36 @@ ui::Rect Shell::desktop_lyrics(ui::Ui& ui, float w, float h) {
 void Shell::account_modal(ui::Ui& ui, Rect r) {
     auto& p = ui.painter();
     const auto& t = ui.theme();
-    static constexpr const char* services[] = {"网易云音乐", "QQ 音乐"};
     // Steps slide sideways: forward into the code, back to the list.
     float in = ui.progress(login_time_, 380);
     Fade fade(p, in);
     r.x += (1 - in) * 32 * (login_step_ >= 0 ? 1 : -1);
 
     if (login_step_ < 0) {
-        ui.resize_modal(420, 330);
+        ui.resize_modal(420, 186 + 72 * float(platforms.size()));
         ui.label({r.x, r.y, r.w, 30}, "账号", {.size = t.fs(20), .color = t.text});
-        ui.label({r.x, r.y + 32, r.w, 20}, "登录后，歌单、喜欢和推荐会合在一起", {.size = t.fs(12), .color = t.text_dim});
-        for (int i = 0; i < 2; ++i) {
+        ui.label({r.x, r.y + 32, r.w, 20}, "各平台分别登录，切换后查看对应的音乐", {.size = t.fs(12), .color = t.text_dim});
+        for (size_t i = 0; i < platforms.size(); ++i) {
+            const auto& entry = platforms[i];
             Rect row{r.x, r.y + 76 + float(i) * 72, r.w, 64};
             p.rect(row, t.text.with_alpha(0.04f), t.radius);
             Rect avatar{row.x + 14, row.y + 12, 40, 40};
-            const auto& account = accounts_[i];
+            const auto& account = library(entry.source).account;
             bool signed_in = account.has_value();
             if (signed_in) cover(ui, avatar, account->avatar, 20, "user");
             else {
                 p.rect(avatar, t.text.with_alpha(0.08f), 20);
                 p.icon("user", ui::center(avatar, 18, 18), t.text_dim);
             }
-            ui.label({avatar.right() + 14, row.y + 12, 180, 22}, services[i], {.size = t.fs(15), .color = t.text});
-            std::string status = signed_in ? account->name : provider(Source(i)).logged_in() ? "正在读取账号" : "未登录";
+            ui.label({avatar.right() + 14, row.y + 12, 180, 22}, entry.name, {.size = t.fs(15), .color = t.text});
+            std::string status = signed_in ? account->name : provider(entry.source).logged_in() ? "正在读取账号" : "未登录";
             ui.label({avatar.right() + 14, row.y + 34, 180, 18}, status, {.size = t.fs(12), .color = signed_in ? t.accent : t.text_dim});
-            ui::Id id = ui.id(services[i]);
+            ui::Id id = ui.id(entry.id);
             Rect b{row.right() - 108, row.y + 15, 94, 34};
-            if (provider(Source(i)).logged_in()) {
-                if (ui.button(id, b, "退出登录", ui::ButtonKind::ghost, "log-out")) spawn(logout(Source(i)));
+            if (provider(entry.source).logged_in()) {
+                if (ui.button(id, b, "退出登录", ui::ButtonKind::ghost, "log-out")) spawn(logout(entry.source));
             } else if (ui.button(id, b, "扫码登录", ui::ButtonKind::secondary, "qr-code")) {
-                login_step_ = i;
+                login_step_ = int(entry.source);
                 login_time_ = ui.now;
                 spawn(qr_login());
             }
@@ -2960,17 +3017,13 @@ void Shell::account_modal(ui::Ui& ui, Rect r) {
 
     ui.resize_modal(400, 540);
     if (ui.icon_button(ui.id("login-back"), {r.x - 8, r.y - 2, 32, 32}, "arrow-left", 18)) {
+        cancel_login();
         login_step_ = -1;
         login_time_ = ui.now;
-        ++qr_gen_;
-        qr_active_ = false;
-        qq_.cancel_qr();
-        images_.erase("qr:qq");
-        qr_image_ = false;
         return;
     }
     ui.label({r.x + 32, r.y, r.w - 64, 30}, "扫码登录", {.size = t.fs(20), .color = t.text});
-    ui.label({r.x, r.y + 40, r.w, 20}, login_step_ == 1 ? "用 QQ 扫一扫，确认登录 QQ 音乐" : "用网易云音乐 App 扫一扫", {.size = t.fs(13), .color = t.text_dim},
+    ui.label({r.x, r.y + 40, r.w, 20}, platform(Source(login_step_)).scan_hint, {.size = t.fs(13), .color = t.text_dim},
              Align::center);
     Rect qr = ui::center({r.x, r.y + 76, r.w, 240}, 228, 228);
     p.shadow({qr.x, qr.y + 8, qr.w, qr.h}, 14, 30, t.shadow.with_alpha(0.6f));
@@ -2981,7 +3034,7 @@ void Shell::account_modal(ui::Ui& ui, Rect r) {
         Rect q = qr.inset(14);
         ui::Color ink{0.07f, 0.07f, 0.08f, 1};
         if (qr_image_) {
-            p.image(q, images_.get("qr:qq", 512).tex, 0);
+            p.image(q, images_.get("qr", 512).tex, 0);
         } else {
             float m = q.w / float(qr_size_);
             for (int y = 0; y < qr_size_; ++y)
@@ -3062,19 +3115,20 @@ void Shell::settings_modal(ui::Ui& ui, Rect r) {
 }
 
 void Shell::categories_modal(ui::Ui& ui, Rect r) {
+    auto& lib = library();
     const auto& t = ui.theme();
     ui.label({r.x, r.y, r.w - 40, 30}, "全部分类", {.size = t.fs(20), .color = t.text});
     constexpr float row = 38, indent = 64;
     float y = r.y + 52;
     std::optional<std::string> picked;
     ui.push_id(ui.id("all-categories"));
-    for (const auto& [heading, names] : categories_.groups) {
+    for (const auto& [heading, names] : lib.categories.groups) {
         ui.label({r.x, y + 5, indent - 8, 20}, heading, {.size = t.fs(13), .color = t.text_dim});
         float x = r.x + indent;
         for (const auto& name : names) {
             float w = chip_w(ui, name);
             if (x + w > r.right()) x = r.x + indent, y += row;
-            if (chip(ui, x, y, name, name == square_category_)) picked = name;
+            if (chip(ui, x, y, name, name == lib.category)) picked = name;
             x += w + 8;
         }
         y += row + 12;
@@ -3223,29 +3277,20 @@ void Shell::open_editor(ui::Ui& ui, Card card, std::optional<Track> track) {
     edit_hidden_ = false;
     edit_focus_ = true;
     edit_track_ = std::move(track);
-    bool ncm = ncm_.logged_in() && (!edit_track_ || recording(*edit_track_, Source::netease));
-    bool qq = qq_.logged_in() && (!edit_track_ || recording(*edit_track_, Source::qq));
-    edit_choose_source_ = card.id.empty() && ncm && qq;
-    edit_source_ = card.id.empty() ? ncm ? Source::netease : Source::qq : card.source;
-    ui.open_modal(400, card.id.empty() ? edit_choose_source_ ? 338 : 286 : 216, [this, card](ui::Ui& u, Rect r) { editor_modal(u, r, card); });
+    edit_source_ = card.id.empty() ? edit_track_ ? edit_track_->source : active_ : card.source;
+    ui.open_modal(400, card.id.empty() ? 286 : 216, [this, card](ui::Ui& u, Rect r) { editor_modal(u, r, card); });
 }
 
 void Shell::editor_modal(ui::Ui& ui, Rect r, Card card) {
     const auto& t = ui.theme();
     bool create = card.id.empty();
     ui.label({r.x, r.y, r.w - 40, 30}, create ? "新建歌单" : "重命名歌单", {.size = t.fs(20), .color = t.text});
+    if (create) ui.label({r.x, r.y + 30, r.w - 40, 18}, platform(edit_source_).name, {.size = t.fs(12), .color = t.text_dim});
     ui::Id field = ui.id("playlist-name");
     if (std::exchange(edit_focus_, false)) ui.focus = field;
     bool submit = ui.text_box(field, {r.x, r.y + 52, r.w, 38}, edit_name_, "歌单名称");
     if (create) {
         float y = r.y + 110;
-        if (edit_choose_source_) {
-            static constexpr std::string_view services[] = {"网易云音乐", "QQ 音乐"};
-            int source = int(edit_source_);
-            ui.tabs(ui.id("playlist-account"), {r.x, y, r.w, 34}, services, source, ui::TabStyle::pill);
-            edit_source_ = Source(source);
-            y += 52;
-        }
         ui.label({r.x, y, r.w - 60, 20}, "隐私歌单", {.size = t.fs(14), .color = t.text});
         ui.label({r.x, y + 22, r.w - 60, 18}, "只有你自己能看到", {.size = t.fs(12), .color = t.text_dim});
         ui.toggle(ui.id("playlist-hidden"), {r.right() - 40, y + 9, 40, 22}, edit_hidden_);
@@ -3262,10 +3307,11 @@ void Shell::editor_modal(ui::Ui& ui, Rect r, Card card) {
         spawn([](Shell* self, Source source, std::string name, bool hidden, std::optional<Track> track) -> Task<void> {
             auto r = co_await self->provider(source).create_playlist(name, hidden);
             if (!r) co_return self->notify(std::format("没有创建歌单：{}", r.error()), "triangle-alert", true);
-            self->playlists_.insert(self->playlists_.begin(), *r);
+            auto& playlists = self->library(source).playlists;
+            playlists.insert(playlists.begin(), *r);
             self->notify(std::format("已创建歌单「{}」", name), "circle-check");
             if (track) self->add_to_playlist(std::move(*track), *r);
-            else if (source == Source::qq) co_await self->load_library(source);
+            else if (self->provider(source).reload_after_edit) co_await self->load_library(source);
         }(this, edit_source_, name, edit_hidden_, edit_track_));
         return;
     }
@@ -3274,7 +3320,7 @@ void Shell::editor_modal(ui::Ui& ui, Rect r, Card card) {
     spawn([](Shell* self, Card card, std::string name) -> Task<void> {
         auto r = co_await self->provider(card).rename_playlist(card.id, name);
         if (r) {
-            if (card.source == Source::qq) co_await self->load_library(Source::qq);
+            if (self->provider(card).reload_after_edit) co_await self->load_library(card.source);
             co_return;
         }
         self->retitle(card, card.title);
@@ -3291,14 +3337,16 @@ void Shell::confirm_delete(ui::Ui& ui, Card card) {
         if (u.button(u.id("delete-cancel"), {ok.x - 92, ok.y, 84, 38}, "取消", ui::ButtonKind::ghost)) u.close_modal();
         if (!u.button(u.id("delete-ok"), ok, "删除", ui::ButtonKind::primary, "trash")) return;
         u.close_modal();
-        auto it = std::ranges::find_if(playlists_, [&](const Card& c) { return same(c, card); });
-        size_t at = size_t(it - playlists_.begin());
-        if (it != playlists_.end()) playlists_.erase(it);
+        auto& playlists = library(card.source).playlists;
+        auto it = std::ranges::find_if(playlists, [&](const Card& c) { return same(c, card); });
+        size_t at = size_t(it - playlists.begin());
+        if (it != playlists.end()) playlists.erase(it);
         if (route_.page == Page::playlist && same(route_.card, card)) back(u);
         spawn([](Shell* self, Card card, size_t at) -> Task<void> {
             auto r = co_await self->provider(card).delete_playlist(card.id);
             if (r) co_return self->notify(std::format("已删除歌单「{}」", card.title), "trash");
-            self->playlists_.insert(self->playlists_.begin() + std::min(at, self->playlists_.size()), card);
+            auto& playlists = self->library(card.source).playlists;
+            playlists.insert(playlists.begin() + std::min(at, playlists.size()), card);
             self->notify(std::format("没有删除歌单：{}", r.error()), "triangle-alert", true);
         }(this, card, at));
     });
@@ -3310,8 +3358,8 @@ void Shell::picker_modal(ui::Ui& ui, Rect r, Track t) {
     ui.label({r.x, r.y, r.w - 40, 30}, "添加到歌单", {.size = th.fs(20), .color = th.text});
     ui.label({r.x, r.y + 32, r.w - 40, 20}, std::format("{} · {}", t.title, t.artist), {.size = th.fs(13), .color = th.text_dim});
     std::vector<const Card*> own;
-    for (const Card& c : playlists_)
-        if (c.owned && provider(c).logged_in() && recording(t, c.source)) own.push_back(&c);
+    for (const Card& c : library(t.source).playlists)
+        if (c.owned && provider(c).logged_in()) own.push_back(&c);
     constexpr float row_h = 56, top = 68;
     float list_h = float(own.size() + 1) * row_h;
     ui.resize_modal(420, std::min(ui.height - 120, top + list_h + 48));
