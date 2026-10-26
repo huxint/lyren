@@ -80,6 +80,7 @@ private:
     net::Http http_;
     audio::Player player_;
     ncm::Netease ncm_;
+    qq::Qq qq_;
     Images images_;
     Shell shell_;
 

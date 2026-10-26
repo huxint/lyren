@@ -35,8 +35,8 @@ const std::size_t icon_source_count = std::size(icon_sources);
 }
 " @ONLY)
 
-# Everything below the window: loop, config, credentials, network, audio and the NetEase client.
-pkg_check_modules(MEDIA REQUIRED IMPORTED_TARGET libcurl libcrypto libmpg123 flac fdk-aac vorbisfile libpipewire-0.3)
+# Everything below the window: loop, config, credentials, network, audio and both services' clients.
+pkg_check_modules(MEDIA REQUIRED IMPORTED_TARGET libcurl libcrypto zlib libmpg123 flac fdk-aac vorbisfile libpipewire-0.3)
 add_library(lyren_base STATIC
     src/core/log.cpp
     src/core/loop.cpp
@@ -57,6 +57,11 @@ add_library(lyren_base STATIC
     src/ncm/crypto.cpp
     src/ncm/client.cpp
     src/ncm/netease.cpp
+    src/qq/crypto.cpp
+    src/qq/auth.cpp
+    src/qq/client.cpp
+    src/qq/qq.cpp
+    src/app/provider.cpp
     src/app/lyrics.cpp
 )
 target_include_directories(lyren_base PUBLIC src)
@@ -126,6 +131,8 @@ add_executable(lyren_tests
     tests/test_ui.cpp
     tests/test_audio.cpp
     tests/test_ncm.cpp
+    tests/test_qq.cpp
+    tests/test_provider.cpp
     tests/test_lyrics.cpp
     tests/test_image.cpp
 )

@@ -23,23 +23,6 @@ static int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-std::string json_string(std::string_view s) {
-    std::string out = "\"";
-    for (char c : s) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) out += std::format("\\u{:04x}", int(c));
-                else out += c;
-        }
-    }
-    return out + '"';
-}
-
 // encodeURIComponent
 static std::string uri_encode(std::string_view s) {
     std::string out;

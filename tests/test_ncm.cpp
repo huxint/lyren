@@ -41,5 +41,5 @@ TEST_CASE("rsa known vector") {
 
 TEST_CASE("base64 round trip and json strings") {
     for (std::string s : {"", "a", "ab", "abc", "abcd", "中文\n\x01"}) CHECK(unbase64(base64(s)) == s);
-    CHECK(json_string("a\"b\\c\nd\x01") == R"("a\"b\\c\nd\u0001")");
+    CHECK(lyren::json_string("a\"b\\c\nd\x01") == R"("a\"b\\c\nd\u0001")");
 }

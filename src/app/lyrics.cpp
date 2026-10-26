@@ -141,17 +141,78 @@ std::vector<LyricLine> parse_yrc(std::string_view text) {
     return out;
 }
 
-}  // namespace
+// The attribute's value with the five XML entities undone.
+std::string xml_attribute(std::string_view xml, std::string_view name) {
+    std::string key = std::string(name) + "=\"";
+    auto at = xml.find(key);
+    if (at == xml.npos) return {};
+    std::string_view v = xml.substr(at + key.size());
+    v = v.substr(0, v.find('"'));
+    static constexpr std::pair<std::string_view, char> entities[] = {{"&quot;", '"'}, {"&apos;", '\''}, {"&lt;", '<'}, {"&gt;", '>'}, {"&amp;", '&'}};
+    std::string out;
+    while (!v.empty()) {
+        auto e = std::ranges::find_if(entities, [&](const auto& x) { return v.starts_with(x.first); });
+        out += e == std::end(entities) ? v.front() : e->second;
+        v.remove_prefix(e == std::end(entities) ? 1 : e->first.size());
+    }
+    return out;
+}
 
-std::vector<LyricLine> parse_lyrics(std::string_view lrc, std::string_view translation, std::string_view yrc) {
-    auto lines = parse_yrc(yrc);
-    if (lines.empty()) lines = parse_lrc(lrc);
+std::vector<LyricLine> parse_qrc_lines(std::string_view text) {
+    std::vector<LyricLine> out;
+    while (!text.empty()) {
+        std::string_view line = next_line(text);
+        auto head = timing(line, '[', ']');
+        if (!head) continue;
+        LyricLine l{.time = head->first / 1000.0};
+        // A word runs up to the "(start,duration)" after it; a '(' that starts none is part of the word.
+        while (!line.empty()) {
+            std::optional<std::pair<int, int>> w;
+            std::string_view rest;
+            size_t p = line.find('(');
+            for (; p != line.npos; p = line.find('(', p + 1)) {
+                rest = line.substr(p);
+                if ((w = timing(rest, '(', ')'))) break;
+            }
+            std::string_view word = line.substr(0, p);
+            line = w ? rest : std::string_view{};
+            if (l.text.empty() && trim(word).empty()) continue;
+            auto from = uint32_t(l.text.size());
+            l.text += word;
+            if (w) l.words.push_back({w->first / 1000.0, w->second / 1000.0, from, uint32_t(l.text.size())});
+        }
+        while (l.text.ends_with(' ')) l.text.pop_back();
+        if (l.text.empty()) continue;
+        for (auto& w : l.words) w.to = std::min(w.to, uint32_t(l.text.size())), w.from = std::min(w.from, w.to);
+        out.push_back(std::move(l));
+    }
+    std::ranges::stable_sort(out, {}, &LyricLine::time);
+    return out;
+}
+
+void add_translation(std::vector<LyricLine>& lines, std::string_view translation) {
     auto trans = parse_lrc(translation);
+    // QQ Music marks the lines it leaves untranslated with "//".
+    std::erase_if(trans, [](const LyricLine& l) { return l.text == "//"; });
     size_t j = 0;
     for (auto& l : lines) {
         while (j < trans.size() && trans[j].time < l.time - 0.05) ++j;
         if (j < trans.size() && std::abs(trans[j].time - l.time) <= 0.05 && trans[j].text != l.text) l.translation = trans[j].text;
     }
+}
+
+}  // namespace
+
+std::vector<LyricLine> parse_lyrics(std::string_view lrc, std::string_view translation, std::string_view yrc) {
+    auto lines = parse_yrc(yrc);
+    if (lines.empty()) lines = parse_lrc(lrc);
+    add_translation(lines, translation);
+    return lines;
+}
+
+std::vector<LyricLine> parse_qrc(std::string_view qrc, std::string_view translation) {
+    auto lines = parse_qrc_lines(xml_attribute(qrc, "LyricContent"));
+    add_translation(lines, translation);
     return lines;
 }
 

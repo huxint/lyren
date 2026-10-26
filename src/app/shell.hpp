@@ -12,6 +12,7 @@
 #include "app/state.hpp"
 #include "audio/player.hpp"
 #include "ncm/netease.hpp"
+#include "qq/qq.hpp"
 #include "sys/mpris.hpp"
 #include "ui/ui.hpp"
 
@@ -23,6 +24,7 @@ struct ShellDeps {
     net::Http& http;
     audio::Player& player;
     ncm::Netease& ncm;
+    qq::Qq& qq;
     Images& images;
     const Config& config;
     // Changes a setting in the config file; value is TOML. config reflects it once this returns.
@@ -75,6 +77,13 @@ private:
         double since = -10;
         size_t size() const { return tracks.size() + cards.size(); }
         bool more() const { return !loaded || int(size()) < total; }
+    };
+    struct SearchResults : Results {
+        Batch sources[2];
+        int pending = 0;
+        bool done[2] = {};
+        std::string errors[2];
+        bool more() const { return !done[0] || !done[1]; }
     };
     // An artist's page: the head, songs and albums a page at a time, the introduction (intro holds only its status).
     struct ArtistPage {
@@ -139,9 +148,9 @@ private:
     void editor_modal(ui::Ui& ui, ui::Rect r, Card card);
     void picker_modal(ui::Ui& ui, ui::Rect r, Track t);
     void open_account(ui::Ui& ui);
-    void open_comments(ui::Ui& ui, Subject subject, std::string id, std::string title);
+    void open_comments(ui::Ui& ui, Source source, Subject subject, std::string id, std::string title);
     // A new playlist when card is empty, otherwise a rename.
-    void open_editor(ui::Ui& ui, Card card = {});
+    void open_editor(ui::Ui& ui, Card card = {}, std::optional<Track> track = {});
     void confirm_delete(ui::Ui& ui, Card card);
     void handle_keys(ui::Ui& ui);
 
@@ -158,12 +167,14 @@ private:
     void back(ui::Ui& ui);
     void enter(ui::Ui& ui, Route route, int direction);
     static bool needs_login(Page p);
+    bool signed_in(Page p) const;
+    bool signed_in() const { return ncm_.logged_in() || qq_.logged_in(); }
     void ensure_route_data();
     Task<void> load_list(std::shared_ptr<List> list, Page page, Card card);
-    Task<void> fetch_results(uint64_t gen, int tab, std::string query, int offset);
-    Task<void> load_artist(std::shared_ptr<ArtistPage> page, std::string id);
+    Task<void> fetch_results(uint64_t gen, int tab, Source source, std::string query, int offset);
+    Task<void> load_artist(std::shared_ptr<ArtistPage> page, Card card);
     void load_artist_tab(int tab);
-    Task<void> fetch_artist(std::shared_ptr<ArtistPage> page, std::string id, int tab, int offset);
+    Task<void> fetch_artist(std::shared_ptr<ArtistPage> page, Card card, int tab, int offset);
     Task<void> load_categories();
     void load_square();
     Task<void> fetch_square(uint64_t gen, std::string category, int offset);
@@ -196,18 +207,24 @@ private:
     const Track* current() const { return current_ >= 0 ? &queue_[size_t(current_)] : nullptr; }
     bool is_current(const Track& t) const { return current() && same(*current(), t); }
     bool playing() const;
-    Provider& provider(const Track&) { return ncm_; }
+    Provider& provider(Source source) {
+        if (source == Source::netease) return ncm_;
+        return qq_;
+    }
+    template <class T>
+    Provider& provider(const T& t) { return provider(t.source); }
+    static const Track* recording(const Track& track, Source source);
 
     // Library and account.
     Task<void> startup();
-    Task<void> load_library();
+    Task<void> load_library(Source source);
     Task<void> load_recommended();
     Task<void> load_daily_lists();
     Task<void> load_toplists();
     Task<void> load_fm();
     void next_fm();
     Task<void> qr_login();
-    Task<void> logout();
+    Task<void> logout(Source source);
     void save_credentials();
     bool liked(const Track& t) const;
     void toggle_like(Track t);
@@ -218,8 +235,8 @@ private:
     void toggle_collect(std::shared_ptr<List> list, Card album);
     void add_to_playlist(Track t, Card playlist);
     void remove_from_playlist(std::shared_ptr<List> list, Card playlist, Track t);
-    void recount(const std::string& playlist, int delta);  // the sidebar's track count
-    void retitle(const std::string& playlist, const std::string& title);
+    void recount(const Card& playlist, int delta);  // the sidebar's track count
+    void retitle(const Card& playlist, const std::string& title);
     void set_category(ui::Ui& ui, std::string category);
     void notify(std::string text, std::string icon = "info", bool error = false);
     void changed();  // persisted state changed
@@ -228,6 +245,7 @@ private:
     net::Http& http_;
     audio::Player& player_;
     ncm::Netease& ncm_;
+    qq::Qq& qq_;
     Images& images_;
     const Config& config_;
     std::function<void(std::string_view, std::string_view, std::string_view)> set_setting_;
@@ -247,15 +265,16 @@ private:
     std::vector<Toast> toasts_;
 
     // Library.
-    std::optional<Account> account_;
+    std::optional<Account> accounts_[2];
+    uint64_t library_gen_[2] = {};
     bool creds_loaded_ = false, can_save_creds_ = false;
     Loop::TimerId creds_timer_ = 0;
     std::vector<Card> playlists_, recommended_, toplists_, daily_lists_;
     double daily_lists_since_ = -10;
-    Card liked_card_;
+    Card liked_cards_[2];
     bool recommended_loading_ = false, toplists_loading_ = false;
     std::string recommended_error_, toplists_error_;
-    std::unordered_set<std::string> liked_ids_;
+    std::unordered_set<std::string> liked_ids_[2];
     std::vector<Track> recent_, fm_;
     int fm_pos_ = 0;
     int recent_tab_ = 0;  // this machine's plays, or the account's
@@ -270,11 +289,12 @@ private:
     Results collection_[2];  // albums, artists
     int collection_tab_ = 0;
     double collection_time_ = -10;
+    uint64_t collection_gen_ = 0;
 
     // Search.
     std::string query_, searched_;
     int search_tab_ = 0;
-    Results results_[4];
+    SearchResults results_[4];
     uint64_t search_gen_ = 0;
     int selected_ = -1;
 
@@ -294,7 +314,8 @@ private:
     bool dragging_ = false;
     float drag_v_ = 0;
     struct Prefetched {
-        std::string id;
+        std::string key;
+        Track track;
         std::shared_ptr<audio::Spool> spool;
         uint64_t gen = 0;
         Stream stream;
@@ -354,11 +375,13 @@ private:
     bool qr_active_ = false;
     std::vector<uint8_t> qr_;  // modules, row by row
     int qr_size_ = 0;
+    bool qr_image_ = false;
     std::optional<QrStatus> qr_status_;
     std::string qr_error_;
 
     // Comments dialog and the playlist editor.
     Subject thread_subject_ = Subject::song;
+    Source thread_source_ = Source::netease;
     std::string thread_id_, thread_title_;
     int thread_tab_ = 0;
     double thread_time_ = -10;
@@ -366,6 +389,9 @@ private:
     uint64_t thread_gen_ = 0;
     std::string edit_name_;
     bool edit_hidden_ = false, edit_focus_ = false;
+    Source edit_source_ = Source::netease;
+    bool edit_choose_source_ = false;
+    std::optional<Track> edit_track_;
 };
 
 }  // namespace lyren

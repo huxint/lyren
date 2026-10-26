@@ -38,18 +38,23 @@ static bool has_key(std::string_view line, std::string_view key) {
     return true;
 }
 
-// Every response in a redirect chain starts with a status line, so only the last one's headers stick.
+// Keep cookies from the whole redirect chain; Location belongs to the final response.
 static size_t on_header(char* p, size_t, size_t n, void* ud) {
     auto* t = static_cast<Http::Transfer*>(ud);
     std::string_view line(p, n);
     if (line.starts_with("HTTP/")) {
         t->offset = t->total = 0;
-        t->resp.cookies.clear();
+        t->resp.location.clear();
     } else if (t->done && has_key(line, "set-cookie:")) {
         line.remove_prefix(11);
         while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.remove_suffix(1);
         t->resp.cookies.emplace_back(line);
+    } else if (t->done && has_key(line, "location:")) {
+        line.remove_prefix(9);
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.remove_suffix(1);
+        t->resp.location = line;
     } else if (has_key(line, "content-range:")) {
         // content-range: bytes FROM-TO/TOTAL
         auto b = line.find("bytes "), dash = line.find('-'), slash = line.find('/');
@@ -132,7 +137,7 @@ Http::Id Http::stream(Get get, Stream cb) {
     curl_easy_setopt(t->easy, CURLOPT_FAILONERROR, 1L);
     std::string range = get.end ? std::format("{}-{}", get.from, get.end - 1) : std::format("{}-", get.from);
     curl_easy_setopt(t->easy, CURLOPT_RANGE, range.c_str());
-    log::debug("http: GET {} range {}", get.url.substr(0, 80), range);
+    log::debug("http: GET {} range {}", get.url.substr(0, get.url.find('?')), range);
     return add(std::move(t), get.delay);
 }
 
@@ -140,6 +145,8 @@ Http::Id Http::request(Request req, std::function<void(Response)> done) {
     auto t = std::make_unique<Transfer>();
     t->done = std::move(done);
     setup(*t, req.url, req.headers);
+    curl_easy_setopt(t->easy, CURLOPT_FOLLOWLOCATION, req.follow_redirects ? 1L : 0L);
+    curl_easy_setopt(t->easy, CURLOPT_COOKIEFILE, "");
     curl_easy_setopt(t->easy, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(t->easy, CURLOPT_TIMEOUT, 30L);
     if (req.body) {
@@ -147,7 +154,7 @@ Http::Id Http::request(Request req, std::function<void(Response)> done) {
         curl_easy_setopt(t->easy, CURLOPT_POSTFIELDSIZE, long(t->post.size()));
         curl_easy_setopt(t->easy, CURLOPT_POSTFIELDS, t->post.c_str());
     }
-    log::debug("http: {} {}", req.body ? "POST" : "GET", req.url.substr(0, 100));
+    log::debug("http: {} {}", req.body ? "POST" : "GET", req.url.substr(0, req.url.find('?')));
     return add(std::move(t), {});
 }
 

@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 
+#include "core/json.hpp"
 #include "core/task.hpp"
 #include "net/http.hpp"
 
@@ -17,9 +18,6 @@ struct Reply {
     std::string body;
     std::string error;  // empty on success
 };
-
-// Quoted and escaped, for building request bodies.
-std::string json_string(std::string_view s);
 
 // A cookie session and the request encodings. Behaviour follows api-enhanced util/request.js.
 class Client {

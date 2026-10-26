@@ -6,6 +6,7 @@
 
 #include "core/loop.hpp"
 #include "gfx/renderer.hpp"
+#include "gfx/image.hpp"
 #include "net/http.hpp"
 
 namespace lyren {
@@ -36,6 +37,8 @@ public:
     // The image at url, which the caller already sized to px; starts loading it on first use. blurred gives a small,
     // heavily blurred version for backgrounds.
     const Entry& get(const std::string& url, uint32_t px, bool blurred = false);
+    void put(const std::string& key, const gfx::Image& image);  // generated images, such as the login QR code
+    void erase(const std::string& key);
     void end_frame();
 
     size_t bytes() const { return bytes_; }

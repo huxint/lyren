@@ -26,12 +26,14 @@ struct Request {
     std::string url;
     std::optional<std::string> body;
     std::vector<std::string> headers;
+    bool follow_redirects = true;
 };
 
 struct Response {
     long status = 0;          // 0 without a response
     std::string body, error;  // error is empty when a response arrived
     std::vector<std::string> cookies;  // Set-Cookie values
+    std::string location;  // the final response's redirect target
 };
 
 // Called on the network thread; keep them short.

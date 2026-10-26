@@ -21,6 +21,9 @@ struct LyricLine {
 // Word-timed lyrics (NetEase yrc: "[start,duration](start,duration,0)word…" in ms) replace the LRC lines when present.
 // Lines are sorted by time; empty ones are dropped.
 std::vector<LyricLine> parse_lyrics(std::string_view lrc, std::string_view translation = {}, std::string_view yrc = {});
+// QQ Music QRC once decoded: an XML wrapper whose LyricContent holds "[start,duration]word(start,duration)word…" lines
+// (ms, the word before its timing) among LRC tags. The translation is LRC, matched by timestamp like above.
+std::vector<LyricLine> parse_qrc(std::string_view qrc, std::string_view translation = {});
 
 // Index of the line playing at t, or -1 before the first.
 int lyric_at(const std::vector<LyricLine>& lines, double t);

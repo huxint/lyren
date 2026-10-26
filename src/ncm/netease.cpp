@@ -30,6 +30,7 @@ struct NSong {
     std::optional<std::vector<NArtist>> ar, artists;
     std::optional<NAlbum> al, album;
     double dt = 0, duration = 0;
+    int fee = 0;
     Strs alia, tns, alias, transNames;
 };
 struct NCreator {
@@ -287,6 +288,7 @@ Track track(const NSong& s) {
             break;
         }
     t.duration = int((s.dt > 0 ? s.dt : s.duration) / 1000);
+    t.paid = s.fee == 1 || s.fee == 4;
     return t;
 }
 
@@ -462,18 +464,12 @@ Task<Result<std::vector<Track>>> Netease::song_detail(std::vector<std::string> i
     co_return out;
 }
 
-std::string Netease::cover_url(const std::string& base, int px) const {
-    if (base.empty()) return {};
-    // Some covers carry their own thumbnail and watermark parameters; the plain image is enough.
-    return std::format("{}?param={}y{}", std::string_view(base).substr(0, base.find('?')), px, px);
-}
-
-Task<Result<std::string>> Netease::qr_start() {
+Task<Result<QrCode>> Netease::qr_start() {
     auto r = parse<QrKeyReply>(co_await client.call("/api/login/qrcode/unikey", R"("type":3)"));
     if (!r) co_return std::unexpected(r.error());
     if (!r->unikey) co_return std::unexpected("没有拿到二维码");
     qr_key_ = *r->unikey;
-    co_return "https://music.163.com/login?codekey=" + qr_key_;
+    co_return QrCode{.text = "https://music.163.com/login?codekey=" + qr_key_};
 }
 
 Task<Result<QrStatus>> Netease::qr_poll() {
@@ -632,8 +628,8 @@ Task<Result<std::vector<std::string>>> Netease::liked_ids(std::string uid) {
     co_return out;
 }
 
-Task<Result<void>> Netease::like(std::string id, bool on) {
-    co_return done(co_await client.call("/api/radio/like", std::format(R"("alg":"itembased","trackId":{},"like":{},"time":"3")", id, on), Api::weapi));
+Task<Result<void>> Netease::like(Track track, bool on) {
+    co_return done(co_await client.call("/api/radio/like", std::format(R"("alg":"itembased","trackId":{},"like":{},"time":"3")", track.id, on), Api::weapi));
 }
 
 Task<Result<Categories>> Netease::categories() {
@@ -715,7 +711,7 @@ Task<Result<std::vector<std::pair<std::string, std::string>>>> Netease::artist_i
 Task<Result<AlbumInfo>> Netease::album(std::string id) {
     auto r = parse<AlbumReply>(co_await client.call("/api/v1/album/" + id, "", Api::weapi));
     if (!r) co_return std::unexpected(r.error());
-    AlbumInfo out{.tracks = tracks_of(r->songs)};
+    AlbumInfo out{.thread = id, .tracks = tracks_of(r->songs)};
     if (const auto& a = r->album) {
         out.artist = names(a->artists);
         if (a->artists && !a->artists->empty()) out.artist_id = std::to_string(a->artists->front().id);
@@ -800,7 +796,8 @@ Task<Result<void>> Netease::delete_playlist(std::string id) {
     co_return done(co_await client.call("/api/playlist/remove", std::format(R"("ids":"[{}]")", id), Api::weapi));
 }
 
-Task<Result<void>> Netease::edit_playlist(std::string id, std::string track, bool add) {
+Task<Result<void>> Netease::edit_playlist(std::string id, Track t, bool add) {
+    std::string track = std::move(t.id);
     auto fields = [&](std::string_view ids) {
         return std::format(R"("op":"{}","pid":{},"trackIds":{},"imme":"true")", add ? "add" : "del", json_string(id), json_string(ids));
     };
@@ -813,6 +810,8 @@ Task<Result<void>> Netease::edit_playlist(std::string id, std::string track, boo
 
 Task<Result<CommentPage>> Netease::comments(Subject subject, std::string id, bool hot, int page, std::string cursor) {
     static constexpr const char* threads[] = {"R_SO_4_", "R_AL_3_", "A_PL_0_"};
+    // Hot comments page by an offset, the newest by the time of the last one; the server hands back either.
+    if (cursor.empty()) cursor = hot ? "normalHot#0" : "0";
     auto r = parse<CommentsReply>(co_await client.call(
         "/api/v2/resource/comments", std::format(R"("threadId":"{}{}","pageNo":{},"showInner":true,"pageSize":20,"cursor":{},"sortType":{})",
                                                  threads[int(subject)], id, page, json_string(cursor), hot ? 2 : 3)));

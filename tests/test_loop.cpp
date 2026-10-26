@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <thread>
+#include <vector>
 
 #include "core/loop.hpp"
 #include "core/task.hpp"
@@ -54,4 +55,31 @@ TEST_CASE("tasks await timers and each other") {
     spawn(chain(loop, out));
     loop.run();
     CHECK(out == 13);
+}
+
+static Task<int> finish_later(Loop& loop, int value, Clock::duration delay, std::vector<int>& order) {
+    co_await sleep{loop, delay};
+    order.push_back(value);
+    co_return value;
+}
+
+TEST_CASE("both starts its tasks together and preserves result order") {
+    Loop loop;
+    std::vector<int> order;
+    std::pair<int, int> out;
+    spawn([](Loop* loop, std::vector<int>* order, std::pair<int, int>* out) -> Task<void> {
+        *out = co_await both(finish_later(*loop, 1, 8ms, *order), finish_later(*loop, 2, 2ms, *order));
+        loop->quit();
+    }(&loop, &order, &out));
+    loop.run();
+    CHECK(order == (std::vector<int>{2, 1}));
+    CHECK(out == std::pair{1, 2});
+}
+
+static Task<int> immediate(int value) { co_return value; }
+
+TEST_CASE("both also joins tasks that complete before it suspends") {
+    std::pair<int, int> out;
+    spawn([](std::pair<int, int>* out) -> Task<void> { *out = co_await both(immediate(3), immediate(4)); }(&out));
+    CHECK(out == std::pair{3, 4});
 }

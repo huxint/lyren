@@ -16,6 +16,7 @@ Task<Result<void>> save(Loop& loop, std::string plaintext);
 // What the plaintext holds: each service's cookie session.
 struct Credentials {
     std::map<std::string, std::string> netease;
+    std::map<std::string, std::string> qq;
 };
 std::string to_json(const Credentials& c);
 Credentials from_json(std::string_view json);

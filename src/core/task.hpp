@@ -1,6 +1,7 @@
 #pragma once
 #include <coroutine>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <utility>
 
@@ -95,6 +96,37 @@ struct Detached {
 
 // Starts a task without awaiting it; its frame is freed when it finishes.
 inline detail::Detached spawn(Task<void> t) { co_await std::move(t); }
+
+// Both tasks run on the loop thread; whichever finishes last resumes the caller.
+template <class A, class B>
+Task<std::pair<A, B>> both(Task<A> a, Task<B> b) {
+    struct State {
+        std::optional<A> a;
+        std::optional<B> b;
+        int left = 2;
+        std::coroutine_handle<> caller;
+        void finish() {
+            if (--left == 0 && caller) caller.resume();
+        }
+    };
+    auto state = std::make_shared<State>();
+    spawn([](std::shared_ptr<State> s, Task<A> task) -> Task<void> {
+        s->a = co_await std::move(task);
+        s->finish();
+    }(state, std::move(a)));
+    spawn([](std::shared_ptr<State> s, Task<B> task) -> Task<void> {
+        s->b = co_await std::move(task);
+        s->finish();
+    }(state, std::move(b)));
+    struct Wait {
+        State& s;
+        bool await_ready() const { return s.left == 0; }
+        void await_suspend(std::coroutine_handle<> h) { s.caller = h; }
+        void await_resume() const {}
+    };
+    co_await Wait{*state};
+    co_return std::pair{std::move(*state->a), std::move(*state->b)};
+}
 
 // co_await sleep(loop, 200ms)
 struct sleep {

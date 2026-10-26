@@ -42,6 +42,23 @@ const Images::Entry& Images::get(const std::string& url, uint32_t px, bool blurr
     return e;
 }
 
+void Images::erase(const std::string& key) {
+    auto it = entries_.find(key);
+    if (it == entries_.end()) return;
+    if (it->second.ready) renderer_.destroy_texture(it->second.tex);
+    bytes_ -= it->second.bytes;
+    entries_.erase(it);
+}
+
+void Images::put(const std::string& key, const gfx::Image& img) {
+    erase(key);
+    Entry e{.ready = true, .ready_at = now_(), .px = img.w, .bytes = img.px.size(), .used = frame_};
+    e.tex = renderer_.create_texture(img.w, img.h, VK_FORMAT_R8G8B8A8_UNORM, false);
+    renderer_.upload(e.tex, 0, 0, img.w, img.h, img.px.data(), img.w * 4);
+    bytes_ += e.bytes;
+    entries_[key] = e;
+}
+
 void Images::pump() {
     while (in_flight_ < max_in_flight && !queue_.empty()) {
         std::string key = std::move(queue_.back());

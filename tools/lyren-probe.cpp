@@ -7,6 +7,9 @@
 //   lyren-probe login     QR login in the terminal; saves the credentials like the app does
 //   lyren-probe account
 //   lyren-probe call <uri> [fields] [weapi|clientlog]   raw request, e.g. call /api/song/lyric/v1 '"id":186016'; prints the JSON
+//   lyren-probe qq search <query> [tracks|albums|artists|playlists] | url <song mid> [quality] | lyrics <song id>
+//   lyren-probe qq album <mid> | artist <mid> | playlist <id> | top | recommend | comments <song id> [new]
+//   lyren-probe qq call <module> <method> [param]   one signed RPC part; prints the JSON
 //
 // Steps run in order: wait:MS  seek:SECONDS  pause  play  vol:0..1  open:URL|FILE  quit. Without steps it is interactive:
 // space pauses, ←/→ seek 10 s, ↑/↓ change the volume, q quits. Exits when the track fails, or ends after the last step.
@@ -20,6 +23,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <print>
 #include <string>
 #include <vector>
@@ -28,9 +32,12 @@
 #include "audio/player.hpp"
 #include "core/log.hpp"
 #include "core/memstat.hpp"
+#include "core/utf8.hpp"
 #include "ncm/netease.hpp"
 #include "net/http.hpp"
+#include "qq/qq.hpp"
 #include "sys/creds.hpp"
+#include "sys/paths.hpp"
 
 using namespace lyren;
 
@@ -203,7 +210,8 @@ static int ncm_command(const std::vector<std::string> &args) {
         if (!saved) {
             fail(saved.error());
         }
-        ncm.client.cookies = creds::from_json(saved.value_or("")).netease;
+        auto credentials = creds::from_json(saved.value_or(""));
+        ncm.client.cookies = std::move(credentials.netease);
         ncm.client.ensure_fingerprint();
         const std::string &cmd = args[0];
         if (cmd == "search") {
@@ -252,7 +260,7 @@ static int ncm_command(const std::vector<std::string> &args) {
             if (!url) {
                 co_return fail(url.error());
             }
-            print_qr(*url);
+            print_qr(url->text);
             std::println("用网易云音乐 App 扫码");
             for (QrState last = QrState::waiting;;) {
                 co_await lyren::sleep{loop, 2s};
@@ -271,7 +279,8 @@ static int ncm_command(const std::vector<std::string> &args) {
                     break;
                 }
             }
-            auto saved = co_await creds::save(loop, creds::to_json({.netease = ncm.client.cookies}));
+            credentials.netease = ncm.client.cookies;
+            auto saved = co_await creds::save(loop, creds::to_json(credentials));
             if (!saved) {
                 co_return fail(saved.error());
             }
@@ -307,6 +316,258 @@ static int ncm_command(const std::vector<std::string> &args) {
     return rc;
 }
 
+static void print_tracks(const std::vector<Track> &tracks) {
+    for (auto &t : tracks) {
+        std::println("{:>12} {:>14} {:>14}  {}{}  {} · {}  {}:{:02}{}", t.id, t.mid, t.media, t.title, t.alias.empty() ? "" : std::format(" ({})", t.alias), t.artist, t.album,
+                     t.duration / 60, t.duration % 60, t.paid ? "  paid" : "");
+    }
+}
+
+static void print_cards(const std::vector<Card> &cards) {
+    for (auto &c : cards) {
+        std::println("{:>16}  {}  {}  {}", c.id, c.title, c.subtitle, c.cover);
+    }
+}
+
+static std::string_view prefix(std::string_view text, size_t bytes) {
+    size_t i = 0, end = 0;
+    while (i < text.size() && i < bytes) {
+        i = utf8::next(text, i);
+        if (i <= bytes) {
+            end = i;
+        }
+    }
+    return text.substr(0, end);
+}
+
+static int qq_command(const std::vector<std::string> &args) {
+    Loop loop;
+    net::Http http;
+    qq::Qq q(loop, http);
+    int rc = 0;
+    auto fail = [&](const std::string &e) {
+        std::println(stderr, "error: {}", e);
+        rc = 1;
+    };
+    auto run = [&]() -> Task<void> {
+        auto saved = co_await creds::load(loop);
+        if (!saved) {
+            co_return fail(saved.error());
+        }
+        auto credentials = creds::from_json(*saved);
+        q.client.session = credentials.qq;
+        const std::string &cmd = args.at(1);
+        auto arg = [&](size_t i) {
+            return args.size() > i ? args[i] : std::string{};
+        };
+        if (cmd == "search") {
+            static constexpr const char *kinds[] = {"tracks", "albums", "artists", "playlists"};
+            int kind = 0;
+            for (int k = 0; k < 4; ++k) {
+                if (arg(3) == kinds[k]) {
+                    kind = k;
+                }
+            }
+            auto r = co_await q.search(args.at(2), SearchKind(kind), 0, 30);
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{} total", r->total);
+            print_tracks(r->tracks);
+            print_cards(r->cards);
+        } else if (cmd == "url") {
+            static constexpr const char *names[] = {"standard", "higher", "exhigh", "lossless", "hires"};
+            int quality = 3;
+            for (int k = 0; k < 5; ++k) {
+                if (arg(3) == names[k]) {
+                    quality = k;
+                }
+            }
+            auto d = co_await q.song_detail(args.at(2));
+            if (!d) {
+                co_return fail(d.error());
+            }
+            auto r = co_await q.stream(*d, Quality(quality));
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{}\nlevel {}, gain {:+.2f} dB, peak {:.3f}{}", r->url, r->level, r->gain, r->peak,
+                         r->trial ? std::format(", trial clip only (from {} s)", r->trial_start) : "");
+        } else if (cmd == "lyrics") {
+            auto r = co_await q.lyrics(Track{.source = Source::qq, .id = args.at(2)});
+            if (!r) {
+                co_return fail(r.error());
+            }
+            for (auto &l : *r) {
+                std::println("{:7.3f}  {}{}{}{}", l.time, l.text, l.translation.empty() ? "" : "  /  ", l.translation,
+                             l.words.empty() ? "" : std::format("  ({} words)", l.words.size()));
+            }
+        } else if (cmd == "album") {
+            auto r = co_await q.album(args.at(2));
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{} ({}) · {} · {} · comments {}\n{}", r->artist, r->artist_id, r->date, r->company, r->thread, prefix(r->about, 300));
+            print_tracks(r->tracks);
+        } else if (cmd == "artist") {
+            auto a = co_await q.artist(args.at(2));
+            if (!a) {
+                co_return fail(a.error());
+            }
+            std::println("{} ({}) songs {} albums {} {}", a->name, a->alias, a->songs, a->albums, a->avatar);
+            auto s = co_await q.artist_songs(args.at(2), 0);
+            if (s) {
+                print_tracks(std::vector(s->tracks.begin(), s->tracks.begin() + std::min<ptrdiff_t>(10, ssize(s->tracks))));
+            }
+            auto al = co_await q.artist_albums(args.at(2), 0);
+            if (al) {
+                print_cards(al->cards);
+            }
+            auto intro = co_await q.artist_intro(args.at(2));
+            if (intro) {
+                for (auto &[head, text] : *intro) {
+                    std::println("## {}\n{}", head, prefix(text, 200));
+                }
+            }
+        } else if (cmd == "playlist") {
+            auto r = co_await q.tracks(Card{.source = Source::qq, .id = args.at(2)});
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{} tracks", r->size());
+            print_tracks(*r);
+        } else if (cmd == "top" || cmd == "recommend") {
+            Result<std::vector<Card>> r;
+            if (cmd == "top") {
+                r = co_await q.toplists();
+            } else {
+                r = co_await q.recommended_playlists();
+            }
+            if (!r) {
+                co_return fail(r.error());
+            }
+            print_cards(*r);
+        } else if (cmd == "comments") {
+            std::string cursor;
+            for (int page = 1; page <= 2; ++page) {
+                auto r = co_await q.comments(Subject::song, args.at(2), arg(3) != "new", page, cursor);
+                if (!r) {
+                    co_return fail(r.error());
+                }
+                std::println("page {}: {} of {}, more {}, cursor {}", page, r->comments.size(), r->total, r->more, r->cursor);
+                for (auto &c : r->comments) {
+                    std::println("  [{}] {} ({}): {}{}", c.time, c.user, c.likes, prefix(c.text, 60), c.reply.empty() ? "" : " ← " + c.reply_user);
+                }
+                cursor = r->cursor;
+            }
+        } else if (cmd == "qr" || cmd == "login") {
+            auto code = co_await q.qr_start();
+            if (!code) {
+                co_return fail(code.error());
+            }
+            auto path = arg(2).empty() ? paths::state_dir() / "qq-qr.png" : std::filesystem::path(arg(2));
+            {
+                std::ofstream out(path, std::ios::binary);
+                out.write(code->image.data(), std::streamsize(code->image.size()));
+                if (!out) {
+                    co_return fail("无法保存二维码图片");
+                }
+            }
+            std::println("二维码：{}\n用 QQ 扫码并确认登录 QQ 音乐", path.string());
+            if (cmd == "qr") {
+                auto s = co_await q.qr_poll();
+                if (!s) {
+                    co_return fail(s.error());
+                }
+                std::println("state {}", int(s->state));
+                co_return;
+            }
+            for (QrState last = QrState::waiting;;) {
+                co_await lyren::sleep{loop, 2s};
+                auto s = co_await q.qr_poll();
+                if (!s) {
+                    co_return fail(s.error());
+                }
+                if (s->state != last) {
+                    std::println("state {}", int(s->state));
+                }
+                last = s->state;
+                if (s->state == QrState::expired) {
+                    co_return fail("二维码已过期");
+                }
+                if (s->state == QrState::confirmed) {
+                    break;
+                }
+            }
+            credentials.qq = q.client.session;
+            auto stored = co_await creds::save(loop, creds::to_json(credentials));
+            if (!stored) {
+                co_return fail(stored.error());
+            }
+            std::filesystem::remove(path);
+            std::println("QQ 音乐已登录，凭据已加密保存");
+        } else if (cmd == "renew") {
+            if (!q.logged_in()) {
+                co_return fail("请先登录 QQ 音乐");
+            }
+            auto r = co_await q.renew();
+            if (!r) {
+                co_return fail(r.error());
+            }
+            credentials.qq = q.client.session;
+            auto stored = co_await creds::save(loop, creds::to_json(credentials));
+            if (!stored) {
+                co_return fail(stored.error());
+            }
+            std::println("QQ 音乐凭据已续期");
+        } else if (cmd == "account") {
+            auto r = co_await q.account();
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{} ({})", r->name, r->id);
+        } else if (cmd == "library") {
+            auto r = co_await q.user_playlists(q.client.get("musicid"));
+            if (!r) {
+                co_return fail(r.error());
+            }
+            print_cards(r->second);
+            auto liked = co_await q.tracks(r->first);
+            if (!liked) {
+                co_return fail(liked.error());
+            }
+            std::println("{} liked tracks", liked->size());
+            print_tracks(*liked);
+        } else if (cmd == "collection") {
+            auto a = co_await q.collected_albums();
+            if (!a) {
+                co_return fail(a.error());
+            }
+            print_cards(*a);
+            auto b = co_await q.followed_artists();
+            if (!b) {
+                co_return fail(b.error());
+            }
+            print_cards(*b);
+        } else if (cmd == "call") {
+            auto r = co_await q.client.call({{args.at(2), args.at(3), args.size() > 4 ? args[4] : "{}"}});
+            if (!r.error.empty()) {
+                fail(r.error);
+            }
+            std::println("{}", r.body);
+        } else {
+            fail("unknown command " + cmd);
+        }
+    };
+    auto main_task = [&]() -> Task<void> {
+        co_await run();
+        loop.quit();
+    };
+    spawn(main_task());
+    loop.run();
+    return rc;
+}
+
 int main(int argc, char **argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
     std::erase_if(args, [](const std::string &a) {
@@ -319,6 +580,9 @@ int main(int argc, char **argv) {
     if (args.size() >= 2 && args[0] == "play") {
         return play(args[1], {args.begin() + 2, args.end()});
     }
+    if (args.size() >= 2 && args[0] == "qq") {
+        return qq_command(args);
+    }
     for (const char *cmd : {"search", "url", "lyrics", "login", "account", "call"}) {
         if (!args.empty() && args[0] == cmd) {
             return ncm_command(args);
@@ -326,6 +590,7 @@ int main(int argc, char **argv) {
     }
     std::println(stderr, "usage: lyren-probe [--debug] play <url|file> [wait:MS seek:S pause play vol:V open:SRC quit ...]\n"
                          "       lyren-probe search <query> [tracks|albums|artists|playlists] | url <id> [quality] | lyrics <id> | login | account\n"
-                         "       lyren-probe call <uri> [fields] [weapi|clientlog]");
+                         "       lyren-probe call <uri> [fields] [weapi|clientlog]\n"
+                         "       lyren-probe qq search|url|lyrics|album|artist|playlist|top|recommend|comments|call ...");
     return 2;
 }

@@ -443,7 +443,10 @@ void Renderer::draw(Target& t, std::span<const Prim> prims, const float clear[4]
         VK_CHECK(vkWaitForFences(dev, 1, &s.fence, VK_TRUE, UINT64_MAX));
         void* map;
         vkMapMemory(dev, readback_mem, 0, VK_WHOLE_SIZE, 0, &map);
-        std::exchange(capture_, nullptr)(static_cast<const uint8_t*>(map), t.width, t.height);
+        auto* pixels = static_cast<uint8_t*>(map);
+        if (t.format == VK_FORMAT_R8G8B8A8_UNORM)
+            for (size_t i = 0; i < size_t(t.width) * t.height * 4; i += 4) std::swap(pixels[i], pixels[i + 2]);
+        std::exchange(capture_, nullptr)(pixels, t.width, t.height);
         vkUnmapMemory(dev, readback_mem);
         vkDestroyBuffer(dev, readback, nullptr);
         vkFreeMemory(dev, readback_mem, nullptr);
