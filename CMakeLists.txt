@@ -63,14 +63,16 @@ target_include_directories(lyren_base PUBLIC src)
 target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA glaze)
 target_compile_options(lyren_base PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
 
-# Window, renderer, text, UI toolkit and the app.
+# Window, renderer, text, UI toolkit, D-Bus media controls and the app.
 pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libqrencode)
+pkg_check_modules(SDBUS REQUIRED IMPORTED_TARGET libsystemd)
 add_library(lyren_lib STATIC
     ${CMAKE_BINARY_DIR}/generated/icon_data.cpp
     src/wl/display.cpp
     src/wl/input.cpp
     src/wl/clipboard.cpp
     src/wl/window.cpp
+    src/wl/layer.cpp
     src/gfx/context.cpp
     src/gfx/renderer.cpp
     src/gfx/image.cpp
@@ -85,13 +87,16 @@ add_library(lyren_lib STATIC
     src/ui/ui.cpp
     src/ui/widgets.cpp
     src/ui/text_box.cpp
+    src/sys/bus.cpp
+    src/sys/mpris.cpp
     src/app/app.cpp
+    src/app/frames.cpp
     src/app/overlay.cpp
     src/app/images.cpp
     src/app/state.cpp
     src/app/shell.cpp
 )
-target_link_libraries(lyren_lib PUBLIC lyren_base PkgConfig::SYSLIBS PkgConfig::UILIBS vulkan_headers nanosvg)
+target_link_libraries(lyren_lib PUBLIC lyren_base PkgConfig::SYSLIBS PkgConfig::UILIBS PkgConfig::SDBUS vulkan_headers nanosvg)
 add_wayland_protocols(lyren_lib
     ${WP_DIR}/stable/xdg-shell/xdg-shell.xml
     ${WP_DIR}/stable/viewporter/viewporter.xml

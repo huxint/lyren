@@ -15,6 +15,9 @@ struct SavedState {
     int current = -1;
     double position = 0;
     std::vector<Track> recent;
+    // Desktop lyrics: offset of the text from the screen's centre, height above the bottom, click-through.
+    float lyrics_x = 0, lyrics_bottom = 48;
+    bool lyrics_locked = false;
 };
 
 SavedState load_state();

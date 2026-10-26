@@ -6,6 +6,7 @@
 //   lyren-probe lyrics <song id>
 //   lyren-probe login     QR login in the terminal; saves the credentials like the app does
 //   lyren-probe account
+//   lyren-probe call <uri> [fields] [weapi|clientlog]   raw request, e.g. call /api/song/lyric/v1 '"id":186016'; prints the JSON
 //
 // Steps run in order: wait:MS  seek:SECONDS  pause  play  vol:0..1  open:URL|FILE  quit. Without steps it is interactive:
 // space pauses, ←/→ seek 10 s, ↑/↓ change the volume, q quits. Exits when the track fails, or ends after the last step.
@@ -242,8 +243,9 @@ static int ncm_command(const std::vector<std::string> &args) {
             if (!r) {
                 co_return fail(r.error());
             }
-            for (auto &l : parse_lyrics(r->lrc, r->translation)) {
-                std::println("{:6.2f}  {}{}{}", l.time, l.text, l.translation.empty() ? "" : "  /  ", l.translation);
+            for (auto &l : *r) {
+                std::println("{:6.2f}  {}{}{}{}", l.time, l.text, l.translation.empty() ? "" : "  /  ", l.translation,
+                             l.words.empty() ? "" : std::format("  ({} words)", l.words.size()));
             }
         } else if (cmd == "login") {
             auto url = co_await ncm.qr_start();
@@ -284,6 +286,16 @@ static int ncm_command(const std::vector<std::string> &args) {
                 co_return fail(a.error());
             }
             std::println("{} ({}) {}", a->name, a->id, a->avatar);
+        } else if (cmd == "call") {
+            std::string api = args.size() > 3 ? args[3] : "";
+            auto r = co_await ncm.client.call(args.at(1), args.size() > 2 ? args[2] : "",
+                                              api == "weapi"       ? ncm::Api::weapi
+                                              : api == "clientlog" ? ncm::Api::clientlog
+                                                                   : ncm::Api::eapi);
+            if (!r.error.empty()) {
+                fail(r.error);
+            }
+            std::println("{}", r.body);
         }
     };
     auto main_task = [&]() -> Task<void> {
@@ -307,12 +319,13 @@ int main(int argc, char **argv) {
     if (args.size() >= 2 && args[0] == "play") {
         return play(args[1], {args.begin() + 2, args.end()});
     }
-    for (const char *cmd : {"search", "url", "lyrics", "login", "account"}) {
+    for (const char *cmd : {"search", "url", "lyrics", "login", "account", "call"}) {
         if (!args.empty() && args[0] == cmd) {
             return ncm_command(args);
         }
     }
     std::println(stderr, "usage: lyren-probe [--debug] play <url|file> [wait:MS seek:S pause play vol:V open:SRC quit ...]\n"
-                         "       lyren-probe search <query> [tracks|albums|artists|playlists] | url <id> [quality] | lyrics <id> | login | account");
+                         "       lyren-probe search <query> [tracks|albums|artists|playlists] | url <id> [quality] | lyrics <id> | login | account\n"
+                         "       lyren-probe call <uri> [fields] [weapi|clientlog]");
     return 2;
 }

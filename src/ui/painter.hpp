@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -64,6 +65,10 @@ public:
     // Multiplies the alpha of everything drawn afterwards (fades of popups and toasts).
     void set_alpha(float a) { alpha_ = a; }
     float alpha() const { return alpha_; }
+    // Text drawn afterwards keeps its colour left of x = at and turns into `rest` right of it, blending across
+    // `soft` px (the sung and unsung parts of a lyric line).
+    void set_wipe(float at, float soft, Color rest) { wipe_ = Wipe{at, soft, rest}; }
+    void clear_wipe() { wipe_.reset(); }
 
 private:
     void premul(float out[4], Color c) const;
@@ -77,6 +82,11 @@ private:
     std::vector<gfx::Prim> prims_;
     std::vector<std::array<float, 4>> clips_;
     float scale_ = 1, ox_ = 0, oy_ = 0, alpha_ = 1;
+    struct Wipe {
+        float at, soft;
+        Color rest;
+    };
+    std::optional<Wipe> wipe_;
 };
 
 }  // namespace lyren::ui

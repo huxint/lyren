@@ -94,6 +94,24 @@ void Window::set_blur(bool on) {
     geometry_dirty_ = true;
 }
 
+void Window::activate(const std::string& token) {
+    if (!display_.activation) return;
+    if (!token.empty()) return xdg_activation_v1_activate(display_.activation, token.c_str(), surface_);
+    static const xdg_activation_token_v1_listener listener{
+        .done =
+            [](void* d, xdg_activation_token_v1* t, const char* token) {
+                Window* w = self(d);
+                xdg_activation_v1_activate(w->display_.activation, token, w->surface_);
+                xdg_activation_token_v1_destroy(t);
+            },
+    };
+    xdg_activation_token_v1* t = xdg_activation_v1_get_activation_token(display_.activation);
+    xdg_activation_token_v1_add_listener(t, &listener, this);
+    xdg_activation_token_v1_set_serial(t, display_.input->serial(), display_.seat);
+    xdg_activation_token_v1_set_surface(t, surface_);
+    xdg_activation_token_v1_commit(t);
+}
+
 void Window::move() { xdg_toplevel_move(toplevel_, display_.seat, display_.input->serial()); }
 void Window::resize(uint32_t edges) { xdg_toplevel_resize(toplevel_, display_.seat, display_.input->serial(), edges); }
 void Window::show_menu(int x, int y) { xdg_toplevel_show_window_menu(toplevel_, display_.seat, display_.input->serial(), x - margin_, y - margin_); }

@@ -92,11 +92,12 @@ void Ui::pop_clip() {
 }
 
 bool Ui::hovering(Rect r) const {
-    return in_->inside && active_ == 0 && layer_ == pointer_layer_ && intersect(r, clip()).contains(in_->x, in_->y);
+    return !disabled && in_->inside && active_ == 0 && layer_ == pointer_layer_ && intersect(r, clip()).contains(in_->x, in_->y);
 }
 
 Interaction Ui::interact(Id id, Rect r) {
     Interaction it;
+    if (disabled) return it;
     Rect hit = intersect(r, clip());
     it.hovered = in_->inside && layer_ == pointer_layer_ && (active_ == 0 || active_ == id) && hit.contains(in_->x, in_->y);
     it.px = in_->x, it.py = in_->y;

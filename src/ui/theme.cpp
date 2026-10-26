@@ -66,6 +66,21 @@ Theme Theme::from(const Config& config, std::string& errors) {
     th.radius = float(std::clamp(t.radius, 0.0, 24.0));
     th.motion = float(std::clamp(t.motion, 0.0, 4.0));
     th.opacity = float(std::clamp(config.window.opacity, 0.3, 1.0));
+
+    const auto& d = config.desktop_lyrics;
+    th.lyric_text = hex("#ffffff"), th.lyric_outline = hex("#000000a0");
+    auto lyric = [&](const std::string& v, Color& dst, const char* key) {
+        if (auto c = parse_color(v)) dst = *c;
+        else errors += std::format("desktop_lyrics.{}: 无效颜色 \"{}\"\n", key, v);
+    };
+    lyric(d.color, th.lyric_text, "color");
+    lyric(d.outline, th.lyric_outline, "outline");
+    if (d.highlight != "accent") {
+        Color c = accent;
+        lyric(d.highlight, c, "highlight");
+        th.lyric_sung = c;
+    }
+    th.lyric_size = float(std::clamp(d.font_size, 16.0, 72.0));
     return th;
 }
 

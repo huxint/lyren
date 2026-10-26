@@ -4,6 +4,8 @@
 #include <sys/inotify.h>
 #include <unistd.h>
 
+#include <cstdio>
+#include <format>
 #include <fstream>
 #include <glaze/toml.hpp>
 
@@ -52,6 +54,50 @@ std::expected<Config, std::string> parse_config(std::string_view toml) {
     return c;
 }
 
+// glaze reports "line:col: code" followed by the offending line.
+std::string describe_config_error(const std::string& err) {
+    auto nl = err.find('\n');
+    std::string head = err.substr(0, nl), context;
+    if (nl != std::string::npos) {
+        auto end = err.find('\n', nl + 1);
+        context = err.substr(nl + 1, end == std::string::npos ? std::string::npos : end - nl - 1);
+        context.erase(0, context.find_first_not_of(' '));
+    }
+    auto colon = head.find(':');
+    std::string line = head.substr(0, colon);
+    std::string code = head.substr(head.find(": ") == std::string::npos ? head.size() : head.find(": ") + 2);
+    return std::format("配置第 {} 行有误（{}）：{}，已保留之前的设置", line, code, context);
+}
+
+static std::string_view trim(std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.remove_suffix(1);
+    return s;
+}
+
+std::string set_config_value(std::string_view toml, std::string_view section, std::string_view key, std::string_view value) {
+    std::string line = std::format("{} = {}", key, value);
+    std::string_view current;  // "" before the first header
+    size_t insert = std::string_view::npos;  // end of the section's header or last setting
+    for (size_t pos = 0; pos < toml.size();) {
+        size_t end = std::min(toml.find('\n', pos), toml.size());
+        std::string_view l = trim(toml.substr(pos, end - pos));
+        if (l.starts_with('[')) {
+            current = trim(l.substr(1, l.find(']') - 1));
+            if (current == section) insert = end;
+        } else if (current == section && !l.empty() && !l.starts_with('#')) {
+            if (l.starts_with(key) && trim(l.substr(key.size())).starts_with('='))
+                return std::format("{}{}{}", toml.substr(0, pos), line, toml.substr(end));
+            insert = end;
+        }
+        pos = end + 1;
+    }
+    if (insert != std::string_view::npos) return std::format("{}\n{}{}", toml.substr(0, insert), line, toml.substr(insert));
+    std::string out(toml);
+    if (!out.empty() && out.back() != '\n') out += '\n';
+    return out + std::format("\n[{}]\n{}\n", section, line);
+}
+
 ConfigFile load_config() {
     ConfigFile f{.path = paths::config_dir() / "config.toml"};
     if (!std::filesystem::exists(f.path)) {
@@ -59,10 +105,30 @@ ConfigFile load_config() {
         log::info("wrote default config to {}", f.path.string());
     }
     std::ifstream in(f.path);
-    std::string text{std::istreambuf_iterator<char>(in), {}};
-    if (auto c = parse_config(text)) f.config = *c;
+    f.text.assign(std::istreambuf_iterator<char>(in), {});
+    if (auto c = parse_config(f.text)) f.config = *c;
     else f.error = c.error();
     return f;
+}
+
+Result<void> save_setting(ConfigFile& f, std::string_view section, std::string_view key, std::string_view value) {
+    std::ifstream in(f.path);
+    std::string text = in ? std::string{std::istreambuf_iterator<char>(in), {}} : std::string(default_config_text());
+    text = set_config_value(text, section, key, value);
+    auto c = parse_config(text);
+    if (!c) return std::unexpected(describe_config_error(c.error()));
+    auto tmp = f.path;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        out << text;
+        if (!out) return std::unexpected(std::format("设置没有保存：无法写入 {}", tmp.string()));
+    }
+    std::rename(tmp.c_str(), f.path.c_str());
+    f.config = *c;
+    f.error.clear();
+    f.text = std::move(text);
+    return {};
 }
 
 ConfigWatcher::ConfigWatcher(Loop& loop, std::filesystem::path path, std::function<void()> on_change)

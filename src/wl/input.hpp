@@ -85,6 +85,8 @@ public:
     void set_text_input(TextInputState s);
     // Latest input serial, for move/resize/menu requests.
     uint32_t serial() const { return serial_; }
+    // The surface under the pointer; only it may set the cursor.
+    const SurfaceSink* pointer_focus() const { return pointer_focus_; }
     uint32_t mods() const { return mods_; }
 
     // Listener plumbing (called from the C callbacks).

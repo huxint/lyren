@@ -70,7 +70,10 @@ void main() {
         if ((p.info.z & FLAG_CUTOUT) != 0u) a *= clamp(0.5 + sd_rrect(local, half_size, p.radii), 0.0, 1.0);
         o = p.color * a;
     } else if (kind == KIND_GLYPH) {
-        o = p.color * texture(textures[nonuniformEXT(p.info.y)], v_uv).r;
+        vec4 c = p.color;
+        // A horizontal wipe: colour left of params.x, color2 right of it, blended over ±params.y.
+        if ((p.info.z & FLAG_GRADIENT) != 0u) c = mix(p.color, p.color2, smoothstep(p.params.x - p.params.y, p.params.x + p.params.y, v_pos.x));
+        o = c * texture(textures[nonuniformEXT(p.info.y)], v_uv).r;
     } else if (kind == KIND_ARC) {
         // Rotate so the middle of the arc points up (+y with y flipped to point up).
         float mid = p.params.y + p.params.z * 0.5, half_sweep = min(p.params.z * 0.5, 3.14159265);

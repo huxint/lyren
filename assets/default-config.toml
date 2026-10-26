@@ -1,4 +1,4 @@
-# lyren 配置文件。保存后立即生效（gpu.device 需要重启）。
+# lyren 配置文件。保存后立即生效（gpu.device 需要重启），设置对话框里的改动也会写回这里。
 # 删掉这个文件，下次启动会重新生成默认配置。
 
 [window]
@@ -20,6 +20,8 @@ max_fps = 60
 quality = "lossless"
 # 只能试听的歌曲：skip 跳过并提示；play 播放试听片段
 trial = "skip"
+# 音量均衡：按服务端给出的每首歌的响度增益调整音量，让不同歌曲一样响
+normalize = false
 
 [theme]
 # dark | light
@@ -46,6 +48,8 @@ motion = 1.0
 # danger = "#e5484d"
 
 [desktop_lyrics]
+# 在其他窗口上方显示当前歌词
+enabled = false
 font_size = 30
 # 已唱部分的颜色："accent" 跟随强调色，或者写颜色
 highlight = "accent"

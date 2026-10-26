@@ -45,22 +45,7 @@ static uint32_t edges_at(float x, float y, float w, float h) {
            (r ? XDG_TOPLEVEL_RESIZE_EDGE_RIGHT : 0);
 }
 
-// glaze reports "line:col: code" followed by the offending line.
-static std::string describe_config_error(const std::string& err) {
-    auto nl = err.find('\n');
-    std::string head = err.substr(0, nl), context;
-    if (nl != std::string::npos) {
-        auto end = err.find('\n', nl + 1);
-        context = err.substr(nl + 1, end == std::string::npos ? std::string::npos : end - nl - 1);
-        context.erase(0, context.find_first_not_of(' '));
-    }
-    auto colon = head.find(':');
-    std::string line = head.substr(0, colon);
-    std::string code = head.substr(head.find(": ") == std::string::npos ? head.size() : head.find(": ") + 2);
-    return std::format("配置第 {} 行有误（{}）：{}，已保留之前的设置", line, code, context);
-}
-
-App::App(Loop& loop, ConfigFile config, bool show_overlay, std::vector<std::string> script)
+App::App(Loop& loop, Bus& bus, ConfigFile config, bool show_overlay, std::vector<std::string> script)
     : loop_(loop),
       config_(std::move(config)),
       display_(loop),
@@ -77,11 +62,27 @@ App::App(Loop& loop, ConfigFile config, bool show_overlay, std::vector<std::stri
                        .ncm = ncm_,
                        .images = images_,
                        .config = config_.config,
+                       .set_setting =
+                           [this](std::string_view section, std::string_view key, std::string_view value) {
+                               if (auto r = save_setting(config_, section, key, value); !r) return toast(r.error());
+                               log::info("config: {}.{} = {}", section, key, value);
+                               shell_.config_changed();
+                               // Settings change mid-frame; the lyrics surface may be the one drawing.
+                               loop_.defer([this] { sync_desktop_lyrics(); });
+                           },
                        .redraw = [this] { request_redraw(); },
                        .now = [this] { return std::chrono::duration<double>(Clock::now() - start_).count(); },
-                       .silent = !script.empty()},
+                       .silent = !script.empty(),
+                       .bus = bus,
+                       .raise =
+                           [this](std::string_view token) {
+                               if (!script_.empty()) return log::info("raise requested ({})", token.empty() ? "no token" : token);
+                               window_->activate(std::string(token));
+                           }},
              saved_),
-      script_(std::move(script)) {
+      script_(std::move(script)),
+      frames_(loop, [this] { return window_->frame_pending(); }, [this] { render(); }),
+      lyric_frames_(loop, [this] { return lyrics_ && lyrics_->frame_pending(); }, [this] { render_lyrics(); }) {
     std::string errors;
     theme_ = ui::Theme::from(config_.config, errors);
     load_text(config_.config.theme.font);
@@ -94,13 +95,7 @@ App::App(Loop& loop, ConfigFile config, bool show_overlay, std::vector<std::stri
                 request_redraw();
             },
         .close = [this] { loop_.quit(); },
-        .frame =
-            [this] {
-                if (dirty_ && !scheduled_) {
-                    scheduled_ = true;
-                    loop_.defer([this] { render(); });
-                }
-            },
+        .frame = [this] { frames_.frame_done(); },
         .pointer = [this](const wl::PointerEvent& e) { on_pointer(e); },
         .key = [this](const wl::KeyEvent& e) { on_key(e); },
         .focus = [this](bool) { request_redraw(); },
@@ -124,9 +119,8 @@ App::App(Loop& loop, ConfigFile config, bool show_overlay, std::vector<std::stri
 
 App::~App() {
     shell_.save(window_->maximized() ? std::nullopt : std::optional{std::pair{window_->width(), window_->height()}});
+    if (lyrics_) close_desktop_lyrics();
     renderer_.destroy_target(target_);
-    loop_.cancel(pace_timer_);
-    loop_.cancel(wake_timer_);
     loop_.cancel(overlay_timer_);
     loop_.cancel(idle_timer_);
 }
@@ -148,12 +142,15 @@ void App::apply_config(bool initial) {
     window_->set_decorations(config_.config.window.decorations == Decorations::client);
     window_->set_shadow(shadow_margin, resize_border, int(theme_.radius_l()));
     window_->set_blur(theme_.opacity < 1);
+    sync_desktop_lyrics();
     request_redraw();
 }
 
 void App::reload_config() {
     std::ifstream in(config_.path);
     std::string text{std::istreambuf_iterator<char>(in), {}};
+    if (text == config_.text) return;
+    config_.text = text;
     auto parsed = parse_config(text);
     if (!parsed) {
         toast(describe_config_error(parsed.error()));
@@ -162,6 +159,7 @@ void App::reload_config() {
     Config old = config_.config;
     config_.config = *parsed;
     log::info("config reloaded");
+    shell_.config_changed();
     if (parsed->theme.font != old.theme.font) load_text(parsed->theme.font);
     apply_config(false);
     if (parsed->gpu.device != old.gpu.device) toast("GPU 设置会在重启后生效");
@@ -176,11 +174,8 @@ void App::toast(std::string message) {
 void App::request_redraw() {
     // Async results can arrive while the window is still being set up.
     if (!window_) return;
-    dirty_ = true;
-    if (!scheduled_ && !window_->frame_pending()) {
-        scheduled_ = true;
-        loop_.defer([this] { render(); });
-    }
+    frames_.request();
+    lyric_frames_.request();
 }
 
 // Once input stops for a while, give back font pages and freed heap; glyphs live in the atlas.
@@ -194,12 +189,7 @@ void App::note_input() {
 }
 
 void App::render() {
-    scheduled_ = false;
-    if (!dirty_ || window_->frame_pending()) return;
-    dirty_ = false;
-    loop_.cancel(pace_timer_);
-    loop_.cancel(wake_timer_);
-    pace_timer_ = wake_timer_ = 0;
+    if (!frames_.begin()) return;
     auto start = Clock::now();
     double now = std::chrono::duration<double>(start - start_).count();
     renderer_.resize(*target_, window_->buffer_width(), window_->buffer_height());
@@ -223,7 +213,7 @@ void App::render() {
     }
     frame_ms_ = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
     after_frame(start);
-    if (++frames_ == 1) {
+    if (++frames_drawn_ == 1) {
         note_input();
         mem_trim();
         auto m = mem_sample();
@@ -304,7 +294,7 @@ void App::caption_press(const ui::PointerAction& a) {
 }
 
 void App::after_frame(Clock::time_point frame_start) {
-    display_.input->set_cursor(resize_edges_ ? cursor_for(resize_edges_) : ui_.cursor);
+    if (display_.input->pointer_focus() == window_.get()) display_.input->set_cursor(resize_edges_ ? cursor_for(resize_edges_) : ui_.cursor);
     wl::TextInputState ti = ui_.text_input;
     if (ti.enabled) ti.x += window_->margin(), ti.y += window_->margin();
     display_.input->set_text_input(std::move(ti));
@@ -318,25 +308,94 @@ void App::after_frame(Clock::time_point frame_start) {
             request_redraw();
         });
 
-    // Input-driven frames follow the compositor; animation frames are capped at render.max_fps.
-    if (ui_.needs_redraw()) {
-        request_redraw();
-    } else if (ui_.animating()) {
-        int fps = config_.config.render.max_fps;
-        auto due = frame_start + std::chrono::nanoseconds(fps > 0 ? 1'000'000'000 / fps : 0);
-        if (Clock::now() >= due) request_redraw();
-        else
-            pace_timer_ = loop_.at(due, [this] {
-                pace_timer_ = 0;
-                request_redraw();
-            });
-    } else if (std::isfinite(ui_.wake_at())) {
-        auto at = start_ + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(ui_.wake_at()));
-        wake_timer_ = loop_.at(at, [this] {
-            wake_timer_ = 0;
-            request_redraw();
-        });
+    // A frame that handled input may have changed what the desktop lyrics show.
+    if (ui_.needs_redraw()) lyric_frames_.request();
+    frames_.after(ui_, frame_start, start_, config_.config.render.max_fps);
+}
+
+void App::sync_desktop_lyrics() {
+    bool want = config_.config.desktop_lyrics.enabled;
+    if (want && !display_.layer_shell) return log::warn("desktop lyrics need wlr-layer-shell, which the compositor lacks");
+    int height = int(Shell::desktop_height(theme_.lyric_size));
+    if (want && !lyrics_) {
+        wl::LayerSurface::Callbacks cb{
+            .configure = [this] { lyric_frames_.request(); },
+            .closed = [this] { loop_.defer([this] { close_desktop_lyrics(); }); },
+            .frame = [this] { lyric_frames_.frame_done(); },
+            .pointer = [this](const wl::PointerEvent& e) { on_lyrics_pointer(e); },
+        };
+        // A scripted run keeps them under the windows, out of the way of whoever uses the desktop.
+        lyrics_ = std::make_unique<wl::LayerSurface>(display_, std::move(cb), script_.empty(), height, shell_.desktop_bottom());
+        lyrics_target_ = renderer_.create_target(display_.display, lyrics_->surface());
+        lyrics_hash_ = 0;
+    } else if (!want && lyrics_) {
+        close_desktop_lyrics();
     }
+    if (lyrics_) lyrics_->set_height(height);
+    lyric_frames_.request();
+}
+
+void App::close_desktop_lyrics() {
+    if (!lyrics_) return;
+    renderer_.destroy_target(lyrics_target_);
+    lyrics_target_ = nullptr;
+    lyrics_.reset();
+    lyrics_input_ = {};
+}
+
+void App::render_lyrics() {
+    if (!lyrics_ || !lyric_frames_.begin()) return;
+    auto start = Clock::now();
+    double now = std::chrono::duration<double>(start - start_).count();
+    float w = float(lyrics_->width()), h = float(lyrics_->height());
+    renderer_.resize(*lyrics_target_, lyrics_->buffer_width(), lyrics_->buffer_height());
+    lyrics_input_.mods = display_.input->mods();
+    ui::Rect input;
+    for (int pass = 0; pass < 2; ++pass) {
+        atlas_->begin_frame();
+        painter_->begin(float(lyrics_->scale()), 0, 0);
+        lyrics_theme_ = theme_;
+        bool accent_moving = false;
+        if (theme_.auto_accent) lyrics_theme_.accent = shell_.accent(now, theme_.dark, accent_moving);
+        lyrics_ui_.begin(*painter_, lyrics_theme_, w, h, now, lyrics_input_);
+        if (accent_moving) lyrics_ui_.keep_animating();
+        input = shell_.desktop_lyrics(lyrics_ui_, w, h);
+        lyrics_ui_.end();
+        lyrics_input_.consumed();
+        if (!atlas_->reset()) break;
+    }
+    shaper_->end_frame();
+    lyrics_->set_bottom(shell_.desktop_bottom());
+    lyrics_->set_input(int(std::floor(input.x)), int(std::floor(input.y)), int(std::ceil(input.w)), int(std::ceil(input.h)));
+    auto prims = painter_->prims();
+    uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char*>(prims.data()), prims.size_bytes()}) ^
+                    (uint64_t(lyrics_->buffer_width()) << 32 | lyrics_->buffer_height());
+    if (hash != lyrics_hash_ || lyrics_->needs_commit()) {
+        const float clear[4] = {0, 0, 0, 0};
+        renderer_.draw(*lyrics_target_, prims, clear, [this] { lyrics_->prepare_present(); });
+        lyrics_hash_ = hash;
+    }
+    if (display_.input->pointer_focus() == lyrics_.get()) display_.input->set_cursor(lyrics_ui_.cursor);
+    lyric_frames_.after(lyrics_ui_, start, start_, config_.config.render.max_fps);
+}
+
+void App::on_lyrics_pointer(const wl::PointerEvent& e) {
+    auto& in = lyrics_input_;
+    switch (e.type) {
+        case wl::PointerEvent::enter: in.left_down = false; [[fallthrough]];
+        case wl::PointerEvent::motion: in.x = e.x, in.y = e.y, in.inside = true; break;
+        case wl::PointerEvent::leave: in.inside = in.left_down = false; break;
+        case wl::PointerEvent::press:
+            in.actions.push_back({e.x, e.y, e.button, true});
+            if (e.button == BTN_LEFT) in.left_down = true;
+            break;
+        case wl::PointerEvent::release:
+            if (e.button == BTN_LEFT) in.left_down = false;
+            in.actions.push_back({e.x, e.y, e.button, false});
+            break;
+        case wl::PointerEvent::scroll: return;
+    }
+    lyric_frames_.request();
 }
 
 void App::on_pointer(const wl::PointerEvent& e) {
@@ -431,7 +490,7 @@ void App::sample_overlay() {
     rows.emplace_back("整形缓存", std::format("{} 段 · {} 字形", shaper_->cached(), shaper_->cached_glyphs()));
     rows.emplace_back("纹理", std::format("{} 个 · {:.1f} MB", renderer_.texture_count(), renderer_.texture_bytes() / 1048576.0));
     rows.emplace_back("  其中封面", std::format("{} 个 · {:.1f} MB", images_.count(), images_.bytes() / 1048576.0));
-    rows.emplace_back("帧", std::format("{:.2f} ms · 第 {} 帧", frame_ms_, frames_));
+    rows.emplace_back("帧", std::format("{:.2f} ms · 第 {} 帧", frame_ms_, frames_drawn_));
     rows.emplace_back("缩放", std::format("{:.2f} · {}×{}", window_->scale(), window_->width(), window_->height()));
     overlay_.set(std::move(rows));
     overlay_timer_ = loop_.after(500ms, [this] {
@@ -458,9 +517,21 @@ void App::run_script(size_t i) {
         std::istringstream in(script_[i++]);
         std::string cmd, rest;
         in >> cmd;
+        // "lyrics CMD …" sends a pointer command or a shot to the desktop lyrics instead of the window.
+        bool to_lyrics = cmd == "lyrics";
+        if (to_lyrics) in >> cmd;
         std::getline(in >> std::ws, rest);
         std::istringstream args(rest);
         if (cmd.empty() || cmd[0] == '#') continue;
+        if (to_lyrics && !lyrics_) {
+            log::warn("script line {}: desktop lyrics are off", i);
+            continue;
+        }
+        auto pointer = [&](wl::PointerEvent e) {
+            if (to_lyrics) return on_lyrics_pointer(e);
+            e.x += m, e.y += m;
+            on_pointer(e);
+        };
         if (cmd == "wait") {
             int n = 0;
             args >> n;
@@ -469,16 +540,19 @@ void App::run_script(size_t i) {
         }
         float x = 0, y = 0;
         std::string how;
-        if (cmd == "move" || cmd == "click") args >> x >> y >> how;
+        if (cmd == "move" || cmd == "click" || cmd == "press" || cmd == "release") args >> x >> y >> how;
         if (cmd == "move") {
-            on_pointer({.type = wl::PointerEvent::motion, .x = x + m, .y = y + m, .time = ms()});
+            pointer({.type = wl::PointerEvent::motion, .x = x, .y = y, .time = ms()});
         } else if (cmd == "click") {
             uint32_t button = how == "right" ? BTN_RIGHT : how == "back" ? BTN_SIDE : BTN_LEFT;
-            on_pointer({.type = wl::PointerEvent::motion, .x = x + m, .y = y + m, .time = ms()});
+            pointer({.type = wl::PointerEvent::motion, .x = x, .y = y, .time = ms()});
             for (int k = how == "double" ? 2 : 1; k > 0; --k) {
-                on_pointer({.type = wl::PointerEvent::press, .x = x + m, .y = y + m, .button = button, .time = ms()});
-                on_pointer({.type = wl::PointerEvent::release, .x = x + m, .y = y + m, .button = button, .time = ms()});
+                pointer({.type = wl::PointerEvent::press, .x = x, .y = y, .button = button, .time = ms()});
+                pointer({.type = wl::PointerEvent::release, .x = x, .y = y, .button = button, .time = ms()});
             }
+        } else if (cmd == "press" || cmd == "release") {
+            pointer({.type = wl::PointerEvent::motion, .x = x, .y = y, .time = ms()});
+            pointer({.type = cmd == "press" ? wl::PointerEvent::press : wl::PointerEvent::release, .x = x, .y = y, .button = BTN_LEFT, .time = ms()});
         } else if (cmd == "scroll") {
             float dy = 0;
             args >> dy >> how;
@@ -501,8 +575,8 @@ void App::run_script(size_t i) {
             e.preedit_cursor = cmd == "preedit" ? int(rest.size()) : -1;
             on_text_input(e);
         } else if (cmd == "shot") {
-            renderer_.capture_next([path = rest](const uint8_t* px, uint32_t w, uint32_t h) { write_png(path, px, w, h); });
-            frame_hash_ = 0;
+            renderer_.capture_next(to_lyrics ? *lyrics_target_ : *target_, [path = rest](const uint8_t* px, uint32_t w, uint32_t h) { write_png(path, px, w, h); });
+            (to_lyrics ? lyrics_hash_ : frame_hash_) = 0;
             request_redraw();
         } else if (cmd == "exec") {
             pid_t pid;

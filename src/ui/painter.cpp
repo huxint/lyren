@@ -14,6 +14,7 @@ void Painter::begin(float scale, float origin_x, float origin_y) {
     prims_.clear();
     clips_.assign(1, {0, 0, 1e9f, 1e9f});
     scale_ = scale, ox_ = origin_x, oy_ = origin_y, alpha_ = 1;
+    wipe_.reset();
 }
 
 float Painter::snap(float v) const { return std::round(v * scale_); }
@@ -101,7 +102,7 @@ void Painter::wave(float x, float y, float w, float thickness, float amplitude, 
 }
 
 void Painter::glyphs(const text::Shaped& shaped, size_t count, float x, float baseline, float size, Color color) {
-    if (color.a * alpha_ == 0) return;
+    if (std::max(color.a, wipe_ ? wipe_->rest.a : 0.f) * alpha_ == 0) return;
     float px = size * scale_;
     float bx = (x + ox_) * scale_, by = snap(baseline + oy_);
     float inv = 1.f / float(atlas_.size());
@@ -117,6 +118,12 @@ void Painter::glyphs(const text::Shaped& shaped, size_t count, float x, float ba
         premul(p.color, color);
         p.uv[0] = e.x * inv, p.uv[1] = e.y * inv, p.uv[2] = (e.x + e.w) * inv, p.uv[3] = (e.y + e.h) * inv;
         p.info[1] = atlas_.texture();
+        if (wipe_) {
+            premul(p.color2, wipe_->rest);
+            p.params[0] = (wipe_->at + ox_) * scale_;
+            p.params[1] = std::max(0.5f, wipe_->soft * scale_ / 2);
+            p.info[2] = gfx::flag_gradient;
+        }
     }
 }
 

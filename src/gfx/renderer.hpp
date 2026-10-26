@@ -20,7 +20,7 @@ struct Prim {
     float color2[4];
     float radii[4];
     // rect: border width; shadow: _, sigma; arc: thickness, start, sweep (radians, clockwise from 12 o'clock);
-    // wave: thickness, amplitude, wavelength, phase
+    // wave: thickness, amplitude, wavelength, phase; glyph with flag_gradient: wipe x, half its width
     float params[4];
     uint32_t info[4];  // kind, texture, flags
 };
@@ -77,8 +77,11 @@ public:
 
     void wait_idle() { vkDeviceWaitIdle(ctx_.device); }
 
-    // The next draw also reads the image back and hands fn premultiplied BGRA rows, tightly packed.
-    void capture_next(std::function<void(const uint8_t* bgra, uint32_t width, uint32_t height)> fn) { capture_ = std::move(fn); }
+    // The next draw of t also reads the image back and hands fn premultiplied BGRA rows, tightly packed.
+    void capture_next(const Target& t, std::function<void(const uint8_t* bgra, uint32_t width, uint32_t height)> fn) {
+        capture_target_ = &t;
+        capture_ = std::move(fn);
+    }
 
 private:
     struct Texture {
@@ -130,6 +133,7 @@ private:
     std::vector<Retired> retired_;
     uint64_t submitted_ = 0, completed_ = 0;
     std::function<void(const uint8_t*, uint32_t, uint32_t)> capture_;
+    const Target* capture_target_ = nullptr;
 };
 
 }  // namespace lyren::gfx

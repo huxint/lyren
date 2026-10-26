@@ -44,6 +44,7 @@ public:
     // Main thread.
     void set_active(bool on);
     void set_volume(float linear);
+    void set_gain(float linear) { gain_.store(linear, std::memory_order_relaxed); }  // loudness, from the next cycle
     void set_name(std::string name);  // media.name, what mixers show for the stream
     uint64_t position();  // frames played out of the speaker
     size_t queued() const;  // frames in the ring
@@ -63,6 +64,7 @@ private:
     Format fmt_;
     std::atomic<bool> active_{false}, waiting_{false}, volume_ready_{false};
     float volume_ = 1;
+    std::atomic<float> gain_{1};
     std::string name_ = "Lyren";
     std::chrono::steady_clock::time_point volume_set_;
 

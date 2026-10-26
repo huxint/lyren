@@ -17,7 +17,8 @@ struct Prim {
     vec4 color;   // premultiplied
     vec4 color2;  // premultiplied border colour or gradient end
     vec4 radii;   // top-left, top-right, bottom-right, bottom-left
-    vec4 params;  // rect: x border width; shadow: y sigma; arc: thickness, start, sweep; wave: thickness, amplitude, wavelength, phase
+    vec4 params;  // rect: x border width; shadow: y sigma; arc: thickness, start, sweep; wave: thickness, amplitude, wavelength, phase;
+                  // glyph with FLAG_GRADIENT: wipe x, half its width
     uvec4 info;   // x kind, y texture, z flags
 };
 

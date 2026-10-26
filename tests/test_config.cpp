@@ -42,3 +42,25 @@ TEST_CASE("theme colours") {
     CHECK(theme.bg.r == 0);
     CHECK(errors.find("theme.colors.text") != std::string::npos);
 }
+
+TEST_CASE("settings are written into the config text in place") {
+    const std::string text = "# top\n[playback]\n# quality\nquality = \"lossless\"\ntrial = \"skip\"\n\n[theme]\nfont_size = 14\n";
+    CHECK(set_config_value(text, "playback", "quality", "\"exhigh\"") ==
+          "# top\n[playback]\n# quality\nquality = \"exhigh\"\ntrial = \"skip\"\n\n[theme]\nfont_size = 14\n");
+    // A missing key follows the last setting of its section, and a longer key is not mistaken for it.
+    CHECK(set_config_value(text, "playback", "normalize", "true") ==
+          "# top\n[playback]\n# quality\nquality = \"lossless\"\ntrial = \"skip\"\nnormalize = true\n\n[theme]\nfont_size = 14\n");
+    CHECK(set_config_value(text, "theme", "font", "\"x\"") == text + "font = \"x\"\n");
+    CHECK(set_config_value(text, "desktop_lyrics", "enabled", "true") == text + "\n[desktop_lyrics]\nenabled = true\n");
+
+    std::string d(default_config_text());
+    d = set_config_value(d, "playback", "quality", "\"exhigh\"");
+    d = set_config_value(d, "playback", "normalize", "true");
+    d = set_config_value(d, "desktop_lyrics", "enabled", "true");
+    auto c = parse_config(d);
+    REQUIRE(c.has_value());
+    CHECK(c->playback.quality == Quality::exhigh);
+    CHECK(c->playback.normalize);
+    CHECK(c->desktop_lyrics.enabled);
+    CHECK(d.find("# 音量均衡") != std::string::npos);
+}

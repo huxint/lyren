@@ -156,6 +156,7 @@ public:
     FrameInput& input() { return *in_; }
 
     Id focus = 0;  // keyboard focus
+    bool disabled = false;  // while set, widgets ignore the pointer; the caller draws them dimmed
 
     // Eased value that follows target over ms (scaled by theme motion). The first call returns target.
     float anim(Id id, float target, float ms = 160, Bezier curve = ease::standard);

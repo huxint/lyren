@@ -176,6 +176,8 @@ void Output::process() {
         std::memcpy(dst + done * ch, ring_.data() + at * ch, run * stride);
         done += run;
     }
+    if (float g = gain_.load(std::memory_order_relaxed); g != 1)
+        for (size_t i = 0; i < size_t(k) * ch; ++i) dst[i] *= g;
     std::memset(dst + k * ch, 0, size_t(n - k) * stride);
     r_.store(r + k, std::memory_order_release);
     played_.store(played_.load(std::memory_order_relaxed) + k, std::memory_order_release);

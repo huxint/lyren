@@ -3,6 +3,7 @@
 #include <glaze/glaze.hpp>
 
 #include <format>
+#include <map>
 
 #include "core/log.hpp"
 
@@ -72,6 +73,7 @@ struct NTrial {
 struct NUrl {
     Str url, level;
     std::optional<NTrial> freeTrialInfo;
+    std::optional<double> gain, peak;
 };
 struct UrlReply {
     std::optional<std::vector<NUrl>> data;
@@ -81,7 +83,7 @@ struct NLyric {
     Str lyric;
 };
 struct LyricReply {
-    std::optional<NLyric> lrc, tlyric;
+    std::optional<NLyric> lrc, tlyric, yrc, ytlrc;
 };
 
 struct NTrackId {
@@ -97,21 +99,44 @@ struct PlaylistReply {
 struct SongsReply {
     std::optional<std::vector<NSong>> songs;
 };
+struct NAlbumFull {
+    Str name, picUrl, description, company;
+    double publishTime = 0;
+    std::optional<std::vector<NArtist>> artists;
+};
 struct AlbumReply {
     std::optional<std::vector<NSong>> songs;
-    std::optional<NAlbum> album;
+    std::optional<NAlbumFull> album;
 };
 struct ArtistReply {
     std::optional<std::vector<NSong>> hotSongs;
 };
 struct PlaylistsReply {
-    std::optional<std::vector<NPlaylist>> playlist, result, list;
+    std::optional<std::vector<NPlaylist>> playlist, result, list, recommend;
 };
 struct DailyData {
     std::optional<std::vector<NSong>> dailySongs;
 };
 struct DailyReply {
     std::optional<DailyData> data;
+};
+struct DislikeReply {
+    std::optional<NSong> data;
+};
+struct NHeartbeat {
+    std::optional<NSong> songInfo;
+};
+struct HeartbeatReply {
+    std::optional<std::vector<NHeartbeat>> data;
+};
+struct NRecord {
+    std::optional<NSong> data;
+};
+struct RecordsData {
+    std::optional<std::vector<NRecord>> list;
+};
+struct RecordsReply {
+    std::optional<RecordsData> data;
 };
 struct FmReply {
     std::optional<std::vector<NSong>> data;
@@ -131,6 +156,89 @@ struct QrKeyReply {
 };
 struct QrCheckReply {
     Str nickname, avatarUrl;
+};
+struct SquareReply {
+    std::optional<std::vector<NPlaylist>> playlists;
+    double total = 0;
+};
+struct NCategory {
+    Str name;
+    int category = 0;
+    bool hot = false;
+};
+struct CatalogueReply {
+    std::optional<std::vector<NCategory>> sub;
+    std::optional<std::map<std::string, std::string>> categories;
+};
+struct NArtistHead {
+    Str name, avatar;
+    Strs alias, transNames;
+    double musicSize = 0, albumSize = 0;
+};
+struct ArtistHeadData {
+    std::optional<NArtistHead> artist;
+};
+struct ArtistHeadReply {
+    std::optional<ArtistHeadData> data;
+};
+struct FollowedReply {
+    std::optional<bool> followed;
+};
+struct ArtistSongsReply {
+    std::optional<std::vector<NSong>> songs;
+    double total = 0;
+};
+struct ArtistAlbumsReply {
+    std::optional<std::vector<NAlbumInfo>> hotAlbums;
+    std::optional<NArtistInfo> artist;
+};
+struct NSection {
+    Str ti, txt;
+};
+struct IntroReply {
+    Str briefDesc;
+    std::optional<std::vector<NSection>> introduction;
+};
+struct CollectedReply {
+    std::optional<bool> isSub;
+};
+struct NSubAlbum {
+    uint64_t id = 0;
+    Str name, picUrl;
+    std::optional<std::vector<NArtist>> artists;
+};
+struct SubAlbumsReply {
+    std::optional<std::vector<NSubAlbum>> data;
+    std::optional<bool> hasMore;
+};
+struct SubArtistsReply {
+    std::optional<std::vector<NArtistInfo>> data;
+    std::optional<bool> hasMore;
+};
+struct CreateReply {
+    std::optional<NPlaylist> playlist;
+};
+struct NCommentUser {
+    Str nickname, avatarUrl;
+};
+struct NReplied {
+    std::optional<NCommentUser> user;
+    Str content;
+};
+struct NComment {
+    std::optional<NCommentUser> user;
+    Str content, timeStr;
+    double likedCount = 0;
+    std::optional<std::vector<NReplied>> beReplied;
+};
+struct CommentsData {
+    std::optional<std::vector<NComment>> comments;
+    double totalCount = 0;
+    std::optional<bool> hasMore;
+    Str cursor;
+};
+struct CommentsReply {
+    std::optional<CommentsData> data;
 };
 struct NProfile {
     uint64_t userId = 0;
@@ -197,22 +305,52 @@ Card playlist_card(const NPlaylist& p) {
     return c;
 }
 
-std::string year_of(double ms) {
-    if (ms <= 0) return {};
+// Search results and the square name the creator too.
+Card listed_playlist(const NPlaylist& p) {
+    Card c = playlist_card(p);
+    if (p.creator && p.creator->nickname) c.subtitle = std::format("{} 首 · {}", c.count, *p.creator->nickname);
+    return c;
+}
+
+std::tm local(double ms) {
     std::time_t t = std::time_t(ms / 1000);
     std::tm tm;
     localtime_r(&t, &tm);
-    return std::to_string(tm.tm_year + 1900);
+    return tm;
+}
+
+std::string year_of(double ms) { return ms > 0 ? std::to_string(local(ms).tm_year + 1900) : ""; }
+
+std::string names(const std::optional<std::vector<NArtist>>& artists) {
+    std::string out;
+    if (artists)
+        for (const auto& a : *artists) out += (out.empty() ? "" : " / ") + a.name.value_or("");
+    return out;
+}
+
+// Descriptions and comments often start or end with blank lines.
+std::string trimmed(const Str& s) {
+    if (!s) return {};
+    std::string_view v = *s;
+    constexpr std::string_view blank = " \t\r\n";
+    v.remove_prefix(std::min(v.size(), v.find_first_not_of(blank)));
+    v = v.substr(0, v.find_last_not_of(blank) + 1);
+    return std::string(v);
+}
+
+Result<void> done(const Reply& r) {
+    if (!r.error.empty()) return std::unexpected(r.error);
+    return {};
 }
 
 }  // namespace
 
-Task<Result<SearchPage>> Netease::search(std::string query, SearchKind kind, int offset, int limit) {
+Task<Result<Batch>> Netease::search(std::string query, SearchKind kind, int offset, int limit) {
     static constexpr int types[] = {1, 10, 100, 1000};
     auto r = parse<SearchReply>(co_await client.call(
         "/api/cloudsearch/pc", std::format(R"("s":{},"type":{},"limit":{},"offset":{},"total":true)", json_string(query), types[int(kind)], limit, offset)));
     if (!r) co_return std::unexpected(r.error());
-    SearchPage page;
+    Batch page;
     if (!r->result) co_return page;
     const SearchResult& res = *r->result;
     switch (kind) {
@@ -245,11 +383,7 @@ Task<Result<SearchPage>> Netease::search(std::string query, SearchKind kind, int
             break;
         case SearchKind::playlists:
             if (res.playlists)
-                for (const auto& p : *res.playlists) {
-                    Card c = playlist_card(p);
-                    if (p.creator && p.creator->nickname) c.subtitle = std::format("{} 首 · {}", c.count, *p.creator->nickname);
-                    page.cards.push_back(std::move(c));
-                }
+                for (const auto& p : *res.playlists) page.cards.push_back(listed_playlist(p));
             page.total = int(res.playlistCount);
             break;
     }
@@ -272,29 +406,26 @@ Task<Result<Stream>> Netease::stream(Track t, Quality quality) {
     co_return Stream{.url = https(*u.url),
                      .trial = u.freeTrialInfo.has_value(),
                      .trial_start = u.freeTrialInfo ? u.freeTrialInfo->start : 0,
-                     .level = u.level.value_or("")};
+                     .level = u.level.value_or(""),
+                     .gain = float(u.gain.value_or(0)),
+                     .peak = float(u.peak.value_or(0))};
 }
 
-Task<Result<Lyrics>> Netease::lyrics(Track t) {
+Task<Result<std::vector<LyricLine>>> Netease::lyrics(Track t) {
     auto r = parse<LyricReply>(
         co_await client.call("/api/song/lyric/v1", std::format(R"("id":{},"cp":false,"tv":0,"lv":0,"rv":0,"kv":0,"yv":0,"ytv":0,"yrv":0)", t.id)));
     if (!r) co_return std::unexpected(r.error());
-    Lyrics l;
-    if (r->lrc) l.lrc = r->lrc->lyric.value_or("");
-    if (r->tlyric) l.translation = r->tlyric->lyric.value_or("");
-    co_return l;
+    auto text = [](const std::optional<NLyric>& l) { return l ? l->lyric.value_or("") : ""; };
+    std::string yrc = text(r->yrc), ytlrc = text(r->ytlrc);
+    // The word-timed translation follows the yrc line starts.
+    co_return parse_lyrics(text(r->lrc), yrc.empty() || ytlrc.empty() ? text(r->tlyric) : ytlrc, yrc);
 }
 
 Task<Result<std::vector<Track>>> Netease::tracks(Card card) {
     if (card.kind == CardKind::album) {
-        auto r = parse<AlbumReply>(co_await client.call("/api/v1/album/" + card.id, "", Api::weapi));
+        auto r = co_await album(card.id);
         if (!r) co_return std::unexpected(r.error());
-        auto out = tracks_of(r->songs);
-        // Album tracks often come without a cover of their own.
-        std::string cover = r->album ? https(r->album->picUrl.value_or("")) : "";
-        for (auto& t : out)
-            if (t.cover.empty()) t.cover = cover;
-        co_return out;
+        co_return std::move(r->tracks);
     }
     if (card.kind == CardKind::artist) {
         auto r = parse<ArtistReply>(co_await client.call("/api/v1/artist/" + card.id, "", Api::weapi));
@@ -406,6 +537,51 @@ Task<Result<std::vector<Track>>> Netease::daily() {
     co_return r->data ? tracks_of(r->data->dailySongs) : std::vector<Track>{};
 }
 
+Task<Result<std::vector<Card>>> Netease::daily_playlists() {
+    auto r = parse<PlaylistsReply>(co_await client.call("/api/v1/discovery/recommend/resource", "", Api::weapi));
+    if (!r) co_return std::unexpected(r.error());
+    std::vector<Card> out;
+    if (r->recommend)
+        for (const auto& p : *r->recommend) out.push_back(playlist_card(p));
+    co_return out;
+}
+
+Task<Result<std::optional<Track>>> Netease::dislike_daily(std::string id) {
+    auto r = parse<DislikeReply>(
+        co_await client.call("/api/v2/discovery/recommend/dislike", std::format(R"("resId":{},"resType":4,"sceneType":1)", id), Api::weapi));
+    if (!r) co_return std::unexpected(r.error());
+    if (!r->data) co_return std::nullopt;
+    co_return track(*r->data);
+}
+
+Task<Result<std::vector<Track>>> Netease::heartbeat(std::string seed, std::string playlist) {
+    auto r = parse<HeartbeatReply>(co_await client.call(
+        "/api/playmode/intelligence/list",
+        std::format(R"("songId":{},"type":"fromPlayOne","playlistId":{},"startMusicId":{},"count":1)", seed, playlist, seed)));
+    if (!r) co_return std::unexpected(r.error());
+    std::vector<Track> out;
+    if (r->data)
+        for (const auto& d : *r->data)
+            if (d.songInfo) out.push_back(track(*d.songInfo));
+    co_return out;
+}
+
+Task<Result<std::vector<Track>>> Netease::similar(std::string id) {
+    auto r = parse<SongsReply>(co_await client.call("/api/v1/discovery/simiSong", std::format(R"("songid":{},"limit":50,"offset":0)", id), Api::weapi));
+    if (!r) co_return std::unexpected(r.error());
+    co_return tracks_of(r->songs);
+}
+
+Task<Result<std::vector<Track>>> Netease::recent_plays() {
+    auto r = parse<RecordsReply>(co_await client.call("/api/play-record/song/list", R"("limit":100)", Api::weapi));
+    if (!r) co_return std::unexpected(r.error());
+    std::vector<Track> out;
+    if (r->data && r->data->list)
+        for (const auto& rec : *r->data->list)
+            if (rec.data) out.push_back(track(*rec.data));
+    co_return out;
+}
+
 Task<Result<std::vector<Track>>> Netease::fm() {
     auto r = parse<FmReply>(co_await client.call("/api/v1/radio/get", "", Api::weapi));
     if (!r) co_return std::unexpected(r.error());
@@ -413,9 +589,7 @@ Task<Result<std::vector<Track>>> Netease::fm() {
 }
 
 Task<Result<void>> Netease::fm_trash(std::string id) {
-    Reply r = co_await client.call("/api/radio/trash/add", std::format(R"("songId":{},"alg":"RT","time":25)", id), Api::weapi);
-    if (!r.error.empty()) co_return std::unexpected(r.error);
-    co_return Result<void>{};
+    co_return done(co_await client.call("/api/radio/trash/add", std::format(R"("songId":{},"alg":"RT","time":25)", id), Api::weapi));
 }
 
 Task<Result<std::vector<Track>>> Netease::cloud() {
@@ -441,8 +615,10 @@ Task<Result<std::pair<Card, std::vector<Card>>>> Netease::user_playlists(std::st
     std::pair<Card, std::vector<Card>> out;
     if (r->playlist)
         for (const auto& p : *r->playlist) {
-            if (p.specialType == 5) out.first = playlist_card(p);
-            else out.second.push_back(playlist_card(p));
+            Card c = playlist_card(p);
+            c.owned = p.creator && std::to_string(p.creator->userId) == uid;
+            if (p.specialType == 5) out.first = std::move(c);
+            else out.second.push_back(std::move(c));
         }
     co_return out;
 }
@@ -457,9 +633,226 @@ Task<Result<std::vector<std::string>>> Netease::liked_ids(std::string uid) {
 }
 
 Task<Result<void>> Netease::like(std::string id, bool on) {
-    Reply r = co_await client.call("/api/radio/like", std::format(R"("alg":"itembased","trackId":{},"like":{},"time":"3")", id, on), Api::weapi);
-    if (!r.error.empty()) co_return std::unexpected(r.error);
-    co_return Result<void>{};
+    co_return done(co_await client.call("/api/radio/like", std::format(R"("alg":"itembased","trackId":{},"like":{},"time":"3")", id, on), Api::weapi));
+}
+
+Task<Result<Categories>> Netease::categories() {
+    auto r = parse<CatalogueReply>(co_await client.call("/api/playlist/catalogue", ""));
+    if (!r) co_return std::unexpected(r.error());
+    Categories out;
+    if (!r->sub || !r->categories) co_return out;
+    for (const auto& [key, heading] : *r->categories) {
+        auto& g = out.groups.emplace_back(heading, std::vector<std::string>{});
+        for (const auto& c : *r->sub)
+            if (std::to_string(c.category) == key) g.second.push_back(c.name.value_or(""));
+    }
+    for (const auto& c : *r->sub)
+        if (c.hot) out.hot.push_back(c.name.value_or(""));
+    co_return out;
+}
+
+Task<Result<Batch>> Netease::square(std::string category, int offset) {
+    auto r = parse<SquareReply>(co_await client.call(
+        "/api/playlist/list", std::format(R"("cat":{},"order":"hot","limit":50,"offset":{},"total":true)", json_string(category), offset), Api::weapi));
+    if (!r) co_return std::unexpected(r.error());
+    Batch out{.total = int(r->total)};
+    if (r->playlists)
+        for (const auto& p : *r->playlists) out.cards.push_back(listed_playlist(p));
+    co_return out;
+}
+
+Task<Result<ArtistInfo>> Netease::artist(std::string id) {
+    auto r = parse<ArtistHeadReply>(co_await client.call("/api/artist/head/info/get", std::format(R"("id":{})", id)));
+    if (!r) co_return std::unexpected(r.error());
+    if (!r->data || !r->data->artist) co_return std::unexpected("没有找到这位歌手");
+    const NArtistHead& a = *r->data->artist;
+    ArtistInfo out{.name = a.name.value_or(""), .avatar = https(a.avatar.value_or("")), .songs = int(a.musicSize), .albums = int(a.albumSize)};
+    for (const Strs* list : {&a.transNames, &a.alias})
+        if (*list)
+            for (const auto& n : **list) out.alias += (out.alias.empty() ? "" : " / ") + n;
+    if (logged_in()) {
+        auto f = parse<FollowedReply>(co_await client.call("/api/artist/detail/dynamic", std::format(R"("id":{})", id)));
+        out.followed = f && f->followed.value_or(false);
+    }
+    co_return out;
+}
+
+Task<Result<Batch>> Netease::artist_songs(std::string id, int offset) {
+    auto r = parse<ArtistSongsReply>(co_await client.call(
+        "/api/v1/artist/songs", std::format(R"("id":{},"private_cloud":"true","work_type":1,"order":"hot","offset":{},"limit":100)", id, offset)));
+    if (!r) co_return std::unexpected(r.error());
+    co_return Batch{.tracks = tracks_of(r->songs), .total = int(r->total)};
+}
+
+Task<Result<Batch>> Netease::artist_albums(std::string id, int offset) {
+    auto r = parse<ArtistAlbumsReply>(
+        co_await client.call("/api/artist/albums/" + id, std::format(R"("limit":30,"offset":{},"total":true)", offset), Api::weapi));
+    if (!r) co_return std::unexpected(r.error());
+    Batch out{.total = r->artist ? int(r->artist->albumSize) : 0};
+    if (r->hotAlbums)
+        for (const auto& a : *r->hotAlbums) {
+            std::string year = year_of(a.publishTime);
+            out.cards.push_back({.kind = CardKind::album,
+                                 .id = std::to_string(a.id),
+                                 .title = a.name.value_or(""),
+                                 .subtitle = year.empty() ? std::format("{} 首", int(a.size)) : std::format("{} · {} 首", year, int(a.size)),
+                                 .cover = https(a.picUrl.value_or("")),
+                                 .count = int(a.size)});
+        }
+    co_return out;
+}
+
+Task<Result<std::vector<std::pair<std::string, std::string>>>> Netease::artist_intro(std::string id) {
+    auto r = parse<IntroReply>(co_await client.call("/api/artist/introduction", std::format(R"("id":{})", id), Api::weapi));
+    if (!r) co_return std::unexpected(r.error());
+    std::vector<std::pair<std::string, std::string>> out;
+    if (std::string brief = trimmed(r->briefDesc); !brief.empty()) out.emplace_back("", std::move(brief));
+    if (r->introduction)
+        for (const auto& s : *r->introduction) out.emplace_back(trimmed(s.ti), trimmed(s.txt));
+    co_return out;
+}
+
+Task<Result<AlbumInfo>> Netease::album(std::string id) {
+    auto r = parse<AlbumReply>(co_await client.call("/api/v1/album/" + id, "", Api::weapi));
+    if (!r) co_return std::unexpected(r.error());
+    AlbumInfo out{.tracks = tracks_of(r->songs)};
+    if (const auto& a = r->album) {
+        out.artist = names(a->artists);
+        if (a->artists && !a->artists->empty()) out.artist_id = std::to_string(a->artists->front().id);
+        if (a->publishTime > 0) {
+            std::tm tm = local(a->publishTime);
+            out.date = std::format("{}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+        }
+        out.company = a->company.value_or("");
+        out.about = trimmed(a->description);
+        // Album tracks often come without a cover of their own.
+        std::string cover = https(a->picUrl.value_or(""));
+        for (auto& t : out.tracks)
+            if (t.cover.empty()) t.cover = cover;
+    }
+    if (logged_in()) {
+        auto c = parse<CollectedReply>(co_await client.call("/api/album/detail/dynamic", std::format(R"("id":{})", id), Api::weapi));
+        out.collected = c && c->isSub.value_or(false);
+    }
+    co_return out;
+}
+
+Task<Result<void>> Netease::follow(std::string artist, bool on) {
+    co_return done(co_await client.call(std::format("/api/artist/{}", on ? "sub" : "unsub"),
+                                        std::format(R"("artistId":{},"artistIds":"[{}]")", json_string(artist), artist), Api::weapi));
+}
+
+Task<Result<void>> Netease::collect(std::string album, bool on) {
+    co_return done(co_await client.call(std::format("/api/album/{}", on ? "sub" : "unsub"), std::format(R"("id":{})", json_string(album)), Api::weapi));
+}
+
+Task<Result<std::vector<Card>>> Netease::collected_albums() {
+    std::vector<Card> out;
+    for (int offset = 0;; offset += 100) {
+        auto r = parse<SubAlbumsReply>(
+            co_await client.call("/api/album/sublist", std::format(R"("limit":100,"offset":{},"total":true)", offset), Api::weapi));
+        if (!r) co_return std::unexpected(r.error());
+        if (r->data)
+            for (const auto& a : *r->data)
+                out.push_back({.kind = CardKind::album,
+                               .id = std::to_string(a.id),
+                               .title = a.name.value_or(""),
+                               .subtitle = names(a.artists),
+                               .cover = https(a.picUrl.value_or(""))});
+        if (!r->hasMore.value_or(false) || !r->data || r->data->empty()) break;
+    }
+    co_return out;
+}
+
+Task<Result<std::vector<Card>>> Netease::followed_artists() {
+    std::vector<Card> out;
+    for (int offset = 0;; offset += 100) {
+        auto r = parse<SubArtistsReply>(
+            co_await client.call("/api/artist/sublist", std::format(R"("limit":100,"offset":{},"total":true)", offset), Api::weapi));
+        if (!r) co_return std::unexpected(r.error());
+        if (r->data)
+            for (const auto& a : *r->data)
+                out.push_back({.kind = CardKind::artist,
+                               .id = std::to_string(a.id),
+                               .title = a.name.value_or(""),
+                               .subtitle = a.albumSize > 0 ? std::format("专辑 {}", int(a.albumSize)) : "",
+                               .cover = https(a.picUrl.value_or(a.img1v1Url.value_or("")))});
+        if (!r->hasMore.value_or(false) || !r->data || r->data->empty()) break;
+    }
+    co_return out;
+}
+
+Task<Result<Card>> Netease::create_playlist(std::string name, bool hidden) {
+    auto r = parse<CreateReply>(co_await client.call(
+        "/api/playlist/create", std::format(R"("name":{},"privacy":"{}","type":"NORMAL")", json_string(name), hidden ? 10 : 0), Api::weapi));
+    if (!r) co_return std::unexpected(r.error());
+    if (!r->playlist) co_return std::unexpected("没有拿到新歌单");
+    Card c = playlist_card(*r->playlist);
+    c.owned = true;
+    co_return c;
+}
+
+Task<Result<void>> Netease::rename_playlist(std::string id, std::string name) {
+    co_return done(co_await client.call("/api/playlist/update/name", std::format(R"("id":{},"name":{})", json_string(id), json_string(name))));
+}
+
+Task<Result<void>> Netease::delete_playlist(std::string id) {
+    co_return done(co_await client.call("/api/playlist/remove", std::format(R"("ids":"[{}]")", id), Api::weapi));
+}
+
+Task<Result<void>> Netease::edit_playlist(std::string id, std::string track, bool add) {
+    auto fields = [&](std::string_view ids) {
+        return std::format(R"("op":"{}","pid":{},"trackIds":{},"imme":"true")", add ? "add" : "del", json_string(id), json_string(ids));
+    };
+    Reply r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}"])", track)));
+    // The server sometimes answers 512 for a single id; listing it twice goes through.
+    if (r.code == 512) r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}","{}"])", track, track)));
+    if (r.code == 502 && add) co_return std::unexpected("这首歌已经在歌单里了");
+    co_return done(r);
+}
+
+Task<Result<CommentPage>> Netease::comments(Subject subject, std::string id, bool hot, int page, std::string cursor) {
+    static constexpr const char* threads[] = {"R_SO_4_", "R_AL_3_", "A_PL_0_"};
+    auto r = parse<CommentsReply>(co_await client.call(
+        "/api/v2/resource/comments", std::format(R"("threadId":"{}{}","pageNo":{},"showInner":true,"pageSize":20,"cursor":{},"sortType":{})",
+                                                 threads[int(subject)], id, page, json_string(cursor), hot ? 2 : 3)));
+    if (!r) co_return std::unexpected(r.error());
+    CommentPage out;
+    if (!r->data) co_return out;
+    const CommentsData& d = *r->data;
+    out.total = int(d.totalCount);
+    out.more = d.hasMore.value_or(false);
+    out.cursor = d.cursor.value_or("");
+    if (d.comments)
+        for (const auto& c : *d.comments) {
+            Comment& m = out.comments.emplace_back();
+            if (c.user) m.user = c.user->nickname.value_or(""), m.avatar = https(c.user->avatarUrl.value_or(""));
+            m.text = trimmed(c.content);
+            m.time = c.timeStr.value_or("");
+            m.likes = int(c.likedCount);
+            if (c.beReplied && !c.beReplied->empty()) {
+                const NReplied& b = c.beReplied->front();
+                m.reply_user = b.user ? b.user->nickname.value_or("") : "";
+                m.reply = trimmed(b.content);
+            }
+        }
+    co_return out;
+}
+
+// As api-enhanced's scrobble: every value is a string, and the play record always ends with "playend" (the server
+// does not count others).
+Task<void> Netease::report_start(std::string id, std::string source) {
+    std::string logs = std::format(
+        R"([{{"action":"startplay","json":{{"id":"{}","type":"song","mainsite":"1","mainsiteWeb":"1","content":"id={}"}}}}])", id, source);
+    co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", json_string(logs)), Api::clientlog);
+}
+
+Task<void> Netease::report_play(std::string id, std::string source, int seconds) {
+    std::string logs = std::format(
+        R"([{{"action":"play","json":{{"download":0,"end":"playend","id":"{}","sourceId":"{}","time":"{}","type":"song","wifi":0,)"
+        R"("source":"list","mainsite":"1","mainsiteWeb":"1","content":"id={}"}}}}])",
+        id, source, seconds, source);
+    co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", json_string(logs)), Api::clientlog);
 }
 
 }  // namespace lyren::ncm

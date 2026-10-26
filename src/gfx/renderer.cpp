@@ -382,7 +382,7 @@ void Renderer::draw(Target& t, std::span<const Prim> prims, const float clear[4]
     vkCmdEndRendering(cmd);
     VkBuffer readback = VK_NULL_HANDLE;
     VkDeviceMemory readback_mem = VK_NULL_HANDLE;
-    if (capture_) {
+    if (capture_ && capture_target_ == &t) {
         VkBufferCreateInfo bci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                .size = VkDeviceSize(t.width) * t.height * 4,
                                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};

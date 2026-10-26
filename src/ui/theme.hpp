@@ -27,6 +27,10 @@ struct Theme {
     float opacity = 1;
     bool dark = true;
     bool auto_accent = true;  // accent follows the cover of the current track
+    // Desktop lyrics: the sung part (unset follows the accent), the rest, and an outline that reads over anything.
+    std::optional<Color> lyric_sung;
+    Color lyric_text, lyric_outline;
+    float lyric_size = 30;
 
     float fs(float base14) const { return base14 * font_size / 14; }
     float radius_s() const { return radius * 0.6f; }

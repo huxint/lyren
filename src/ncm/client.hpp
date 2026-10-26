@@ -9,7 +9,8 @@
 
 namespace lyren::ncm {
 
-enum class Api { eapi, weapi };
+// clientlog: eapi to the client-log host as the macOS client, which is how listening reports are sent.
+enum class Api { eapi, weapi, clientlog };
 
 struct Reply {
     long code = 0;  // business code, or the HTTP status when the body has none

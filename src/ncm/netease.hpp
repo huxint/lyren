@@ -4,6 +4,12 @@
 
 namespace lyren::ncm {
 
+// Playlist square categories: the popular ones, then all of them under their headings.
+struct Categories {
+    std::vector<std::string> hot;
+    std::vector<std::pair<std::string, std::vector<std::string>>> groups;
+};
+
 // NetEase Cloud Music. Endpoints and their encodings follow api-enhanced's module/*.js.
 class Netease : public Provider {
 public:
@@ -11,9 +17,9 @@ public:
 
     Client client;
 
-    Task<Result<SearchPage>> search(std::string query, SearchKind kind, int offset, int limit) override;
+    Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) override;
     Task<Result<Stream>> stream(Track track, Quality quality) override;
-    Task<Result<Lyrics>> lyrics(Track track) override;
+    Task<Result<std::vector<LyricLine>>> lyrics(Track track) override;
     Task<Result<std::vector<Track>>> tracks(Card card) override;
     std::string cover_url(const std::string& base, int px) const override;
 
@@ -26,6 +32,14 @@ public:
     Task<Result<std::vector<Card>>> recommended_playlists();
     Task<Result<std::vector<Card>>> toplists();
     Task<Result<std::vector<Track>>> daily();
+    Task<Result<std::vector<Card>>> daily_playlists();
+    // Takes a song out of the daily recommendations; the server may name one to take its place.
+    Task<Result<std::optional<Track>>> dislike_daily(std::string id);
+    // Heartbeat mode: songs to follow seed, from the liked playlist and others like them.
+    Task<Result<std::vector<Track>>> heartbeat(std::string seed, std::string playlist);
+    Task<Result<std::vector<Track>>> similar(std::string id);
+    // The account's recent plays on every device.
+    Task<Result<std::vector<Track>>> recent_plays();
     Task<Result<std::vector<Track>>> fm();
     Task<Result<void>> fm_trash(std::string id);
     Task<Result<std::vector<Track>>> cloud();
@@ -34,6 +48,31 @@ public:
     Task<Result<std::vector<std::string>>> liked_ids(std::string uid);
     Task<Result<void>> like(std::string id, bool on);
     Task<Result<std::vector<Track>>> song_detail(std::vector<std::string> ids);
+
+    Task<Result<Categories>> categories();
+    Task<Result<Batch>> square(std::string category, int offset);
+
+    Task<Result<ArtistInfo>> artist(std::string id);
+    Task<Result<Batch>> artist_songs(std::string id, int offset);
+    Task<Result<Batch>> artist_albums(std::string id, int offset);
+    // Headings and their text; the summary comes first, without a heading.
+    Task<Result<std::vector<std::pair<std::string, std::string>>>> artist_intro(std::string id);
+    Task<Result<AlbumInfo>> album(std::string id);
+    Task<Result<void>> follow(std::string artist, bool on);
+    Task<Result<void>> collect(std::string album, bool on);
+    Task<Result<std::vector<Card>>> collected_albums();
+    Task<Result<std::vector<Card>>> followed_artists();
+
+    Task<Result<Card>> create_playlist(std::string name, bool hidden);
+    Task<Result<void>> rename_playlist(std::string id, std::string name);
+    Task<Result<void>> delete_playlist(std::string id);
+    Task<Result<void>> edit_playlist(std::string id, std::string track, bool add);
+
+    Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor);
+
+    // Listening reports: start puts the song in the account's recent plays, play counts it in the listening ranking.
+    Task<void> report_start(std::string id, std::string source);
+    Task<void> report_play(std::string id, std::string source, int seconds);
 
 private:
     std::string qr_key_;

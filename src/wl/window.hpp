@@ -56,6 +56,9 @@ public:
     void show_menu(int x, int y);
     void minimize();
     void toggle_maximize();
+    // Asks to be focused. A launcher's token is honoured; without one the compositor decides, and KWin then only
+    // marks the window as wanting attention unless it is already active.
+    void activate(const std::string& token);
 
     // Must run right before the frame is presented (the present commits the surface).
     void prepare_present();

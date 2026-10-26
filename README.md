@@ -8,6 +8,8 @@ Lyren（弦间）是面向 Wayland 桌面的 C++26 音乐播放器，使用 Vulk
 
 支持 MP3、FLAC、AAC 和 Vorbis 解码、渐进下载、进度跳转及音量控制。播放地址与可用音质由平台响应决定。
 
+通过 MPRIS 接入桌面媒体控制和媒体键。桌面歌词使用独立的 Wayland 表面，可调整位置、锁定和切换显示模式。
+
 ## 运行环境
 
 需要支持 C++26 的 GCC 16 工具链、CMake 4.0 或更新版本、Ninja 和 `glslc`。运行环境需提供 Wayland 会话和 Vulkan 驱动。播放需要 PipeWire 服务。

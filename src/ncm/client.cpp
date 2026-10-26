@@ -15,6 +15,8 @@ namespace lyren::ncm {
 static constexpr const char* ua_eapi = "User-Agent: NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)";
 static constexpr const char* ua_weapi =
     "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0";
+static constexpr const char* ua_osx =
+    "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 static constexpr const char* form = "Content-Type: application/x-www-form-urlencoded";
 
 static int64_t now_ms() {
@@ -114,11 +116,12 @@ struct Status {
 Task<Reply> Client::call(std::string uri, std::string fields, Api api) {
     std::string sep = fields.empty() ? "" : ",";
     net::Request req;
-    if (api == Api::eapi) {
-        Pairs header{{"osver", get("osver")},
+    if (api != Api::weapi) {
+        bool log = api == Api::clientlog;
+        Pairs header{{"osver", log ? "15.5" : get("osver")},
                      {"deviceId", get("deviceId")},
-                     {"os", get("os")},
-                     {"appver", get("appver")},
+                     {"os", log ? "osx" : get("os")},
+                     {"appver", log ? "3.1.10.5100" : get("appver")},
                      {"versioncode", "140"},
                      {"mobilename", ""},
                      {"buildver", std::to_string(now_ms() / 1000)},
@@ -132,9 +135,9 @@ Task<Reply> Client::call(std::string uri, std::string fields, Api api) {
         std::string h;
         for (auto& [k, v] : header) h += std::format("{}{}:{}", h.empty() ? "" : ",", json_string(k), json_string(v));
         std::string text = std::format("{{{}{}\"header\":{{{}}},\"e_r\":false}}", fields, sep, h);
-        req.url = "https://interfacepc.music.163.com/eapi/" + uri.substr(5);
+        req.url = std::format("https://{}/eapi/{}", log ? "clientlog.music.163.com" : "interfacepc.music.163.com", uri.substr(5));
         req.body = "params=" + eapi(uri, text);
-        req.headers = {ua_eapi, cookie_header(header), form};
+        req.headers = {log ? ua_osx : ua_eapi, cookie_header(header), form};
     } else {
         std::string text = std::format("{{{}{}\"csrf_token\":{}}}", fields, sep, json_string(get("__csrf")));
         auto w = weapi(text);
