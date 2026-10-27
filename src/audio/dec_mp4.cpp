@@ -1,6 +1,7 @@
 #include <fdk-aac/aacdecoder_lib.h>
 
 #include <algorithm>
+#include <array>
 #include <format>
 #include <vector>
 
@@ -381,8 +382,8 @@ namespace lyren::audio {
         uint64_t at = 0, size = spool.size();
         std::vector<uint8_t> moov;
         while (at + 8 <= size) {
-            uint8_t h[16];
-            if (!spool.read_exact(at, h, std::min<uint64_t>(16, size - at))) {
+            std::array<uint8_t, 16> h;
+            if (!spool.read_exact(at, h.data(), std::min<uint64_t>(h.size(), size - at))) {
                 return nullptr;
             }
             uint64_t n = uint64_t(h[0]) << 24 | h[1] << 16 | h[2] << 8 | h[3], hdr = 8;
@@ -419,7 +420,7 @@ namespace lyren::audio {
             return nullptr;
         }
         if (t.codec != fourcc("mp4a") || t.asc.empty()) {
-            char cc[5] = {char(t.codec >> 24), char(t.codec >> 16), char(t.codec >> 8), char(t.codec), 0};
+            std::string cc = {char(t.codec >> 24), char(t.codec >> 16), char(t.codec >> 8), char(t.codec)};
             error = std::format("unsupported mp4 codec {}", cc);
             return nullptr;
         }

@@ -1340,7 +1340,7 @@ namespace lyren {
         auto batch = [](std::vector<Card> v) {
             return Batch{.cards = std::move(v)};
         };
-        Results fresh[2];
+        std::array<Results, 2> fresh;
         arrived(fresh[0], std::move(albums).transform(batch), now_());
         arrived(fresh[1], std::move(artists).transform(batch), now_());
         // A reload does not replay the cards' entrance.
@@ -2113,12 +2113,17 @@ namespace lyren {
             const char *icon;
             const char *label;
         };
-        static constexpr Nav entries[] = {{Page::recommend, "compass", "推荐"}, {Page::toplist, "list-ordered", "排行榜"}, {Page::square, "layout-grid", "歌单广场"},
-                                          {Page::fm, "radio", "私人 FM"},       {Page::liked, "heart", "我喜欢的音乐"},    {Page::recent, "history", "最近播放"},
-                                          {Page::cloud, "cloud", "我的云盘"},   {Page::collection, "star", "我的收藏"}};
+        static constexpr auto entries = std::to_array<Nav>({{Page::recommend, "compass", "推荐"},
+                                                            {Page::toplist, "list-ordered", "排行榜"},
+                                                            {Page::square, "layout-grid", "歌单广场"},
+                                                            {Page::fm, "radio", "私人 FM"},
+                                                            {Page::liked, "heart", "我喜欢的音乐"},
+                                                            {Page::recent, "history", "最近播放"},
+                                                            {Page::cloud, "cloud", "我的云盘"},
+                                                            {Page::collection, "star", "我的收藏"}});
         std::vector<Nav> nav;
         size_t mine = 0;
-        for (size_t k = 0; k < std::size(entries); ++k) {
+        for (size_t k = 0; k < entries.size(); ++k) {
             if (supports(entries[k].page, active_)) {
                 nav.push_back(entries[k]);
                 if (k < 4) {
@@ -2520,7 +2525,7 @@ namespace lyren {
         if (page_status(ui, {r.x, r.y + 100, r.w, r.h - 100}, false, "", !signed_in())) {
             return;
         }
-        static constexpr std::string_view tabs[] = {"专辑", "歌手"};
+        static constexpr std::array<std::string_view, 2> tabs = {"专辑", "歌手"};
         int before = lib.collection_tab;
         if (ui.tabs(ui.id("collection-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, lib.collection_tab)) {
             tab_time_ = ui.now;
@@ -2579,7 +2584,7 @@ namespace lyren {
         }
 
         // Songs and albums load a page at a time as they scroll; each tab loads the first time it is picked.
-        static constexpr std::string_view tabs[] = {"歌曲", "专辑", "简介"};
+        static constexpr std::array<std::string_view, 3> tabs = {"歌曲", "专辑", "简介"};
         Rect bar{head.x, head.bottom() + 24, head.w, 36};
         int before = a.tab;
         if (ui.tabs(ui.id("artist-tabs"), bar, tabs, a.tab)) {
@@ -2624,10 +2629,10 @@ namespace lyren {
     void Shell::search_page(ui::Ui &ui, Rect r) {
         Rect body = r.inset(32, 0);
         SearchResults &res = results_[search_tab_];
-        static constexpr const char *kinds[] = {"首单曲", "张专辑", "位歌手", "个歌单"};
+        static constexpr std::array kinds = {"首单曲", "张专辑", "位歌手", "个歌单"};
         page_title(ui, body, r.y + 28, std::format("“{}”", searched_),
                    res.loaded ? std::format("全部平台 · 找到{} {} {}", res.more() ? "约" : "", res.total, kinds[search_tab_]) : "正在搜索全部平台");
-        static constexpr std::string_view tabs[] = {"单曲", "专辑", "歌手", "歌单"};
+        static constexpr std::array<std::string_view, 4> tabs = {"单曲", "专辑", "歌手", "歌单"};
         int before = search_tab_;
         if (ui.tabs(ui.id("search-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, search_tab_)) {
             selected_ = -1;
@@ -2655,7 +2660,7 @@ namespace lyren {
             }
             return;
         }
-        static constexpr const char *ids[] = {"", "search-albums", "search-artists", "search-playlists"};
+        static constexpr std::array ids = {"", "search-albums", "search-artists", "search-playlists"};
         bool near_end;
         if (int i = grid_view(ui, content, ui.id(ids[search_tab_]), shown.cards, search_tab_ == 2, since, false, near_end); i >= 0) {
             open(ui, shown.cards[size_t(i)]);
@@ -2913,7 +2918,7 @@ namespace lyren {
                 spawn(heartbeat(v[seed]));
             }
         } else if (route_.page == Page::recent) {
-            static constexpr std::string_view tabs[] = {"本机", "云端"};
+            static constexpr std::array<std::string_view, 2> tabs = {"本机", "云端"};
             if (provider().features.recent_plays && signed_in() && ui.tabs(ui.id("recent-tabs"), {x, y, 140, 40}, tabs, library().recent_tab, ui::TabStyle::pill)) {
                 tab_time_ = ui.now;
                 selected_ = -1;
@@ -3104,8 +3109,8 @@ namespace lyren {
 
         // Transport; play and pause morph into each other, a ring turns while the track loads or buffers.
         float cx = std::round(mid.x + mid.w / 2), cy = mid.y + 30;
-        static constexpr const char *mode_icons[] = {"repeat", "repeat-1", "shuffle"};
-        static constexpr const char *mode_names[] = {"列表循环", "单曲循环", "随机播放"};
+        static constexpr std::array mode_icons = {"repeat", "repeat-1", "shuffle"};
+        static constexpr std::array mode_names = {"列表循环", "单曲循环", "随机播放"};
         if (ui.icon_button(ui.id("mode"), {cx - 124, cy - 16, 32, 32}, mode_icons[int(mode_)], 17, mode_ != Mode::list)) {
             set_mode(Mode((int(mode_) + 1) % 3));
             ui.toast(mode_names[int(mode_)], mode_icons[int(mode_)]);
@@ -3867,12 +3872,14 @@ namespace lyren {
                 p.rect(logo, t.accent, 10);
                 p.icon("music", ui::center(logo, 22, 22), white);
             }
-            // Scanned or expired: the code fades under the state.
-            float veil = ui.anim(ui.id("qr-veil"), state == QrState::scanned || state == QrState::expired ? 1 : 0, 240);
+            // Scanned, expired or failed: the code fades under the state.
+            float veil = ui.anim(ui.id("qr-veil"), !qr_error_.empty() || state == QrState::scanned || state == QrState::expired ? 1 : 0, 240);
             if (veil > 0) {
                 p.rect(qr, white.with_alpha(0.9f * veil), 14);
                 Fade f(p, veil);
-                if (state == QrState::scanned && !qr_status_->avatar.empty()) {
+                if (!qr_error_.empty()) {
+                    p.icon("circle-x", ui::center(qr, 48, 48), ink.with_alpha(0.7f));
+                } else if (state == QrState::scanned && !qr_status_->avatar.empty()) {
                     cover(ui, ui::center(qr, 72, 72), qr_status_->avatar, 36, "user");
                 } else {
                     p.icon(state == QrState::expired ? "rotate-ccw" : "circle-check", ui::center(qr, 48, 48), ink.with_alpha(0.7f));
@@ -3887,7 +3894,7 @@ namespace lyren {
         std::string line1, line2;
         bool spin = false;
         if (!qr_error_.empty()) {
-            line1 = "没有拿到二维码", line2 = qr_error_;
+            line1 = qr_status_ ? "登录未完成" : "没有拿到二维码", line2 = qr_error_;
         } else if (qr_.empty() && !qr_image_) {
             line1 = "正在生成二维码", spin = true;
         } else if (state == QrState::waiting) {
@@ -3925,8 +3932,8 @@ namespace lyren {
             return control;
         };
         // Changes go straight to the config file; what is drawn is always what the file says.
-        static constexpr std::string_view qualities[] = {"标准", "较高", "极高", "无损", "Hi-Res"};
-        static constexpr const char *quality_keys[] = {"standard", "higher", "exhigh", "lossless", "hires"};
+        static constexpr std::array<std::string_view, 5> qualities = {"标准", "较高", "极高", "无损", "Hi-Res"};
+        static constexpr std::array quality_keys = {"standard", "higher", "exhigh", "lossless", "hires"};
         Rect q = row("音质", "账号没有权限时自动降档");
         int quality = int(config_.playback.quality);
         if (ui.tabs(ui.id("quality"), {q.right() - 240, q.y + 14, 240, 30}, qualities, quality, ui::TabStyle::pill)) {
@@ -4033,7 +4040,7 @@ namespace lyren {
         ui.resize_modal(600, std::min(ui.height - 80, 720.f));
         ui.label({r.x, r.y, r.w - 40, 30}, "评论", {.size = t.fs(20), .color = t.text});
         ui.label({r.x, r.y + 32, r.w - 40, 20}, thread_title_, {.size = t.fs(13), .color = t.text_dim});
-        static constexpr std::string_view tabs[] = {"热门", "最新"};
+        static constexpr std::array<std::string_view, 2> tabs = {"热门", "最新"};
         if (ui.tabs(ui.id("comment-tabs"), {r.x, r.y + 66, 140, 34}, tabs, thread_tab_)) {
             thread_time_ = ui.now;
             load_comments(thread_tab_);

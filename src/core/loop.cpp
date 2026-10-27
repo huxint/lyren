@@ -4,6 +4,7 @@
 #include <sys/eventfd.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+#include <array>
 
 namespace lyren {
 
@@ -117,7 +118,7 @@ namespace lyren {
 
     void Loop::run() {
         running_ = true;
-        epoll_event events[16];
+        std::array<epoll_event, 16> events;
         while (running_) {
             while (!deferred_.empty()) {
                 auto batch = std::move(deferred_);
@@ -138,7 +139,7 @@ namespace lyren {
                 }
                 break;
             }
-            int n = epoll_wait(epoll_, events, 16, deferred_.empty() ? -1 : 0);
+            int n = epoll_wait(epoll_, events.data(), int(events.size()), deferred_.empty() ? -1 : 0);
             if (hook_.after) {
                 bool readable = false;
                 for (int i = 0; i < n; ++i) {

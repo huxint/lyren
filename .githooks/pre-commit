@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+import subprocess
+
+
+def run(*args, input=None):
+    return subprocess.run(args, input=input, stdout=subprocess.PIPE, check=True).stdout
+
+
+os.chdir(os.fsdecode(run("git", "rev-parse", "--show-toplevel").rstrip(b"\n")))
+extensions = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+files = run("git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z").split(b"\0")[:-1]
+
+for name in files:
+    path = Path(os.fsdecode(name))
+    if path.suffix.lower() not in extensions:
+        continue
+    entry = run("git", "ls-files", "--stage", "-z", "--", str(path))
+    mode, oid, _ = entry.split(b"\t", 1)[0].split()
+    if mode not in (b"100644", b"100755"):
+        continue
+
+    staged = run("git", "cat-file", "blob", os.fsdecode(oid))
+    command = ("clang-format", "--style=file", f"--assume-filename={path}")
+    formatted = run(*command, input=staged)
+    if formatted == staged:
+        continue
+
+    # Format each version separately so partially staged edits stay unstaged.
+    if not path.is_symlink() and path.is_file():
+        working = path.read_bytes()
+        path.write_bytes(formatted if working == staged else run(*command, input=working))
+    oid = run("git", "hash-object", "-w", "--stdin", input=formatted).strip()
+    run("git", "update-index", "--cacheinfo", os.fsdecode(mode), os.fsdecode(oid), str(path))
+    print(f"clang-format: {path}")

@@ -57,7 +57,7 @@ namespace lyren::ui {
 
         void rect(Rect r, Color fill, float radius = 0);
         void rect(Rect r, Color fill, float radius, Color border, float border_width);
-        void rect(Rect r, Color fill, const float radii[4]);
+        void rect(Rect r, Color fill, const std::array<float, 4> &radii);
         void gradient(Rect r, Color top, Color bottom, float radius = 0);
         void shadow(Rect r, float radius, float blur, Color color, bool cutout = false);
         void icon(std::string_view name, Rect r, Color color);
@@ -120,7 +120,7 @@ namespace lyren::ui {
         }
 
     private:
-        void premul(float out[4], Color c) const;
+        void premul(std::array<float, 4> &out, Color c) const;
         gfx::Prim &emit(gfx::Kind kind, float x0, float y0, float x1, float y1);
         gfx::Prim &emit_zoomed(gfx::Kind kind, float x0, float y0, float w, float h);
         float snap(float v) const;

@@ -4,6 +4,7 @@
 #include <sys/inotify.h>
 #include <unistd.h>
 
+#include <array>
 #include <cstdio>
 #include <format>
 #include <fstream>
@@ -185,11 +186,11 @@ namespace lyren {
         // Editors save by rename, so watch the directory rather than the file.
         inotify_add_watch(fd_, path_.parent_path().c_str(), IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE);
         loop_.watch(fd_, EPOLLIN, [this](uint32_t) {
-            alignas(inotify_event) char buf[4096];
+            alignas(inotify_event) std::array<char, 4096> buf;
             bool hit = false;
             ssize_t n;
-            while ((n = read(fd_, buf, sizeof buf)) > 0) {
-                for (char *p = buf; p < buf + n;) {
+            while ((n = read(fd_, buf.data(), buf.size())) > 0) {
+                for (char *p = buf.data(); p < buf.data() + n;) {
                     auto *e = reinterpret_cast<inotify_event *>(p);
                     hit |= e->len && path_.filename() == e->name;
                     p += sizeof(inotify_event) + e->len;

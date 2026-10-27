@@ -1,6 +1,7 @@
 #include "ui/theme.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <format>
 
@@ -16,7 +17,7 @@ namespace lyren::ui {
             auto r = std::from_chars(s.data() + i, s.data() + i + n, v, 16);
             return r.ec == std::errc{} && r.ptr == s.data() + i + n ? int(v) : -1;
         };
-        int c[4] = {0, 0, 0, 255};
+        std::array c = {0, 0, 0, 255};
         if (s.size() == 3) {
             for (int i = 0; i < 3; ++i) {
                 c[i] = hex(size_t(i), 1) * 17;

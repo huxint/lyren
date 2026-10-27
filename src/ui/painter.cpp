@@ -5,9 +5,9 @@
 
 namespace lyren::ui {
 
-    void Painter::premul(float out[4], Color c) const {
+    void Painter::premul(std::array<float, 4> &out, Color c) const {
         float a = c.a * alpha_;
-        out[0] = c.r * a, out[1] = c.g * a, out[2] = c.b * a, out[3] = a;
+        out = {c.r * a, c.g * a, c.b * a, a};
     }
 
     void Painter::begin(float scale, float origin_x, float origin_y) {
@@ -26,7 +26,7 @@ namespace lyren::ui {
     gfx::Prim &Painter::emit(gfx::Kind kind, float x0, float y0, float x1, float y1) {
         gfx::Prim &p = prims_.emplace_back();
         p.rect[0] = x0, p.rect[1] = y0, p.rect[2] = x1 - x0, p.rect[3] = y1 - y0;
-        std::copy_n(clips_.back().data(), 4, p.clip);
+        p.clip = clips_.back();
         p.info[0] = uint32_t(kind);
         return p;
     }
@@ -51,20 +51,20 @@ namespace lyren::ui {
         auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
         premul(p.color, fill);
         premul(p.color2, border);
-        std::fill_n(p.radii, 4, radius * scale_);
+        p.radii.fill(radius * scale_);
         p.params[0] = border_width > 0 ? std::max(1.f, std::round(border_width * scale_)) : 0;
     }
 
-    void Painter::rect(Rect r, Color fill, const float radii[4]) {
+    void Painter::rect(Rect r, Color fill, const std::array<float, 4> &radii) {
         float x0 = snap(r.x + ox_), y0 = snap(r.y + oy_), x1 = snap(r.right() + ox_), y1 = snap(r.bottom() + oy_);
         if (x1 <= x0 || y1 <= y0) {
             return;
         }
         auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
         premul(p.color, fill);
-        for (int i = 0; i < 4; ++i) {
-            p.radii[i] = radii[i] * scale_;
-        }
+        std::ranges::transform(radii, p.radii.begin(), [this](float radius) {
+            return radius * scale_;
+        });
     }
 
     void Painter::gradient(Rect r, Color top, Color bottom, float radius) {
@@ -75,14 +75,14 @@ namespace lyren::ui {
         auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
         premul(p.color, top);
         premul(p.color2, bottom);
-        std::fill_n(p.radii, 4, radius * scale_);
+        p.radii.fill(radius * scale_);
         p.info[2] = gfx::flag_gradient;
     }
 
     void Painter::shadow(Rect r, float radius, float blur, Color color, bool cutout) {
         auto &p = emit(gfx::Kind::shadow, (r.x + ox_) * scale_, (r.y + oy_) * scale_, (r.right() + ox_) * scale_, (r.bottom() + oy_) * scale_);
         premul(p.color, color);
-        std::fill_n(p.radii, 4, radius * scale_);
+        p.radii.fill(radius * scale_);
         p.params[1] = std::max(0.5f, blur * 0.5f * scale_);
         if (cutout) {
             p.info[2] = gfx::flag_cutout;
@@ -107,7 +107,7 @@ namespace lyren::ui {
         float x0 = snap(r.x + ox_), y0 = snap(r.y + oy_), x1 = snap(r.right() + ox_), y1 = snap(r.bottom() + oy_);
         auto &p = emit(gfx::Kind::image, x0, y0, x1, y1);
         premul(p.color, tint);
-        std::fill_n(p.radii, 4, radius * scale_);
+        p.radii.fill(radius * scale_);
         p.uv[0] = uv.x, p.uv[1] = uv.y, p.uv[2] = uv.right(), p.uv[3] = uv.bottom();
         p.info[1] = tex;
     }

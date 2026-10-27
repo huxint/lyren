@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -125,7 +126,7 @@ namespace lyren {
             Results square;
             uint64_t square_gen = 0;
             double square_time = -10;
-            Results collection[2];
+            std::array<Results, 2> collection;
             int collection_tab = 0;
             uint64_t collection_gen = 0;
         };
@@ -358,7 +359,7 @@ namespace lyren {
         // Search.
         std::string query_, searched_;
         int search_tab_ = 0;
-        SearchResults results_[4];
+        std::array<SearchResults, 4> results_;
         uint64_t search_gen_ = 0;
         int selected_ = -1;
 
@@ -453,7 +454,7 @@ namespace lyren {
         std::string thread_id_, thread_title_;
         int thread_tab_ = 0;
         double thread_time_ = -10;
-        Feed feeds_[2]; // hot, newest
+        std::array<Feed, 2> feeds_; // hot, newest
         uint64_t thread_gen_ = 0;
         std::string edit_name_;
         bool edit_hidden_ = false, edit_focus_ = false;

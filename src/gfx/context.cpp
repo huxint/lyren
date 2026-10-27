@@ -1,7 +1,7 @@
 #include "gfx/context.hpp"
 
+#include <array>
 #include <cstdlib>
-#include <cstring>
 #include <fstream>
 #include <string_view>
 #include <vector>
@@ -65,7 +65,7 @@ namespace lyren::gfx {
             std::vector<VkLayerProperties> layers(n);
             vkEnumerateInstanceLayerProperties(&n, layers.data());
             for (auto &l : layers) {
-                validation |= !std::strcmp(l.layerName, "VK_LAYER_KHRONOS_validation");
+                validation |= std::string_view(l.layerName) == "VK_LAYER_KHRONOS_validation";
             }
             if (!validation) {
                 log::info("validation layer not installed (pacman -S vulkan-validation-layers)");
@@ -137,7 +137,7 @@ namespace lyren::gfx {
             std::exit(1);
         }
 
-        const char *device_exts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+        std::array device_exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
         VkPhysicalDeviceVulkan12Features f12{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                              .shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
@@ -158,7 +158,7 @@ namespace lyren::gfx {
                                .queueCreateInfoCount = 1,
                                .pQueueCreateInfos = &qci,
                                .enabledExtensionCount = uint32_t(std::size(device_exts)),
-                               .ppEnabledExtensionNames = device_exts};
+                               .ppEnabledExtensionNames = device_exts.data()};
         VK_CHECK(vkCreateDevice(physical, &dci, nullptr, &device));
         vkGetDeviceQueue(device, queue_family, 0, &queue);
         log::info("GPU: {} ({}){}", device_name, driver_name, validation ? ", validation on" : "");

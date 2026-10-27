@@ -6,6 +6,7 @@
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <fstream>
@@ -295,8 +296,7 @@ namespace lyren {
         uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char *>(prims.data()), prims.size_bytes()}) ^
                         (uint64_t(window_->buffer_width()) << 32 | window_->buffer_height()) ^ renderer_.texture_version();
         if (hash != frame_hash_ || window_->configure_pending()) {
-            const float clear[4] = {0, 0, 0, 0};
-            renderer_.draw(*target_, prims, clear, [this] {
+            renderer_.draw(*target_, prims, {}, [this] {
                 window_->prepare_present();
             });
             frame_hash_ = hash;
@@ -511,8 +511,7 @@ namespace lyren {
         uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char *>(prims.data()), prims.size_bytes()}) ^
                         (uint64_t(lyrics_->buffer_width()) << 32 | lyrics_->buffer_height()) ^ renderer_.texture_version();
         if (hash != lyrics_hash_ || lyrics_->needs_commit()) {
-            const float clear[4] = {0, 0, 0, 0};
-            renderer_.draw(*lyrics_target_, prims, clear, [this] {
+            renderer_.draw(*lyrics_target_, prims, {}, [this] {
                 lyrics_->prepare_present();
             });
             lyrics_hash_ = hash;
@@ -711,9 +710,9 @@ namespace lyren {
                     mods |= mod == "ctrl" ? wl::mod_ctrl : mod == "shift" ? wl::mod_shift : mod == "alt" ? wl::mod_alt : 0;
                 }
                 wl::KeyEvent e{.keysym = xkb_keysym_from_name(rest.c_str(), XKB_KEYSYM_NO_FLAGS), .mods = mods, .pressed = true};
-                char buf[8];
-                if (!(mods & wl::mod_ctrl) && xkb_keysym_to_utf8(e.keysym, buf, sizeof buf) > 1 && static_cast<unsigned char>(buf[0]) >= 0x20) {
-                    e.text = buf;
+                std::array<char, 8> buf;
+                if (!(mods & wl::mod_ctrl) && xkb_keysym_to_utf8(e.keysym, buf.data(), buf.size()) > 1 && static_cast<unsigned char>(buf[0]) >= 0x20) {
+                    e.text = buf.data();
                 }
                 on_key(e);
             } else if (cmd == "commit" || cmd == "preedit") {
@@ -729,8 +728,8 @@ namespace lyren {
                 request_redraw();
             } else if (cmd == "exec") {
                 pid_t pid;
-                const char *argv[] = {"sh", "-c", rest.c_str(), nullptr};
-                posix_spawnp(&pid, "sh", nullptr, nullptr, const_cast<char *const *>(argv), environ);
+                std::array<const char *, 4> argv = {"sh", "-c", rest.c_str(), nullptr};
+                posix_spawnp(&pid, "sh", nullptr, nullptr, const_cast<char *const *>(argv.data()), environ);
             } else if (cmd == "quit") {
                 loop_.quit();
             } else {

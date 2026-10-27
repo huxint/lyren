@@ -4,7 +4,9 @@
 #include <turbojpeg.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <numbers>
 
 namespace lyren::gfx {
 
@@ -127,7 +129,7 @@ namespace lyren::gfx {
                 for (int i = 0; i < n; ++i) {
                     std::copy_n(a.data() + start + size_t(i) * stride, 4, line.data() + size_t(i) * 4);
                 }
-                float acc[4] = {};
+                std::array<float, 4> acc{};
                 for (int k = -radius; k <= radius; ++k) {
                     for (int c = 0; c < 4; ++c) {
                         acc[c] += line[size_t(std::clamp(k, 0, n - 1)) * 4 + c];
@@ -156,7 +158,8 @@ namespace lyren::gfx {
     float dominant_hue(const Image &img) {
         // Hue histogram weighted by saturation and brightness, so grey and dark areas count little.
         constexpr int bins = 36;
-        double weight[bins] = {}, sx[bins] = {}, sy[bins] = {}, total = 0;
+        std::array<double, bins> weight{}, sx{}, sy{};
+        double total = 0;
         for (size_t i = 0; i < img.px.size(); i += 4) {
             float r = img.px[i] / 255.f, g = img.px[i + 1] / 255.f, b = img.px[i + 2] / 255.f;
             float mx = std::max({r, g, b}), mn = std::min({r, g, b}), d = mx - mn;
@@ -168,18 +171,18 @@ namespace lyren::gfx {
             double wgt = double(d) * mx;
             int bin = std::min(bins - 1, int(h * bins));
             weight[bin] += wgt, total += wgt;
-            sx[bin] += wgt * std::cos(h * 2 * M_PI), sy[bin] += wgt * std::sin(h * 2 * M_PI);
+            sx[bin] += wgt * std::cos(h * 2 * std::numbers::pi), sy[bin] += wgt * std::sin(h * 2 * std::numbers::pi);
         }
         if (total < 0.04 * double(img.w * img.h)) {
             return -1;
         }
         // The heaviest bin with its neighbours.
-        int best = int(std::max_element(weight, weight + bins) - weight);
+        int best = int(std::ranges::max_element(weight) - weight.begin());
         double x = 0, y = 0;
         for (int k = -1; k <= 1; ++k) {
             x += sx[(best + k + bins) % bins], y += sy[(best + k + bins) % bins];
         }
-        double h = std::atan2(y, x) / (2 * M_PI);
+        double h = std::atan2(y, x) / (2 * std::numbers::pi);
         return float(h < 0 ? h + 1 : h);
     }
 

@@ -1,5 +1,7 @@
 #include "text/shaper.hpp"
 
+#include <array>
+
 #include "core/utf8.hpp"
 
 namespace lyren::text {
@@ -25,7 +27,7 @@ namespace lyren::text {
         }
 
         Shaped out;
-        hb_feature_t feats[1];
+        std::array<hb_feature_t, 1> feats;
         unsigned nfeats = 0;
         if (features & tabular_nums) {
             hb_feature_from_string("tnum", -1, &feats[nfeats++]);
@@ -54,7 +56,7 @@ namespace lyren::text {
             hb_buffer_clear_contents(buf_);
             hb_buffer_add_utf8(buf_, text.data(), int(text.size()), unsigned(start), int(j - start));
             hb_buffer_guess_segment_properties(buf_);
-            hb_shape(fc.hb, buf_, feats, nfeats);
+            hb_shape(fc.hb, buf_, feats.data(), nfeats);
             unsigned n;
             hb_glyph_info_t *info = hb_buffer_get_glyph_infos(buf_, &n);
             hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(buf_, &n);

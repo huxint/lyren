@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -23,16 +24,16 @@ namespace lyren::gfx {
 
     // One instanced quad; layout matches shaders/prim.glsl. Coordinates are buffer pixels, colours premultiplied.
     struct Prim {
-        float rect[4];
-        float clip[4];
-        float uv[4]; // texture coordinates; wave: x played width
-        float color[4];
-        float color2[4];
-        float radii[4];
+        std::array<float, 4> rect;
+        std::array<float, 4> clip;
+        std::array<float, 4> uv; // texture coordinates; wave: x played width
+        std::array<float, 4> color;
+        std::array<float, 4> color2;
+        std::array<float, 4> radii;
         // rect: border width; shadow: _, sigma; arc: thickness, start, sweep (radians, clockwise from 12 o'clock);
         // wave: thickness, amplitude, wavelength, phase; glyph with flag_gradient: wipe x, half its width
-        float params[4];
-        uint32_t info[4]; // kind, texture, flags
+        std::array<float, 4> params;
+        std::array<uint32_t, 4> info; // kind, texture, flags
     };
     static_assert(sizeof(Prim) == 128);
 
@@ -59,7 +60,7 @@ namespace lyren::gfx {
         std::vector<VkImage> images;
         std::vector<VkImageView> views;
         std::vector<VkSemaphore> rendered;
-        Slot slots[2];
+        std::array<Slot, 2> slots;
         int slot = 0;
         bool stale = true;
     };
@@ -76,7 +77,7 @@ namespace lyren::gfx {
         // Takes effect at the next draw.
         void resize(Target &t, uint32_t width, uint32_t height);
         // Renders and presents. before_present runs between submit and present (the present commits the surface).
-        void draw(Target &t, std::span<const Prim> prims, const float clear[4], const std::function<void()> &before_present);
+        void draw(Target &t, std::span<const Prim> prims, const std::array<float, 4> &clear, const std::function<void()> &before_present);
 
         // Bindless textures. Uploads are staged now and copied at the start of the next draw.
         TextureId create_texture(uint32_t width, uint32_t height, VkFormat format, bool smooth);

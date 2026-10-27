@@ -23,11 +23,11 @@ namespace lyren::text {
 
     static Coverage copy_coverage(FcCharSet *cs) {
         Coverage c;
-        FcChar32 map[FC_CHARSET_MAP_SIZE], next;
-        for (FcChar32 base = FcCharSetFirstPage(cs, map, &next); base != FC_CHARSET_DONE; base = FcCharSetNextPage(cs, map, &next)) {
+        std::array<FcChar32, FC_CHARSET_MAP_SIZE> map;
+        FcChar32 next;
+        for (FcChar32 base = FcCharSetFirstPage(cs, map.data(), &next); base != FC_CHARSET_DONE; base = FcCharSetNextPage(cs, map.data(), &next)) {
             c.pages.push_back(base >> 8);
-            auto &b = c.bits.emplace_back();
-            std::copy_n(map, 8, b.begin());
+            c.bits.push_back(map);
         }
         return c;
     }

@@ -21,6 +21,7 @@
 
 #include <qrencode.h>
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -41,7 +42,7 @@
 using namespace lyren;
 
 static const char *state_name(audio::Player::State s) {
-    static constexpr const char *names[] = {"idle", "loading", "playing", "paused", "ended", "failed"};
+    static constexpr std::array names = {"idle", "loading", "playing", "paused", "ended", "failed"};
     return names[int(s)];
 }
 
@@ -113,9 +114,9 @@ static int play(std::string src, std::vector<std::string> steps) {
         tcsetattr(STDIN_FILENO, TCSANOW, &raw);
         std::println("space pause · ←/→ seek 10 s · ↑/↓ volume · q quit");
         loop.watch(STDIN_FILENO, EPOLLIN, [&](uint32_t) {
-            char buf[16];
-            ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
-            std::string_view k(buf, n > 0 ? size_t(n) : 0);
+            std::array<char, 16> buf;
+            ssize_t n = read(STDIN_FILENO, buf.data(), buf.size());
+            std::string_view k(buf.data(), n > 0 ? size_t(n) : 0);
             if (k == " ") {
                 player.toggle();
             } else if (k == "q") {
@@ -212,7 +213,7 @@ static int ncm_command(const std::vector<std::string> &args) {
         ncm.client.ensure_fingerprint();
         const std::string &cmd = args[0];
         if (cmd == "search") {
-            static constexpr const char *kinds[] = {"tracks", "albums", "artists", "playlists"};
+            static constexpr std::array kinds = {"tracks", "albums", "artists", "playlists"};
             int kind = 0;
             for (int k = 0; k < 4; ++k) {
                 if (args.size() > 2 && args[2] == kinds[k]) {
@@ -231,7 +232,7 @@ static int ncm_command(const std::vector<std::string> &args) {
                 std::println("{:>12}  {}  {}  {}", c.id, c.title, c.subtitle, c.cover);
             }
         } else if (cmd == "url") {
-            static constexpr const char *names[] = {"standard", "higher", "exhigh", "lossless", "hires"};
+            static constexpr std::array names = {"standard", "higher", "exhigh", "lossless", "hires"};
             int q = 3;
             for (int k = 0; k < 5; ++k) {
                 if (args.size() > 2 && args[2] == names[k]) {
@@ -358,7 +359,7 @@ static int qq_command(const std::vector<std::string> &args) {
             return args.size() > i ? args[i] : std::string{};
         };
         if (cmd == "search") {
-            static constexpr const char *kinds[] = {"tracks", "albums", "artists", "playlists"};
+            static constexpr std::array kinds = {"tracks", "albums", "artists", "playlists"};
             int kind = 0;
             for (int k = 0; k < 4; ++k) {
                 if (arg(3) == kinds[k]) {
@@ -373,7 +374,7 @@ static int qq_command(const std::vector<std::string> &args) {
             print_tracks(r->tracks);
             print_cards(r->cards);
         } else if (cmd == "url") {
-            static constexpr const char *names[] = {"standard", "higher", "exhigh", "lossless", "hires"};
+            static constexpr std::array names = {"standard", "higher", "exhigh", "lossless", "hires"};
             int quality = 3;
             for (int k = 0; k < 5; ++k) {
                 if (arg(3) == names[k]) {

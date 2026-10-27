@@ -5,6 +5,7 @@
 #include <openssl/rand.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <format>
 #include <memory>
@@ -28,10 +29,10 @@ namespace lyren::ncm {
     }
 
     std::string md5_hex(std::string_view s) {
-        unsigned char d[16];
+        std::array<unsigned char, 16> d;
         unsigned n = 0;
-        EVP_Digest(s.data(), s.size(), d, &n, EVP_md5(), nullptr);
-        return hex({reinterpret_cast<char *>(d), n});
+        EVP_Digest(s.data(), s.size(), d.data(), &n, EVP_md5(), nullptr);
+        return hex({reinterpret_cast<const char *>(d.data()), n});
     }
 
     std::string random_hex(size_t digits, bool upper) {
@@ -103,12 +104,12 @@ namespace lyren::ncm {
     }
 
     Weapi weapi(std::string_view text) {
-        static constexpr char base62[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        unsigned char r[16];
-        RAND_bytes(r, sizeof r);
-        std::string key(16, '\0');
-        for (size_t i = 0; i < 16; ++i) {
-            key[i] = base62[r[i] % 62];
+        static constexpr std::string_view base62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        std::array<unsigned char, 16> r;
+        RAND_bytes(r.data(), int(r.size()));
+        std::string key(r.size(), '\0');
+        for (size_t i = 0; i < r.size(); ++i) {
+            key[i] = base62[r[i] % base62.size()];
         }
         return weapi(text, key);
     }

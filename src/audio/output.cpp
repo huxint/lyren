@@ -5,8 +5,8 @@
 #include <spa/param/props.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
-#include <cstring>
 
 #include "core/log.hpp"
 
@@ -121,8 +121,8 @@ namespace lyren::audio {
                               PW_KEY_NODE_NAME, "lyren", PW_KEY_NODE_LATENCY, "2048/48000", "state.restore-props", "false", PW_KEY_MEDIA_NAME, name_.c_str(), nullptr);
         stream_ = pw_stream_new(core_, "Lyren", props);
         pw_stream_add_listener(stream_, &listener_, &StreamEvents::events, this);
-        uint8_t buf[1024];
-        spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof buf);
+        std::array<uint8_t, 1024> buf;
+        spa_pod_builder b = SPA_POD_BUILDER_INIT(buf.data(), buf.size());
         spa_audio_info_raw info{.format = SPA_AUDIO_FORMAT_F32, .rate = f.rate, .channels = f.channels};
         if (f.channels == 1) {
             info.position[0] = SPA_AUDIO_CHANNEL_MONO;
@@ -131,12 +131,12 @@ namespace lyren::audio {
         } else {
             info.flags = SPA_AUDIO_FLAG_UNPOSITIONED;
         }
-        const spa_pod *params[] = {spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info)};
+        std::array<const spa_pod *, 1> params = {spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info)};
         auto flags = PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS;
         if (!active_) {
             flags = flags | PW_STREAM_FLAG_INACTIVE;
         }
-        pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, pw_stream_flags(flags), params, 1);
+        pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, pw_stream_flags(flags), params.data(), uint32_t(params.size()));
         pw_thread_loop_unlock(loop_);
         log::debug("pipewire stream: {} Hz, {} ch", f.rate, f.channels);
         return true;
@@ -167,7 +167,7 @@ namespace lyren::audio {
         size_t ch = fmt_.channels;
         for (size_t done = 0; done < n;) {
             size_t at = size_t((w + done) % cap_), run = std::min(n - done, cap_ - at);
-            std::memcpy(ring_.data() + at * ch, frames + done * ch, run * ch * sizeof(float));
+            std::copy_n(frames + done * ch, run * ch, ring_.data() + at * ch);
             done += run;
         }
         w_.store(w + n, std::memory_order_release);
@@ -191,7 +191,7 @@ namespace lyren::audio {
 
         if (!volume_ready_.load(std::memory_order_acquire)) {
             // Nothing is audible before our volume is in place.
-            std::memset(d.data, 0, size_t(n) * stride);
+            std::fill_n(static_cast<float *>(d.data), size_t(n) * ch, 0.f);
             d.chunk->offset = 0, d.chunk->stride = int32_t(stride), d.chunk->size = uint32_t(n * stride);
             b->size = n;
             pw_stream_queue_buffer(stream_, b);
@@ -208,7 +208,7 @@ namespace lyren::audio {
         auto *dst = static_cast<float *>(d.data);
         for (uint64_t done = 0; done < k;) {
             size_t at = size_t((r + done) % cap_), run = std::min<size_t>(size_t(k - done), cap_ - at);
-            std::memcpy(dst + done * ch, ring_.data() + at * ch, run * stride);
+            std::copy_n(ring_.data() + at * ch, run * ch, dst + done * ch);
             done += run;
         }
         if (float g = gain_.load(std::memory_order_relaxed); g != 1) {
@@ -216,7 +216,7 @@ namespace lyren::audio {
                 dst[i] *= g;
             }
         }
-        std::memset(dst + k * ch, 0, size_t(n - k) * stride);
+        std::fill_n(dst + k * ch, size_t(n - k) * ch, 0.f);
         r_.store(r + k, std::memory_order_release);
         played_.store(played_.load(std::memory_order_relaxed) + k, std::memory_order_release);
 
@@ -266,10 +266,10 @@ namespace lyren::audio {
     }
 
     void Output::apply_volume() {
-        float v[SPA_AUDIO_MAX_CHANNELS];
-        std::fill_n(v, fmt_.channels, volume_);
+        std::array<float, SPA_AUDIO_MAX_CHANNELS> v;
+        std::fill_n(v.begin(), fmt_.channels, volume_);
         volume_set_ = std::chrono::steady_clock::now();
-        pw_stream_set_control(stream_, SPA_PROP_channelVolumes, fmt_.channels, v, 0);
+        pw_stream_set_control(stream_, SPA_PROP_channelVolumes, fmt_.channels, v.data(), 0);
         log::debug("stream volume {:.3f}", volume_);
     }
 

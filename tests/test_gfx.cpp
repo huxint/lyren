@@ -152,9 +152,8 @@ TEST_CASE("texture replacement preserves the uploaded pixels across submissions"
     prim.clip[2] = float(window.buffer_width());
     prim.clip[3] = float(window.buffer_height());
     prim.uv[2] = prim.uv[3] = 1;
-    std::fill_n(prim.color, 4, 1);
+    prim.color.fill(1);
     prim.info[0] = uint32_t(gfx::Kind::image);
-    const float clear[4] = {};
     gfx::TextureId tex = 0;
     for (const std::array<uint8_t, 4> rgba : {std::array<uint8_t, 4>{255, 0, 0, 255}, {0, 255, 0, 255}}) {
         tex = g.renderer.create_texture(1, 1, VK_FORMAT_R8G8B8A8_UNORM, false);
@@ -169,7 +168,7 @@ TEST_CASE("texture replacement preserves the uploaded pixels across submissions"
             CHECK(pixel[3] == rgba[3]);
             captured = true;
         });
-        g.renderer.draw(*target, {&prim, 1}, clear, [&] {
+        g.renderer.draw(*target, {&prim, 1}, {}, [&] {
             window.prepare_present();
         });
         CHECK(captured);

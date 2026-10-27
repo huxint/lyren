@@ -1,4 +1,5 @@
 #include "core/utf8.hpp"
+#include <array>
 
 namespace lyren::utf8 {
 
@@ -20,7 +21,7 @@ namespace lyren::utf8 {
             }
             cp = (cp << 6) | (b(i + k) & 0x3f);
         }
-        static constexpr char32_t min[] = {0, 0, 0x80, 0x800, 0x10000};
+        static constexpr std::array<char32_t, 5> min = {0, 0, 0x80, 0x800, 0x10000};
         if (cp < min[len] || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
             ++i;
             return 0xfffd;

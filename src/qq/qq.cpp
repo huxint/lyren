@@ -2,6 +2,7 @@
 
 #include <glaze/glaze.hpp>
 
+#include <array>
 #include <ctime>
 #include <format>
 #include <random>
@@ -543,7 +544,7 @@ namespace lyren::qq {
     }
 
     Task<Result<Batch>> Qq::search(std::string query, SearchKind kind, int offset, int limit) {
-        static constexpr int types[] = {0, 2, 1, 3}; // songs, albums, artists, playlists
+        static constexpr std::array types = {0, 2, 1, 3}; // songs, albums, artists, playlists
         std::mt19937_64 rng{std::random_device{}()};
         std::string param = std::format(R"({{"query":{},"search_type":{},"page_num":{},"num_per_page":{},"searchid":"{}"}})", json_string(query), types[int(kind)],
                                         offset / limit + 1, limit, rng() % 100000000000000);
@@ -614,11 +615,11 @@ namespace lyren::qq {
         struct File {
             const char *prefix, *ext, *level;
         };
-        static constexpr File files[] = {
-            {"F000", "flac", "lossless"}, {"M800", "mp3", "exhigh"}, {"M500", "mp3", "standard"}, {"C400", "m4a", "standard"}, {"RS02", "mp3", "standard"}};
+        static constexpr auto files =
+            std::to_array<File>({{"F000", "flac", "lossless"}, {"M800", "mp3", "exhigh"}, {"M500", "mp3", "standard"}, {"C400", "m4a", "standard"}, {"RS02", "mp3", "standard"}});
         size_t first = quality >= Quality::lossless ? 0 : quality == Quality::exhigh ? 1 : 2;
         std::string mids, types, names;
-        for (size_t i = first; i < std::size(files); ++i) {
+        for (size_t i = first; i < files.size(); ++i) {
             std::string_view sep = i == first ? "" : ",";
             mids += std::format("{}\"{}\"", sep, t.mid);
             types += std::format("{}0", sep);
@@ -639,7 +640,7 @@ namespace lyren::qq {
         if (!v->sip || v->sip->empty() || !v->midurlinfo) {
             co_return std::unexpected("这首歌暂时不能播放（需要会员或没有版权）");
         }
-        for (size_t i = first; i < std::size(files); ++i) {
+        for (size_t i = first; i < files.size(); ++i) {
             std::string name = std::format("{}{}.{}", files[i].prefix, t.media, files[i].ext);
             auto u = std::ranges::find_if(*v->midurlinfo, [&](const QUrl &x) {
                 return x.filename == name && x.result == 0 && x.purl && !x.purl->empty();
@@ -1347,12 +1348,13 @@ namespace lyren::qq {
         if ((*args)[0] != "0") {
             co_return std::unexpected(std::format("QQ 扫码登录失败（{}）", (*args)[0]));
         }
-        std::string confirm = (*args)[2];
-        if (!confirm.starts_with("https://ssl.ptlogin2.graph.qq.com/check_sig?")) {
-            co_return std::unexpected("QQ 登录返回了无法识别的确认地址");
+        auto confirm = qr_confirmation((*args)[2]);
+        if (!confirm) {
+            co_return std::unexpected(confirm.error());
         }
         receive_cookies(cookies, poll.cookies);
-        auto checked = co_await net::fetch{loop_, http_, {.url = confirm, .headers = {cookie_header(cookies)}}};
+        confirm->headers.push_back(cookie_header(cookies));
+        auto checked = co_await net::fetch{loop_, http_, std::move(*confirm)};
         if (gen != qr_gen_) {
             co_return QrStatus{};
         }

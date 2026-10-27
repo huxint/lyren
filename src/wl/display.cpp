@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <cstring>
+#include <string_view>
 
 #include "core/log.hpp"
 #include "core/loop.hpp"
@@ -19,7 +19,7 @@ namespace lyren::wl {
     static void on_global(void *data, wl_registry *reg, uint32_t name, const char *iface, uint32_t ver) {
         auto *d = static_cast<Display *>(data);
         auto is = [&](const wl_interface &i) {
-            return !std::strcmp(iface, i.name);
+            return std::string_view(iface) == i.name;
         };
         if (is(wl_compositor_interface)) {
             bind(reg, name, &wl_compositor_interface, ver, 6, d->compositor);

@@ -20,7 +20,7 @@ namespace lyren::gfx {
 
     struct PushConstants {
         VkDeviceAddress prims;
-        float screen[2];
+        std::array<float, 2> screen;
     };
 
     static void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
@@ -136,10 +136,10 @@ namespace lyren::gfx {
             return m;
         };
         VkShaderModule vs = module(vert_spv, sizeof vert_spv), fs = module(frag_spv, sizeof frag_spv);
-        VkPipelineShaderStageCreateInfo stages[] = {
+        auto stages = std::to_array<VkPipelineShaderStageCreateInfo>({
             {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
             {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"},
-        };
+        });
         VkPipelineVertexInputStateCreateInfo vi{.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         VkPipelineInputAssemblyStateCreateInfo ia{.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP};
         VkPipelineViewportStateCreateInfo vp{.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
@@ -155,13 +155,13 @@ namespace lyren::gfx {
                                                   .alphaBlendOp = VK_BLEND_OP_ADD,
                                                   .colorWriteMask = 0xf};
         VkPipelineColorBlendStateCreateInfo cb{.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &blend};
-        VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-        VkPipelineDynamicStateCreateInfo ds{.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+        std::array dyn = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo ds{.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = uint32_t(dyn.size()), .pDynamicStates = dyn.data()};
         VkPipelineRenderingCreateInfo ri{.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1, .pColorAttachmentFormats = &format};
         VkGraphicsPipelineCreateInfo gp{.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                                         .pNext = &ri,
-                                        .stageCount = 2,
-                                        .pStages = stages,
+                                        .stageCount = uint32_t(stages.size()),
+                                        .pStages = stages.data(),
                                         .pVertexInputState = &vi,
                                         .pInputAssemblyState = &ia,
                                         .pViewportState = &vp,
@@ -335,7 +335,7 @@ namespace lyren::gfx {
         s.prims_addr = vkGetBufferDeviceAddress(dev, &bai);
     }
 
-    void Renderer::draw(Target &t, std::span<const Prim> prims, const float clear[4], const std::function<void()> &before_present) {
+    void Renderer::draw(Target &t, std::span<const Prim> prims, const std::array<float, 4> &clear, const std::function<void()> &before_present) {
         VkDevice dev = ctx_.device;
         auto &s = t.slots[t.slot];
         t.slot ^= 1;
@@ -377,7 +377,7 @@ namespace lyren::gfx {
                                       .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                       .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                                       .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-        std::memcpy(att.clearValue.color.float32, clear, 4 * sizeof(float));
+        std::ranges::copy(clear, att.clearValue.color.float32);
         VkRenderingInfo ri{
             .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {t.width, t.height}}, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att};
         vkCmdBeginRendering(cmd, &ri);

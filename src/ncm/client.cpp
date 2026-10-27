@@ -2,6 +2,9 @@
 
 #include <glaze/glaze.hpp>
 
+#include <algorithm>
+#include <array>
+#include <charconv>
 #include <chrono>
 #include <format>
 #include <random>
@@ -207,9 +210,13 @@ namespace lyren::ncm {
         if (code.starts_with('"')) {
             code = code.substr(1, code.size() - 2);
         }
-        r.code = code.empty() ? res.status : std::atol(std::string(code).c_str());
-        static constexpr long ok[] = {200, 201, 302, 400, 502, 800, 801, 802, 803};
-        if (std::ranges::find(ok, r.code) == std::end(ok)) {
+        if (code.empty()) {
+            r.code = res.status;
+        } else {
+            std::from_chars(code.data(), code.data() + code.size(), r.code);
+        }
+        static constexpr std::array ok = {200, 201, 302, 400, 502, 800, 801, 802, 803};
+        if (!std::ranges::contains(ok, r.code)) {
             r.error = st.message.value_or(st.msg.value_or(std::format("请求失败（{}）", r.code)));
             if (r.code == 301) {
                 r.error = "登录已失效，请重新扫码登录";

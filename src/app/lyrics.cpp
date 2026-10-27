@@ -3,6 +3,7 @@
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <optional>
@@ -195,14 +196,14 @@ namespace lyren {
             }
             std::string_view v = xml.substr(at + key.size());
             v = v.substr(0, v.find('"'));
-            static constexpr std::pair<std::string_view, char> entities[] = {{"&quot;", '"'}, {"&apos;", '\''}, {"&lt;", '<'}, {"&gt;", '>'}, {"&amp;", '&'}};
+            static constexpr auto entities = std::to_array<std::pair<std::string_view, char>>({{"&quot;", '"'}, {"&apos;", '\''}, {"&lt;", '<'}, {"&gt;", '>'}, {"&amp;", '&'}});
             std::string out;
             while (!v.empty()) {
                 auto e = std::ranges::find_if(entities, [&](const auto &x) {
                     return v.starts_with(x.first);
                 });
-                out += e == std::end(entities) ? v.front() : e->second;
-                v.remove_prefix(e == std::end(entities) ? 1 : e->first.size());
+                out += e == entities.end() ? v.front() : e->second;
+                v.remove_prefix(e == entities.end() ? 1 : e->first.size());
             }
             return out;
         }

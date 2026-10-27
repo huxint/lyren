@@ -2,6 +2,7 @@
 
 #include <glaze/glaze.hpp>
 
+#include <array>
 #include <format>
 #include <map>
 
@@ -421,7 +422,7 @@ namespace lyren::ncm {
     }
 
     Task<Result<Batch>> Netease::search(std::string query, SearchKind kind, int offset, int limit) {
-        static constexpr int types[] = {1, 10, 100, 1000};
+        static constexpr std::array types = {1, 10, 100, 1000};
         auto r = parse<SearchReply>(co_await client.call(
             "/api/cloudsearch/pc", std::format(R"("s":{},"type":{},"limit":{},"offset":{},"total":true)", json_string(query), types[int(kind)], limit, offset)));
         if (!r) {
@@ -476,7 +477,7 @@ namespace lyren::ncm {
     }
 
     Task<Result<Stream>> Netease::stream(Track t, Quality quality) {
-        static constexpr const char *levels[] = {"standard", "higher", "exhigh", "lossless", "hires"};
+        static constexpr std::array levels = {"standard", "higher", "exhigh", "lossless", "hires"};
         // Cloud-drive uploads only resolve through the older endpoint.
         Reply reply;
         if (t.cloud) {
@@ -1036,7 +1037,7 @@ namespace lyren::ncm {
     }
 
     Task<Result<CommentPage>> Netease::comments(Subject subject, std::string id, bool hot, int page, std::string cursor) {
-        static constexpr const char *threads[] = {"R_SO_4_", "R_AL_3_", "A_PL_0_"};
+        static constexpr std::array threads = {"R_SO_4_", "R_AL_3_", "A_PL_0_"};
         // Hot comments page by an offset, the newest by the time of the last one; the server hands back either.
         if (cursor.empty()) {
             cursor = hot ? "normalHot#0" : "0";

@@ -337,10 +337,10 @@ namespace lyren::wl {
         }
         KeyEvent e{.keysym = xkb_state_key_get_one_sym(state_, key + 8), .mods = mods_, .pressed = pressed, .repeat = repeat, .serial = serial_};
         if (pressed) {
-            char buf[32];
-            int n = xkb_state_key_get_utf8(state_, key + 8, buf, sizeof buf);
+            std::array<char, 32> buf;
+            int n = xkb_state_key_get_utf8(state_, key + 8, buf.data(), buf.size());
             if (n > 0 && !(n == 1 && (static_cast<unsigned char>(buf[0]) < 0x20 || buf[0] == 0x7f))) {
-                e.text.assign(buf, size_t(n));
+                e.text.assign(buf.data(), size_t(n));
             }
         }
         key_focus_->on_key(e);

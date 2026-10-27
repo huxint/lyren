@@ -4,6 +4,7 @@
 
 #include <cctype>
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <format>
 #include <limits>
@@ -24,7 +25,7 @@ namespace lyren::net {
         uint64_t offset = 0, total = 0, at = 0;
         bool started = false;
         std::chrono::steady_clock::time_point due;
-        char error[CURL_ERROR_SIZE] = {};
+        std::array<char, CURL_ERROR_SIZE> error{};
 
         ~Transfer() {
             curl_easy_cleanup(easy);
@@ -140,7 +141,7 @@ namespace lyren::net {
         curl_easy_setopt(e, CURLOPT_LOW_SPEED_TIME, 15L);
         curl_easy_setopt(e, CURLOPT_TCP_KEEPALIVE, 1L);
         curl_easy_setopt(e, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36");
-        curl_easy_setopt(e, CURLOPT_ERRORBUFFER, t.error);
+        curl_easy_setopt(e, CURLOPT_ERRORBUFFER, t.error.data());
         curl_easy_setopt(e, CURLOPT_HEADERFUNCTION, on_header);
         curl_easy_setopt(e, CURLOPT_HEADERDATA, &t);
         curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_write);
@@ -262,7 +263,7 @@ namespace lyren::net {
                 curl_easy_getinfo(owned->easy, CURLINFO_RESPONSE_CODE, &status);
                 std::string err;
                 if (rc != CURLE_OK) {
-                    err = owned->error[0] ? owned->error : curl_easy_strerror(rc);
+                    err = owned->error[0] ? owned->error.data() : curl_easy_strerror(rc);
                 }
                 log::debug("http {}: {} {}", owned->id, status, err);
                 if (owned->done) {

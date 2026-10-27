@@ -1,6 +1,7 @@
 #pragma once
 #include <xkbcommon/xkbcommon.h>
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -146,8 +147,8 @@ namespace lyren::wl {
         uint32_t enter_serial_ = 0, serial_ = 0;
         Cursor cursor_ = Cursor::arrow;
         float px_ = 0, py_ = 0;
-        float axis_[2]{};
-        int axis120_[2]{};
+        std::array<float, 2> axis_{};
+        std::array<int, 2> axis120_{};
         uint32_t axis_source_ = 0;
         bool axis_stop_ = false, has_axis_ = false;
 

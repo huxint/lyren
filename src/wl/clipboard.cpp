@@ -5,8 +5,9 @@
 #include <unistd.h>
 
 #include <cerrno>
-#include <cstring>
+#include <array>
 #include <memory>
+#include <string_view>
 
 #include "core/loop.hpp"
 #include "wl/display.hpp"
@@ -16,7 +17,7 @@ namespace lyren::wl {
     static Clipboard *self(void *data) {
         return static_cast<Clipboard *>(data);
     }
-    static const char *const text_types[] = {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain"};
+    static constexpr std::array text_types = {"text/plain;charset=utf-8", "UTF8_STRING", "text/plain"};
 
     static const wl_data_offer_listener offer_listener{
         .offer =
@@ -93,7 +94,7 @@ namespace lyren::wl {
             if (best == t) {
                 return;
             }
-            if (!std::strcmp(mime, t)) {
+            if (std::string_view(mime) == t) {
                 best = t;
                 return;
             }
@@ -160,8 +161,8 @@ namespace lyren::wl {
             fn({});
             return;
         }
-        int fds[2];
-        if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) < 0) {
+        std::array<int, 2> fds;
+        if (pipe2(fds.data(), O_CLOEXEC | O_NONBLOCK) < 0) {
             fn({});
             return;
         }
@@ -172,10 +173,10 @@ namespace lyren::wl {
         auto buf = std::make_shared<std::string>();
         int rfd = fds[0];
         display_.loop.watch(rfd, EPOLLIN, [this, rfd, buf, fn = std::move(fn)](uint32_t) {
-            char chunk[4096];
+            std::array<char, 4096> chunk;
             ssize_t n;
-            while ((n = read(rfd, chunk, sizeof chunk)) > 0) {
-                buf->append(chunk, size_t(n));
+            while ((n = read(rfd, chunk.data(), chunk.size())) > 0) {
+                buf->append(chunk.data(), size_t(n));
             }
             if (n < 0 && errno == EAGAIN) {
                 return;

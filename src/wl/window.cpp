@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <span>
 
 #include "wl/display.hpp"
 
@@ -177,8 +178,8 @@ namespace lyren::wl {
     void Window::toplevel_configure(int w, int h, wl_array *states) {
         pending_w_ = w, pending_h_ = h;
         pending_max_ = pending_full_ = pending_act_ = pending_tiled_ = false;
-        for (auto *s = static_cast<uint32_t *>(states->data); (char *)s < (char *)states->data + states->size; ++s) {
-            switch (*s) {
+        for (uint32_t state : std::span{static_cast<const uint32_t *>(states->data), states->size / sizeof(uint32_t)}) {
+            switch (state) {
                 case XDG_TOPLEVEL_STATE_MAXIMIZED:
                     pending_max_ = true;
                     break;

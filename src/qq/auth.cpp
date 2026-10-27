@@ -2,6 +2,7 @@
 
 #include <curl/curl.h>
 #include <algorithm>
+#include <memory>
 
 namespace lyren::qq {
 
@@ -86,10 +87,8 @@ namespace lyren::qq {
 
     std::string form(const std::map<std::string, std::string> &fields) {
         auto encode = [](const std::string &s) {
-            char *p = curl_easy_escape(nullptr, s.c_str(), int(s.size()));
-            std::string out(p);
-            curl_free(p);
-            return out;
+            std::unique_ptr<char, decltype(&curl_free)> p(curl_easy_escape(nullptr, s.c_str(), int(s.size())), curl_free);
+            return std::string(p.get());
         };
         std::string out;
         for (const auto &[name, value] : fields) {
@@ -116,10 +115,8 @@ namespace lyren::qq {
                 std::string value(part.substr(eq + 1));
                 std::ranges::replace(value, '+', ' ');
                 int n = 0;
-                char *p = curl_easy_unescape(nullptr, value.c_str(), int(value.size()), &n);
-                std::string out(p, size_t(n));
-                curl_free(p);
-                return out;
+                std::unique_ptr<char, decltype(&curl_free)> p(curl_easy_unescape(nullptr, value.c_str(), int(value.size()), &n), curl_free);
+                return std::string(p.get(), size_t(n));
             }
             if (amp == url.npos) {
                 break;
@@ -127,6 +124,37 @@ namespace lyren::qq {
             url.remove_prefix(amp + 1);
         }
         return {};
+    }
+
+    Result<net::Request> qr_confirmation(std::string_view redirect) {
+        if (!redirect.starts_with("https://ssl.ptlogin2.graph.qq.com/check_sig?")) {
+            return std::unexpected("QQ 登录返回了无法识别的确认地址");
+        }
+        auto uin = query_value(redirect, "uin"), sig = query_value(redirect, "ptsigx");
+        if (uin.empty() || sig.empty()) {
+            return std::unexpected("QQ 登录没有返回完整的确认凭据，请重新扫码");
+        }
+        // The callback supplies the ticket; explicitly request the QQ Music OAuth session.
+        return net::Request{.url = "https://ssl.ptlogin2.graph.qq.com/check_sig?" + form({{"uin", uin},
+                                                                                          {"pttype", "1"},
+                                                                                          {"service", "ptqrlogin"},
+                                                                                          {"nodirect", "0"},
+                                                                                          {"ptsigx", sig},
+                                                                                          {"s_url", "https://graph.qq.com/oauth2.0/login_jump"},
+                                                                                          {"ptlang", "2052"},
+                                                                                          {"ptredirect", "100"},
+                                                                                          {"aid", "716027609"},
+                                                                                          {"daid", "383"},
+                                                                                          {"j_later", "0"},
+                                                                                          {"low_login_hour", "0"},
+                                                                                          {"regmaster", "0"},
+                                                                                          {"pt_login_type", "3"},
+                                                                                          {"pt_aid", "0"},
+                                                                                          {"pt_aaid", "16"},
+                                                                                          {"pt_light", "0"},
+                                                                                          {"pt_3rd_aid", "100497308"}}),
+                            .headers = {"Referer: https://xui.ptlogin2.qq.com/"},
+                            .follow_redirects = false};
     }
 
     void receive_cookies(std::map<std::string, std::string> &jar, const std::vector<std::string> &cookies) {

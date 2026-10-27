@@ -84,11 +84,11 @@ namespace lyren::wl {
     }
 
     void LayerSurface::set_input(int x, int y, int w, int h) {
-        int r[4] = {x, y, w, h};
-        if (std::equal(r, r + 4, input_)) {
+        std::array r = {x, y, w, h};
+        if (r == input_) {
             return;
         }
-        std::copy_n(r, 4, input_);
+        input_ = r;
         dirty_ = true;
     }
 

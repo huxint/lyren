@@ -3,6 +3,7 @@
 #include <systemd/sd-bus.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -101,7 +102,7 @@ namespace lyren {
         }
 
         static int get(sd_bus *, const char *, const char *, const char *property, sd_bus_message *m, void *u, sd_bus_error *) {
-            static constexpr const char *statuses[] = {"Stopped", "Playing", "Paused"};
+            static constexpr std::array statuses = {"Stopped", "Playing", "Paused"};
             const MprisState &s = self(u).state_;
             std::string_view p = property;
             auto flag = [&](bool b) {

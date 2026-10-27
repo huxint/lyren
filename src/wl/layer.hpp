@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <functional>
 
@@ -78,7 +79,7 @@ namespace lyren::wl {
         wp_viewport *viewport_ = nullptr;
         wp_fractional_scale_v1 *fractional_ = nullptr;
         int width_ = 0, height_, bottom_;
-        int input_[4]{};
+        std::array<int, 4> input_{};
         uint32_t scale120_ = 120, ack_serial_ = 0;
         bool needs_ack_ = false, dirty_ = true, frame_pending_ = false;
     };

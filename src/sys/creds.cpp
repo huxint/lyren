@@ -9,6 +9,7 @@
 #include <glaze/glaze.hpp>
 
 #include <cctype>
+#include <array>
 #include <cerrno>
 #include <cstring>
 #include <format>
@@ -41,8 +42,7 @@ namespace lyren::creds {
             }
             void await_suspend(std::coroutine_handle<> h) {
                 int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-                sockaddr_un addr{.sun_family = AF_UNIX};
-                std::strcpy(addr.sun_path, "/run/systemd/io.systemd.Credentials");
+                sockaddr_un addr{.sun_family = AF_UNIX, .sun_path = "/run/systemd/io.systemd.Credentials"};
                 request += '\0';
                 if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) < 0 || write(fd, request.data(), request.size()) != ssize_t(request.size())) {
                     error = std::format("systemd-creds: {}", std::strerror(errno));
@@ -54,10 +54,10 @@ namespace lyren::creds {
                 }
                 fcntl(fd, F_SETFL, O_NONBLOCK);
                 loop.watch(fd, EPOLLIN, [this, h, fd](uint32_t) {
-                    char buf[4096];
+                    std::array<char, 4096> buf;
                     ssize_t n;
-                    while ((n = read(fd, buf, sizeof buf)) > 0) {
-                        reply.append(buf, size_t(n));
+                    while ((n = read(fd, buf.data(), buf.size())) > 0) {
+                        reply.append(buf.data(), size_t(n));
                     }
                     bool complete = !reply.empty() && reply.back() == '\0';
                     if (!complete && n < 0 && errno == EAGAIN) {

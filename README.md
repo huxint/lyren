@@ -60,6 +60,14 @@ dbus-run-session -- env \
 
 `lyren-probe` 提供接口诊断和音频检查；命令及参数见 [lyren-probe.cpp](tools/lyren-probe.cpp)。
 
+启用提交前格式化：
+
+```sh
+git config core.hooksPath .githooks
+```
+
+提交钩子使用 `clang-format` 和 Python 3，按 [.clang-format](.clang-format) 格式化暂存的 C/C++ 文件。
+
 ## 项目结构
 
 | 目录 | 职责 |
