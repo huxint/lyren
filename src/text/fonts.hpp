@@ -11,49 +11,46 @@
 
 namespace lyren::text {
 
-// One font file mapped once; FreeType and HarfBuzz both read the mapping, so font data stays in clean,
-// shared page-cache pages instead of the heap.
-// Which code points a font covers, copied out of fontconfig so it can be shut down.
-struct Coverage {
-    std::vector<uint32_t> pages;  // cp >> 8, sorted
-    std::vector<std::array<uint32_t, 8>> bits;
-    bool has(char32_t cp) const;
-};
+    // One font file mapped once; FreeType and HarfBuzz both read the mapping, so font data stays in clean,
+    // shared page-cache pages instead of the heap.
+    // Which code points a font covers, copied out of fontconfig so it can be shut down.
+    struct Coverage {
+        std::vector<uint32_t> pages; // cp >> 8, sorted
+        std::vector<std::array<uint32_t, 8>> bits;
+        bool has(char32_t cp) const;
+    };
 
-struct Face {
-    std::string path;
-    int index = 0;
-    Coverage coverage;
-    const uint8_t* data = nullptr;
-    size_t size = 0;
-    FT_Face ft = nullptr;
-    hb_font_t* hb = nullptr;
-    float upem = 1000;
-    float ascender = 0.8f, descender = 0.2f;  // in em
-};
+    struct Face {
+        std::string path;
+        int index = 0;
+        Coverage coverage;
+        const uint8_t *data = nullptr;
+        size_t size = 0;
+        FT_Face ft = nullptr;
+        hb_font_t *hb = nullptr;
+        float upem = 1000;
+        float ascender = 0.8f, descender = 0.2f; // in em
+    };
 
-class Fonts {
-public:
-    // Resolves the family's fallback chain with fontconfig, then shuts fontconfig down.
-    explicit Fonts(const std::string& family);
-    ~Fonts();
-    Fonts(const Fonts&) = delete;
-    Fonts& operator=(const Fonts&) = delete;
+    class Fonts {
+    public:
+        // Resolves the family's fallback chain with fontconfig, then shuts fontconfig down.
+        explicit Fonts(const std::string &family);
+        ~Fonts();
+        Fonts(const Fonts &) = delete;
+        Fonts &operator=(const Fonts &) = delete;
 
-    // First face in the chain that covers cp (0 when none does).
-    uint16_t face_for(char32_t cp) const;
-    // Opens the face on first use.
-    Face& face(uint16_t i);
-    size_t face_count() const { return faces_.size(); }
-    size_t opened_count() const;
-    size_t mapped_bytes() const;
-    // Drops the mapped font pages from this process's RSS; they stay in the page cache.
-    void trim();
+        // First face in the chain that covers cp (0 when none does).
+        uint16_t face_for(char32_t cp) const;
+        // Opens the face on first use.
+        Face &face(uint16_t i);
+        // Drops the mapped font pages from this process's RSS; they stay in the page cache.
+        void trim();
 
-private:
-    void open(Face& f);
-    FT_Library ft_ = nullptr;
-    std::vector<Face> faces_;
-};
+    private:
+        void open(Face &f);
+        FT_Library ft_ = nullptr;
+        std::vector<Face> faces_;
+    };
 
-}  // namespace lyren::text
+} // namespace lyren::text

@@ -13,7 +13,9 @@ TEST_CASE("utf8 decode, append and boundaries") {
     CHECK(i == s.size());
 
     std::string out;
-    for (char32_t cp : {U'a', U'周', U'🎵'}) utf8::append(out, cp);
+    for (char32_t cp : {U'a', U'周', U'🎵'}) {
+        utf8::append(out, cp);
+    }
     CHECK(out == s);
 
     CHECK(utf8::next(s, 0) == 1);

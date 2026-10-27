@@ -10,7 +10,9 @@ void main() {
     Prim p = pc.prims.p[gl_InstanceIndex];
     vec2 c = vec2(gl_VertexIndex & 1, gl_VertexIndex >> 1);
     vec4 r = p.rect;
-    if (p.info.x == KIND_SHADOW) r += vec4(-3.0, -3.0, 6.0, 6.0) * p.params.y;
+    if (p.info.x == KIND_SHADOW) {
+        r += vec4(-3.0, -3.0, 6.0, 6.0) * p.params.y;
+    }
     vec2 pos = r.xy + c * r.zw;
     v_pos = pos;
     v_uv = mix(p.uv.xy, p.uv.zw, c);

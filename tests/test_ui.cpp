@@ -22,8 +22,8 @@ TEST_CASE("bezier curves hit their ends and follow the CSS reference values") {
     CHECK(ease::linear(0.37f) == doctest::Approx(0.37f).epsilon(1e-4));
     // CSS "ease" (0.25, 0.1, 0.25, 1) at x = 0.5 is about 0.8024.
     CHECK(Bezier{0.25f, 0.1f, 0.25f, 1}(0.5f) == doctest::Approx(0.8024f).epsilon(1e-3));
-    CHECK(ease::emphasized(0.2f) > 0.6f);  // decelerating: most of the way early
-    CHECK(ease::exit(0.2f) < 0.1f);        // accelerating: slow start
+    CHECK(ease::emphasized(0.2f) > 0.6f); // decelerating: most of the way early
+    CHECK(ease::exit(0.2f) < 0.1f);       // accelerating: slow start
 }
 
 TEST_CASE("spring motion settles without oscillation and is independent of frame rate") {
@@ -43,7 +43,9 @@ TEST_CASE("spring motion settles without oscillation and is independent of frame
     CHECK(reference.value == doctest::Approx(0.99f).epsilon(1e-4));
     for (int fps : {30, 60, 144}) {
         Spring stepped;
-        for (int i = 0; i < fps; ++i) stepped.advance(1, 0.28f / float(fps), 0.28f);
+        for (int i = 0; i < fps; ++i) {
+            stepped.advance(1, 0.28f / float(fps), 0.28f);
+        }
         CHECK(stepped.value == doctest::Approx(reference.value).epsilon(1e-5));
         CHECK(stepped.velocity == doctest::Approx(reference.velocity).epsilon(1e-4));
     }
@@ -91,12 +93,12 @@ static wl::KeyEvent key(uint32_t sym, uint32_t mods = 0, std::string text = {}) 
 
 TEST_CASE("word boundaries treat spaces, punctuation, latin and CJK runs separately") {
     std::string s = "hello, 周杰伦 world";
-    CHECK(word_right(s, 0) == 5);              // "hello"
-    CHECK(word_right(s, 5) == 7);              // ", "
-    CHECK(word_right(s, 7) == 7 + 9 + 1);      // "周杰伦 "
-    CHECK(word_left(s, s.size()) == 17);       // "world"
-    CHECK(word_left(s, 16) == 7);              // back over the space and "周杰伦"
-    CHECK(char_boundary(s, 8) == 7);           // inside 周
+    CHECK(word_right(s, 0) == 5);         // "hello"
+    CHECK(word_right(s, 5) == 7);         // ", "
+    CHECK(word_right(s, 7) == 7 + 9 + 1); // "周杰伦 "
+    CHECK(word_left(s, s.size()) == 17);  // "world"
+    CHECK(word_left(s, 16) == 7);         // back over the space and "周杰伦"
+    CHECK(char_boundary(s, 8) == 7);      // inside 周
 }
 
 TEST_CASE("text edit keys") {

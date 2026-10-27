@@ -1,0 +1,1 @@
+`fixed.m4a` repeats the first AAC packet from `tone.m4a` 32 times. Its MP4 sample table stores a single nonzero `stsz.sample_size` and a sample count of 32, with no per-sample size array. The chunk offsets, timing tables and durations describe 32 × 1024 stereo frames at 22050 Hz. This covers the constant-size table form independently of the variable-size table in `tone.m4a`.

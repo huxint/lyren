@@ -5,13 +5,12 @@
 using namespace lyren;
 
 TEST_CASE("lrc with credits, repeats and a translation") {
-    std::string lrc =
-        "{\"t\":0,\"c\":[{\"tx\":\"作词: \"},{\"tx\":\"周杰伦\"}]}\n"
-        "[ti:晴天]\n"
-        "[00:30.54]故事的小黄花\r\n"
-        "[00:34.165][01:40.5]从出生那年就飘着\n"
-        "[00:37:77]\n"
-        "[00:41]童年的荡秋千\n";
+    std::string lrc = "{\"t\":0,\"c\":[{\"tx\":\"作词: \"},{\"tx\":\"周杰伦\"}]}\n"
+                      "[ti:晴天]\n"
+                      "[00:30.54]故事的小黄花\r\n"
+                      "[00:34.165][01:40.5]从出生那年就飘着\n"
+                      "[00:37:77]\n"
+                      "[00:41]童年的荡秋千\n";
     std::string trans = "[00:30.540]The little yellow flower\n[00:34.165]Has been floating since birth\n";
     auto lines = parse_lyrics(lrc, trans);
     REQUIRE(lines.size() == 5);
@@ -39,16 +38,15 @@ TEST_CASE("lrc offset") {
 }
 
 TEST_CASE("yrc word timing with a translation") {
-    std::string yrc =
-        "{\"t\":0,\"c\":[{\"tx\":\"作词: \"},{\"tx\":\"Taylor Swift\"}]}\n"
-        "[16240,3600](16240,270,0)We (16510,210,0)were (16720,570,0)young\n"
-        "[11430,2610](11430,450,0)Bad(11880,0,0), (11880,360,0)(oh) \n";
+    std::string yrc = "{\"t\":0,\"c\":[{\"tx\":\"作词: \"},{\"tx\":\"Taylor Swift\"}]}\n"
+                      "[16240,3600](16240,270,0)We (16510,210,0)were (16720,570,0)young\n"
+                      "[11430,2610](11430,450,0)Bad(11880,0,0), (11880,360,0)(oh) \n";
     auto lines = parse_lyrics("[00:16.24]ignored\n", "[00:16.240]我们都还年轻\n", yrc);
     REQUIRE(lines.size() == 3);
     CHECK(lines[0].text == "作词: Taylor Swift");
     CHECK(lines[0].words.empty());
 
-    const auto& bad = lines[1];
+    const auto &bad = lines[1];
     CHECK(bad.time == doctest::Approx(11.43));
     CHECK(bad.text == "Bad, (oh)");
     REQUIRE(bad.words.size() == 3);
@@ -56,7 +54,7 @@ TEST_CASE("yrc word timing with a translation") {
     CHECK(bad.text.substr(bad.words[1].from, bad.words[1].to - bad.words[1].from) == ", ");
     CHECK(bad.words[2].to == bad.text.size());
 
-    const auto& young = lines[2];
+    const auto &young = lines[2];
     CHECK(young.text == "We were young");
     CHECK(young.translation == "我们都还年轻");
     REQUIRE(young.words.size() == 3);

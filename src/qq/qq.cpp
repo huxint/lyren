@@ -5,7 +5,6 @@
 #include <ctime>
 #include <format>
 #include <random>
-#include <regex>
 #include <curl/curl.h>
 
 #include "core/json.hpp"
@@ -266,7 +265,7 @@ namespace lyren::qq {
             int total = 0, hasmore = 0;
         };
         struct QAssetSongs {
-            Vec<glz::generic_u64> list;
+            Vec<glz::raw_json_view> list; // only used while parse_playlist's reply is alive
             int total = 0, hasmore = 0;
         };
         struct QAlbumFavorite {
@@ -306,9 +305,9 @@ namespace lyren::qq {
             return v;
         }
 
-        // A part's data, or why it has none.
+        // Moves a part's data out of the reply, or returns why it has none.
         template <class T>
-        Result<T> data(const std::optional<Part<T>> &p) {
+        Result<T> take_data(std::optional<Part<T>> &p) {
             if (!p) {
                 return std::unexpected("QQ 音乐没有返回数据");
             }
@@ -321,7 +320,7 @@ namespace lyren::qq {
             if (!p->data) {
                 return std::unexpected("QQ 音乐没有返回数据");
             }
-            return *p->data;
+            return std::move(*p->data);
         }
 
         // Covers by mid: T001 is an artist's picture, T002 an album's.
@@ -357,44 +356,43 @@ namespace lyren::qq {
 
         std::vector<Track> tracks_of(const Vec<QSong> &songs) {
             std::vector<Track> out;
-            if (songs) {
-                for (const auto &s : *songs) {
-                    out.push_back(track(s));
-                }
+            if (!songs) {
+                return out;
+            }
+            out.reserve(songs->size());
+            for (const auto &s : *songs) {
+                out.push_back(track(s));
             }
             return out;
         }
 
         std::vector<Track> tracks_of(const Vec<QSongInfo> &songs) {
             std::vector<Track> out;
-            if (songs) {
-                for (const auto &s : *songs) {
-                    if (s.songInfo) {
-                        out.push_back(track(*s.songInfo));
-                    }
+            if (!songs) {
+                return out;
+            }
+            out.reserve(songs->size());
+            for (const auto &s : *songs) {
+                if (s.songInfo) {
+                    out.push_back(track(*s.songInfo));
                 }
             }
             return out;
         }
 
-        Result<std::vector<Track>> asset_tracks(const Vec<glz::generic_u64> &songs) {
+        Result<std::vector<Track>> asset_tracks(const Vec<glz::raw_json_view> &songs) {
             std::vector<Track> out;
             if (!songs) {
                 return out;
             }
+            out.reserve(songs->size());
             for (const auto &item : *songs) {
-                const auto *song = &item;
-                if (!item.is_object()) {
-                    return std::unexpected("QQ 音乐返回了无法识别的歌曲资料");
+                std::string_view json = item.str;
+                if (auto view = glz::get_view_json<"/songInfo">(json)) {
+                    json = {view->data(), view->size()};
+                } else if (auto view = glz::get_view_json<"/track">(json)) {
+                    json = {view->data(), view->size()};
                 }
-                const auto &object = item.get_object();
-                if (auto it = object.find("songInfo"); it != object.end()) {
-                    song = &it->second;
-                } else if (auto it = object.find("track"); it != object.end()) {
-                    song = &it->second;
-                }
-                std::string json;
-                (void)glz::write_json(*song, json);
                 QSong s;
                 if (glz::read<lax>(s, json) || s.id == 0 || s.mid.value_or("").empty()) {
                     return std::unexpected("QQ 音乐返回了不完整的歌曲资料");
@@ -409,7 +407,7 @@ namespace lyren::qq {
             if (!r) {
                 return std::unexpected(r.error());
             }
-            auto d = data(r->req_0);
+            auto d = take_data(r->req_0);
             if (!d) {
                 return std::unexpected(d.error());
             }
@@ -498,7 +496,7 @@ namespace lyren::qq {
             if (!r) {
                 return std::unexpected(r.error());
             }
-            auto s = data(r->req_0);
+            auto s = take_data(r->req_0);
             if (!s) {
                 return std::unexpected(s.error());
             }
@@ -511,6 +509,22 @@ namespace lyren::qq {
         }
 
     } // namespace
+
+    Result<PlaylistPage> parse_playlist(const Reply &reply) {
+        auto r = parse<One<QAssetSongs>>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        auto d = take_data(r->req_0);
+        if (!d) {
+            return std::unexpected(d.error());
+        }
+        auto tracks = asset_tracks(d->list);
+        if (!tracks) {
+            return std::unexpected(tracks.error());
+        }
+        return PlaylistPage{std::move(*tracks), d->hasmore != 0};
+    }
 
     Qq::Qq(Loop &loop, net::Http &http)
     : client(loop, http),
@@ -537,7 +551,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -618,7 +632,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto v = data(r->req_0);
+        auto v = take_data(r->req_0);
         if (!v) {
             co_return std::unexpected(v.error());
         }
@@ -638,7 +652,7 @@ namespace lyren::qq {
                 host.insert(4, "s");
             }
             Stream s{.url = host + *u->purl, .trial = std::string_view(files[i].prefix) == "RS02", .level = files[i].level};
-            auto d = data(r->req_1);
+            auto d = take_data(r->req_1);
             if (d && d->track_info) {
                 const QSong &song = *d->track_info;
                 if (song.file) {
@@ -659,7 +673,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -675,7 +689,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -691,23 +705,15 @@ namespace lyren::qq {
         if (card.id.starts_with("dir:")) {
             std::vector<Track> out;
             for (int offset = 0;;) {
-                auto r = parse<One<QAssetSongs>>(co_await client.call(
+                auto page = parse_playlist(co_await client.call(
                     {{"music.musicasset.PlaylistDetailRead", "GetUniformSongDetailInfo",
                       std::format(R"({{"uin":{},"dirid":{},"bPaged":true,"offset":{},"size":100}})", json_string(client.get("musicid")), card.id.substr(4), offset)}}));
-                if (!r) {
-                    co_return std::unexpected(r.error());
+                if (!page) {
+                    co_return std::unexpected(page.error());
                 }
-                auto d = data(r->req_0);
-                if (!d) {
-                    co_return std::unexpected(d.error());
-                }
-                auto part = asset_tracks(d->list);
-                if (!part) {
-                    co_return std::unexpected(part.error());
-                }
-                bool end = part->empty() || !d->hasmore;
-                offset += int(part->size());
-                out.insert(out.end(), std::make_move_iterator(part->begin()), std::make_move_iterator(part->end()));
+                bool end = page->tracks.empty() || !page->more;
+                offset += int(page->tracks.size());
+                out.insert(out.end(), std::make_move_iterator(page->tracks.begin()), std::make_move_iterator(page->tracks.end()));
                 if (end) {
                     break;
                 }
@@ -734,7 +740,7 @@ namespace lyren::qq {
             if (!r) {
                 co_return std::unexpected(r.error());
             }
-            auto d = data(r->req_0);
+            auto d = take_data(r->req_0);
             if (!d) {
                 co_return std::unexpected(d.error());
             }
@@ -747,7 +753,7 @@ namespace lyren::qq {
             if (!r) {
                 co_return std::unexpected(r.error());
             }
-            auto d = data(r->req_0);
+            auto d = take_data(r->req_0);
             if (!d) {
                 co_return std::unexpected(d.error());
             }
@@ -769,7 +775,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -796,7 +802,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -825,8 +831,8 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto a = data(r->req_0);
-        auto s = data(r->req_1);
+        auto a = take_data(r->req_0);
+        auto s = take_data(r->req_1);
         if (!a) {
             co_return std::unexpected(a.error());
         }
@@ -871,7 +877,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -884,10 +890,10 @@ namespace lyren::qq {
             out.alias = e.ex_info->foreign_name.value_or("");
         }
         out.avatar = e.pic && e.pic->pic ? *e.pic->pic : photo(1, mid);
-        if (auto s = data(r->req_1)) {
+        if (auto s = take_data(r->req_1)) {
             out.songs = s->totalNum;
         }
-        if (auto a = data(r->req_2)) {
+        if (auto a = take_data(r->req_2)) {
             out.albums = a->total;
         }
         if (client.logged_in()) {
@@ -908,7 +914,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -921,7 +927,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -940,7 +946,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -997,7 +1003,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -1033,7 +1039,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -1063,7 +1069,7 @@ namespace lyren::qq {
             if (!f) {
                 co_return std::unexpected(f.error());
             }
-            auto page = data(f->req_0);
+            auto page = take_data(f->req_0);
             if (!page) {
                 co_return std::unexpected(page.error());
             }
@@ -1135,7 +1141,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -1183,7 +1189,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }
@@ -1223,7 +1229,7 @@ namespace lyren::qq {
             if (!r) {
                 co_return std::unexpected(r.error());
             }
-            auto d = data(r->req_0);
+            auto d = take_data(r->req_0);
             if (!d) {
                 co_return std::unexpected(d.error());
             }
@@ -1263,11 +1269,10 @@ namespace lyren::qq {
             co_return std::unexpected("无法连接 QQ 登录服务");
         }
         receive_cookies(cookies, page.cookies);
-        std::smatch version;
-        if (!std::regex_search(page.body, version, std::regex(R"re(ptui_version\s*:\s*(?:encodeURIComponent\()?['"]([0-9]+)['"])re"))) {
+        std::string js_version = qr_version(page.body);
+        if (js_version.empty()) {
             co_return std::unexpected("QQ 登录页没有返回客户端版本");
         }
-        std::string js_version = version[1];
         auto qr = co_await net::fetch{loop_,
                                       http_,
                                       {.url = "https://ssl.ptlogin2.qq.com/ptqrshow?" + form({{"appid", "716027609"},
@@ -1438,7 +1443,7 @@ namespace lyren::qq {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        auto d = data(r->req_0);
+        auto d = take_data(r->req_0);
         if (!d) {
             co_return std::unexpected(d.error());
         }

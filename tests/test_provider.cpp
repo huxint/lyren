@@ -9,8 +9,7 @@ using namespace lyren;
 
 TEST_CASE("identical songs on different platforms keep independent identities") {
     Track n{.id = "1", .title = "Love Story", .artist = "Taylor Swift", .duration = 235, .paid = true};
-    Track q{.source = Source::qq, .id = "1", .mid = "mid", .media = "media", .title = n.title,
-            .artist = n.artist, .duration = 235};
+    Track q{.source = Source::qq, .id = "1", .mid = "mid", .media = "media", .title = n.title, .artist = n.artist, .duration = 235};
     CHECK_FALSE(same(n, q));
     CHECK(key(n) != key(q));
     CHECK(same(n, Track{.id = "1"}));
@@ -35,7 +34,9 @@ TEST_CASE("search rankings retain every listing across uneven and empty batches"
     auto tracks = interleave(sources, &Batch::tracks);
     REQUIRE(tracks.size() == 5);
     std::vector<std::string> ids;
-    for (const auto& track : tracks) ids.push_back(track.id);
+    for (const auto &track : tracks) {
+        ids.push_back(track.id);
+    }
     CHECK(ids == (std::vector<std::string>{"a1", "b1", "a2", "b2", "a3"}));
     auto cards = interleave(sources, &Batch::cards);
     REQUIRE(cards.size() == 3);
@@ -74,4 +75,8 @@ TEST_CASE("credentials preserve registered and future platforms and read the old
     restored = creds::from_json(creds::to_json(restored));
     CHECK(restored["qq"] == c["qq"]);
     CHECK(restored["extension"] == c["extension"]);
+}
+
+TEST_CASE("malformed credentials do not retain partially parsed sessions") {
+    CHECK(creds::from_json(R"({"netease":{"MUSIC_U":"test-cookie"},"qq":)").empty());
 }

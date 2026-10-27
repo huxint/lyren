@@ -45,8 +45,7 @@ TEST_CASE("theme colours") {
 
 TEST_CASE("settings are written into the config text in place") {
     const std::string text = "# top\n[playback]\n# quality\nquality = \"lossless\"\ntrial = \"skip\"\n\n[theme]\nfont_size = 14\n";
-    CHECK(set_config_value(text, "playback", "quality", "\"exhigh\"") ==
-          "# top\n[playback]\n# quality\nquality = \"exhigh\"\ntrial = \"skip\"\n\n[theme]\nfont_size = 14\n");
+    CHECK(set_config_value(text, "playback", "quality", "\"exhigh\"") == "# top\n[playback]\n# quality\nquality = \"exhigh\"\ntrial = \"skip\"\n\n[theme]\nfont_size = 14\n");
     // A missing key follows the last setting of its section, and a longer key is not mistaken for it.
     CHECK(set_config_value(text, "playback", "normalize", "true") ==
           "# top\n[playback]\n# quality\nquality = \"lossless\"\ntrial = \"skip\"\nnormalize = true\n\n[theme]\nfont_size = 14\n");
@@ -63,4 +62,14 @@ TEST_CASE("settings are written into the config text in place") {
     CHECK(c->playback.normalize);
     CHECK(c->desktop_lyrics.enabled);
     CHECK(d.find("# 音量均衡") != std::string::npos);
+}
+
+TEST_CASE("setting updates preserve inline comments and surrounding whitespace") {
+    CHECK(set_config_value("[playback]\r\n  normalize\t= false  # 音量均衡\r\n", "playback", "normalize", "true") == "[playback]\r\n  normalize\t= true  # 音量均衡\r\n");
+    CHECK(set_config_value("[theme]\naccent = \"#abcdef\" # 强调色\n", "theme", "accent", "\"auto\"") == "[theme]\naccent = \"auto\" # 强调色\n");
+    CHECK(set_config_value("[theme]\nfont = 'Font #1'  # 字体\n", "theme", "font", "\"sans-serif\"") == "[theme]\nfont = \"sans-serif\"  # 字体\n");
+    CHECK(set_config_value(R"([theme]
+font = "Font \"#1" # 字体
+)",
+                           "theme", "font", "\"sans-serif\"") == "[theme]\nfont = \"sans-serif\" # 字体\n");
 }

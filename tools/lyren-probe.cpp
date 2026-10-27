@@ -31,7 +31,6 @@
 #include "app/lyrics.hpp"
 #include "audio/player.hpp"
 #include "core/log.hpp"
-#include "core/memstat.hpp"
 #include "core/utf8.hpp"
 #include "ncm/netease.hpp"
 #include "net/http.hpp"
@@ -169,8 +168,6 @@ static int play(std::string src, std::vector<std::string> steps) {
     if (tty) {
         std::println();
     }
-    MemStat m = mem_sample();
-    std::println("RSS {:.1f} MB (anon {:.1f}, file {:.1f})", m.rss / 1024.0, m.anon / 1024.0, m.file / 1024.0);
     if (interactive) {
         tcsetattr(STDIN_FILENO, TCSANOW, &saved);
     }

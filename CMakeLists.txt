@@ -4,6 +4,7 @@ project(lyren LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
@@ -23,8 +24,12 @@ foreach(f ${ICON_FILES})
     string(APPEND icon_arrays "static const unsigned char svg_${id}[] = {\n#embed \"icons/${name}.svg\" suffix(, 0)\n};\n")
     string(APPEND icon_entries "    {\"${name}\", reinterpret_cast<const char*>(svg_${id})},\n")
 endforeach()
-file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/generated/icon_data.cpp CONTENT
-"// Generated from assets/icons by CMakeLists.txt.
+file(
+    CONFIGURE
+    OUTPUT
+    ${CMAKE_BINARY_DIR}/generated/icon_data.cpp
+    CONTENT
+    "// Generated from assets/icons by CMakeLists.txt.
 #include \"text/icons.hpp\"
 
 namespace lyren::text {
@@ -33,14 +38,26 @@ const IconSource icon_sources[] = {
 ${icon_entries}};
 const std::size_t icon_source_count = std::size(icon_sources);
 }
-" @ONLY)
+"
+    @ONLY)
 
 # Everything below the window: loop, config, credentials, network, audio and both services' clients.
-pkg_check_modules(MEDIA REQUIRED IMPORTED_TARGET libcurl libcrypto zlib libmpg123 flac fdk-aac vorbisfile libpipewire-0.3)
-add_library(lyren_base STATIC
+pkg_check_modules(
+    MEDIA
+    REQUIRED
+    IMPORTED_TARGET
+    libcurl
+    libcrypto
+    zlib
+    libmpg123
+    flac
+    fdk-aac
+    vorbisfile
+    libpipewire-0.3)
+add_library(
+    lyren_base STATIC
     src/core/log.cpp
     src/core/loop.cpp
-    src/core/memstat.cpp
     src/core/utf8.cpp
     src/sys/paths.cpp
     src/sys/config.cpp
@@ -62,8 +79,7 @@ add_library(lyren_base STATIC
     src/qq/client.cpp
     src/qq/qq.cpp
     src/app/provider.cpp
-    src/app/lyrics.cpp
-)
+    src/app/lyrics.cpp)
 target_include_directories(lyren_base PUBLIC src)
 target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA glaze)
 target_compile_options(lyren_base PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
@@ -71,7 +87,8 @@ target_compile_options(lyren_base PUBLIC -Wall -Wextra -Wno-missing-field-initia
 # Window, renderer, text, UI toolkit, D-Bus media controls and the app.
 pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libqrencode)
 pkg_check_modules(SDBUS REQUIRED IMPORTED_TARGET libsystemd)
-add_library(lyren_lib STATIC
+add_library(
+    lyren_lib STATIC
     ${CMAKE_BINARY_DIR}/generated/icon_data.cpp
     src/wl/display.cpp
     src/wl/input.cpp
@@ -96,13 +113,12 @@ add_library(lyren_lib STATIC
     src/sys/mpris.cpp
     src/app/app.cpp
     src/app/frames.cpp
-    src/app/overlay.cpp
     src/app/images.cpp
     src/app/state.cpp
-    src/app/shell.cpp
-)
+    src/app/shell.cpp)
 target_link_libraries(lyren_lib PUBLIC lyren_base PkgConfig::SYSLIBS PkgConfig::UILIBS PkgConfig::SDBUS vulkan_headers nanosvg)
-add_wayland_protocols(lyren_lib
+add_wayland_protocols(
+    lyren_lib
     ${WP_DIR}/stable/xdg-shell/xdg-shell.xml
     ${WP_DIR}/stable/viewporter/viewporter.xml
     ${WP_DIR}/stable/tablet/tablet-v2.xml
@@ -112,8 +128,7 @@ add_wayland_protocols(lyren_lib
     ${WP_DIR}/staging/ext-background-effect/ext-background-effect-v1.xml
     ${WP_DIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
     ${WP_DIR}/unstable/text-input/text-input-unstable-v3.xml
-    ${CMAKE_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml
-)
+    ${CMAKE_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml)
 add_shaders(lyren_lib shaders/ui.vert shaders/ui.frag)
 
 add_executable(lyren src/main.cpp)
@@ -123,7 +138,8 @@ add_executable(lyren-probe tools/lyren-probe.cpp)
 target_link_libraries(lyren-probe PRIVATE lyren_base PkgConfig::UILIBS)
 
 enable_testing()
-add_executable(lyren_tests
+add_executable(
+    lyren_tests
     tests/main.cpp
     tests/test_loop.cpp
     tests/test_config.cpp
@@ -135,14 +151,12 @@ add_executable(lyren_tests
     tests/test_qq.cpp
     tests/test_provider.cpp
     tests/test_lyrics.cpp
-    tests/test_image.cpp
-)
+    tests/test_image.cpp)
 target_link_libraries(lyren_tests PRIVATE lyren_lib doctest)
 target_compile_definitions(lyren_tests PRIVATE LYREN_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data")
 add_test(NAME unit COMMAND lyren_tests)
 set_tests_properties(unit PROPERTIES ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_BINARY_DIR}/test-cache;NO_PROXY=127.0.0.1;no_proxy=127.0.0.1")
-add_test(NAME no_alsa COMMAND sh -c "! ldd $<TARGET_FILE:lyren> $<TARGET_FILE:lyren-probe> | grep -q asound")
-add_test(NAME memprobe COMMAND sh ${CMAKE_SOURCE_DIR}/tests/test_memprobe.sh ${CMAKE_SOURCE_DIR})
+add_test(NAME no_alsa COMMAND ${CMAKE_COMMAND} "-DEXECUTABLES=$<TARGET_FILE:lyren>;$<TARGET_FILE:lyren-probe>" -P ${CMAKE_SOURCE_DIR}/tests/no_alsa.cmake)
 
 add_executable(lyren_gfx_tests tests/main.cpp tests/test_gfx.cpp)
 target_link_libraries(lyren_gfx_tests PRIVATE lyren_lib doctest)

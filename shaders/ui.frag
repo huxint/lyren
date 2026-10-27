@@ -18,7 +18,9 @@ float sd_rrect(vec2 p, vec2 half_size, vec4 r) {
 }
 
 // Gaussian-blurred rounded box, after Evan Wallace's "fast rounded rectangle shadows".
-float gaussian(float x, float sigma) { return exp(-(x * x) / (2.0 * sigma * sigma)) / (2.5066283 * sigma); }
+float gaussian(float x, float sigma) {
+    return exp(-(x * x) / (2.0 * sigma * sigma)) / (2.5066283 * sigma);
+}
 vec2 erf(vec2 x) {
     vec2 s = sign(x), a = abs(x);
     x = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
@@ -50,7 +52,9 @@ float sd_arc(vec2 p, vec2 sc, float ra, float rb) {
 
 void main() {
     Prim p = pc.prims.p[v_index];
-    if (v_pos.x < p.clip.x || v_pos.y < p.clip.y || v_pos.x >= p.clip.z || v_pos.y >= p.clip.w) discard;
+    if (v_pos.x < p.clip.x || v_pos.y < p.clip.y || v_pos.x >= p.clip.z || v_pos.y >= p.clip.w) {
+        discard;
+    }
     vec2 half_size = p.rect.zw * 0.5;
     vec2 local = v_pos - p.rect.xy - half_size;
     uint kind = p.info.x;
@@ -67,12 +71,16 @@ void main() {
         }
     } else if (kind == KIND_SHADOW) {
         float a = rounded_box_shadow(local, half_size, p.params.y, p.radii.x);
-        if ((p.info.z & FLAG_CUTOUT) != 0u) a *= clamp(0.5 + sd_rrect(local, half_size, p.radii), 0.0, 1.0);
+        if ((p.info.z & FLAG_CUTOUT) != 0u) {
+            a *= clamp(0.5 + sd_rrect(local, half_size, p.radii), 0.0, 1.0);
+        }
         o = p.color * a;
     } else if (kind == KIND_GLYPH) {
         vec4 c = p.color;
         // A horizontal wipe: colour left of params.x, color2 right of it, blended over ±params.y.
-        if ((p.info.z & FLAG_GRADIENT) != 0u) c = mix(p.color, p.color2, smoothstep(p.params.x - p.params.y, p.params.x + p.params.y, v_pos.x));
+        if ((p.info.z & FLAG_GRADIENT) != 0u) {
+            c = mix(p.color, p.color2, smoothstep(p.params.x - p.params.y, p.params.x + p.params.y, v_pos.x));
+        }
         o = c * texture(textures[nonuniformEXT(p.info.y)], v_uv).r;
     } else if (kind == KIND_ARC) {
         // Rotate so the middle of the arc points up (+y with y flipped to point up).

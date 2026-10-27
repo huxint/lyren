@@ -12,8 +12,7 @@ TEST_CASE("cover blur clamps edges and keeps colour channels independent") {
     }
     SUBCASE("horizontal and vertical lines have the same clamped blur") {
         for (bool horizontal : {true, false}) {
-            Image image{horizontal ? 3u : 1u, horizontal ? 1u : 3u,
-                        {0, 64, 128, 255, 0, 64, 128, 255, 255, 64, 128, 255}};
+            Image image{horizontal ? 3u : 1u, horizontal ? 1u : 3u, {0, 64, 128, 255, 0, 64, 128, 255, 255, 64, 128, 255}};
             blur(image, 1);
             CHECK(image.px == std::vector<uint8_t>{47, 64, 128, 255, 85, 64, 128, 255, 123, 64, 128, 255});
         }

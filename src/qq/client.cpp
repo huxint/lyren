@@ -31,7 +31,7 @@ namespace lyren::qq {
         }
         body += '}';
         std::string url = comm == Comm::linux ? "https://u.y.qq.com/cgi-bin/musicu.fcg" : "https://u.y.qq.com/cgi-bin/musics.fcg?sign=" + sign(body);
-        net::Request req{.url = std::move(url), .body = body, .headers = {"Content-Type: application/json", "Referer: https://y.qq.com/", "Origin: https://y.qq.com"}};
+        net::Request req{.url = std::move(url), .body = std::move(body), .headers = {"Content-Type: application/json", "Referer: https://y.qq.com/", "Origin: https://y.qq.com"}};
         if (logged_in()) {
             req.headers.push_back(std::format("Cookie: uin={0}; qqmusic_uin={0}; qqmusic_key={1}; qqmusic_version=17; qqmusic_miniversion=70; "
                                               "psrf_qqopenid={2}; psrf_qqaccess_token={3}",

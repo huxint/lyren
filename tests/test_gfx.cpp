@@ -13,20 +13,22 @@ using namespace lyren;
 
 namespace {
 
-struct Graphics {
-    struct Validation {
-        const gfx::Context& context;
-        ~Validation() { CHECK(context.validation_errors() == 0); }
+    struct Graphics {
+        struct Validation {
+            const gfx::Context &context;
+            ~Validation() {
+                CHECK(context.validation_errors() == 0);
+            }
+        };
+
+        Loop loop;
+        wl::Display display{loop};
+        gfx::Context context{display.display};
+        Validation validation{context};
+        gfx::Renderer renderer{context};
     };
 
-    Loop loop;
-    wl::Display display{loop};
-    gfx::Context context{display.display};
-    Validation validation{context};
-    gfx::Renderer renderer{context};
-};
-
-}  // namespace
+} // namespace
 
 TEST_CASE("scroll motion requests paced animation frames after consuming input") {
     gfx::select_driver(GpuChoice::integrated);
@@ -83,28 +85,42 @@ TEST_CASE("scroll motion requests paced animation frames after consuming input")
             frame(1.016);
             int count = int(std::lround(0.4 * fps));
             float offset = 0;
-            for (int i = 1; i <= count; ++i) offset = frame(1.016 + 0.4 * i / count);
+            for (int i = 1; i <= count; ++i) {
+                offset = frame(1.016 + 0.4 * i / count);
+            }
             CHECK(offset == doctest::Approx(40 + 1200 * 0.35 * (1 - std::exp(-0.4 / 0.35))).epsilon(1e-5));
         }
     }
 }
 
-TEST_CASE("small cover textures stay bounded and preserve the current cover") {
+TEST_CASE("cover eviction discards old covers and preserves visible covers") {
+    uint32_t side = 64;
+    int count = 640;
+    SUBCASE("small covers reach the entry limit") {}
+    SUBCASE("large covers reach the byte budget") {
+        side = 512;
+        count = 40;
+    }
     gfx::select_driver(GpuChoice::integrated);
     Graphics g;
     net::Http http;
-    Images images(g.loop, http, g.renderer, [] {}, [] { return 0.; });
-    gfx::Image image{64, 64, std::vector<uint8_t>(64 * 64 * 4, 255)};
-    for (int i = 0; i < 1600; ++i) {
+    Images images(
+        g.loop, http, g.renderer, [] {},
+        [] {
+            return 0.;
+        });
+    gfx::Image image{side, side, std::vector<uint8_t>(size_t(side) * side * 4, 255)};
+    images.put("visible", image);
+    auto visible = images.get("visible", side).tex;
+    for (int i = 0; i < count; ++i) {
         images.put("cover-" + std::to_string(i), image);
+        images.get("visible", side);
         images.end_frame();
     }
-    CHECK(images.count() <= 512);
-    CHECK(g.renderer.texture_count() <= 512);
-    CHECK(images.bytes() <= 512 * image.px.size());
-    const auto& current = images.get("cover-1599", 64);
-    CHECK(current.ready);
-    CHECK(current.bytes == image.px.size());
+    CHECK_FALSE(images.get("cover-0", side).ready);
+    CHECK(images.get("cover-" + std::to_string(count - 1), side).ready);
+    CHECK(images.get("visible", side).ready);
+    CHECK(images.get("visible", side).tex == visible);
 }
 
 TEST_CASE("texture replacement preserves the uploaded pixels across submissions") {
@@ -112,17 +128,23 @@ TEST_CASE("texture replacement preserves the uploaded pixels across submissions"
     Graphics g;
     bool configured = false;
     wl::Window window(g.display,
-                      {.configure = [&] { configured = true; g.loop.quit(); },
-                       .pointer = [](const wl::PointerEvent&) {},
-                       .key = [](const wl::KeyEvent&) {},
+                      {.configure =
+                           [&] {
+                               configured = true;
+                               g.loop.quit();
+                           },
+                       .pointer = [](const wl::PointerEvent &) {},
+                       .key = [](const wl::KeyEvent &) {},
                        .focus = [](bool) {},
-                       .text_input = [](const wl::TextInputEvent&) {}},
+                       .text_input = [](const wl::TextInputEvent &) {}},
                       true, 720, 480);
-    auto timeout = g.loop.after(2s, [&] { g.loop.quit(); });
+    auto timeout = g.loop.after(2s, [&] {
+        g.loop.quit();
+    });
     g.loop.run();
     g.loop.cancel(timeout);
     REQUIRE(configured);
-    auto* target = g.renderer.create_target(g.display.display, window.surface());
+    auto *target = g.renderer.create_target(g.display.display, window.surface());
     g.renderer.resize(*target, window.buffer_width(), window.buffer_height());
     gfx::Prim prim{};
     prim.rect[0] = prim.rect[1] = 10;
@@ -139,15 +161,17 @@ TEST_CASE("texture replacement preserves the uploaded pixels across submissions"
         g.renderer.upload(tex, 0, 0, 1, 1, rgba.data(), 4);
         prim.info[1] = tex;
         bool captured = false;
-        g.renderer.capture_next(*target, [&](const uint8_t* bgra, uint32_t width, uint32_t) {
-            const auto* pixel = bgra + (14 * width + 14) * 4;
+        g.renderer.capture_next(*target, [&](const uint8_t *bgra, uint32_t width, uint32_t) {
+            const auto *pixel = bgra + (14 * width + 14) * 4;
             CHECK(pixel[0] == rgba[2]);
             CHECK(pixel[1] == rgba[1]);
             CHECK(pixel[2] == rgba[0]);
             CHECK(pixel[3] == rgba[3]);
             captured = true;
         });
-        g.renderer.draw(*target, {&prim, 1}, clear, [&] { window.prepare_present(); });
+        g.renderer.draw(*target, {&prim, 1}, clear, [&] {
+            window.prepare_present();
+        });
         CHECK(captured);
         g.renderer.destroy_texture(tex);
     }

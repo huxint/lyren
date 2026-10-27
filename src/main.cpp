@@ -15,21 +15,21 @@
 #include "sys/mpris.hpp"
 
 // --debug     debug logging
-// --overlay   open the F12 memory overlay at start
 // --script F  replay synthetic input from F, one command per line (window geometry coordinates):
 //             wait MS | move X Y | click X Y [right|double|back] | press X Y | release X Y | scroll DY [wheel]
 //             key [ctrl+][shift+][alt+]KEYSYM | commit TEXT | preedit TEXT (input method) | shot FILE.png (next frame)
 //             exec SHELL-COMMAND | quit; "lyrics move|click|press|release|shot …" targets the desktop lyrics
-int main(int argc, char** argv) {
-    bool overlay = false;
+int main(int argc, char **argv) {
     std::vector<std::string> script;
     for (int i = 1; i < argc; ++i) {
         std::string_view a = argv[i];
-        if (a == "--debug") lyren::log::min_level = lyren::log::Level::debug;
-        else if (a == "--overlay") overlay = true;
-        else if (a == "--script" && i + 1 < argc) {
+        if (a == "--debug") {
+            lyren::log::min_level = lyren::log::Level::debug;
+        } else if (a == "--script" && i + 1 < argc) {
             std::ifstream in(argv[++i]);
-            for (std::string line; std::getline(in, line);) script.push_back(line);
+            for (std::string line; std::getline(in, line);) {
+                script.push_back(line);
+            }
         }
     }
     mallopt(M_ARENA_MAX, 2);
@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
         read(sfd, &info, sizeof info);
         loop.quit();
     });
-    lyren::App app(loop, bus, std::move(config), overlay, std::move(script));
+    lyren::App app(loop, bus, std::move(config), std::move(script));
     loop.run();
     return 0;
 }

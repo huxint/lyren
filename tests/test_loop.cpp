@@ -18,9 +18,15 @@ TEST_CASE("timers fire in deadline order and can be cancelled") {
         order += "c";
         loop.quit();
     });
-    loop.after(10ms, [&] { order += "a"; });
-    auto id = loop.after(20ms, [&] { order += "x"; });
-    loop.after(15ms, [&] { order += "b"; });
+    loop.after(10ms, [&] {
+        order += "a";
+    });
+    auto id = loop.after(20ms, [&] {
+        order += "x";
+    });
+    loop.after(15ms, [&] {
+        order += "b";
+    });
     loop.cancel(id);
     loop.run();
     CHECK(order == "abc");
@@ -30,9 +36,13 @@ TEST_CASE("cancelling the earliest timer does not wake the loop at its old deadl
     Loop loop;
     int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     int wakeups = 0;
-    loop.set_poll_hook({.fd = fd, .after = [&](bool) { ++wakeups; }});
+    loop.set_poll_hook({.fd = fd, .after = [&](bool) {
+                            ++wakeups;
+                        }});
     auto cancelled = loop.at(Clock::now() - 1s, [] {});
-    loop.after(100ms, [&] { loop.quit(); });
+    loop.after(100ms, [&] {
+        loop.quit();
+    });
     loop.cancel(cancelled);
     loop.run();
     close(fd);
@@ -44,9 +54,19 @@ TEST_CASE("quitting in the before-poll hook cancels the prepared read without wa
     int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     bool prepared = false, waited = false;
     loop.set_poll_hook({.fd = fd,
-                        .before = [&] { prepared = true; loop.quit(); },
-                        .after = [&](bool readable) { CHECK_FALSE(readable); prepared = false; }});
-    loop.after(20ms, [&] { waited = true; });
+                        .before =
+                            [&] {
+                                prepared = true;
+                                loop.quit();
+                            },
+                        .after =
+                            [&](bool readable) {
+                                CHECK_FALSE(readable);
+                                prepared = false;
+                            }});
+    loop.after(20ms, [&] {
+        waited = true;
+    });
     loop.run();
     close(fd);
     CHECK_FALSE(prepared);
@@ -67,12 +87,12 @@ TEST_CASE("post runs on the loop thread") {
     CHECK(ran_on == std::this_thread::get_id());
 }
 
-static Task<int> add_later(Loop& loop, int a, int b) {
+static Task<int> add_later(Loop &loop, int a, int b) {
     co_await lyren::sleep{loop, 5ms};
     co_return a + b;
 }
 
-static Task<void> chain(Loop& loop, int& out) {
+static Task<void> chain(Loop &loop, int &out) {
     int x = co_await add_later(loop, 1, 2);
     int y = co_await add_later(loop, x, 10);
     out = y;
@@ -87,7 +107,7 @@ TEST_CASE("tasks await timers and each other") {
     CHECK(out == 13);
 }
 
-static Task<int> finish_later(Loop& loop, int value, Clock::duration delay, std::vector<int>& order) {
+static Task<int> finish_later(Loop &loop, int value, Clock::duration delay, std::vector<int> &order) {
     co_await lyren::sleep{loop, delay};
     order.push_back(value);
     co_return value;
@@ -97,7 +117,7 @@ TEST_CASE("both starts its tasks together and preserves result order") {
     Loop loop;
     std::vector<int> order;
     std::pair<int, int> out;
-    spawn([](Loop* loop, std::vector<int>* order, std::pair<int, int>* out) -> Task<void> {
+    spawn([](Loop *loop, std::vector<int> *order, std::pair<int, int> *out) -> Task<void> {
         *out = co_await both(finish_later(*loop, 1, 8ms, *order), finish_later(*loop, 2, 2ms, *order));
         loop->quit();
     }(&loop, &order, &out));
@@ -106,10 +126,14 @@ TEST_CASE("both starts its tasks together and preserves result order") {
     CHECK(out == std::pair{1, 2});
 }
 
-static Task<int> immediate(int value) { co_return value; }
+static Task<int> immediate(int value) {
+    co_return value;
+}
 
 TEST_CASE("both also joins tasks that complete before it suspends") {
     std::pair<int, int> out;
-    spawn([](std::pair<int, int>* out) -> Task<void> { *out = co_await both(immediate(3), immediate(4)); }(&out));
+    spawn([](std::pair<int, int> *out) -> Task<void> {
+        *out = co_await both(immediate(3), immediate(4));
+    }(&out));
     CHECK(out == std::pair{3, 4});
 }

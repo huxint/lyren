@@ -5,15 +5,17 @@ file(MAKE_DIRECTORY ${PROTOCOL_OUT})
 
 # Generates client header + glue code for each XML and adds them to <target>.
 function(add_wayland_protocols target)
-    foreach(xml ${ARGN})
-        get_filename_component(name ${xml} NAME_WE)
-        set(header ${PROTOCOL_OUT}/${name}-client.h)
-        set(code ${PROTOCOL_OUT}/${name}.c)
-        add_custom_command(OUTPUT ${header} ${code}
-            COMMAND ${WAYLAND_SCANNER} client-header ${xml} ${header}
-            COMMAND ${WAYLAND_SCANNER} private-code ${xml} ${code}
-            DEPENDS ${xml} VERBATIM)
-        target_sources(${target} PRIVATE ${header} ${code})
-    endforeach()
-    target_include_directories(${target} PUBLIC ${PROTOCOL_OUT})
+  foreach(xml ${ARGN})
+    get_filename_component(name ${xml} NAME_WE)
+    set(header ${PROTOCOL_OUT}/${name}-client.h)
+    set(code ${PROTOCOL_OUT}/${name}.c)
+    add_custom_command(
+      OUTPUT ${header} ${code}
+      COMMAND ${WAYLAND_SCANNER} client-header ${xml} ${header}
+      COMMAND ${WAYLAND_SCANNER} private-code ${xml} ${code}
+      DEPENDS ${xml}
+      VERBATIM)
+    target_sources(${target} PRIVATE ${header} ${code})
+  endforeach()
+  target_include_directories(${target} PUBLIC ${PROTOCOL_OUT})
 endfunction()
