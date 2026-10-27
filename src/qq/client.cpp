@@ -26,8 +26,10 @@ namespace lyren::qq {
     Task<Reply> Client::call(std::vector<Rpc> parts, Comm comm, bool retry) {
         // The signature covers these exact bytes, so the body is built once and sent as is.
         std::string body = comm == Comm::app ? R"({"comm":{"ct":20,"cv":1770,"tmeAppID":"qqmusic"})" : R"({"comm":{"ct":19,"cv":1,"tmeAppID":"qqmusic"})";
+        std::string what;
         for (size_t i = 0; i < parts.size(); ++i) {
             body += std::format(R"(,"req_{}":{{"module":"{}","method":"{}","param":{}}})", i, parts[i].module, parts[i].method, parts[i].param);
+            what += std::format("{}{}.{}", i ? ", " : "", parts[i].module, parts[i].method);
         }
         body += '}';
         std::string url = comm == Comm::linux ? "https://u.y.qq.com/cgi-bin/musicu.fcg" : "https://u.y.qq.com/cgi-bin/musics.fcg?sign=" + sign(body);
@@ -37,8 +39,6 @@ namespace lyren::qq {
                                               "psrf_qqopenid={2}; psrf_qqaccess_token={3}",
                                               get("musicid"), get("musickey"), get("openid"), get("access_token")));
         }
-        std::string what = parts.size() == 1 ? parts[0].module + "." + parts[0].method : std::format("{} parts", parts.size());
-
         net::Response res;
         for (int attempt = 0;; ++attempt) {
             res = co_await net::fetch{loop_, http_, req};
@@ -70,6 +70,7 @@ namespace lyren::qq {
             log::warn("qq {}: code {}, trace {}", what, top.code, top.traceid.value_or(""));
             co_return r;
         }
+        log::debug("qq {}: HTTP {}, code {}, trace {}", what, res.status, top.code, top.traceid.value_or(""));
         r.body = std::move(res.body);
         co_return r;
     }

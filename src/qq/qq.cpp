@@ -6,6 +6,7 @@
 #include <ctime>
 #include <format>
 #include <random>
+#include <source_location>
 #include <curl/curl.h>
 
 #include "core/json.hpp"
@@ -267,7 +268,7 @@ namespace lyren::qq {
         };
         struct QAssetSongs {
             Vec<glz::raw_json_view> list; // only used while parse_playlist's reply is alive
-            int total = 0, hasmore = 0;
+            bool hasmore = false;
         };
         struct QAlbumFavorite {
             Str albumMid, albumName, pic, singerName;
@@ -294,13 +295,13 @@ namespace lyren::qq {
         constexpr glz::opts lax{.error_on_unknown_keys = false};
 
         template <class T>
-        Result<T> parse(const Reply &r) {
+        Result<T> parse(const Reply &r, std::source_location origin = std::source_location::current()) {
             if (!r.error.empty()) {
                 return std::unexpected(r.error);
             }
             T v{};
             if (auto e = glz::read<lax>(v, r.body)) {
-                log::warn("qq: cannot parse reply ({} bytes)", r.body.size());
+                log::warn("qq {} at line {}: {} at byte {} ({} bytes)", origin.function_name(), origin.line(), glz::format_error(e.ec), e.count, r.body.size());
                 return std::unexpected("QQ 音乐返回的数据无法解析");
             }
             return v;
@@ -308,9 +309,12 @@ namespace lyren::qq {
 
         // Moves a part's data out of the reply, or returns why it has none.
         template <class T>
-        Result<T> take_data(std::optional<Part<T>> &p) {
+        Result<T> take_data(std::optional<Part<T>> &p, std::source_location origin = std::source_location::current()) {
             if (!p) {
                 return std::unexpected("QQ 音乐没有返回数据");
+            }
+            if (p->code != 0) {
+                log::warn("qq {} at line {}: code {}", origin.function_name(), origin.line(), p->code);
             }
             if (p->code == 2001) {
                 return std::unexpected("QQ 音乐要求登录后再试");
@@ -387,15 +391,23 @@ namespace lyren::qq {
                 return out;
             }
             out.reserve(songs->size());
-            for (const auto &item : *songs) {
-                std::string_view json = item.str;
+            for (size_t i = 0; i < songs->size(); ++i) {
+                std::string_view json = (*songs)[i].str;
+                std::string_view path = "direct";
                 if (auto view = glz::get_view_json<"/songInfo">(json)) {
                     json = {view->data(), view->size()};
+                    path = "songInfo";
                 } else if (auto view = glz::get_view_json<"/track">(json)) {
                     json = {view->data(), view->size()};
+                    path = "track";
                 }
                 QSong s;
-                if (glz::read<lax>(s, json) || s.id == 0 || s.mid.value_or("").empty()) {
+                if (auto e = glz::read<lax>(s, json)) {
+                    log::warn("qq playlist item {} ({}): {} at byte {} ({} bytes)", i, path, glz::format_error(e.ec), e.count, json.size());
+                    return std::unexpected("QQ 音乐返回的歌曲资料无法解析");
+                }
+                if (s.id == 0) {
+                    log::warn("qq playlist item {} ({}): missing song id", i, path);
                     return std::unexpected("QQ 音乐返回了不完整的歌曲资料");
                 }
                 out.push_back(track(s));
@@ -524,7 +536,37 @@ namespace lyren::qq {
         if (!tracks) {
             return std::unexpected(tracks.error());
         }
-        return PlaylistPage{std::move(*tracks), d->hasmore != 0};
+        return PlaylistPage{std::move(*tracks), d->hasmore};
+    }
+
+    Result<FavoritePlaylistsPage> parse_favorite_playlists(const Reply &reply) {
+        auto r = parse<One<QFavorites>>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        // This endpoint reports an account with no favorite playlists as 80050.
+        if (r->req_0 && r->req_0->code == 80050) {
+            return FavoritePlaylistsPage{};
+        }
+        auto d = take_data(r->req_0);
+        if (!d) {
+            return std::unexpected(d.error());
+        }
+        FavoritePlaylistsPage out{.total = d->total, .more = d->hasmore != 0};
+        if (d->v_list) {
+            for (const auto &p : *d->v_list) {
+                if (!p.tid) {
+                    return std::unexpected("QQ 音乐返回了无法识别的收藏歌单");
+                }
+                out.playlists.push_back({.source = Source::qq,
+                                         .id = std::to_string(p.tid),
+                                         .title = p.name.value_or(""),
+                                         .subtitle = std::format("{} 首", p.songNum),
+                                         .cover = p.pic.value_or(""),
+                                         .count = p.songNum});
+            }
+        }
+        return out;
     }
 
     Qq::Qq(Loop &loop, net::Http &http)
@@ -611,6 +653,9 @@ namespace lyren::qq {
     }
 
     Task<Result<Stream>> Qq::stream(Track t, Quality quality) {
+        if (t.mid.empty()) {
+            co_return std::unexpected("QQ 音乐未提供这首歌的播放信息");
+        }
         // Down from the quality asked for; the preview clip comes last, for songs that need a membership.
         struct File {
             const char *prefix, *ext, *level;
@@ -1065,31 +1110,17 @@ namespace lyren::qq {
             }
         }
         for (int offset = 0;;) {
-            auto f = parse<One<QFavorites>>(co_await client.call(
+            auto page = parse_favorite_playlists(co_await client.call(
                 {{"music.musicasset.PlaylistFavRead", "GetPlaylistFavInfo_v2", std::format(R"({{"uin":{},"offset":{},"size":100}})", json_string(uid), offset)}}));
-            if (!f) {
-                co_return std::unexpected(f.error());
-            }
-            auto page = take_data(f->req_0);
             if (!page) {
                 co_return std::unexpected(page.error());
             }
-            if (!page->v_list || page->v_list->empty()) {
+            if (page->playlists.empty()) {
                 break;
             }
-            for (const auto &p : *page->v_list) {
-                if (!p.tid) {
-                    co_return std::unexpected("QQ 音乐返回了无法识别的收藏歌单");
-                }
-                out.second.push_back({.source = Source::qq,
-                                      .id = std::to_string(p.tid),
-                                      .title = p.name.value_or(""),
-                                      .subtitle = std::format("{} 首", p.songNum),
-                                      .cover = p.pic.value_or(""),
-                                      .count = p.songNum});
-            }
-            offset += int(page->v_list->size());
-            if (!page->hasmore || offset >= page->total) {
+            offset += int(page->playlists.size());
+            out.second.insert(out.second.end(), std::make_move_iterator(page->playlists.begin()), std::make_move_iterator(page->playlists.end()));
+            if (!page->more || offset >= page->total) {
                 break;
             }
         }
@@ -1257,19 +1288,20 @@ namespace lyren::qq {
 
     Task<Result<QrCode>> Qq::qr_start() {
         uint64_t gen = ++qr_gen_;
-        std::map<std::string, std::string> cookies;
+        net::CookieJar cookies;
         auto page = co_await net::fetch{
             loop_,
             http_,
             {.url = "https://xui.ptlogin2.qq.com/cgi-bin/xlogin?" +
-                    form({{"appid", "716027609"}, {"daid", "383"}, {"pt_3rd_aid", "100497308"}, {"style", "40"}, {"s_url", "https://graph.qq.com/oauth2.0/login_jump"}})}};
+                    form({{"appid", "716027609"}, {"daid", "383"}, {"pt_3rd_aid", "100497308"}, {"style", "40"}, {"s_url", "https://graph.qq.com/oauth2.0/login_jump"}}),
+             .cookie_jar = cookies}};
         if (gen != qr_gen_) {
             co_return std::unexpected("已取消扫码登录");
         }
         if (!page.error.empty() || page.status != 200) {
             co_return std::unexpected("无法连接 QQ 登录服务");
         }
-        receive_cookies(cookies, page.cookies);
+        cookies = std::move(page.cookie_jar);
         std::string js_version = qr_version(page.body);
         if (js_version.empty()) {
             co_return std::unexpected("QQ 登录页没有返回客户端版本");
@@ -1286,15 +1318,16 @@ namespace lyren::qq {
                                                                                               {"daid", "383"},
                                                                                               {"pt_3rd_aid", "100497308"},
                                                                                               {"u1", "https://graph.qq.com/oauth2.0/login_jump"}}),
-                                       .headers = {"Referer: https://xui.ptlogin2.qq.com/", cookie_header(cookies)}}};
+                                       .headers = {"Referer: https://xui.ptlogin2.qq.com/"},
+                                       .cookie_jar = cookies}};
         if (gen != qr_gen_) {
             co_return std::unexpected("已取消扫码登录");
         }
         if (!qr.error.empty() || qr.status != 200 || !qr.body.starts_with("\x89PNG\r\n\x1a\n")) {
             co_return std::unexpected("QQ 登录服务没有返回二维码");
         }
-        receive_cookies(cookies, qr.cookies);
-        if (cookies["qrsig"].empty()) {
+        cookies = std::move(qr.cookie_jar);
+        if (cookies.get("qrsig", "ssl.ptlogin2.qq.com", "/ptqrlogin").empty()) {
             co_return std::unexpected("QQ 登录服务没有返回二维码令牌");
         }
         qr_cookies_ = std::move(cookies);
@@ -1307,31 +1340,35 @@ namespace lyren::qq {
         uint64_t gen = qr_gen_;
         auto cookies = qr_cookies_;
         std::string state = oauth_state_;
-        auto poll = co_await net::fetch{loop_,
-                                        http_,
-                                        {.url = "https://ssl.ptlogin2.qq.com/ptqrlogin?" + form({{"u1", "https://graph.qq.com/oauth2.0/login_jump"},
-                                                                                                 {"ptqrtoken", std::to_string(hash33(cookies["qrsig"]))},
-                                                                                                 {"ptredirect", "0"},
-                                                                                                 {"h", "1"},
-                                                                                                 {"t", "1"},
-                                                                                                 {"g", "1"},
-                                                                                                 {"from_ui", "1"},
-                                                                                                 {"ptlang", "2052"},
-                                                                                                 {"action", "0-0-" + millis()},
-                                                                                                 {"js_ver", js_version_},
-                                                                                                 {"js_type", "1"},
-                                                                                                 {"pt_uistyle", "40"},
-                                                                                                 {"aid", "716027609"},
-                                                                                                 {"daid", "383"},
-                                                                                                 {"pt_3rd_aid", "100497308"},
-                                                                                                 {"login_sig", cookies["pt_login_sig"]}}),
-                                         .headers = {"Referer: https://xui.ptlogin2.qq.com/", cookie_header(cookies)}}};
+        auto poll = co_await net::fetch{
+            loop_,
+            http_,
+            {.url = "https://ssl.ptlogin2.qq.com/ptqrlogin?" + form({{"u1", "https://graph.qq.com/oauth2.0/login_jump"},
+                                                                     {"ptqrtoken", std::to_string(hash33(cookies.get("qrsig", "ssl.ptlogin2.qq.com", "/ptqrlogin")))},
+                                                                     {"ptredirect", "0"},
+                                                                     {"h", "1"},
+                                                                     {"t", "1"},
+                                                                     {"g", "1"},
+                                                                     {"from_ui", "1"},
+                                                                     {"ptlang", "2052"},
+                                                                     {"action", "0-0-" + millis()},
+                                                                     {"js_ver", js_version_},
+                                                                     {"js_type", "1"},
+                                                                     {"pt_uistyle", "40"},
+                                                                     {"aid", "716027609"},
+                                                                     {"daid", "383"},
+                                                                     {"pt_3rd_aid", "100497308"},
+                                                                     {"login_sig", cookies.get("pt_login_sig", "xui.ptlogin2.qq.com", "/cgi-bin/xlogin")}}),
+             .headers = {"Referer: https://xui.ptlogin2.qq.com/"},
+             .cookie_jar = cookies}};
         if (gen != qr_gen_) {
             co_return QrStatus{};
         }
         if (!poll.error.empty() || poll.status != 200) {
             co_return std::unexpected("无法查询 QQ 二维码状态");
         }
+        cookies = std::move(poll.cookie_jar);
+        qr_cookies_ = cookies;
         auto args = qr_callback(poll.body);
         if (!args) {
             co_return std::unexpected(args.error());
@@ -1352,17 +1389,24 @@ namespace lyren::qq {
         if (!confirm) {
             co_return std::unexpected(confirm.error());
         }
-        receive_cookies(cookies, poll.cookies);
-        confirm->headers.push_back(cookie_header(cookies));
+        confirm->cookie_jar = std::move(cookies);
         auto checked = co_await net::fetch{loop_, http_, std::move(*confirm)};
         if (gen != qr_gen_) {
             co_return QrStatus{};
         }
-        if (!checked.error.empty() || checked.status >= 400) {
-            co_return std::unexpected("QQ 登录确认失败，请重新扫码");
-        }
-        receive_cookies(cookies, checked.cookies);
-        if (cookies["p_skey"].empty()) {
+        std::string p_skey = checked.cookie_jar.get("p_skey", "graph.qq.com", "/oauth2.0/authorize");
+        if (!checked.error.empty() || checked.status >= 400 || p_skey.empty()) {
+            std::vector<std::string> cookie_names;
+            for (std::string_view cookie : checked.cookies) {
+                if (auto eq = cookie.find('='); eq != cookie.npos) {
+                    cookie_names.emplace_back(cookie.substr(0, eq));
+                }
+            }
+            log::warn("qq login confirmation: HTTP {}, URL {}, {} bytes, cookie names {}", checked.status, checked.url.substr(0, checked.url.find_first_of("?#")),
+                      checked.body.size(), cookie_names);
+            if (!checked.error.empty() || checked.status >= 400) {
+                co_return std::unexpected("QQ 登录确认失败，请重新扫码");
+            }
             co_return std::unexpected("QQ 登录没有返回授权凭据，请重新扫码");
         }
         auto authorized = co_await net::fetch{loop_,
@@ -1378,11 +1422,12 @@ namespace lyren::qq {
                                                              {"src", "1"},
                                                              {"update_auth", "1"},
                                                              {"openapi", "1010"},
-                                                             {"g_tk", std::to_string(hash33(cookies["p_skey"], 5381))},
+                                                             {"g_tk", std::to_string(hash33(p_skey, 5381))},
                                                              {"auth_time", millis()},
                                                              {"ui", random_id()}}),
-                                               .headers = {"Content-Type: application/x-www-form-urlencoded", "Referer: https://graph.qq.com/", cookie_header(cookies)},
-                                               .follow_redirects = false}};
+                                               .headers = {"Content-Type: application/x-www-form-urlencoded", "Referer: https://graph.qq.com/", "Origin: https://graph.qq.com"},
+                                               .follow_redirects = false,
+                                               .cookie_jar = std::move(checked.cookie_jar)}};
         if (gen != qr_gen_) {
             co_return QrStatus{};
         }
@@ -1403,7 +1448,7 @@ namespace lyren::qq {
             co_return std::unexpected(session.error());
         }
         client.session = std::move(*session);
-        qr_cookies_.clear();
+        qr_cookies_ = {};
         if (client.on_session) {
             client.on_session();
         }

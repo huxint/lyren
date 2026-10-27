@@ -9,7 +9,7 @@
 using namespace lyren;
 
 TEST_CASE("QQ playlist pages preserve direct and wrapped songs in server order") {
-    auto page = qq::parse_playlist({.body = R"({"req_0":{"code":0,"data":{"hasmore":1,"total":3,"list":[
+    auto page = qq::parse_playlist({.body = R"({"req_0":{"code":0,"data":{"hasmore":true,"total":4,"list":[
         {"id":1,"mid":"one","title":"第一首","interval":42,"file":{"media_mid":"audio-one"},
          "album":{"mid":"album-one","title":"专辑"},"singer":[{"mid":"artist-one","name":"歌手"}]},
         {"unrelated":{"title":"忽略","values":[1,2,3]},"songInfo":{"id":2,"mid":"two","name":"第二首"}},
@@ -32,12 +32,77 @@ TEST_CASE("QQ playlist pages preserve direct and wrapped songs in server order")
     CHECK(page->tracks[2].title == "第三首");
 }
 
-TEST_CASE("QQ playlist pages reject incomplete songs without returning a partial list") {
+TEST_CASE("QQ playlist pages stop at the final page even when it contains songs") {
+    // GetUniformSongDetailInfo uses a JSON boolean, unlike the numeric flag on favorite playlists.
+    auto page = qq::parse_playlist({.body = R"({"req_0":{"code":0,"data":{"total":1,"dirShow":0,
+        "list":[{"id":1,"mid":"one","title":"最后一首"}],"hasmore":false,
+        "filterNum":0,"diyNum":0,"deviceValid":true,"deviceBits":0}}})"});
+    REQUIRE(page);
+    REQUIRE(page->tracks.size() == 1);
+    CHECK(page->tracks[0].title == "最后一首");
+    CHECK_FALSE(page->more);
+}
+
+TEST_CASE("QQ playlist pages accept an empty directory") {
+    auto page = qq::parse_playlist({.body = R"({"req_0":{"code":0,"data":{"total":0,"dirShow":0,
+        "list":[],"hasmore":false,"filterNum":0,"diyNum":0,"deviceValid":true,"deviceBits":0}}})"});
+    REQUIRE(page);
+    CHECK(page->tracks.empty());
+    CHECK_FALSE(page->more);
+}
+
+TEST_CASE("QQ playlist pages preserve songs without playback mids in server order") {
+    auto page = qq::parse_playlist({.body = R"({"req_0":{"code":0,"data":{"hasmore":true,"list":[
+        {"id":1,"mid":"one","title":"前一首"},
+        {"track":{"id":2995157998,"mid":"","type":0,"title":"没有播放标识","interval":42}},
+        {"songInfo":{"id":3,"title":"未返回 MID"}},
+        {"id":4,"mid":null,"title":"MID 为 null"},
+        {"id":5,"mid":"five","title":"后一首"}
+    ]}}})"});
+    REQUIRE(page);
+    REQUIRE(page->tracks.size() == 5);
+    CHECK(page->more);
+    CHECK(page->tracks[0].id == "1");
+    CHECK(page->tracks[1].id == "2995157998");
+    CHECK(page->tracks[1].title == "没有播放标识");
+    CHECK(page->tracks[1].duration == 42);
+    CHECK(page->tracks[1].mid.empty());
+    CHECK(page->tracks[2].id == "3");
+    CHECK(page->tracks[2].mid.empty());
+    CHECK(page->tracks[3].id == "4");
+    CHECK(page->tracks[3].mid.empty());
+    CHECK(page->tracks[4].id == "5");
+    CHECK(page->tracks[4].mid == "five");
+}
+
+TEST_CASE("QQ playlist pages reject songs without an id instead of returning a partial list") {
     auto page = qq::parse_playlist({.body = R"({"req_0":{"code":0,"data":{"list":[
-        {"id":1,"mid":"one"},{"songInfo":{"id":2}}
+        {"id":1,"mid":"one"},{"songInfo":{"mid":"two"}}
     ]}}})"});
     REQUIRE_FALSE(page);
     CHECK(page.error() == "QQ 音乐返回了不完整的歌曲资料");
+}
+
+TEST_CASE("QQ favorite playlists treat the empty collection response as a final page") {
+    auto page = qq::parse_favorite_playlists({.body = R"({"code":0,"req_0":{"code":80050,"data":{
+        "number":0,"hasmore":0,"v_list":[],"v_failTids":[],"v_delTids":[],"total":0,"hide":false
+    }}})"});
+    REQUIRE(page);
+    CHECK(page->playlists.empty());
+    CHECK(page->total == 0);
+    CHECK_FALSE(page->more);
+}
+
+TEST_CASE("QQ favorite playlists keep authentication and other errors visible") {
+    auto login = qq::parse_favorite_playlists({.body = R"({"req_0":{"code":2001}})"});
+    REQUIRE_FALSE(login);
+    CHECK(login.error() == "QQ 音乐要求登录后再试");
+    auto failure = qq::parse_favorite_playlists({.body = R"({"req_0":{"code":1000}})"});
+    REQUIRE_FALSE(failure);
+    CHECK(failure.error() == "QQ 音乐请求失败（1000）");
+    auto other_endpoint = qq::parse_playlist({.body = R"({"req_0":{"code":80050}})"});
+    REQUIRE_FALSE(other_endpoint);
+    CHECK(other_endpoint.error() == "QQ 音乐请求失败（80050）");
 }
 
 TEST_CASE("qq request signature vectors") {

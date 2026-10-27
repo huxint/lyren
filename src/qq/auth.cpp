@@ -130,53 +130,7 @@ namespace lyren::qq {
         if (!redirect.starts_with("https://ssl.ptlogin2.graph.qq.com/check_sig?")) {
             return std::unexpected("QQ 登录返回了无法识别的确认地址");
         }
-        auto uin = query_value(redirect, "uin"), sig = query_value(redirect, "ptsigx");
-        if (uin.empty() || sig.empty()) {
-            return std::unexpected("QQ 登录没有返回完整的确认凭据，请重新扫码");
-        }
-        // The callback supplies the ticket; explicitly request the QQ Music OAuth session.
-        return net::Request{.url = "https://ssl.ptlogin2.graph.qq.com/check_sig?" + form({{"uin", uin},
-                                                                                          {"pttype", "1"},
-                                                                                          {"service", "ptqrlogin"},
-                                                                                          {"nodirect", "0"},
-                                                                                          {"ptsigx", sig},
-                                                                                          {"s_url", "https://graph.qq.com/oauth2.0/login_jump"},
-                                                                                          {"ptlang", "2052"},
-                                                                                          {"ptredirect", "100"},
-                                                                                          {"aid", "716027609"},
-                                                                                          {"daid", "383"},
-                                                                                          {"j_later", "0"},
-                                                                                          {"low_login_hour", "0"},
-                                                                                          {"regmaster", "0"},
-                                                                                          {"pt_login_type", "3"},
-                                                                                          {"pt_aid", "0"},
-                                                                                          {"pt_aaid", "16"},
-                                                                                          {"pt_light", "0"},
-                                                                                          {"pt_3rd_aid", "100497308"}}),
-                            .headers = {"Referer: https://xui.ptlogin2.qq.com/"},
-                            .follow_redirects = false};
-    }
-
-    void receive_cookies(std::map<std::string, std::string> &jar, const std::vector<std::string> &cookies) {
-        for (std::string_view cookie : cookies) {
-            cookie = cookie.substr(0, cookie.find(';'));
-            auto eq = cookie.find('=');
-            if (eq == cookie.npos) {
-                continue;
-            }
-            jar[std::string(cookie.substr(0, eq))] = cookie.substr(eq + 1);
-        }
-    }
-
-    std::string cookie_header(const std::map<std::string, std::string> &jar) {
-        std::string out = "Cookie: ";
-        for (const auto &[name, value] : jar) {
-            if (out.size() > 8) {
-                out += "; ";
-            }
-            out += name + '=' + value;
-        }
-        return out;
+        return net::Request{.url = std::string(redirect), .headers = {"Referer: https://xui.ptlogin2.qq.com/"}};
     }
 
 } // namespace lyren::qq

@@ -8,11 +8,22 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 namespace lyren::net {
+
+    // A libcurl cookie snapshot, preserving domain, path and expiry across requests.
+    class CookieJar {
+    public:
+        std::string get(std::string_view name, std::string_view host, std::string_view path = "/") const;
+
+    private:
+        friend class Http;
+        std::vector<std::string> entries_;
+    };
 
     struct Get {
         std::string url;
@@ -27,6 +38,7 @@ namespace lyren::net {
         std::optional<std::string> body;
         std::vector<std::string> headers;
         bool follow_redirects = true;
+        std::optional<CookieJar> cookie_jar;
     };
 
     struct Response {
@@ -34,6 +46,8 @@ namespace lyren::net {
         std::string body, error;          // error is empty when a response arrived
         std::vector<std::string> cookies; // Set-Cookie values
         std::string location;             // the final response's redirect target
+        std::string url;                  // the final response's URL
+        CookieJar cookie_jar;
     };
 
     // Called on the network thread; keep them short.

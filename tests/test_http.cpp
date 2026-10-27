@@ -136,6 +136,58 @@ TEST_CASE("an HTTP client wakes for a new request after the previous one finishe
     }
 }
 
+TEST_CASE("cookie sessions preserve domain and path scopes across separate requests") {
+    Server server([](std::string_view request) {
+        auto response = ok(request);
+        std::string cookies;
+        if (request.starts_with("GET /qr ")) {
+            cookies = "Set-Cookie: qrsig=QR; Domain=login.example.test; Path=/; HttpOnly\r\n"
+                      "Set-Cookie: common=shared; Domain=example.test; Path=/\r\n"
+                      "Set-Cookie: p_skey=old; Domain=example.test; Path=/\r\n";
+        } else if (request.starts_with("GET /confirm ")) {
+            // Clearing the parent domain's cookie must not erase the new auth-domain cookie.
+            cookies = "Set-Cookie: p_skey=new; Domain=auth.example.test; Path=/\r\n"
+                      "Set-Cookie: p_skey=; Domain=example.test; Path=/; Max-Age=0\r\n"
+                      "Set-Cookie: path_only=private; Domain=auth.example.test; Path=/private\r\n"
+                      "Set-Cookie: foreign=blocked; Domain=unrelated.test; Path=/\r\n";
+        }
+        response.insert(response.find("\r\n") + 2, cookies);
+        return response;
+    });
+    net::Http http;
+    auto fetch = [&](std::string path, std::string host, net::CookieJar cookies) {
+        auto result = std::make_shared<std::promise<net::Response>>();
+        auto ready = result->get_future();
+        // Host selects the cookie origin; the connection always stays on 127.0.0.1.
+        http.request({.url = server.url() + path, .headers = {"Host: " + host}, .cookie_jar = std::move(cookies)}, [result](net::Response r) {
+            result->set_value(std::move(r));
+        });
+        REQUIRE(ready.wait_for(2s) == std::future_status::ready);
+        auto response = ready.get();
+        REQUIRE(response.error.empty());
+        REQUIRE(response.status == 200);
+        return response;
+    };
+    auto qr = fetch("/qr", "login.example.test", {});
+    CHECK(qr.cookie_jar.get("qrsig", "login.example.test") == "QR");
+    auto confirmed = fetch("/confirm", "auth.example.test", qr.cookie_jar);
+    CHECK(confirmed.body.contains("common=shared"));
+    CHECK_FALSE(confirmed.body.contains("qrsig=QR"));
+    CHECK(confirmed.cookie_jar.get("p_skey", "auth.example.test") == "new");
+    CHECK(confirmed.cookie_jar.get("p_skey", "login.example.test").empty());
+    CHECK(confirmed.cookie_jar.get("path_only", "auth.example.test", "/private/item") == "private");
+    CHECK(confirmed.cookie_jar.get("path_only", "auth.example.test", "/privately").empty());
+    auto authorized = fetch("/oauth", "auth.example.test", confirmed.cookie_jar);
+    CHECK(authorized.body.contains("p_skey=new"));
+    CHECK_FALSE(authorized.body.contains("p_skey=old"));
+    CHECK_FALSE(authorized.body.contains("qrsig=QR"));
+    CHECK_FALSE(authorized.body.contains("path_only="));
+    CHECK_FALSE(authorized.body.contains("foreign="));
+    auto login = fetch("/done", "login.example.test", authorized.cookie_jar);
+    CHECK(login.body.contains("qrsig=QR"));
+    CHECK_FALSE(login.body.contains("p_skey="));
+}
+
 TEST_CASE("chunked audio downloads expose the exact bytes and final size") {
     std::string body(4097, '\0');
     for (size_t i = 0; i < body.size(); ++i) {

@@ -12,6 +12,14 @@ namespace lyren::qq {
     // Decode an account playlist page into owned application data.
     Result<PlaylistPage> parse_playlist(const Reply &reply);
 
+    struct FavoritePlaylistsPage {
+        std::vector<Card> playlists;
+        int total = 0;
+        bool more = false;
+    };
+
+    Result<FavoritePlaylistsPage> parse_favorite_playlists(const Reply &reply);
+
     // QQ Music, after docs/qqmusic-api.md. Albums and artists go by their mids, playlists by their public ids, songs by
     // their numeric ids with the mids alongside (Track::mid, Track::media).
     class Qq : public Provider {
@@ -72,7 +80,7 @@ namespace lyren::qq {
         net::Http &http_;
         std::string guid_; // names this client in stream requests
         uint64_t qr_gen_ = 0;
-        std::map<std::string, std::string> qr_cookies_;
+        net::CookieJar qr_cookies_;
         std::string js_version_, oauth_state_;
     };
 

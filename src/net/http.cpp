@@ -14,6 +14,52 @@
 
 namespace lyren::net {
 
+    std::string CookieJar::get(std::string_view name, std::string_view host, std::string_view path) const {
+        std::string_view value;
+        size_t domain_size = 0, path_size = 0;
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        for (std::string_view entry : entries_) {
+            if (entry.starts_with("#HttpOnly_")) {
+                entry.remove_prefix(10);
+            }
+            // CURLINFO_COOKIELIST supplies seven tab-separated Netscape cookie fields.
+            std::array<std::string_view, 7> fields;
+            for (size_t i = 0; i < 6; ++i) {
+                auto tab = entry.find('\t');
+                fields[i] = entry.substr(0, tab);
+                entry.remove_prefix(tab + 1);
+            }
+            fields.back() = entry;
+            if (fields[5] != name) {
+                continue;
+            }
+            auto domain = fields[0], cookie_path = fields[2];
+            domain.remove_prefix(domain.starts_with('.'));
+            if (host.size() < domain.size() ||
+                !std::ranges::equal(host.substr(host.size() - domain.size()), domain,
+                                    [](unsigned char a, unsigned char b) {
+                                        return std::tolower(a) == std::tolower(b);
+                                    }) ||
+                (host.size() != domain.size() && (fields[1] != "TRUE" || host[host.size() - domain.size() - 1] != '.'))) {
+                continue;
+            }
+            if (!path.starts_with(cookie_path) || (path.size() != cookie_path.size() && !cookie_path.ends_with('/') && path[cookie_path.size()] != '/')) {
+                continue;
+            }
+            int64_t expires = 0;
+            std::from_chars(fields[4].data(), fields[4].data() + fields[4].size(), expires);
+            if (expires && expires <= now) {
+                continue;
+            }
+            if (cookie_path.size() > path_size || (cookie_path.size() == path_size && domain.size() >= domain_size)) {
+                value = fields[6];
+                domain_size = domain.size();
+                path_size = cookie_path.size();
+            }
+        }
+        return std::string(value);
+    }
+
     struct Http::Transfer {
         Id id;
         CURL *easy = curl_easy_init();
@@ -23,7 +69,7 @@ namespace lyren::net {
         Response resp;
         std::string post;
         uint64_t offset = 0, total = 0, at = 0;
-        bool started = false;
+        bool started = false, keep_cookies = false;
         std::chrono::steady_clock::time_point due;
         std::array<char, CURL_ERROR_SIZE> error{};
 
@@ -169,6 +215,12 @@ namespace lyren::net {
         setup(*t, req.url, req.headers);
         curl_easy_setopt(t->easy, CURLOPT_FOLLOWLOCATION, req.follow_redirects ? 1L : 0L);
         curl_easy_setopt(t->easy, CURLOPT_COOKIEFILE, "");
+        if (req.cookie_jar) {
+            t->keep_cookies = true;
+            for (const auto &cookie : req.cookie_jar->entries_) {
+                curl_easy_setopt(t->easy, CURLOPT_COOKIELIST, cookie.c_str());
+            }
+        }
         curl_easy_setopt(t->easy, CURLOPT_ACCEPT_ENCODING, "");
         curl_easy_setopt(t->easy, CURLOPT_TIMEOUT, 30L);
         if (req.body) {
@@ -269,6 +321,17 @@ namespace lyren::net {
                 if (owned->done) {
                     owned->resp.status = status;
                     owned->resp.error = std::move(err);
+                    char *url = nullptr;
+                    curl_easy_getinfo(owned->easy, CURLINFO_EFFECTIVE_URL, &url);
+                    owned->resp.url = url;
+                    if (owned->keep_cookies) {
+                        curl_slist *list = nullptr;
+                        curl_easy_getinfo(owned->easy, CURLINFO_COOKIELIST, &list);
+                        std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> cookies(list, curl_slist_free_all);
+                        for (auto *cookie = cookies.get(); cookie; cookie = cookie->next) {
+                            owned->resp.cookie_jar.entries_.emplace_back(cookie->data);
+                        }
+                    }
                     owned->done(std::move(owned->resp));
                 } else {
                     owned->cb.done(status, std::move(err));
