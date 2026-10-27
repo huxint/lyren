@@ -225,18 +225,19 @@ float Ui::begin_scroll(Id id, Rect view, float content) {
 
 void Ui::step_scroll(Scroll& s) {
     float max = max_offset(s);
-    double dt = std::clamp(now - s.last_frame, 0.0, 0.05);
+    double dt = now - s.last_frame;
     s.last_frame = now;
     if (s.smooth) {
         s.offset += (s.target - s.offset) * float(1 - std::exp(-dt / 0.08));
         if (std::abs(s.target - s.offset) < 0.5f) s.offset = s.target, s.smooth = false;
-        else redraw_ = true;
+        else animating_ = true;
         s.last_move = now;
     } else if (s.coasting) {
-        s.offset += s.velocity * float(dt);
-        s.velocity *= float(std::exp(-dt / 0.35));
+        float decay = float(std::exp(-dt / 0.35));
+        s.offset += s.velocity * 0.35f * (1 - decay);
+        s.velocity *= decay;
         s.coasting = s.offset > 0 && s.offset < max && std::abs(s.velocity) > 15;
-        if (s.coasting) redraw_ = true;
+        if (s.coasting) animating_ = true;
         s.last_move = now;
     }
     s.offset = std::clamp(s.offset, 0.f, max);

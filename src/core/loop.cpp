@@ -53,6 +53,7 @@ Loop::TimerId Loop::at(Clock::time_point when, std::function<void()> fn) {
 void Loop::cancel(TimerId id) {
     auto it = timers_.find(id);
     if (it == timers_.end()) return;
+    bool earliest = timer_queue_.begin()->second == id;
     auto [first, last] = timer_queue_.equal_range(it->second.first);
     for (auto q = first; q != last; ++q)
         if (q->second == id) {
@@ -60,6 +61,7 @@ void Loop::cancel(TimerId id) {
             break;
         }
     timers_.erase(it);
+    if (earliest) arm_timer();
 }
 
 void Loop::arm_timer() {
@@ -121,6 +123,10 @@ void Loop::run() {
         }
         if (!running_) break;
         if (hook_.before) hook_.before();
+        if (!running_) {
+            if (hook_.after) hook_.after(false);
+            break;
+        }
         int n = epoll_wait(epoll_, events, 16, deferred_.empty() ? -1 : 0);
         if (hook_.after) {
             bool readable = false;

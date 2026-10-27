@@ -1,5 +1,8 @@
 #include <doctest/doctest.h>
 
+#include <sys/eventfd.h>
+#include <unistd.h>
+
 #include <thread>
 #include <vector>
 
@@ -23,6 +26,33 @@ TEST_CASE("timers fire in deadline order and can be cancelled") {
     CHECK(order == "abc");
 }
 
+TEST_CASE("cancelling the earliest timer does not wake the loop at its old deadline") {
+    Loop loop;
+    int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    int wakeups = 0;
+    loop.set_poll_hook({.fd = fd, .after = [&](bool) { ++wakeups; }});
+    auto cancelled = loop.at(Clock::now() - 1s, [] {});
+    loop.after(100ms, [&] { loop.quit(); });
+    loop.cancel(cancelled);
+    loop.run();
+    close(fd);
+    CHECK(wakeups == 1);
+}
+
+TEST_CASE("quitting in the before-poll hook cancels the prepared read without waiting") {
+    Loop loop;
+    int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    bool prepared = false, waited = false;
+    loop.set_poll_hook({.fd = fd,
+                        .before = [&] { prepared = true; loop.quit(); },
+                        .after = [&](bool readable) { CHECK_FALSE(readable); prepared = false; }});
+    loop.after(20ms, [&] { waited = true; });
+    loop.run();
+    close(fd);
+    CHECK_FALSE(prepared);
+    CHECK_FALSE(waited);
+}
+
 TEST_CASE("post runs on the loop thread") {
     Loop loop;
     std::thread::id ran_on;
@@ -38,7 +68,7 @@ TEST_CASE("post runs on the loop thread") {
 }
 
 static Task<int> add_later(Loop& loop, int a, int b) {
-    co_await sleep{loop, 5ms};
+    co_await lyren::sleep{loop, 5ms};
     co_return a + b;
 }
 
@@ -58,7 +88,7 @@ TEST_CASE("tasks await timers and each other") {
 }
 
 static Task<int> finish_later(Loop& loop, int value, Clock::duration delay, std::vector<int>& order) {
-    co_await sleep{loop, delay};
+    co_await lyren::sleep{loop, delay};
     order.push_back(value);
     co_return value;
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #define VK_USE_PLATFORM_WAYLAND_KHR
 #include <vulkan/vulkan.h>
 
@@ -28,6 +29,7 @@ public:
     uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags want) const;
     VkDeviceMemory allocate(const VkMemoryRequirements& req, VkMemoryPropertyFlags flags, bool device_address = false) const;
     std::vector<HeapUsage> heap_usage() const;
+    unsigned validation_errors() const { return validation_errors_.load(); }
 
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -41,6 +43,7 @@ public:
 private:
     VkPhysicalDeviceMemoryProperties mem_props_{};
     VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
+    std::atomic<unsigned> validation_errors_{0};
 };
 
 #define VK_CHECK(expr) ::lyren::gfx::check((expr), #expr)

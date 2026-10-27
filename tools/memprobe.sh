@@ -10,10 +10,7 @@ awk '/^(VmRSS|RssAnon|RssFile|RssShmem):/ { printf "%-9s %7.1f MB\n", $1, $2 / 1
 # Several fds can share one DRM client; count each client once.
 for fd in /proc/$pid/fd/*; do
     case $(readlink "$fd") in /dev/dri/*) cat /proc/$pid/fdinfo/${fd##*/} ;; esac
-done | awk '
-    /^drm-client-id:/ { id = $2 }
-    /^drm-resident-/ { v = $2; if ($3 == "MiB") v *= 1024; else if ($3 != "KiB") v /= 1024; kib[id] += v }
-    END { for (i in kib) t += kib[i]; printf "%-9s %7.1f MB\n", "GPU", t / 1024 }'
+done | awk -f "$(dirname "$0")/drm-resident.awk"
 
 echo "largest mappings:"
 awk '/^[0-9a-f]+-[0-9a-f]+ / { name = $6 == "" ? "[anon]" : $6; sub(/.*\//, "", name) }

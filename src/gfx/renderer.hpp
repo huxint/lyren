@@ -74,8 +74,13 @@ public:
     void destroy_texture(TextureId tex);
     size_t texture_bytes() const { return texture_bytes_; }
     size_t texture_count() const { return texture_count_; }
+    uint64_t texture_version() const { return texture_version_; }
 
-    void wait_idle() { vkDeviceWaitIdle(ctx_.device); }
+    void wait_idle() {
+        vkDeviceWaitIdle(ctx_.device);
+        completed_ = submitted_;
+        poll_completed();
+    }
 
     // The next draw of t also reads the image back and hands fn premultiplied BGRA rows, tightly packed.
     void capture_next(const Target& t, std::function<void(const uint8_t* bgra, uint32_t width, uint32_t height)> fn) {
@@ -128,6 +133,7 @@ private:
     std::vector<Texture> textures_;
     std::vector<TextureId> free_slots_;
     size_t texture_bytes_ = 0, texture_count_ = 0;
+    uint64_t texture_version_ = 0;
     std::vector<Copy> copies_;
     Staging staging_;
     std::vector<Retired> retired_;

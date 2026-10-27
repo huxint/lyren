@@ -24,6 +24,12 @@ cmake --build build
 ./build/lyren
 ```
 
+CMake 可选参数：
+
+| 参数 | 作用 |
+|---|---|
+| `-DLYREN_TEST_GRAPHICS=ON` | 启用 Wayland / Vulkan 集成测试，需要 `kwin_wayland` |
+
 执行已启用的测试：
 
 ```sh

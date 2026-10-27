@@ -1660,6 +1660,8 @@ void Shell::sidebar(ui::Ui& ui, Rect r) {
     auto item = [&](ui::Id id, size_t k, std::string_view label, std::string_view icon, const std::string* thumb) {
         Rect row = row0;
         row.y = r.y + item_y(k) - off;
+        Rect clip = ui.clip();
+        if (row.bottom() < clip.y || row.y > clip.bottom()) return false;
         auto it = ui.interact(id, row);
         float hot = ui.anim(id, it.hovered ? 1 : 0, 150);
         float down = ui.anim(ui::sub_id(id, 0xd0), it.held ? 1 : 0, 90);

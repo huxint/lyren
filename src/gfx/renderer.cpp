@@ -409,7 +409,7 @@ void Renderer::draw(Target& t, std::span<const Prim> prims, const float clear[4]
                                .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
     VkSemaphoreSubmitInfo signal{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                  .semaphore = t.rendered[index],
-                                 .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
+                                 .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
     VkCommandBufferSubmitInfo cbi{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cmd};
     VkSubmitInfo2 si{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                      .waitSemaphoreInfoCount = 1,
@@ -455,6 +455,7 @@ void Renderer::draw(Target& t, std::span<const Prim> prims, const float clear[4]
 
 TextureId Renderer::create_texture(uint32_t width, uint32_t height, VkFormat format, bool smooth) {
     VkDevice dev = ctx_.device;
+    if (free_slots_.empty()) poll_completed();
     TextureId id;
     if (!free_slots_.empty()) {
         id = free_slots_.back();
@@ -530,6 +531,7 @@ void Renderer::upload(TextureId tex, uint32_t x, uint32_t y, uint32_t w, uint32_
                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .imageOffset = {int32_t(x), int32_t(y), 0},
                         .imageExtent = {w, h, 1}}});
+    ++texture_version_;
 }
 
 void Renderer::record_uploads(VkCommandBuffer cmd) {
@@ -566,7 +568,10 @@ void Renderer::destroy_texture(TextureId id) {
     });
 }
 
-void Renderer::retire(std::function<void()> release) { retired_.push_back({submitted_, std::move(release)}); }
+void Renderer::retire(std::function<void()> release) {
+    if (submitted_ == completed_) release();
+    else retired_.push_back({submitted_, std::move(release)});
+}
 
 void Renderer::poll_completed() {
     for (Target* t : targets_)

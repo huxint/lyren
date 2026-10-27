@@ -10,6 +10,7 @@ namespace lyren {
 
 static constexpr int max_in_flight = 6;
 static constexpr size_t budget = 24u << 20;
+static constexpr size_t max_entries = 512;
 static constexpr uint32_t blur_px = 48;
 
 Images::Images(Loop& loop, net::Http& http, gfx::Renderer& renderer, std::function<void()> redraw, std::function<double()> now)
@@ -126,17 +127,15 @@ void Images::pump() {
 
 void Images::end_frame() {
     ++frame_;
-    if (bytes_ <= budget) return;
+    if (bytes_ <= budget && entries_.size() <= max_entries) return;
+    double now = now_();
     std::vector<std::pair<uint64_t, std::string>> old;
     for (auto& [key, e] : entries_)
-        if (e.ready && e.used + 1 < frame_) old.emplace_back(e.used, key);
+        if (e.used + 1 < frame_ && (e.ready || (e.failed && now >= e.ready_at))) old.emplace_back(e.used, key);
     std::ranges::sort(old);
     for (auto& [used, key] : old) {
-        if (bytes_ <= budget * 3 / 4) break;
-        Entry& e = entries_[key];
-        renderer_.destroy_texture(e.tex);
-        bytes_ -= e.bytes;
-        entries_.erase(key);
+        if (bytes_ <= budget * 3 / 4 && entries_.size() <= max_entries * 3 / 4) break;
+        erase(key);
     }
 }
 

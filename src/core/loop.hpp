@@ -35,8 +35,8 @@ public:
     // Runs fn once before the loop next sleeps.
     void defer(std::function<void()> fn);
 
-    // For wl_display: before() runs right before sleeping (prepare_read + flush); after(readable) runs right after
-    // waking, before any other handler, so a prepared read is never held while handlers run.
+    // For wl_display: before() runs right before sleeping (prepare_read + flush); after(readable) runs after
+    // waking or cancelling the wait, before any other handler, so a prepared read is never held while handlers run.
     struct PollHook {
         int fd = -1;
         std::function<void()> before;

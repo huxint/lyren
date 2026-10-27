@@ -130,6 +130,7 @@ add_executable(lyren_tests
     tests/test_utf8.cpp
     tests/test_ui.cpp
     tests/test_audio.cpp
+    tests/test_http.cpp
     tests/test_ncm.cpp
     tests/test_qq.cpp
     tests/test_provider.cpp
@@ -139,4 +140,15 @@ add_executable(lyren_tests
 target_link_libraries(lyren_tests PRIVATE lyren_lib doctest)
 target_compile_definitions(lyren_tests PRIVATE LYREN_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data")
 add_test(NAME unit COMMAND lyren_tests)
+set_tests_properties(unit PROPERTIES ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_BINARY_DIR}/test-cache;NO_PROXY=127.0.0.1;no_proxy=127.0.0.1")
 add_test(NAME no_alsa COMMAND sh -c "! ldd $<TARGET_FILE:lyren> $<TARGET_FILE:lyren-probe> | grep -q asound")
+add_test(NAME memprobe COMMAND sh ${CMAKE_SOURCE_DIR}/tests/test_memprobe.sh ${CMAKE_SOURCE_DIR})
+
+add_executable(lyren_gfx_tests tests/main.cpp tests/test_gfx.cpp)
+target_link_libraries(lyren_gfx_tests PRIVATE lyren_lib doctest)
+option(LYREN_TEST_GRAPHICS "Include tests requiring Wayland and Vulkan in CTest" OFF)
+if(LYREN_TEST_GRAPHICS)
+    find_program(LYREN_KWIN_WAYLAND kwin_wayland REQUIRED)
+    add_test(NAME graphics COMMAND sh ${CMAKE_SOURCE_DIR}/tests/test_gfx.sh $<TARGET_FILE:lyren_gfx_tests> ${LYREN_KWIN_WAYLAND})
+    set_tests_properties(graphics PROPERTIES TIMEOUT 30)
+endif()

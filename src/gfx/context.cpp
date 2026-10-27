@@ -36,9 +36,11 @@ void select_driver(GpuChoice gpu) {
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL on_validation(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
-                                                    const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
-    if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) log::error("vulkan: {}", data->pMessage);
-    else log::warn("vulkan: {}", data->pMessage);
+                                                    const VkDebugUtilsMessengerCallbackDataEXT* data, void* errors) {
+    if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+        static_cast<std::atomic<unsigned>*>(errors)->fetch_add(1, std::memory_order_relaxed);
+        log::error("vulkan: {}", data->pMessage);
+    } else log::warn("vulkan: {}", data->pMessage);
     return VK_FALSE;
 }
 
@@ -74,7 +76,8 @@ Context::Context(wl_display* display) {
             .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
             .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-            .pfnUserCallback = on_validation};
+            .pfnUserCallback = on_validation,
+            .pUserData = &validation_errors_};
         auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
         create(instance, &mci, nullptr, &messenger_);
     }
@@ -109,10 +112,11 @@ Context::Context(wl_display* display) {
     VkPhysicalDeviceVulkan13Features have13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = &have12};
     VkPhysicalDeviceFeatures2 have{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &have13};
     vkGetPhysicalDeviceFeatures2(physical, &have);
-    if (props.properties.apiVersion < VK_API_VERSION_1_3 || !have13.dynamicRendering || !have13.synchronization2 || !have12.bufferDeviceAddress ||
-        !have12.runtimeDescriptorArray || !have12.descriptorBindingPartiallyBound || !have12.descriptorBindingSampledImageUpdateAfterBind ||
+    if (props.properties.apiVersion < VK_API_VERSION_1_3 || !have13.dynamicRendering || !have13.synchronization2 ||
+        !have13.shaderDemoteToHelperInvocation || !have12.bufferDeviceAddress || !have12.runtimeDescriptorArray ||
+        !have12.descriptorBindingPartiallyBound || !have12.descriptorBindingSampledImageUpdateAfterBind ||
         !have12.descriptorBindingUpdateUnusedWhilePending || !have12.shaderSampledImageArrayNonUniformIndexing) {
-        log::error("{} lacks Vulkan 1.3 with dynamic rendering, buffer device address and descriptor indexing", device_name);
+        log::error("{} lacks Vulkan 1.3 with dynamic rendering, shader demote, buffer device address and descriptor indexing", device_name);
         std::exit(1);
     }
 
@@ -133,6 +137,7 @@ Context::Context(wl_display* display) {
                                          .bufferDeviceAddress = VK_TRUE};
     VkPhysicalDeviceVulkan13Features f13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                          .pNext = &f12,
+                                         .shaderDemoteToHelperInvocation = VK_TRUE,
                                          .synchronization2 = VK_TRUE,
                                          .dynamicRendering = VK_TRUE};
     float priority = 1;

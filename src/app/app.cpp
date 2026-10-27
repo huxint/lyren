@@ -204,9 +204,10 @@ void App::render() {
     }
     shaper_->end_frame();
     // Pointer motion over static areas rebuilds an identical frame; skip presenting it.
+    // Reused texture IDs can carry new pixels without changing any primitives.
     auto prims = painter_->prims();
     uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char*>(prims.data()), prims.size_bytes()}) ^
-                    (uint64_t(window_->buffer_width()) << 32 | window_->buffer_height());
+                    (uint64_t(window_->buffer_width()) << 32 | window_->buffer_height()) ^ renderer_.texture_version();
     if (hash != frame_hash_ || window_->configure_pending()) {
         const float clear[4] = {0, 0, 0, 0};
         renderer_.draw(*target_, prims, clear, [this] { window_->prepare_present(); });
@@ -370,7 +371,7 @@ void App::render_lyrics() {
     lyrics_->set_input(int(std::floor(input.x)), int(std::floor(input.y)), int(std::ceil(input.w)), int(std::ceil(input.h)));
     auto prims = painter_->prims();
     uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char*>(prims.data()), prims.size_bytes()}) ^
-                    (uint64_t(lyrics_->buffer_width()) << 32 | lyrics_->buffer_height());
+                    (uint64_t(lyrics_->buffer_width()) << 32 | lyrics_->buffer_height()) ^ renderer_.texture_version();
     if (hash != lyrics_hash_ || lyrics_->needs_commit()) {
         const float clear[4] = {0, 0, 0, 0};
         renderer_.draw(*lyrics_target_, prims, clear, [this] { lyrics_->prepare_present(); });

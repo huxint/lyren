@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <format>
+#include <limits>
 #include <string_view>
 
 #include "core/log.hpp"
@@ -57,7 +58,8 @@ static size_t on_header(char* p, size_t, size_t n, void* ud) {
         t->resp.location = line;
     } else if (has_key(line, "content-range:")) {
         // content-range: bytes FROM-TO/TOTAL
-        auto b = line.find("bytes "), dash = line.find('-'), slash = line.find('/');
+        auto b = line.find("bytes ");
+        auto dash = line.find('-', b), slash = line.find('/', dash);
         if (b != line.npos && dash != line.npos && slash != line.npos) {
             std::from_chars(line.data() + b + 6, line.data() + dash, t->offset);
             std::from_chars(line.data() + slash + 1, line.data() + line.size(), t->total);
@@ -181,7 +183,8 @@ void Http::cancel(Id id) {
 // Returns how long the next delayed request still waits.
 std::chrono::milliseconds Http::apply() {
     auto now = std::chrono::steady_clock::now();
-    auto wait = std::chrono::milliseconds(1000);
+    // Curl supplies transfer deadlines; idle waits end when add(), cancel() or shutdown wakes the poll.
+    auto wait = std::chrono::milliseconds(std::numeric_limits<int>::max());
     std::vector<std::unique_ptr<Transfer>> due;
     std::vector<Id> cancels;
     {
