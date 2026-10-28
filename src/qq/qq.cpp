@@ -861,7 +861,7 @@ namespace lyren::qq {
         }
         std::string uin = client.logged_in() ? client.get("musicid") : "0";
         std::string vkey = std::format(R"({{"uin":"{}","guid":"{}","songmid":[{}],"songtype":[{}],"filename":[{}],"ctx":0}})", uin, guid_, mids, types, names);
-        // The details carry the loudness and where the preview clip starts.
+        // The details carry the loudness.
         std::string detail = std::format(R"({{"song_mid":"{}"}})", t.mid);
         auto r = parse<Two<QVkey, QDetail>>(co_await client.call({{"music.vkey.GetVkey", "UrlGetVkey", vkey}, {"music.pf_song_detail_svr", "get_song_detail", detail}}));
         if (!r) {
@@ -886,13 +886,12 @@ namespace lyren::qq {
             if (host.starts_with("http://")) {
                 host.insert(4, "s");
             }
+            // The RS02 preview file always holds the song's first 60 s, whatever the detail's try_begin/b_30s
+            // windows say (they mark the highlight segment QQ's own player offers), so its lyrics need no offset.
             Stream s{.url = host + *u->purl, .trial = std::string_view(files[i].prefix) == "RS02", .level = files[i].level};
             auto d = take_data(r->req_1);
             if (d && d->track_info) {
                 const QSong &song = *d->track_info;
-                if (song.file) {
-                    s.trial_start = s.trial ? song.file->try_begin / 1000.0 : 0;
-                }
                 // A clip's loudness is not the song's.
                 if (song.volume && !s.trial) {
                     s.gain = song.volume->gain, s.peak = song.volume->peak;

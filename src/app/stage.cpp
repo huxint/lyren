@@ -459,7 +459,11 @@ namespace lyren {
             }
             p.set_zoom(1);
             if (it.clicked) {
-                seek(std::max(0.0, lyrics_[i].time - clip_start_));
+                // A preview clip ends long before the song does; a line beyond it must not end the track.
+                const double target = lyrics_[i].time - clip_start_;
+                if (player_.duration() <= 0 || target < player_.duration()) {
+                    seek(std::max(0.0, target));
+                }
                 lyric_manual_until_ = 0;
             }
         }
