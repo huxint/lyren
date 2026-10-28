@@ -112,7 +112,11 @@ namespace lyren {
         int drawing = -1;
         auto place = [&](int c) {
             if (drawing >= 0) {
-                settings_heights_[static_cast<size_t>(drawing)] = y - top;
+                float &height = settings_heights_[static_cast<size_t>(drawing)];
+                if (height != y - top) {
+                    height = y - top;
+                    ui.redraw();
+                }
             }
             drawing = c;
             if (c < 0) {

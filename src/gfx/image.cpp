@@ -2,6 +2,7 @@
 
 #include <png.h>
 #include <turbojpeg.h>
+#include <webp/demux.h>
 
 #include <algorithm>
 #include <array>
@@ -76,9 +77,35 @@ namespace lyren::gfx {
         return img;
     }
 
+    static Image decode_webp(std::span<const uint8_t> data, std::string &error) {
+        const WebPData source{data.data(), data.size()};
+        WebPAnimDecoderOptions options;
+        WebPAnimDecoderOptionsInit(&options);
+        options.color_mode = MODE_rgbA;
+        WebPAnimDecoder *decoder = WebPAnimDecoderNew(&source, &options);
+        if (!decoder) {
+            error = "Invalid WebP image";
+            return {};
+        }
+        WebPAnimInfo info;
+        WebPAnimDecoderGetInfo(decoder, &info);
+        uint8_t *px;
+        int timestamp;
+        Image img;
+        // Covers stay still: use the first composited canvas for animated WebP too.
+        if (WebPAnimDecoderGetNext(decoder, &px, &timestamp)) {
+            img = {info.canvas_width, info.canvas_height, {px, px + static_cast<size_t>(info.canvas_width) * info.canvas_height * 4}};
+        } else {
+            error = "Failed to decode WebP image";
+        }
+        WebPAnimDecoderDelete(decoder);
+        return img;
+    }
+
     Image decode_square(std::span<const uint8_t> data, uint32_t size, std::string &error) {
         bool png = data.size() > 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G';
-        Image img = png ? decode_png(data, error) : decode_jpeg(data, size, error);
+        bool webp = data.size() >= 12 && std::equal(data.begin(), data.begin() + 4, "RIFF") && std::equal(data.begin() + 8, data.begin() + 12, "WEBP");
+        Image img = png ? decode_png(data, error) : webp ? decode_webp(data, error) : decode_jpeg(data, size, error);
         if (!img.w) {
             return img;
         }

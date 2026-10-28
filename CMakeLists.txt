@@ -86,7 +86,7 @@ target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA glaze)
 target_compile_options(lyren_base PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
 
 # Window, renderer, text, UI toolkit, D-Bus media controls and the app.
-pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libqrencode)
+pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libwebp libwebpdemux libqrencode)
 pkg_check_modules(SDBUS REQUIRED IMPORTED_TARGET libsystemd)
 add_library(
     lyren_lib STATIC
