@@ -108,7 +108,8 @@ namespace lyren {
         const float text_w = p.measure(text, {.size = line_size});
         const float pill_w = ui.spring(ui.id("island-w"), std::clamp(left + text_w + right, 230.f, 460.f), 420, 0.2f);
         const auto lines = wrap(p, text, 16, open_w - 2 * pad);
-        const size_t shown_lines = std::min(lines.size(), size_t{2});
+        const bool lyric_text = line || !track;
+        const size_t shown_lines = lyric_text ? std::min(lines.size(), size_t{2}) : 0;
         const float head_h = art ? 52.f : 40.f, lines_h = static_cast<float>(shown_lines) * 23;
         const float open_h = pad + head_h + 14 + lines_h + 16 + 14 + 12 + 40 + 16;
         const Rect pill{center - pill_w / 2, top, pill_w, pill_h};
@@ -121,7 +122,7 @@ namespace lyren {
         // closes a moment after the pointer leaves, so slipping past its edge does not.
         const float rest = ui.anim(ui.id("island-rest"), pointed ? 1 : 0, pointed ? 220 : 180, ease::linear);
         const bool opened = rest >= 1 || (rest > 0 && was > 0.5f);
-        const float k = ui.spring(ui.id("island-open"), opened ? 1 : 0, 440, 0.24f);
+        const float k = ui.spring(ui.id("island-open"), opened ? 1 : 0, 480, 0.08f);
         const float open = std::clamp(k, 0.f, 1.f);
         const Rect panel = mix(pill, card, k);
         const float radius = std::lerp(pill_h / 2, 28.f, open);
@@ -129,7 +130,14 @@ namespace lyren {
         p.rect(panel, ink.with_alpha(0.97f), radius);
         p.rect(panel.inset(0.5f), {}, radius, white.with_alpha(0.05f), 1);
 
-        const float closed_a = 1 - reveal(open, 0.04f, 0.4f), open_a = reveal(open, 0.38f, 0.9f);
+        const float closed_a = 1 - reveal(open, 0.08f, 0.68f), open_a = reveal(open, 0.3f, 0.9f);
+        const float head_x = art ? card.x + pad + 52 + 14 : card.x + pad, head_w = card.right() - pad - 30 - head_x;
+        const float head_y = card.y + pad + (art ? 6.f : 0.f);
+        // Details grow out of the pill with the same motion as its frame; their hit areas follow their drawn bounds.
+        auto unfold = [&](Rect end) {
+            return mix(Rect{center, pill.y + pill_h / 2, 0, 0}, end, open);
+        };
+        ui.push_clip(panel.inset(1));
         const float live = ui.anim(ui.id("island-live"), playing() ? 1 : 0, 420);
         auto meter = [&](float cx, float cy, float alpha) {
             for (int i = 0; i < 4; ++i) {
@@ -179,10 +187,16 @@ namespace lyren {
             p.text(x, baseline, value, {.size = size, .color = white.with_alpha(0.96f)}, limit);
             p.clear_wipe();
         };
-        if (closed_a > 0) {
-            Fade fade(p, closed_a);
-            const float x = pill.x + left, avail = pill.right() - right - x;
-            const Rect area{x, pill.y, avail, pill_h};
+        {
+            // The line itself travels into the card. With no lyrics, the track title becomes the heading instead.
+            const float avail = pill.w - left - right, size = lyric_text ? 16.f : 15.f;
+            const float end_x = lyric_text ? card.x + pad : head_x, end_y = lyric_text ? card.y + pad + head_h + 14 + 17 : head_y + 15;
+            const float end_w = lyric_text ? card.w - 2 * pad : head_w;
+            // A lyric first drops below the travelling cover, then moves left into the wider line.
+            const float across = lyric_text && art ? reveal(open, 0.25f, 1) : open;
+            const float x = std::lerp(pill.x + left, end_x, across), baseline = std::lerp(pill.y + 25, end_y, open);
+            const float zoom = std::lerp(line_size, size, open) / size;
+            const Rect area{x, std::lerp(pill.y, end_y - 20, open), std::lerp(avail, end_w, open), std::lerp(pill_h, lyric_text ? lines_h + 10 : 28.f, open)};
             ui.push_clip(area);
             auto slide = [&](std::string_view value, double since, bool current) {
                 const float overflow = p.measure(value, {.size = line_size}) - avail;
@@ -198,52 +212,70 @@ namespace lyren {
                 }
                 return ui.spring(ui::sub_id(ui.id("island-slide"), std::bit_cast<uint64_t>(since)), target, 700);
             };
-            const float baseline = pill.y + 25;
             if (change < 1) {
                 Fade old(p, 1 - change);
-                const float shift = slide(island_line_.prev.text, island_line_.prev_since, false);
-                p.text(x - shift, baseline - 7 * change, island_line_.prev.text, {.size = line_size, .color = white.with_alpha(0.96f)});
+                const float ox = x - slide(island_line_.prev.text, island_line_.prev_since, false) * (1 - open), oy = baseline - 7 * change;
+                p.set_zoom(zoom, ox, oy);
+                p.text(ox, oy, island_line_.prev.text, {.size = size, .color = white.with_alpha(0.96f)});
+                p.set_zoom(1);
             }
             {
                 Fade incoming(p, change);
-                const float shift = slide(text, island_line_.since, true);
-                sung(text, x - shift, baseline + 7 * (1 - change), line_size, 1e9f);
-                // Soft edges where the line runs on past the pill.
-                if (shift > 0.5f) {
-                    p.hgradient({x, pill.y, 16, pill_h}, ink, ink.with_alpha(0));
+                const float shift = slide(text, island_line_.since, true) * (1 - open), tx = x - shift, ty = baseline + 7 * (1 - change);
+                const float folded = lyric_text && lines.size() > 1 ? reveal(open, 0.2f, 0.85f) : 0;
+                if (folded < 1) {
+                    Fade single(p, 1 - folded);
+                    const float limit = lyric_text ? 1e9f : std::lerp(p.measure(text, {.size = size}), end_w / zoom, open);
+                    p.set_zoom(zoom, tx, ty);
+                    sung(text, tx, ty, size, limit);
+                    p.set_zoom(1);
                 }
-                if (text_w - shift > avail + 0.5f) {
-                    p.hgradient({x + avail - 16, pill.y, 16, pill_h}, ink.with_alpha(0), ink);
+                if (folded > 0) {
+                    Fade wrapped(p, folded);
+                    for (size_t i = 0; i < shown_lines; ++i) {
+                        std::string_view value = lines[i];
+                        if (i == 1 && lines.size() > 2) {
+                            value = text.substr(static_cast<size_t>(value.data() - text.data()));
+                        }
+                        const float ly = ty + static_cast<float>(i) * 23 * open;
+                        p.set_zoom(zoom, tx, ly);
+                        sung(value, tx, ly, size, end_w / zoom);
+                        p.set_zoom(1);
+                    }
+                }
+                // Soft edges where the line runs on past the pill.
+                if (closed_a > 0) {
+                    Fade edge(p, closed_a);
+                    if (shift > 0.5f) {
+                        p.hgradient({area.x, area.y, 16, area.h}, ink, ink.with_alpha(0));
+                    }
+                    if (text_w - shift > avail + 0.5f) {
+                        p.hgradient({area.right() - 16, area.y, 16, area.h}, ink.with_alpha(0), ink);
+                    }
                 }
             }
             ui.pop_clip();
-            meter(pill.right() - 22, pill.y + pill_h / 2, closed_a);
         }
+        meter(std::lerp(pill.right() - 22, card.right() - pad - 9, open), std::lerp(pill.y + pill_h / 2, head_y + 12, open), 1);
 
         if (open_a > 0) {
             Fade fade(p, open_a);
             ui.disabled = open_a < 0.6f;
-            const float x = art ? card.x + pad + 52 + 14 : card.x + pad, tw = card.right() - pad - 30 - x;
-            const float head_y = card.y + pad + (art ? 6.f : 0.f);
-            p.text(x, head_y + 15, track ? std::string_view(track->title) : std::string_view("Lyren"), {.size = 15, .color = white.with_alpha(0.95f)}, tw);
-            p.text(x, head_y + 35, track ? std::string_view(track->artist) : lyren::tr("Nothing playing"), {.size = 12.5f, .color = white.with_alpha(0.55f)}, tw);
-            meter(card.right() - pad - 9, head_y + 12, 1);
-
-            float baseline = card.y + pad + head_h + 14 + 17;
-            for (size_t i = 0; i < shown_lines; ++i) {
-                std::string_view value = lines[i];
-                if (i == 1 && lines.size() > 2) {
-                    value = text.substr(static_cast<size_t>(value.data() - text.data()));
-                }
-                Fade incoming(p, change);
-                sung(value, card.x + pad, baseline + 5 * (1 - change), 16, card.w - 2 * pad);
-                baseline += 23;
+            auto detail = [&](Rect end, std::string_view value, ui::TextStyle style) {
+                const Rect at = unfold(end);
+                p.set_zoom(open, at.x, at.y);
+                p.text(at.x, at.y, value, style, end.w);
+                p.set_zoom(1);
+            };
+            if (lyric_text) {
+                detail({head_x, head_y + 15, head_w, 0}, track ? std::string_view(track->title) : std::string_view("Lyren"), {.size = 15, .color = white.with_alpha(0.95f)});
             }
+            detail({head_x, head_y + 35, head_w, 0}, track ? std::string_view(track->artist) : lyren::tr("Nothing playing"), {.size = 12.5f, .color = white.with_alpha(0.55f)});
 
             // Progress: drag to preview, release to seek.
             const float py = card.y + pad + head_h + 14 + lines_h + 16;
             const ui::TextStyle times{.size = 11, .color = white.with_alpha(0.5f), .features = text::tabular_nums};
-            const Rect bar{card.x + pad + 42, py, card.w - 2 * pad - 84, 14};
+            const Rect bar = unfold({card.x + pad + 42, py, card.w - 2 * pad - 84, 14});
             ui.disabled = ui.disabled || !track;
             float v = island_dragging_ ? island_drag_v_ : done;
             if (ui.slider(ui.id("island-seek"), bar, v) || ui.is_active(ui.id("island-seek"))) {
@@ -257,19 +289,23 @@ namespace lyren {
                 const int v = static_cast<int>(std::max(0.0, s));
                 return std::format("{}:{:02}", v / 60, v % 60);
             };
-            ui.label({card.x + pad, py, 38, 14}, clock(island_dragging_ ? island_drag_v_ * duration : elapsed), times);
-            ui.label({bar.right() + 4, py, 38, 14}, clock(duration), times, ui::Align::right);
+            detail({card.x + pad, py + 11, 38, 0}, clock(island_dragging_ ? island_drag_v_ * duration : elapsed), times);
+            const std::string total = clock(duration);
+            detail({card.right() - pad - p.measure(total, times), py + 11, 38, 0}, total, times);
 
             // Controls: the floating mode and hiding on the sides, the transport in the middle.
             const float cy = py + 14 + 12 + 20;
-            auto button = [&](std::string_view name, Rect b, std::string_view icon, bool primary = false) {
+            auto button = [&](std::string_view name, Rect end, std::string_view icon, bool primary = false) {
+                const Rect b = unfold(end);
                 const auto id = ui.id(name);
                 const auto it = ui.interact(id, b);
                 const float hot = ui.anim(id, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(id, 0xd0), it.held ? 1 : 0, 90);
-                const Rect face = b.inset(down * 1.5f);
+                const Rect face = b.inset(down * 1.5f * open);
                 p.rect(face, primary ? white.with_alpha(0.95f) : white.with_alpha(0.1f * hot), face.h / 2);
                 const float s = primary ? 16 : 17;
+                p.set_zoom(open, face.x + face.w / 2, face.y + face.h / 2);
                 p.icon(icon, ui::center(face, s, s), primary ? ink : white.with_alpha(0.7f + 0.3f * hot));
+                p.set_zoom(1);
                 return it.clicked;
             };
             if (button("island-previous", {center - 64, cy - 16, 32, 32}, "skip-back")) {
@@ -290,6 +326,7 @@ namespace lyren {
             }
             ui.disabled = false;
         }
+        ui.pop_clip();
         lyric_frames(ui, at, timed);
         return panel;
     }
