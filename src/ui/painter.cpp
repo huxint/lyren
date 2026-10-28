@@ -12,6 +12,8 @@ namespace lyren::ui {
 
     void Painter::begin(float scale, float origin_x, float origin_y) {
         prims_.clear();
+        deferred_.clear();
+        deferring_ = false;
         clips_.assign(1, {0, 0, 1e9f, 1e9f});
         scale_ = scale, ox_ = origin_x, oy_ = origin_y, alpha_ = 1;
         zoom_ = 1;
@@ -24,7 +26,7 @@ namespace lyren::ui {
     }
 
     gfx::Prim &Painter::emit(gfx::Kind kind, float x0, float y0, float x1, float y1) {
-        gfx::Prim &p = prims_.emplace_back();
+        gfx::Prim &p = (deferring_ ? deferred_ : prims_).emplace_back();
         p.rect[0] = x0, p.rect[1] = y0, p.rect[2] = x1 - x0, p.rect[3] = y1 - y0;
         p.clip = clips_.back();
         p.info[0] = static_cast<uint32_t>(kind);
@@ -79,6 +81,18 @@ namespace lyren::ui {
         p.info[2] = gfx::flag_gradient;
     }
 
+    void Painter::hgradient(Rect r, Color left, Color right, float radius) {
+        float x0 = snap(r.x + ox_), y0 = snap(r.y + oy_), x1 = snap(r.right() + ox_), y1 = snap(r.bottom() + oy_);
+        if (x1 <= x0 || y1 <= y0) {
+            return;
+        }
+        auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
+        premul(p.color, left);
+        premul(p.color2, right);
+        p.radii.fill(radius * scale_);
+        p.info[2] = gfx::flag_hgradient;
+    }
+
     void Painter::shadow(Rect r, float radius, float blur, Color color, bool cutout) {
         auto &p = emit(gfx::Kind::shadow, (r.x + ox_) * scale_, (r.y + oy_) * scale_, (r.right() + ox_) * scale_, (r.bottom() + oy_) * scale_);
         premul(p.color, color);
@@ -128,11 +142,12 @@ namespace lyren::ui {
         p.params[0] = r.h * scale_, p.params[1] = amplitude * scale_, p.params[2] = wavelength * scale_, p.params[3] = phase;
     }
 
-    void Painter::glyphs(const text::Shaped &shaped, size_t count, float x, float baseline, float size, Color color) {
+    void Painter::glyphs(const text::Shaped &shaped, size_t count, float x, float baseline, const TextStyle &style) {
+        const Color color = style.color;
         if (std::max(color.a, wipe_ ? wipe_->rest.a : 0.f) * alpha_ == 0) {
             return;
         }
-        float px = size * scale_;
+        float px = style.size * scale_;
         float bx = (x + ox_) * scale_, by = snap(baseline + oy_);
         float inv = 1.f / static_cast<float>(atlas_.size());
         for (size_t i = 0; i < count; ++i) {
@@ -151,6 +166,15 @@ namespace lyren::ui {
                     y0 -= l[-1].dy * scale_;
                 }
             }
+            if (e.color) {
+                // Emoji keep their own colours and take only the text's alpha, unless they are a silhouette.
+                auto &p = emit_zoomed(gfx::Kind::image, x0, y0, e.w, e.h);
+                premul(p.color, style.silhouette ? color : Color{1, 1, 1, color.a});
+                float cinv = 1.f / static_cast<float>(atlas_.color_size());
+                p.uv[0] = e.x * cinv, p.uv[1] = e.y * cinv, p.uv[2] = (e.x + e.w) * cinv, p.uv[3] = (e.y + e.h) * cinv;
+                p.info[1] = atlas_.color_texture();
+                continue;
+            }
             auto &p = emit_zoomed(gfx::Kind::glyph, x0, y0, e.w, e.h);
             premul(p.color, color);
             p.uv[0] = e.x * inv, p.uv[1] = e.y * inv, p.uv[2] = (e.x + e.w) * inv, p.uv[3] = (e.y + e.h) * inv;
@@ -168,7 +192,7 @@ namespace lyren::ui {
         const auto &shaped = shaper_.shape(s, style.features);
         float width = shaped.width * style.size;
         if (width <= max_width) {
-            glyphs(shaped, shaped.glyphs.size(), x, baseline, style.size, style.color);
+            glyphs(shaped, shaped.glyphs.size(), x, baseline, style);
             return width;
         }
         // Keep whole clusters that fit before the ellipsis.
@@ -187,8 +211,8 @@ namespace lyren::ui {
             --n;
         }
         float cut = n < shaped.glyphs.size() ? shaped.glyphs[n].x : shaped.width;
-        glyphs(shaped, n, x, baseline, style.size, style.color);
-        glyphs(dots, dots.glyphs.size(), x + cut * style.size, baseline, style.size, style.color);
+        glyphs(shaped, n, x, baseline, style);
+        glyphs(dots, dots.glyphs.size(), x + cut * style.size, baseline, style);
         return (cut + dots.width) * style.size;
     }
 

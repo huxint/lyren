@@ -121,7 +121,11 @@ namespace lyren::ui {
     }
 
     bool Ui::hovering(Rect r) const {
-        return !disabled && in_->inside && active_ == 0 && layer_ == pointer_layer_ && intersect(r, clip()).contains(in_->x, in_->y);
+        return !disabled && active_ == 0 && pointing(r);
+    }
+
+    bool Ui::pointing(Rect r) const {
+        return in_->inside && layer_ == pointer_layer_ && intersect(r, clip()).contains(in_->x, in_->y);
     }
 
     Interaction Ui::interact(Id id, Rect r) {
@@ -179,12 +183,12 @@ namespace lyren::ui {
         return v;
     }
 
-    float Ui::spring(Id id, float target, float response_ms) {
+    float Ui::spring(Id id, float target, float response_ms, float bounce) {
         auto [it, fresh] = springs_.try_emplace(id, Following{{target}, target, now, frame_});
         Following &s = it->second;
         float response = response_ms * theme_->motion / 1000;
         if (response > 0) {
-            s.motion.advance(s.target, static_cast<float>(now - s.time), response);
+            s.motion.advance(s.target, static_cast<float>(now - s.time), response, bounce);
         }
         s.target = target, s.time = now, s.frame = frame_;
         if (response == 0 || (std::abs(s.motion.value - target) < 0.001f && std::abs(s.motion.velocity) < 0.01f)) {
@@ -320,10 +324,16 @@ namespace lyren::ui {
         p_->rect({thumb.right() - w - 2, thumb.y + 2, w, thumb.h - 4}, t.text.with_alpha((0.25f + 0.2f * wide) * shown), w / 2);
     }
 
-    void Ui::scroll_to(Id id, float offset) {
+    void Ui::scroll_to(Id id, float offset, bool smooth) {
         Scroll &s = scrolls_[id];
-        s.offset = s.target = std::max(0.f, offset);
-        s.smooth = s.coasting = false;
+        s.target = std::clamp(offset, 0.f, max_offset(s));
+        if (!smooth) {
+            s.offset = s.target;
+        } else if (!s.smooth) {
+            s.last_frame = now;
+        }
+        s.smooth = smooth && theme_->motion > 0, s.coasting = false;
+        redraw_ = true;
     }
 
     // Menu, modal and toasts.

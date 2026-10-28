@@ -176,3 +176,66 @@ TEST_CASE("texture replacement preserves the uploaded pixels across submissions"
     }
     g.renderer.destroy_target(target);
 }
+
+TEST_CASE("emoji are drawn in colour from their own sheet") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    text::Fonts fonts("sans-serif");
+    text::Shaper shaper(fonts);
+    const text::Shaped &shaped = shaper.shape("a😀");
+    REQUIRE(shaped.glyphs.size() == 2);
+    CHECK_FALSE(fonts.face(shaped.glyphs[0].face).color);
+    if (!fonts.face(shaped.glyphs[1].face).color) {
+        MESSAGE("no colour emoji font installed");
+        return;
+    }
+    text::Atlas atlas(g.renderer, fonts);
+    ui::Painter painter(atlas, shaper, fonts);
+    painter.begin(1, 0, 0);
+    painter.text(10, 50, "😀", {.size = 32, .color = {1, 1, 1, 1}});
+    REQUIRE(painter.prims().size() == 1);
+    const gfx::Prim emoji = painter.prims()[0];
+    CHECK(emoji.info[0] == static_cast<uint32_t>(gfx::Kind::image));
+    CHECK(emoji.info[1] == atlas.color_texture());
+    CHECK(emoji.rect[2] == doctest::Approx(emoji.rect[3]).epsilon(0.2));
+    CHECK(emoji.rect[3] >= 28);
+    CHECK(emoji.rect[3] <= 44);
+
+    bool configured = false;
+    wl::Window window(g.display,
+                      {.configure =
+                           [&] {
+                               configured = true;
+                               g.loop.quit();
+                           },
+                       .pointer = [](const wl::PointerEvent &) {},
+                       .key = [](const wl::KeyEvent &) {},
+                       .focus = [](bool) {},
+                       .text_input = [](const wl::TextInputEvent &) {}},
+                      true, 720, 480);
+    auto timeout = g.loop.after(2s, [&] {
+        g.loop.quit();
+    });
+    g.loop.run();
+    g.loop.cancel(timeout);
+    REQUIRE(configured);
+    auto *target = g.renderer.create_target(g.display.display, window.surface());
+    g.renderer.resize(*target, window.buffer_width(), window.buffer_height());
+    gfx::Prim drawn = emoji;
+    drawn.clip = {0, 0, static_cast<float>(window.buffer_width()), static_cast<float>(window.buffer_height())};
+    bool captured = false;
+    g.renderer.capture_next(*target, [&](const uint8_t *bgra, uint32_t width, uint32_t) {
+        // The face is yellow: plenty of red and green, little blue.
+        const auto x = static_cast<uint32_t>(drawn.rect[0] + drawn.rect[2] / 2), y = static_cast<uint32_t>(drawn.rect[1] + drawn.rect[3] * 0.3f);
+        const uint8_t *pixel = bgra + (y * width + x) * 4;
+        CHECK(pixel[2] > 180);
+        CHECK(pixel[1] > 120);
+        CHECK(pixel[0] + 60 < pixel[2]);
+        captured = true;
+    });
+    g.renderer.draw(*target, {&drawn, 1}, {}, [&] {
+        window.prepare_present();
+    });
+    CHECK(captured);
+    g.renderer.destroy_target(target);
+}

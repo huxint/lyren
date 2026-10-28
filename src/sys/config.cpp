@@ -46,6 +46,12 @@ struct glz::meta<lyren::Language> {
     static constexpr auto value = enumerate(en, zh);
 };
 template <>
+struct glz::meta<lyren::Config::DesktopLyrics::Island> {
+    using T = lyren::Config::DesktopLyrics::Island;
+    // The open island has one layout now; files from before keep parsing.
+    static constexpr auto value = object("cover", &T::cover, "progress", &T::progress, "details", glz::skip{}, "controls", glz::skip{}, "volume", glz::skip{});
+};
+template <>
 struct glz::meta<lyren::Config::DesktopLyrics> {
     using T = lyren::Config::DesktopLyrics;
     // The old visibility setting is now persisted with the player state.

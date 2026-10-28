@@ -1,267 +1,576 @@
-#include "app/shell.hpp"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <format>
 
+#include "app/draw.hpp"
+#include "app/shell.hpp"
 #include "core/i18n.hpp"
 #include "core/json.hpp"
 
+// The settings page: cards of settings under a tab bar that sticks to the top and follows the scroll. Settings that
+// change how something looks show it live: the themes as small windows, the accent beside the cover it comes from,
+// the desktop lyrics and the island as they will appear.
 namespace lyren {
 
-    void Shell::settings_modal(ui::Ui &ui, ui::Rect r) {
-        using ui::Align;
-        using ui::Rect;
+    using ui::Align;
+    using ui::Rect;
+    using ui::TextStyle;
+
+    namespace {
+        constexpr ui::Color white{1, 1, 1, 1};
+        // Accents and lyric colours that read on both themes and over a wallpaper.
+        constexpr std::array<std::string_view, 8> accents{"#e5484d", "#f76b15", "#e2a336", "#30a46c", "#12a594", "#0090ff", "#6e56cf", "#d6409f"};
+        constexpr std::array<std::string_view, 5> sung_colors{"#ffffff", "#ffd166", "#ff8fab", "#7ee0e6", "#9be9a8"};
+        constexpr std::array<std::string_view, 4> rest_colors{"#ffffff", "#c9c9d2", "#ffe7ad", "#cdeaff"};
+        constexpr std::string_view outline_on = "\"#000000a0\"", outline_off = "\"#00000000\"";
+        constexpr std::array<double, 4> text_sizes{13, 14, 15, 16};
+        constexpr std::array<double, 3> motions{0, 1, 1.5};
+        constexpr std::array<int, 6> frame_rates{0, 30, 60, 90, 120, 144};
+        constexpr float bar_h = 52; // the tab bar
+
+        bool same_color(std::string_view a, std::string_view b) {
+            auto x = ui::parse_color(a), y = ui::parse_color(b);
+            return x && y && ui::format_color(*x) == ui::format_color(*y);
+        }
+    } // namespace
+
+    void Shell::settings_page(ui::Ui &ui, Rect r) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        ui.resize_modal(std::min(840.f, ui.width - 40), std::min(656.f, ui.height - 40));
-        const Rect frame = r;
-        ui.label({r.x, r.y, r.w - 32, 30}, tr("Settings"), {.size = t.fs(22), .color = t.text});
-        const std::array tabs{tr("Appearance"), tr("Playback"), tr("Lyrics"), tr("Dynamic Island"), tr("Colors"), tr("System")};
-        constexpr std::array<std::string_view, 6> icons{"sparkles", "play", "captions", "panel-top", "disc-3", "settings"};
-        const float nav_width = std::min(148.f, r.w * 0.23f);
-        const Rect navigation{r.x - 8, r.y + 50, nav_width + 8, r.h - 50};
-        p.rect(navigation, t.bg.mix(t.elevated, 0.45f), 12);
-        for (size_t i = 0; i < tabs.size(); ++i) {
-            const Rect item{navigation.x + 6, navigation.y + 7 + static_cast<float>(i) * 44, navigation.w - 12, 38};
-            const auto id = ui.id(0x53455400 + i);
-            const auto interaction = ui.interact(id, item);
-            if (interaction.clicked && settings_tab_ != i) {
-                settings_tab_ = static_cast<uint8_t>(i);
-                settings_since_ = ui.now;
+        const std::array<std::string_view, 4> sections{lyren::tr("Appearance"), lyren::tr("Playback"), lyren::tr("Lyrics"), lyren::tr("General")};
+        const ui::Id scroll_id = ui.id("settings");
+        const float off = ui.begin_scroll(scroll_id, r, settings_height_);
+        const float x = r.x + 32, w = std::min(r.w - 64, 720.f);
+        const float origin = r.y - off; // content coordinates start here
+        float y = origin + 28;
+        ui.label({x, y, w, 38}, lyren::tr("Settings"), {.size = t.fs(28), .color = t.text});
+        ui.label({x, y + 42, w, 20}, lyren::tr("Changes apply right away"), {.size = t.fs(13), .color = t.text_dim});
+        y += 76;
+        // The tab bar sits here until it reaches the top, then stays there over the content.
+        const float bar_natural = y, bar_y = std::max(r.y, bar_natural);
+        y += bar_h + 12;
+        ui.push_clip({r.x, bar_y + bar_h, r.w, std::max(0.f, r.bottom() - bar_y - bar_h)});
+
+        // Cards are rows stacked edge to edge: the first and last round the corners, hairlines part the rest.
+        const float radius = t.radius_l() * 0.8f;
+        const ui::Color fill = t.dark ? t.surface.mix(t.text, 0.04f) : t.bg.mix(t.surface, 0.3f);
+        auto row = [&](float h, bool first, bool last) {
+            const Rect rr{x, y, w, h};
+            p.rect(rr, fill, {first ? radius : 0, first ? radius : 0, last ? radius : 0, last ? radius : 0});
+            if (!first) {
+                p.rect({x + 18, y, w - 36, 1}, t.border.with_alpha(t.dark ? 0.8f : 1));
             }
-            const bool active = settings_tab_ == i;
-            const float hover = ui.anim(id, interaction.hovered ? 1 : 0, 140);
-            p.rect(item, active ? t.accent.with_alpha(0.1f) : t.text.with_alpha(0.04f * hover), 8);
-            p.icon(icons[i], {item.x + 12, item.y + 11, 16, 16}, active ? t.accent : t.text_dim);
-            ui.label({item.x + 38, item.y, item.w - 44, item.h}, tabs[i], {.size = t.fs(13), .color = active ? t.text : t.text_dim});
-        }
-        r = {frame.x + nav_width + 28, frame.y + 50, frame.w - nav_width - 28, frame.h - 50};
-        const float row_height = std::max(64.f, t.fs(13) * 1.3f + t.fs(11) * 2.6f + 14);
-        constexpr std::array<uint8_t, 6> row_counts{7, 3, 4, 5, 8, 4};
-        const Rect viewport{r.x, r.y, r.w, r.h - 30};
-        ui.push_id(ui.id("settings-content"));
-        ui.push_id(ui.id(static_cast<uint64_t>(settings_tab_)));
-        const float enter = ui.progress(settings_since_, 180, ui::ease::standard);
-        const float alpha = p.alpha();
-        p.set_alpha(alpha * enter);
-        const float content_height = row_height * row_counts[settings_tab_] + (settings_tab_ == 0 ? 32 : 0);
-        float y = viewport.y + 4 + (1 - enter) * 5 - ui.begin_scroll(ui.id("scroll"), viewport, content_height);
-        const float control_width = std::min(244.f, r.w * 0.48f);
-        auto row = [&](std::string_view label, std::string_view hint, float extra = 0.f) {
-            const float label_width = r.w - control_width - 20;
-            const float label_height = t.fs(13) * 1.3f;
-            ui.label({r.x, y + 8, label_width, label_height}, label, {.size = t.fs(13), .color = t.text});
-            ui::TextStyle hint_style{.size = t.fs(11), .color = t.text_dim};
-            auto lines = wrap(p, hint, hint_style.size, label_width);
-            for (size_t i = 0; i < std::min(lines.size(), size_t{2}); ++i) {
-                const float hint_height = hint_style.size * 1.3f;
-                ui.label({r.x, y + 11 + label_height + static_cast<float>(i) * hint_height, label_width, hint_height}, lines[i], hint_style);
-            }
-            Rect control{r.right() - control_width, y + 8, control_width - 8, std::max(34.f, t.fs(13) + 14)};
-            y += row_height + extra;
-            return control;
+            y += h + (last ? 14 : 0);
+            return rr;
         };
-        auto toggle = [&](std::string_view id, Rect control, bool on, std::string_view section, std::string_view key, std::string_view yes, std::string_view no) {
-            if (ui.toggle(ui.id(id), {control.right() - 42, control.y + 6, 42, 24}, on)) {
-                set_setting_(section, key, on ? yes : no);
+        // A row's title and hint on the left of a control control_w wide.
+        auto caption = [&](Rect rr, std::string_view title, std::string_view hint, float control_w, float alpha = 1) {
+            const float tw = rr.w - 36 - control_w - 16;
+            if (hint.empty()) {
+                ui.label({rr.x + 18, rr.y, tw, rr.h}, title, {.size = t.fs(14), .color = t.text.with_alpha(alpha)});
+                return;
             }
+            const float mid = rr.y + rr.h / 2;
+            p.text(rr.x + 18, mid - 3, title, {.size = t.fs(14), .color = t.text.with_alpha(alpha)}, tw);
+            p.text(rr.x + 18, mid + 16, hint, {.size = t.fs(12), .color = t.text_dim.with_alpha(alpha)}, tw);
         };
-        auto choice = [&](std::string_view id, Rect control, int selected, std::span<const std::string_view> labels, std::span<const std::string_view> values,
-                          std::string_view section, std::string_view key, bool quoted = true) {
-            const auto interaction = ui.interact(ui.id(id), control);
-            const float hover = ui.anim(ui.id(id), interaction.hovered ? 1 : 0, 140);
-            p.rect(control, t.bg.mix(t.elevated, 0.25f).mix(t.text, hover * 0.035f), 8);
-            ui.label({control.x + 12, control.y, control.w - 38, control.h}, labels[static_cast<size_t>(selected)], {.size = t.fs(13), .color = t.text});
-            p.icon("chevron-down", {control.right() - 25, control.y + (control.h - 14) / 2, 14, 14}, t.text_dim);
-            if (interaction.clicked) {
-                std::vector<ui::MenuItem> menu;
-                for (size_t i = 0; i < labels.size(); ++i) {
-                    menu.push_back({selected == static_cast<int>(i) ? "check" : "", std::string(labels[i]),
-                                    [this, section = std::string(section), key = std::string(key), value = std::string(values[i]), quoted] {
-                                        set_setting_(section, key, quoted ? json_string(value) : value);
-                                    }});
-                }
-                ui.open_menu(control.x, control.bottom() + 6, std::move(menu));
+        auto toggle_row = [&](std::string_view id, std::string_view title, std::string_view hint, bool &on, bool first, bool last, bool enabled = true) {
+            const Rect rr = row(hint.empty() ? 54 : 66, first, last);
+            const float a = ui.anim(ui.id(std::string(id) + "-enabled"), enabled ? 1 : 0.4f, 200);
+            caption(rr, title, hint, 44, a);
+            Fade dim(p, a);
+            ui.disabled = !enabled;
+            const bool changed = ui.toggle(ui.id(id), {rr.right() - 62, rr.y + (rr.h - 24) / 2, 44, 24}, on);
+            ui.disabled = false;
+            return changed;
+        };
+        auto segmented_row = [&](std::string_view id, std::string_view title, std::string_view hint, std::span<const std::string_view> labels, int &selected, bool first,
+                                 bool last) {
+            float widest = 0;
+            for (auto l : labels) {
+                widest = std::max(widest, p.measure(l, {.size = t.fs(13)}));
             }
+            const float cw = std::min((widest + 30) * static_cast<float>(labels.size()), w * 0.56f);
+            const Rect rr = row(hint.empty() ? 58 : 66, first, last);
+            caption(rr, title, hint, cw);
+            return ui.segmented(ui.id(id), {rr.right() - 18 - cw, rr.y + (rr.h - 32) / 2, cw, 32}, labels, selected);
         };
-        auto slider = [&](std::string_view id, Rect control, double current, double low, double high, double step, std::string_view unit, std::string_view section,
-                          std::string_view key) {
+        // A slider that writes its setting on release; display formats the value it would set.
+        auto slider_row = [&](std::string_view id, std::string_view title, std::string_view hint, double current, double low, double high, double step, auto display,
+                              std::string_view section, std::string_view key, bool first, bool last) {
+            const Rect rr = row(66, first, last);
+            const float cw = std::min(250.f, w * 0.42f);
+            caption(rr, title, hint, cw);
             const std::string draft_key(id);
             auto draft = settings_sliders_.find(draft_key);
             float value = draft == settings_sliders_.end() ? static_cast<float>((current - low) / (high - low)) : draft->second;
-            ui::Id slider_id = ui.id(id);
-            if (ui.slider(slider_id, {control.x, control.y, control.w - 62, control.h}, value, {.accent = true})) {
+            const ui::Id slider_id = ui.id(id);
+            if (ui.slider(slider_id, {rr.right() - 18 - cw, rr.y + (rr.h - 18) / 2, cw - 52, 18}, value)) {
                 settings_sliders_[draft_key] = value;
             }
-            double result = std::round((low + static_cast<double>(value) * (high - low)) / step) * step;
-            std::string display = unit == "%" ? std::format("{:.0f}%", result * 100) : step < 1 ? std::format("{:.2f}{}", result, unit) : std::format("{:.0f}{}", result, unit);
-            ui.label({control.right() - 60, control.y, 60, control.h}, display, {.size = t.fs(12), .color = t.text}, Align::right);
+            const double result = std::round((low + static_cast<double>(value) * (high - low)) / step) * step;
+            ui.label({rr.right() - 18 - 46, rr.y, 46, rr.h}, display(result), {.size = t.fs(13), .color = t.text_dim, .features = text::tabular_nums}, Align::right);
             if (!ui.is_active(slider_id) && settings_sliders_.contains(draft_key)) {
                 set_setting_(section, key, std::format("{:.2f}", result));
                 settings_sliders_.erase(draft_key);
             }
         };
-        auto field = [&](std::string_view id, Rect control, std::string_view current, std::string_view placeholder, std::string_view section, std::string_view key,
-                         std::string_view color_alias = {}, bool color = false, bool reset = false) {
-            ui::Id input_id = ui.id(id);
-            auto [entry, inserted] = settings_text_.try_emplace(std::string(id), std::string(current), std::string(current));
-            auto &[saved, draft] = entry->second;
-            if (saved != current && ui.focus != input_id) {
-                saved = draft = current;
-            }
-            float preview = color ? 28.f : 0;
-            float buttons = reset ? 70.f : 34.f;
-            if (color) {
-                ui::Color swatch = ui::parse_color(draft).value_or(t.accent);
-                p.rect({control.x, control.y + 7, 20, 20}, swatch, 10, t.border, 1);
-            }
-            bool apply = ui.text_box(input_id, {control.x + preview, control.y, control.w - preview - buttons, control.h}, draft, placeholder);
-            apply |= ui.icon_button(ui.id(std::string(id) + "-apply"), {control.right() - buttons + 2, control.y + 1, 32, 32}, "check", 16);
-            if (apply) {
-                if (color && !ui::parse_color(draft) && draft != color_alias) {
-                    ui.toast(std::string(tr("Enter a color such as #3b82f6 or #3b82f680")), "circle-alert", true);
-                } else if (!draft.empty()) {
-                    set_setting_(section, key, json_string(draft));
-                    ui.focus = 0;
-                }
-            }
-            if (reset && ui.icon_button(ui.id(std::string(id) + "-reset"), {control.right() - 32, control.y + 1, 32, 32}, "rotate-ccw", 16)) {
-                set_setting_(section, key, {});
-                ui.focus = 0;
-            }
+        auto button_row = [&](std::string_view id, std::string_view title, std::string_view hint, std::string_view label, std::string_view icon, bool first, bool last) {
+            const Rect rr = row(66, first, last);
+            const float bw = button_width(ui, label, !icon.empty());
+            caption(rr, title, hint, bw);
+            return ui.button(ui.id(id), {rr.right() - 18 - bw, rr.y + (rr.h - 34) / 2, bw, 34}, label, ui::ButtonKind::secondary, icon);
         };
+        // A row of colour swatches, right-aligned; one ring glides to the chosen one. paint draws swatch i into its circle.
+        auto swatches = [&](std::string_view id, Rect rr, size_t count, int chosen, auto paint) {
+            constexpr float d = 24;
+            const float gap = std::clamp((rr.w * 0.5f - d * static_cast<float>(count)) / static_cast<float>(count - 1), 6.f, 12.f);
+            const float x0 = rr.right() - 18 - d * static_cast<float>(count) - gap * static_cast<float>(count - 1), cy = rr.y + rr.h / 2;
+            int clicked = -1;
+            ui.push_id(ui.id(id));
+            for (size_t i = 0; i < count; ++i) {
+                const Rect s{x0 + static_cast<float>(i) * (d + gap), cy - d / 2, d, d};
+                const ui::Id sid = ui.id(static_cast<uint64_t>(i));
+                const auto it = ui.interact(sid, s.inset(-3));
+                const float hot = ui.anim(sid, it.hovered ? 1 : 0, 140);
+                const Rect face = s.inset(-1.5f * hot);
+                paint(i, face);
+                p.rect(face, {}, face.w / 2, t.text.with_alpha(0.12f), 1);
+                if (it.clicked) {
+                    clicked = static_cast<int>(i);
+                }
+            }
+            const float ring_x = ui.spring(ui.id("ring-x"), x0 + static_cast<float>(std::max(chosen, 0)) * (d + gap), 280);
+            const float ring_a = ui.anim(ui.id("ring-a"), chosen >= 0 ? 1 : 0, 160);
+            if (ring_a > 0) {
+                p.rect({ring_x - 4, cy - d / 2 - 4, d + 8, d + 8}, {}, d / 2 + 4, t.text.with_alpha(0.85f * ring_a), 2);
+            }
+            ui.pop_id();
+            return clicked;
+        };
+        auto heading = [&](size_t i) {
+            y += i ? 30 : 0;
+            settings_tops_[i] = y - origin;
+            ui.label({x, y, w, 28}, sections[i], {.size = t.fs(20), .color = t.text});
+            y += 44;
+        };
+        auto group = [&](std::string_view label) {
+            ui.label({x + 2, y, w, 18}, label, {.size = t.fs(12), .color = t.text_dim});
+            y += 26;
+        };
+        bool moving = false;
 
-        switch (settings_tab_) {
-            case 0: {
-                const std::array theme_labels{tr("Dark"), tr("Light")};
-                const Rect themes = row(tr("Theme"), tr("Choose the window appearance"), 32);
-                for (uint8_t i = 0; i < 2; ++i) {
-                    const Rect tile{themes.x + static_cast<float>(i) * (themes.w + 10) / 2, themes.y, (themes.w - 10) / 2, 76};
-                    const auto id = ui.id(0x54484500 + i);
-                    const auto interaction = ui.interact(id, tile);
-                    const bool selected = static_cast<uint8_t>(config_.theme.mode) == i;
-                    const float hover = ui.anim(id, interaction.hovered ? 1 : 0, 140);
-                    p.rect(tile, t.bg.mix(t.elevated, 0.6f).mix(t.accent, hover * 0.04f), 10, selected ? t.accent : t.border.with_alpha(0.55f), selected ? 1.5f : 1);
-                    const Rect preview{tile.x + 9, tile.y + 9, tile.w - 18, 35};
-                    const ui::Color base = i == 0 ? ui::Color{0.11f, 0.11f, 0.13f, 1} : ui::Color{0.95f, 0.95f, 0.97f, 1};
-                    const ui::Color ink = i == 0 ? ui::Color{1, 1, 1, 1} : ui::Color{0.12f, 0.13f, 0.16f, 1};
-                    p.rect(preview, base, 5);
-                    p.rect({preview.x + 5, preview.y + 6, 15, 23}, ink.with_alpha(0.08f), 3);
-                    p.rect({preview.x + 25, preview.y + 7, 17, 17}, t.accent.with_alpha(i == 0 ? 0.9f : 0.75f), 3);
-                    p.rect({preview.x + 47, preview.y + 10, preview.w - 55, 3}, ink.with_alpha(0.5f), 1.5f);
-                    p.rect({preview.x + 47, preview.y + 17, preview.w - 64, 3}, ink.with_alpha(0.2f), 1.5f);
-                    ui.label({tile.x, tile.y + 47, tile.w, 22}, theme_labels[i], {.size = t.fs(12), .color = t.text}, Align::center);
-                    if (interaction.clicked) {
-                        set_setting_("theme", "mode", i == 0 ? "\"dark\"" : "\"light\"");
-                    }
-                }
-                const std::array language_labels{tr("English"), tr("Chinese")};
-                const std::array<std::string_view, 2> language_values{"en", "zh"};
-                choice("language", row(tr("Language"), tr("Switch the interface immediately")), static_cast<int>(config_.interface.language), language_labels, language_values,
-                       "interface", "language");
-                field("font", row(tr("Font family"), tr("Use an installed font family")), config_.theme.font, "sans-serif", "theme", "font");
-                slider("font-size", row(tr("Text size"), tr("Scale text throughout the player")), config_.theme.font_size, 9, 32, 1, "", "theme", "font_size");
-                slider("radius", row(tr("Corner radius"), tr("Adjust the shape of panels and buttons")), config_.theme.radius, 0, 24, 1, "", "theme", "radius");
-                slider("motion", row(tr("Animation duration"), tr("0 disables motion; higher values slow it down")), config_.theme.motion, 0, 4, 0.25, "x", "theme", "motion");
-                slider("opacity", row(tr("Window opacity"), tr("Transparency enables background blur")), config_.window.opacity, 0.3, 1, 0.05, "%", "window", "opacity");
-                break;
+        // Appearance.
+        heading(0);
+        {
+            // The two themes as small windows, in their own colours with the current accent.
+            Config variant = config_;
+            std::string errors;
+            variant.theme.mode = ThemeMode::dark;
+            ui::Theme dark = ui::Theme::from(variant, errors);
+            variant.theme.mode = ThemeMode::light;
+            ui::Theme light = ui::Theme::from(variant, errors);
+            if (t.auto_accent) {
+                dark.accent = accent(ui.now, true, moving), light.accent = accent(ui.now, false, moving);
             }
-            case 1: {
-                const std::array quality_labels{tr("Standard"), tr("Higher"), tr("Very high"), tr("Lossless"), tr("Hi-Res")};
-                const std::array<std::string_view, 5> quality_values{"standard", "higher", "exhigh", "lossless", "hires"};
-                choice("quality", row(tr("Audio quality"), tr("Availability depends on your account")), static_cast<int>(config_.playback.quality), quality_labels, quality_values,
-                       "playback", "quality");
-                toggle("trial", row(tr("Skip previews"), tr("Skip tracks that only offer a short preview")), skip_trials(), "playback", "trial", "\"skip\"", "\"play\"");
-                toggle("normalize", row(tr("Volume normalization"), tr("Keep track loudness consistent")), config_.playback.normalize, "playback", "normalize", "true", "false");
-                break;
-            }
-            case 2:
-                slider("lyric-size", row(tr("Desktop text size"), tr("Size of the floating lyric text")), config_.desktop_lyrics.font_size, 16, 72, 1, "", "desktop_lyrics",
-                       "font_size");
-                field("lyric-highlight", row(tr("Sung words"), tr("Use accent to follow the player color")), config_.desktop_lyrics.highlight, "accent", "desktop_lyrics",
-                      "highlight", "accent", true);
-                field("lyric-color", row(tr("Remaining words"), tr("Color before each word is sung")), config_.desktop_lyrics.color, "#ffffff", "desktop_lyrics", "color", {},
-                      true);
-                field("lyric-outline", row(tr("Text outline"), tr("The last two hex digits control opacity")), config_.desktop_lyrics.outline, "#000000a0", "desktop_lyrics",
-                      "outline", {}, true);
-                break;
-            case 3:
-                toggle("island-cover", row(tr("Cover artwork"), tr("Show the album cover")), config_.desktop_lyrics.island.cover, "desktop_lyrics.island", "cover", "true",
-                       "false");
-                toggle("island-progress", row(tr("Progress ring"), tr("Show playback progress around the cover")), config_.desktop_lyrics.island.progress, "desktop_lyrics.island",
-                       "progress", "true", "false");
-                toggle("island-details", row(tr("Track details"), tr("Show song and artist when expanded")), config_.desktop_lyrics.island.details, "desktop_lyrics.island",
-                       "details", "true", "false");
-                toggle("island-controls", row(tr("Playback controls"), tr("Show previous, play and next when expanded")), config_.desktop_lyrics.island.controls,
-                       "desktop_lyrics.island", "controls", "true", "false");
-                toggle("island-volume", row(tr("Volume control"), tr("Adjust volume from the expanded island")), config_.desktop_lyrics.island.volume, "desktop_lyrics.island",
-                       "volume", "true", "false");
-                break;
-            case 4: {
-                field("accent", row(tr("Accent color"), tr("Use auto to follow the album cover")), config_.theme.accent, "auto", "theme", "accent", "auto", true);
-                Config base = config_;
-                base.theme.colors = {};
-                std::string errors;
-                const auto defaults = ui::Theme::from(base, errors);
-                auto hex = [](ui::Color color) {
-                    return std::format("#{:02x}{:02x}{:02x}", static_cast<int>(std::lround(color.r * 255)), static_cast<int>(std::lround(color.g * 255)),
-                                       static_cast<int>(std::lround(color.b * 255)));
-                };
-                auto override_color = [&](std::string_view key, std::string_view label, const std::optional<std::string> &value, ui::Color fallback) {
-                    field(key, row(label, value ? tr("Custom color; reset to follow the theme") : tr("Following the selected theme")), value.value_or(hex(fallback)), "#rrggbb",
-                          "theme.colors", key, {}, true, true);
-                };
-                override_color("bg", tr("Window background"), config_.theme.colors.bg, defaults.bg);
-                override_color("surface", tr("Content surface"), config_.theme.colors.surface, defaults.surface);
-                override_color("elevated", tr("Menus and dialogs"), config_.theme.colors.elevated, defaults.elevated);
-                override_color("border", tr("Borders"), config_.theme.colors.border, defaults.border);
-                override_color("text", tr("Primary text"), config_.theme.colors.text, defaults.text);
-                override_color("text_dim", tr("Secondary text"), config_.theme.colors.text_dim, defaults.text_dim);
-                override_color("danger", tr("Error color"), config_.theme.colors.danger, defaults.danger);
-                break;
-            }
-            case 5: {
-                const std::array frame_rates{0, 30, 60, 90, 120, 144};
-                const std::string custom_frame = std::format("{} fps", config_.render.max_fps);
-                const std::string custom_value = std::to_string(config_.render.max_fps);
-                std::vector<std::string_view> frame_labels{tr("Display refresh rate"), "30 fps", "60 fps", "90 fps", "120 fps", "144 fps"};
-                std::vector<std::string_view> frame_values{"0", "30", "60", "90", "120", "144"};
-                auto selected = std::ranges::find(frame_rates, config_.render.max_fps);
-                int frame = static_cast<int>(selected - frame_rates.begin());
-                if (selected == frame_rates.end()) {
-                    frame_labels.push_back(custom_frame);
-                    frame_values.push_back(custom_value);
+            const Rect rr = row(196, true, false);
+            const float tw = (rr.w - 36 - 16) / 2;
+            for (size_t i = 0; i < 2; ++i) {
+                const ui::Theme &look = i == 0 ? dark : light;
+                const Rect tile{rr.x + 18 + static_cast<float>(i) * (tw + 16), rr.y + 18, tw, 130};
+                const ui::Id id = ui.id(i == 0 ? "theme-dark" : "theme-light");
+                const auto it = ui.interact(id, tile);
+                const bool on = (config_.theme.mode == ThemeMode::dark) == (i == 0);
+                const float hot = ui.anim(id, it.hovered ? 1 : 0, 180), lit = ui.anim(ui::sub_id(id, 1), on ? 1 : 0, 220);
+                const Rect lifted{tile.x, tile.y - 2 * hot, tile.w, tile.h};
+                p.shadow({lifted.x, lifted.y + 6, lifted.w, lifted.h}, 12, 18, t.shadow.with_alpha(0.25f + 0.35f * hot));
+                theme_mock(ui, lifted, look);
+                p.rect(lifted.inset(-4), {}, 15, t.accent.with_alpha(lit), 2);
+                p.rect(lifted, {}, 12, look.border.with_alpha(1 - lit), 1);
+                const std::string_view name = i == 0 ? lyren::tr("Dark") : lyren::tr("Light");
+                ui.label({tile.x, tile.bottom() + 10, tile.w, 24}, name, {.size = t.fs(13), .color = on ? t.text : t.text_dim}, Align::center);
+                if (it.clicked && !on) {
+                    set_setting_("theme", "mode", i == 0 ? "\"dark\"" : "\"light\"");
                 }
-                choice("frame-rate", row(tr("Animation frame limit"), tr("Lower limits reduce GPU usage")), frame, frame_labels, frame_values, "render", "max_fps", false);
-                const std::array decoration_labels{tr("Integrated title bar"), tr("System title bar")};
-                const std::array<std::string_view, 2> decoration_values{"client", "server"};
-                choice("decorations", row(tr("Window decorations"), tr("Choose how the title bar is drawn")), static_cast<int>(config_.window.decorations), decoration_labels,
-                       decoration_values, "window", "decorations");
-                const std::array gpu_labels{tr("Integrated graphics"), tr("Dedicated graphics")};
-                const std::array<std::string_view, 2> gpu_values{"integrated", "discrete"};
-                choice("gpu", row(tr("Graphics device"), tr("Takes effect after restarting Lyren")), static_cast<int>(config_.gpu.device), gpu_labels, gpu_values, "gpu", "device");
-                Rect reset = row(tr("Reset appearance"), tr("Restore text, colors, and animation defaults"));
-                if (ui.button(ui.id("reset-appearance"), reset, tr("Restore defaults"), ui::ButtonKind::secondary, "rotate-ccw")) {
-                    set_setting_("theme", "accent", "\"auto\"");
-                    set_setting_("theme", "font", "\"sans-serif\"");
-                    set_setting_("theme", "font_size", "14");
-                    set_setting_("theme", "radius", "10");
-                    set_setting_("theme", "motion", "1.0");
-                    set_setting_("window", "opacity", "1.0");
-                    for (std::string_view key : {"bg", "surface", "elevated", "border", "text", "text_dim", "danger"}) {
-                        set_setting_("theme.colors", key, {});
-                    }
-                }
-                break;
             }
         }
+        {
+            // The accent: the cover's own colour first, then a few fixed ones.
+            const Rect rr = row(66, false, false);
+            const bool automatic = config_.theme.accent == "auto";
+            int chosen = automatic ? 0 : -1;
+            for (size_t i = 0; i < accents.size(); ++i) {
+                if (same_color(config_.theme.accent, accents[i])) {
+                    chosen = static_cast<int>(i + 1);
+                }
+            }
+            caption(rr, lyren::tr("Accent color"),
+                    automatic    ? lyren::tr("Follows the album cover")
+                    : chosen > 0 ? lyren::tr("Fixed color")
+                                 : std::string_view(config_.theme.accent),
+                    rr.w * 0.5f);
+            const int picked = swatches("accent", rr, accents.size() + 1, chosen, [&](size_t i, Rect s) {
+                if (i > 0) {
+                    p.rect(s, *ui::parse_color(accents[i - 1]), s.w / 2);
+                    return;
+                }
+                p.rect(s, accent(ui.now, t.dark, moving), s.w / 2);
+                if (const Track *track = current()) {
+                    cover(ui, s.inset(3), track->cover, s.w / 2 - 3, "");
+                }
+            });
+            if (picked == 0 && !automatic) {
+                set_setting_("theme", "accent", "\"auto\"");
+            } else if (picked > 0 && picked != chosen) {
+                set_setting_("theme", "accent", json_string(accents[static_cast<size_t>(picked - 1)]));
+            }
+        }
+        {
+            const std::array sizes{lyren::tr("Small"), lyren::tr("Default"), lyren::tr("Large"), lyren::tr("Larger")};
+            int size = static_cast<int>(std::ranges::find(text_sizes, config_.theme.font_size) - text_sizes.begin());
+            size = size < static_cast<int>(text_sizes.size()) ? size : -1;
+            if (segmented_row("text-size", lyren::tr("Text size"), {}, sizes, size, false, false)) {
+                set_setting_("theme", "font_size", std::format("{}", text_sizes[static_cast<size_t>(size)]));
+            }
+        }
+        {
+            const std::array labels{lyren::tr("Off"), lyren::tr("Standard"), lyren::tr("Relaxed")};
+            int motion = static_cast<int>(std::ranges::find(motions, config_.theme.motion) - motions.begin());
+            motion = motion < static_cast<int>(motions.size()) ? motion : -1;
+            if (segmented_row("motion", lyren::tr("Motion"), {}, labels, motion, false, false)) {
+                set_setting_("theme", "motion", std::format("{:.1f}", motions[static_cast<size_t>(motion)]));
+            }
+        }
+        slider_row(
+            "opacity", lyren::tr("Window opacity"), lyren::tr("Below 100% the desktop shows through, blurred"), config_.window.opacity, 0.3, 1, 0.05,
+            [](double v) {
+                return std::format("{:.0f}%", v * 100);
+            },
+            "window", "opacity", false, true);
+
+        // Playback.
+        heading(1);
+        {
+            const Rect head = row(60, true, false);
+            caption(head, lyren::tr("Audio quality"), lyren::tr("What you get depends on your accounts"), 0);
+            const std::array<std::string_view, 5> names{lyren::tr("Standard"), lyren::tr("High"), lyren::tr("Very high"), lyren::tr("Lossless"), "Hi-Res"};
+            const std::array<std::string_view, 5> details{"128 kbps", "192 kbps", "320 kbps", "FLAC", "FLAC 24 bit"};
+            const std::array<std::string_view, 5> values{"standard", "higher", "exhigh", "lossless", "hires"};
+            for (size_t i = 0; i < names.size(); ++i) {
+                const Rect rr = row(46, false, i + 1 == names.size());
+                const ui::Id id = ui.id(values[i]);
+                const auto it = ui.interact(id, rr);
+                const bool on = static_cast<size_t>(config_.playback.quality) == i;
+                const float hot = ui.anim(id, it.hovered ? 1 : 0, 140);
+                if (hot > 0) {
+                    p.rect(rr.inset(6, 4), t.hover.with_alpha(hot), t.radius_s());
+                }
+                ui.label({rr.x + 18, rr.y, 160, rr.h}, names[i], {.size = t.fs(14), .color = on ? t.text : t.text.mix(t.text_dim, 0.35f)});
+                ui.label({rr.x + 160, rr.y, rr.w - 220, rr.h}, details[i], {.size = t.fs(12), .color = t.text_dim});
+                const float check = ui.anim(ui::sub_id(id, 1), on ? 1 : 0, 180);
+                if (check > 0) {
+                    p.icon("check", ui::center({rr.right() - 46, rr.y, 28, rr.h}, 17 * (0.6f + 0.4f * check), 17 * (0.6f + 0.4f * check)), t.accent.with_alpha(check));
+                }
+                if (it.clicked && !on) {
+                    set_setting_("playback", "quality", json_string(values[i]));
+                }
+            }
+        }
+        {
+            bool skip = skip_trials();
+            if (toggle_row("trial", lyren::tr("Skip previews"), lyren::tr("Pass over songs that only play a short clip"), skip, true, false)) {
+                set_setting_("playback", "trial", skip ? "\"skip\"" : "\"play\"");
+            }
+            bool normalize = config_.playback.normalize;
+            if (toggle_row("normalize", lyren::tr("Volume normalization"), lyren::tr("Even out loudness between songs"), normalize, false, true)) {
+                set_setting_("playback", "normalize", normalize ? "true" : "false");
+            }
+        }
+
+        // Lyrics on the desktop.
+        heading(2);
+        {
+            bool shown = dl_enabled_;
+            if (toggle_row("desktop-lyrics", lyren::tr("Desktop lyrics"), lyren::tr("Show the line being sung over your desktop"), shown, true, false)) {
+                set_desktop_enabled(shown);
+            }
+            // The two ways to show them, as small desktops.
+            const Rect rr = row(168, false, true);
+            const float tw = (rr.w - 36 - 16) / 2;
+            for (size_t i = 0; i < 2; ++i) {
+                const bool island = i == 1;
+                const Rect tile{rr.x + 18 + static_cast<float>(i) * (tw + 16), rr.y + 14, tw, 104};
+                const ui::Id id = ui.id(island ? "mode-island" : "mode-floating");
+                const auto it = ui.interact(id, tile);
+                const bool on = dl_island_ == island;
+                const float hot = ui.anim(id, it.hovered ? 1 : 0, 180), lit = ui.anim(ui::sub_id(id, 1), on ? 1 : 0, 220);
+                const Rect lifted{tile.x, tile.y - 2 * hot, tile.w, tile.h};
+                desktop_mock(ui, lifted, island);
+                p.rect(lifted.inset(-4), {}, 15, t.accent.with_alpha(lit), 2);
+                ui.label({tile.x, tile.bottom() + 10, tile.w, 24}, island ? lyren::tr("Dynamic Island") : lyren::tr("Floating lyrics"),
+                         {.size = t.fs(13), .color = on ? t.text : t.text_dim}, Align::center);
+                if (it.clicked) {
+                    set_desktop_island(island);
+                    if (!dl_enabled_) {
+                        set_desktop_enabled(true);
+                    }
+                }
+            }
+        }
+        {
+            group(lyren::tr("Floating lyrics"));
+            // The line as it shows on the desktop, over the blurred cover.
+            const float size = t.lyric_size, sub = std::round(size * 0.58f);
+            const Rect rr = row(std::max(112.f, std::round(size * 1.35f) + std::round(sub * 1.35f) + 44), true, false);
+            const Rect wall = rr.inset(10);
+            wallpaper(ui, wall, radius - 4);
+            ui.push_clip(wall);
+            {
+                UseTheme on_desktop(ui, *stage_);
+                const double now = clip_start_ + position();
+                const int at = lyric_at(lyrics_, now + 0.2);
+                const LyricLine *line = at >= 0 ? &lyrics_[static_cast<size_t>(at)] : nullptr;
+                const std::string_view text = line ? std::string_view(line->text) : current() ? std::string_view(current()->title) : lyren::tr("Lyrics appear here");
+                const std::string_view below = line ? (lyric_translation_ ? std::string_view(line->translation) : std::string_view{}) : current() ? current()->artist : "";
+                const float lh = std::round(size * 1.35f), top = wall.y + (wall.h - lh - (below.empty() ? 0 : sub * 1.35f)) / 2;
+                const ui::Color sung = t.lyric_sung.value_or(stage_->accent);
+                const bool timed = line && !line->words.empty();
+                floating_text(ui, wall.x + wall.w / 2, top + lh * 0.76f, text, timed ? line : nullptr, size, wall.w - 32, timed ? sung : t.lyric_text, t.lyric_text);
+                if (!below.empty()) {
+                    floating_text(ui, wall.x + wall.w / 2, top + lh + sub * 1.1f, below, nullptr, sub, wall.w - 32, t.lyric_text.with_alpha(0.85f), t.lyric_text);
+                }
+                lyric_frames(ui, at, timed);
+            }
+            ui.pop_clip();
+            slider_row(
+                "lyric-size", lyren::tr("Text size"), {}, config_.desktop_lyrics.font_size, 16, 72, 1,
+                [](double v) {
+                    return std::format("{:.0f}", v);
+                },
+                "desktop_lyrics", "font_size", false, false);
+            {
+                const Rect sr = row(58, false, false);
+                const bool follows = config_.desktop_lyrics.highlight == "accent";
+                int chosen = follows ? 0 : -1;
+                for (size_t i = 0; i < sung_colors.size(); ++i) {
+                    if (same_color(config_.desktop_lyrics.highlight, sung_colors[i])) {
+                        chosen = static_cast<int>(i + 1);
+                    }
+                }
+                caption(sr, lyren::tr("Sung words"), {}, sr.w * 0.5f);
+                const int picked = swatches("sung", sr, sung_colors.size() + 1, chosen, [&](size_t i, Rect s) {
+                    p.rect(s, i == 0 ? stage_->accent : *ui::parse_color(sung_colors[i - 1]), s.w / 2);
+                    if (i == 0) {
+                        p.icon("sparkles", ui::center(s, 12, 12), white.with_alpha(0.9f));
+                    }
+                });
+                if (picked >= 0 && picked != chosen) {
+                    set_setting_("desktop_lyrics", "highlight", picked == 0 ? "\"accent\"" : json_string(sung_colors[static_cast<size_t>(picked - 1)]));
+                }
+            }
+            {
+                const Rect sr = row(58, false, false);
+                int chosen = -1;
+                for (size_t i = 0; i < rest_colors.size(); ++i) {
+                    if (same_color(config_.desktop_lyrics.color, rest_colors[i])) {
+                        chosen = static_cast<int>(i);
+                    }
+                }
+                caption(sr, lyren::tr("Other words"), {}, sr.w * 0.5f);
+                const int picked = swatches("rest", sr, rest_colors.size(), chosen, [&](size_t i, Rect s) {
+                    p.rect(s, *ui::parse_color(rest_colors[i]), s.w / 2);
+                });
+                if (picked >= 0 && picked != chosen) {
+                    set_setting_("desktop_lyrics", "color", json_string(rest_colors[static_cast<size_t>(picked)]));
+                }
+            }
+            bool outlined = t.lyric_outline.a > 0;
+            if (toggle_row("outline", lyren::tr("Outline"), lyren::tr("Keeps the words readable over bright wallpapers"), outlined, false, true)) {
+                set_setting_("desktop_lyrics", "outline", outlined ? outline_on : outline_off);
+            }
+        }
+        {
+            group(lyren::tr("Dynamic Island"));
+            // The island itself, live: point at it to open it. Its space grows as it does.
+            ui.push_id(ui.id("island-preview"));
+            const float open = std::clamp(ui.spring_value(ui.id("island-open"), 0), 0.f, 1.2f);
+            const auto &island_options = config_.desktop_lyrics.island;
+            const Rect rr = row(std::lerp(92.f, 268.f, open), true, false);
+            const Rect wall = rr.inset(10);
+            wallpaper(ui, wall, radius - 4);
+            ui.push_clip(wall);
+            {
+                UseTheme on_desktop(ui, *stage_);
+                island(ui, wall.x + wall.w / 2, wall.y + 16);
+            }
+            ui.pop_clip();
+            ui.pop_id();
+            bool cover_on = island_options.cover;
+            if (toggle_row("island-cover", lyren::tr("Cover"), lyren::tr("The album cover at the start of the island"), cover_on, false, false)) {
+                set_setting_("desktop_lyrics.island", "cover", cover_on ? "true" : "false");
+            }
+            // The ring goes round the cover, so it needs the cover.
+            bool ring = island_options.cover && island_options.progress;
+            if (toggle_row("island-ring", lyren::tr("Progress ring"), island_options.cover ? lyren::tr("Playback progress around the cover") : lyren::tr("Needs the cover"), ring,
+                           false, true, island_options.cover)) {
+                set_setting_("desktop_lyrics.island", "progress", ring ? "true" : "false");
+            }
+        }
+
+        // General.
+        heading(3);
+        {
+            const std::array<std::string_view, 2> language_labels{"中文", "English"};
+            int language = config_.interface.language == Language::zh ? 0 : 1;
+            if (segmented_row("language", lyren::tr("Language"), {}, language_labels, language, true, false)) {
+                set_setting_("interface", "language", language == 0 ? "\"zh\"" : "\"en\"");
+            }
+            const std::array titles{lyren::tr("Built in"), lyren::tr("System")};
+            int title_bar = static_cast<int>(config_.window.decorations);
+            if (segmented_row("decorations", lyren::tr("Title bar"), lyren::tr("System draws the desktop's own title bar"), titles, title_bar, false, false)) {
+                set_setting_("window", "decorations", title_bar == 0 ? "\"client\"" : "\"server\"");
+            }
+            {
+                // Frame rate: a menu, since it has many choices.
+                const Rect rr = row(66, false, false);
+                const float cw = 150;
+                caption(rr, lyren::tr("Animation frame rate"), lyren::tr("Lower rates save power"), cw);
+                auto name = [](int fps) {
+                    return fps == 0 ? std::string(lyren::tr("Display rate")) : std::format("{} fps", fps);
+                };
+                const Rect control{rr.right() - 18 - cw, rr.y + (rr.h - 34) / 2, cw, 34};
+                const ui::Id id = ui.id("frame-rate");
+                const auto it = ui.interact(id, control);
+                const float hot = ui.anim(id, it.hovered ? 1 : 0, 140);
+                p.rect(control, t.text.with_alpha(0.06f + 0.04f * hot), control.h / 2);
+                ui.label({control.x + 14, control.y, control.w - 40, control.h}, name(config_.render.max_fps), {.size = t.fs(13), .color = t.text});
+                p.icon("chevron-down", {control.right() - 26, control.y + 10, 14, 14}, t.text_dim);
+                if (it.clicked) {
+                    std::vector<ui::MenuItem> menu;
+                    for (int fps : frame_rates) {
+                        menu.push_back({config_.render.max_fps == fps ? "check" : "", name(fps), [this, fps] {
+                                            set_setting_("render", "max_fps", std::to_string(fps));
+                                        }});
+                    }
+                    ui.open_menu(control.x, control.bottom() + 6, std::move(menu));
+                }
+            }
+            const std::array gpus{lyren::tr("Integrated"), lyren::tr("Dedicated")};
+            int gpu = static_cast<int>(config_.gpu.device);
+            if (segmented_row("gpu", lyren::tr("Graphics"), lyren::tr("Takes effect after a restart"), gpus, gpu, false, true)) {
+                set_setting_("gpu", "device", gpu == 0 ? "\"integrated\"" : "\"discrete\"");
+            }
+        }
+        if (button_row("config-file", lyren::tr("Config file"), lyren::tr("Fonts, corner radius and individual colors live here"), lyren::tr("Open"), "file-cog", true, false)) {
+            open_config_();
+        }
+        if (button_row("reset", lyren::tr("Reset appearance"), lyren::tr("Theme colors, text size, accent and motion"), lyren::tr("Reset"), "rotate-ccw", false, true)) {
+            set_setting_("theme", "accent", "\"auto\"");
+            set_setting_("theme", "font", "\"sans-serif\"");
+            set_setting_("theme", "font_size", "14");
+            set_setting_("theme", "radius", "10");
+            set_setting_("theme", "motion", "1.0");
+            set_setting_("window", "opacity", "1.0");
+            for (std::string_view key : {"bg", "surface", "elevated", "border", "text", "text_dim", "danger"}) {
+                set_setting_("theme.colors", key, {});
+            }
+        }
+        if (moving) {
+            ui.keep_animating();
+        }
+        ui.pop_clip();
+        settings_height_ = y - origin + 40;
+
+        // The tab bar: it follows the scroll, and a tab glides there.
+        const float stuck = std::clamp((r.y - bar_natural) / 12, 0.f, 1.f);
+        p.rect({r.x, bar_y, r.w, bar_h}, t.surface, {r.y >= bar_y ? t.radius_l() : 0, r.y >= bar_y ? t.radius_l() : 0, 0, 0});
+        p.rect({r.x, bar_y + bar_h - 1, r.w, 1}, t.border.with_alpha(stuck));
+        const float max_offset = std::max(0.f, settings_height_ - r.h);
+        int active = 0;
+        for (size_t i = 0; i < settings_tops_.size(); ++i) {
+            if (origin + settings_tops_[i] <= bar_y + bar_h + (r.bottom() - bar_y - bar_h) * 0.35f) {
+                active = static_cast<int>(i);
+            }
+        }
+        if (off >= max_offset - 1 && max_offset > 0) {
+            active = static_cast<int>(sections.size()) - 1;
+        }
+        if (ui.now < settings_jump_until_) {
+            active = settings_jump_;
+        }
+        int picked = active;
+        if (ui.tabs(ui.id("settings-tabs"), {x, bar_y + 8, w, 36}, sections, picked)) {
+            settings_jump_ = picked, settings_jump_until_ = ui.now + 0.6 * t.motion;
+            ui.scroll_to(scroll_id, settings_tops_[static_cast<size_t>(picked)] - bar_h - 20, true);
+        }
         ui.end_scroll();
-        ui.pop_id();
-        ui.pop_id();
-        p.set_alpha(alpha);
-        ui.label({r.x, r.bottom() - 20, r.w, 20}, tr("Changes are saved automatically"), {.size = t.fs(11), .color = t.text_dim});
+    }
+
+    // A window in miniature, in the colours of a theme: sidebar, page with covers, player bar.
+    void Shell::theme_mock(ui::Ui &ui, Rect m, const ui::Theme &look) {
+        auto &p = ui.painter();
+        p.rect(m, look.bg, 12);
+        const Rect side{m.x + 10, m.y + 14, m.w * 0.22f, m.h - 44};
+        for (int i = 0; i < 4; ++i) {
+            const float bw = side.w - 6 - static_cast<float>(i % 2) * 8;
+            p.rect({side.x, side.y + static_cast<float>(i) * 12, bw, 6}, i == 0 ? look.accent.with_alpha(0.9f) : look.text.with_alpha(0.16f), 3);
+        }
+        const Rect page{side.right() + 8, m.y + 8, m.right() - side.right() - 16, m.h - 38};
+        p.rect(page, look.surface, 7);
+        p.rect({page.x + 10, page.y + 10, page.w * 0.34f, 7}, look.text.with_alpha(0.75f), 3.5f);
+        const float cw = (page.w - 20 - 16) / 3;
+        for (int i = 0; i < 3; ++i) {
+            const Rect c{page.x + 10 + static_cast<float>(i) * (cw + 8), page.y + 26, cw, std::min(cw, page.h - 34)};
+            if (i == 0 && current()) {
+                cover(ui, c, current()->cover, 4, "");
+            } else {
+                p.rect(c, ui::hsl(0.58f + 0.17f * static_cast<float>(i), 0.45f, look.dark ? 0.42f : 0.7f), 4);
+            }
+        }
+        const float by = m.bottom() - 18;
+        p.rect({m.x + 10, by - 5, 12, 12}, look.text.with_alpha(0.22f), 3);
+        p.rect({m.x + 28, by - 3, m.w * 0.16f, 4}, look.text.with_alpha(0.3f), 2);
+        p.rect({m.x + m.w * 0.42f, by, m.w * 0.36f, 2.5f}, look.text.with_alpha(0.16f), 1.25f);
+        p.rect({m.x + m.w * 0.42f, by, m.w * 0.13f, 2.5f}, look.accent, 1.25f);
+        p.rect({m.x + m.w * 0.42f - 13, by - 4, 9, 9}, look.text.with_alpha(0.85f), 4.5f);
+    }
+
+    // The current cover, blurred, standing in for a desktop wallpaper.
+    void Shell::wallpaper(ui::Ui &ui, Rect r, float radius) {
+        auto &p = ui.painter();
+        p.gradient(r, ui::hsl(0.62f, 0.35f, 0.42f), ui::hsl(0.7f, 0.3f, 0.2f), radius);
+        if (const Track *track = current()) {
+            const auto &e = images_.get(cover_url(track->cover, 128), 128, true);
+            if (e.ready) {
+                const float aspect = r.w / r.h;
+                const Rect uv = aspect > 1 ? Rect{0, (1 - 1 / aspect) / 2, 1, 1 / aspect} : Rect{(1 - aspect) / 2, 0, aspect, 1};
+                Fade fade(p, ui.progress(e.ready_at, 400));
+                p.image(r, e.tex, radius, {1, 1, 1, 1}, uv);
+            }
+        }
+        p.gradient(r, {0, 0, 0, 0.05f}, {0, 0, 0, 0.25f}, radius);
+    }
+
+    // A desktop in miniature with lyrics on it: a line near the bottom, or the island at the top.
+    void Shell::desktop_mock(ui::Ui &ui, Rect m, bool island) {
+        auto &p = ui.painter();
+        wallpaper(ui, m, 12);
+        constexpr ui::Color ink{0.03f, 0.03f, 0.035f, 1};
+        if (island) {
+            const Rect pill{m.x + m.w * 0.3f, m.y + 8, m.w * 0.4f, 18};
+            p.shadow({pill.x, pill.y + 2, pill.w, pill.h}, 9, 8, {0, 0, 0, 0.3f});
+            p.rect(pill, ink, 9);
+            if (config_.desktop_lyrics.island.cover) {
+                p.rect({pill.x + 4, pill.y + 4, 10, 10}, ui::Color{1, 1, 1, 0.75f}, 5);
+            }
+            p.rect({pill.x + (config_.desktop_lyrics.island.cover ? 20.f : 10.f), pill.y + 7, pill.w * 0.5f, 4}, ui::Color{1, 1, 1, 0.85f}, 2);
+            return;
+        }
+        const float cx = m.x + m.w / 2, by = m.bottom() - 26;
+        p.rect({cx - m.w * 0.3f - 1.5f, by - 1.5f, m.w * 0.6f + 3, 9}, {0, 0, 0, 0.35f}, 4.5f);
+        p.rect({cx - m.w * 0.3f, by, m.w * 0.6f, 6}, ui::Color{1, 1, 1, 0.95f}, 3);
+        p.rect({cx - m.w * 0.18f, by + 12, m.w * 0.36f, 4}, ui::Color{1, 1, 1, 0.7f}, 2);
     }
 
 } // namespace lyren

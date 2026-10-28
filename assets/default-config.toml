@@ -62,8 +62,5 @@ outline = "#000000a0"
 
 [desktop_lyrics.island]
 cover = true
+# The progress ring goes around the cover and is hidden without it.
 progress = true
-# Optional components in the expanded island.
-details = false
-controls = false
-volume = false

@@ -13,9 +13,10 @@ namespace lyren::text {
         hb_buffer_destroy(buf_);
     }
 
-    // Characters that should stay in the surrounding run whatever font covers them.
+    // Characters that should stay in the surrounding run whatever font covers them: spaces, joiners, variation
+    // selectors, combining marks, the keycap and emoji tags.
     static bool joins_run(char32_t cp) {
-        return cp == ' ' || cp == 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x300 && cp <= 0x36f);
+        return cp == ' ' || cp == 0x200d || cp == 0x20e3 || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x300 && cp <= 0x36f) || (cp >= 0xe0020 && cp <= 0xe007f);
     }
 
     const Shaped &Shaper::shape(std::string_view text, uint8_t features) {
@@ -44,7 +45,10 @@ namespace lyren::text {
                 size_t k = j;
                 char32_t cp = utf8::decode(text, k);
                 if (!joins_run(cp)) {
-                    uint16_t f = fonts_.face_for(cp);
+                    // Shown as an emoji: anything from the emoji blocks of plane 1, or a character followed by VS16.
+                    size_t after = k;
+                    bool emoji = (cp >= 0x1f000 && cp < 0x20000) || (after < text.size() && utf8::decode(text, after) == 0xfe0f);
+                    uint16_t f = fonts_.face_for(cp, emoji);
                     if (chosen && f != face) {
                         break;
                     }

@@ -186,4 +186,12 @@ namespace lyren::gfx {
         return static_cast<float>(h < 0 ? h + 1 : h);
     }
 
+    float mean_luma(const Image &img) {
+        double sum = 0;
+        for (size_t i = 0; i < img.px.size(); i += 4) {
+            sum += 0.2126 * img.px[i] + 0.7152 * img.px[i + 1] + 0.0722 * img.px[i + 2];
+        }
+        return img.px.empty() ? 0 : static_cast<float>(sum / (255.0 * static_cast<double>(img.px.size() / 4)));
+    }
+
 } // namespace lyren::gfx

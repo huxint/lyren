@@ -38,7 +38,8 @@ namespace lyren {
         void request_redraw();
         void render();
         void build(double now);
-        void titlebar(ui::Rect bar);
+        // stage: how far the now-playing stage is up; the title bar keeps only the window buttons on it.
+        void titlebar(ui::Rect bar, float stage);
         bool window_button(ui::Id id, ui::Rect r, std::string_view icon, float size, bool close);
         void caption_press(const ui::PointerAction &a);
         void after_frame(Clock::time_point frame_start);
@@ -61,7 +62,7 @@ namespace lyren {
 
         Loop &loop_;
         ConfigFile config_;
-        ui::Theme theme_, frame_theme_;
+        ui::Theme theme_, frame_theme_, stage_theme_;
         wl::Display display_;
         gfx::Context gpu_;
         gfx::Renderer renderer_;

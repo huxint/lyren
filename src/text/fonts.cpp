@@ -40,7 +40,7 @@ namespace lyren::text {
         FcDefaultSubstitute(pat);
         FcResult res;
         FcFontSet *set = FcFontSort(cfg, pat, FcTrue, nullptr, &res);
-        for (int i = 0; set && i < set->nfont && faces_.size() < 16; ++i) {
+        for (int i = 0; set && i < set->nfont && faces_.size() < 256; ++i) {
             FcChar8 *file = nullptr;
             int index = 0;
             FcBool color = FcFalse;
@@ -49,7 +49,6 @@ namespace lyren::text {
             }
             FcPatternGetInteger(set->fonts[i], FC_INDEX, 0, &index);
             FcPatternGetBool(set->fonts[i], FC_COLOR, 0, &color);
-            // Colour bitmap fonts (emoji) would need an RGBA atlas.
             if (color) {
                 continue;
             }
@@ -67,6 +66,24 @@ namespace lyren::text {
             FcFontSetDestroy(set);
         }
         FcPatternDestroy(pat);
+        // Colour emoji sort far down the chain, so the best one is added at its end.
+        FcPattern *emoji = FcNameParse(reinterpret_cast<const FcChar8 *>("emoji:color=true"));
+        FcConfigSubstitute(cfg, emoji, FcMatchPattern);
+        FcDefaultSubstitute(emoji);
+        if (FcPattern *match = FcFontMatch(cfg, emoji, &res)) {
+            FcChar8 *file = nullptr;
+            FcBool color = FcFalse;
+            int index = 0;
+            FcCharSet *cs = nullptr;
+            FcPatternGetBool(match, FC_COLOR, 0, &color);
+            if (color && FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && FcPatternGetCharSet(match, FC_CHARSET, 0, &cs) == FcResultMatch) {
+                FcPatternGetInteger(match, FC_INDEX, 0, &index);
+                color_ = static_cast<int>(faces_.size());
+                faces_.push_back({.path = reinterpret_cast<const char *>(file), .index = index, .coverage = copy_coverage(cs), .color = true});
+            }
+            FcPatternDestroy(match);
+        }
+        FcPatternDestroy(emoji);
         FcConfigDestroy(cfg);
         FcFini();
         malloc_trim(0);
@@ -124,7 +141,10 @@ namespace lyren::text {
         return faces_[i];
     }
 
-    uint16_t Fonts::face_for(char32_t cp) const {
+    uint16_t Fonts::face_for(char32_t cp, bool emoji) const {
+        if (emoji && color_ >= 0 && faces_[static_cast<size_t>(color_)].coverage.has(cp)) {
+            return static_cast<uint16_t>(color_);
+        }
         for (uint16_t i = 0; i < faces_.size(); ++i) {
             if (faces_[i].coverage.has(cp)) {
                 return i;

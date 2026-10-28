@@ -30,6 +30,7 @@ namespace lyren {
         // Changes a setting in the config file; value is TOML. config reflects it once this returns.
         std::move_only_function<void(std::string_view section, std::string_view key, std::string_view value)> set_setting;
         std::move_only_function<void()> desktop_changed;
+        std::move_only_function<void()> open_config;                 // in the user's editor
         std::move_only_function<void()> redraw;                      // async results arrived
         std::move_only_function<double()> now;                       // the UI clock
         bool silent;                                                 // scripted runs: the stream volume stays 0
@@ -45,7 +46,10 @@ namespace lyren {
         Shell(ShellDeps deps, SavedState saved);
         // bar is the top strip beside the window controls; the search box centres on center_x.
         void top_bar(ui::Ui &ui, ui::Rect bar, float center_x);
-        void draw(ui::Ui &ui, ui::Rect area);
+        // area: below the title bar. The now-playing stage covers the whole window in the stage theme.
+        void draw(ui::Ui &ui, ui::Rect area, const ui::Theme &stage);
+        // How far the now-playing stage is up, 0..1.
+        float stage(ui::Ui &ui);
         // Accent taken from the current cover, cross-faded after a change.
         ui::Color accent(double now, bool dark, bool &animating);
         // window: the size to remember, unless the window is maximized.
@@ -73,6 +77,7 @@ namespace lyren {
             toplist,
             square,
             fm,
+            settings,
             liked,
             recent,
             cloud,
@@ -167,9 +172,17 @@ namespace lyren {
             one,
             shuffle
         };
+        // What the panel beside the page shows.
+        enum class Panel : uint8_t {
+            none,
+            queue,
+            comments
+        };
 
     public:
         static std::vector<std::string_view> wrap(ui::Painter &p, std::string_view text, float size, float width);
+        // wrap() for text with line breaks; blank lines stay.
+        static std::vector<std::string_view> wrap_lines(ui::Painter &p, std::string_view text, float size, float width);
 
     private:
         // Pages and parts.
@@ -194,12 +207,19 @@ namespace lyren {
         bool hero(ui::Ui &ui, ui::Id id, ui::Rect r, std::string_view big, std::string_view title, std::string_view subtitle, float hue);
         // Loading, error and signed-out states of a page; true when one was drawn.
         bool page_status(ui::Ui &ui, ui::Rect r, bool loading, const std::string &error, bool needs_login);
+        static float panel_width(Panel panel);
+        void show_panel(Panel panel); // the same one again, or none, closes it
+        // slot: the space beside the page, which grows as the panel slides in; stage: how far the stage is up.
+        void side_panel(ui::Ui &ui, ui::Rect slot, float stage);
         void queue_panel(ui::Ui &ui, ui::Rect r);
-        void player_bar(ui::Ui &ui, ui::Rect r);
+        void comments_panel(ui::Ui &ui, ui::Rect r);
+        // stage: how far the stage is up; on it the bar also holds the comments and translation of the song on show.
+        void player_bar(ui::Ui &ui, ui::Rect r, float stage);
         // The cover, title, artist and heart of the current track, which move between the player bar (np 0) and the
         // now-playing view (np 1), whose layout is wide (1) or narrow (0).
         void player_art(ui::Ui &ui, ui::Rect player, ui::Rect page, float np, float wide);
-        void now_playing(ui::Ui &ui, ui::Rect r, float k, float wide);
+        // The stage over the window; page is where its cover and lyrics go.
+        void now_playing(ui::Ui &ui, ui::Rect window, ui::Rect page, float k, float wide);
         // centered: 0 lines start at the left, 1 they are centred.
         void lyrics_view(ui::Ui &ui, ui::Rect r, float centered);
         // The size of a heart that pops when its track has just been liked.
@@ -207,15 +227,22 @@ namespace lyren {
         // The buttons after "play all" and "shuffle" on album and playlist pages, from x.
         void list_actions(ui::Ui &ui, float x, float y);
         void account_modal(ui::Ui &ui, ui::Rect r);
-        void settings_modal(ui::Ui &ui, ui::Rect r);
+        void settings_page(ui::Ui &ui, ui::Rect r);
+        void theme_mock(ui::Ui &ui, ui::Rect r, const ui::Theme &look);
+        void desktop_mock(ui::Ui &ui, ui::Rect r, bool island);
+        void wallpaper(ui::Ui &ui, ui::Rect r, float radius);
         void categories_modal(ui::Ui &ui, ui::Rect r);
-        void comments_modal(ui::Ui &ui, ui::Rect r);
         // Lays out a comment at y, or only measures it; returns its height.
         float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw);
         void editor_modal(ui::Ui &ui, ui::Rect r, Card card);
         void picker_modal(ui::Ui &ui, ui::Rect r, Track t);
         void open_account(ui::Ui &ui);
-        void open_comments(ui::Ui &ui, Source source, Subject subject, std::string id, std::string title);
+        // Opens the comments on something in the panel. follows: the current song's, which the stage keeps up with.
+        void open_comments(ui::Ui &ui, Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows = false);
+        // Points the comments at something and loads their first page, without showing them.
+        void set_thread(ui::Ui &ui, Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows);
+        // Leaving the stage closes the comments it opened.
+        void show_stage(bool open);
         // A new playlist when card is empty, otherwise a rename.
         void open_editor(ui::Ui &ui, Card card = {}, std::optional<Track> track = {});
         void confirm_delete(ui::Ui &ui, Card card);
@@ -381,7 +408,9 @@ namespace lyren {
         uint64_t play_gen_ = 0;
         audio::Player::State last_state_ = audio::Player::State::idle;
         bool want_play_ = false, fetching_ = false, fm_playing_ = false;
-        bool queue_open_ = false, muted_ = false, retried_ = false, counted_ = false;
+        bool muted_ = false, retried_ = false, counted_ = false;
+        Panel panel_ = Panel::none, panel_last_ = Panel::queue, panel_from_ = Panel::none; // last: the one drawn while it closes
+        double panel_time_ = -10;
         size_t failures_ = 0;
         Mode mode_ = Mode::list;
         std::vector<int> shuffle_history_;
@@ -416,6 +445,7 @@ namespace lyren {
         double clip_start_ = 0; // where a trial clip sits in the song the lyrics are timed for
         bool lyrics_loading_ = false;
         bool np_open_ = false, np_wide_ = true;
+        double drift_ = 0, drift_last_ = 0; // how far the backdrop has drifted: it moves only while the music plays
         struct LyricBlock {
             std::vector<std::string_view> lines, translation; // wrapped, pointing into lyrics_
             float y = 0, h = 0;
@@ -423,34 +453,50 @@ namespace lyren {
         std::vector<LyricBlock> lyric_layout_;
         float lyric_layout_w_ = 0, lyric_layout_size_ = 0;
         std::string lyric_layout_font_;
-        // Each line scrolls on its own spring. When the current line changes, the lines below it set off a little later
-        // than the ones above, so the change runs down the lyrics; the wheel moves them all at once.
+        // Each line scrolls on its own spring towards the offset it aims at. When the next line comes up, the lines below
+        // it set off a little later than the ones above, so the change ripples down; jumps and the wheel move them as one.
         std::vector<ui::Spring> lyric_y_;
+        std::vector<float> lyric_aim_;
         float lyric_manual_ = 0;
-        int lyric_from_ = 0, lyric_to_ = 0; // the line the view was centred on and the one it moves to
+        int lyric_to_ = 0; // what the view centres on: 2i is line i, 2i - 1 the pause before it
+        bool lyric_ripple_ = false;
         double lyric_switch_ = -10, lyric_manual_until_ = 0, lyric_last_ = 0, lyrics_since_ = -10;
 
-        // Desktop lyrics: offset from the screen's centre, height above the bottom, click-through; the line shown and
-        // the one fading out.
-        struct ShownLine {
-            std::string text, sub;
-            bool timed = false;
-        };
+        // Desktop lyrics: offset from the screen's centre, height above the bottom, click-through.
         float dl_x_ = 0, dl_bottom_ = 48;
         bool dl_locked_ = false, dl_dragging_ = false;
         bool dl_enabled_ = false, dl_island_ = false, lyric_translation_ = true;
         std::move_only_function<void()> desktop_changed_;
         static float sung_x(ui::Painter &p, const LyricLine &line, std::string_view text, float size, float soft, double position);
         void toggle_translation();
-        void toggle_desktop_mode();
+        void set_desktop_island(bool island);
         float dl_grab_x_ = 0, dl_grab_y_ = 0, dl_last_y_ = 0;
-        ShownLine dl_line_, dl_prev_;
-        double dl_changed_ = -10;
+        // The line on show and the one it replaced, for the change between them.
+        struct ShownLine {
+            std::string text, sub;
+            bool timed = false;
+        };
+        struct LineChange {
+            ShownLine shown, prev;
+            double since = -10, prev_since = -10;
+        };
+        LineChange island_line_, floating_line_;
+        bool island_dragging_ = false;
+        float island_drag_v_ = 0;
+        // Notes the line on show; returns how far the change to it has gone, 0..1.
+        float show_line(ui::Ui &ui, LineChange &change, std::string_view text, std::string_view sub, bool timed);
+        // Frames for desktop lyrics: continuous while a word-timed line is sung, otherwise one when the next line starts.
+        void lyric_frames(ui::Ui &ui, int line, bool timed);
+        // The island hanging from top at center; floating lyrics across a surface. Both return where they take input.
+        ui::Rect island(ui::Ui &ui, float center, float top);
+        ui::Rect floating(ui::Ui &ui, float width, float height);
+        // A line of floating lyrics, outlined; a word-timed live line lights up from color to rest as it is sung.
+        void floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color, ui::Color rest);
 
         // Accent.
         bool dark_ = true;
         float accent_hue_ = -2;
-        ui::Color accent_from_{}, accent_to_{};
+        std::array<ui::Color, 2> accent_from_{}; // where a change set off from, on light and on dark backgrounds
         double accent_time_ = -10;
         float bar_cover_px_ = 64;
 
@@ -465,10 +511,11 @@ namespace lyren {
         std::optional<QrStatus> qr_status_;
         std::string qr_error_;
 
-        // Comments dialog and the playlist editor.
+        // Comments panel and the playlist editor.
         Subject thread_subject_ = Subject::song;
         Source thread_source_ = Source::netease;
-        std::string thread_id_, thread_title_;
+        std::string thread_id_, thread_title_, thread_cover_;
+        bool thread_follows_ = false;
         int thread_tab_ = 0;
         double thread_time_ = -10;
         std::array<Feed, 2> feeds_; // hot, newest
@@ -478,10 +525,14 @@ namespace lyren {
         Source edit_source_ = Source::netease;
         std::optional<Track> edit_track_;
 
-        uint8_t settings_tab_ = 0;
-        double settings_since_ = -10;
-        std::map<std::string, std::pair<std::string, std::string>> settings_text_;
-        std::map<std::string, float> settings_sliders_;
+        // Settings page: its height last frame, where each section starts, the tab it is gliding to.
+        float settings_height_ = 1000;
+        std::array<float, 4> settings_tops_{};
+        int settings_jump_ = 0;
+        double settings_jump_until_ = 0;
+        std::map<std::string, float> settings_sliders_; // values being dragged, written on release
+        std::move_only_function<void()> open_config_;
+        const ui::Theme *stage_ = nullptr; // this frame's stage theme, for the desktop previews
     };
 
 } // namespace lyren

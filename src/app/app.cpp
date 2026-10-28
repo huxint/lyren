@@ -113,6 +113,16 @@ namespace lyren {
                                    request_redraw();
                                });
                            },
+                       .open_config =
+                           [this] {
+                               if (!script_.empty()) {
+                                   return log::info("open config requested");
+                               }
+                               pid_t pid;
+                               std::string path = config_.path.string();
+                               std::array<const char *, 3> argv = {"xdg-open", path.c_str(), nullptr};
+                               posix_spawnp(&pid, "xdg-open", nullptr, nullptr, const_cast<char *const *>(argv.data()), environ);
+                           },
                        .redraw =
                            [this] {
                                request_redraw();
@@ -330,6 +340,7 @@ namespace lyren {
         if (theme_.auto_accent) {
             frame_theme_.accent = shell_.accent(now, theme_.dark, accent_moving);
         }
+        stage_theme_ = frame_theme_.stage(theme_.auto_accent ? shell_.accent(now, true, accent_moving) : theme_.accent);
 
         bool floating = window_->client_side() && m > 0;
         float radius = floating ? theme_.radius_l() : 0;
@@ -345,8 +356,13 @@ namespace lyren {
             ui_.keep_animating();
         }
         ui::Rect area{0, 0, w, h};
-        titlebar(ui::cut_top(area, titlebar_h));
-        shell_.draw(ui_, area);
+        ui::Rect bar = ui::cut_top(area, titlebar_h);
+        // The title bar takes input before the page but is drawn over it, since the stage reaches under it.
+        p.defer(true);
+        titlebar(bar, shell_.stage(ui_));
+        p.defer(false);
+        shell_.draw(ui_, area, stage_theme_);
+        p.draw_deferred();
         ui_.end();
         for (auto &a : input_.actions) {
             if (a.press && !a.consumed) {
@@ -355,9 +371,11 @@ namespace lyren {
         }
     }
 
-    void App::titlebar(ui::Rect bar) {
+    void App::titlebar(ui::Rect bar, float stage) {
         auto &p = *painter_;
-        const auto &t = frame_theme_;
+        ui::Theme mixed = frame_theme_.mix(stage_theme_, stage);
+        const auto &saved = ui_.use_theme(mixed);
+        const auto &t = mixed;
         ui::Rect r = bar;
         if (window_->client_side()) {
             ui::Rect ctl = ui::cut_right(r, 3 * 36 + 2 * 4 + 16);
@@ -373,17 +391,19 @@ namespace lyren {
             }
             float name_w = p.measure("Lyren", {.size = t.fs(15)});
             ui::Rect mark = ui::cut_left(r, 60 + name_w);
-            p.icon("disc-3", {mark.x + 20, bar.y + (bar.h - 20) / 2, 20, 20}, t.accent);
-            p.text_in({mark.x + 48, bar.y, name_w, bar.h}, "Lyren", {.size = t.fs(15), .color = window_->activated() ? t.text : t.text_dim});
+            float shown = 1 - stage;
+            p.icon("disc-3", {mark.x + 20, bar.y + (bar.h - 20) / 2, 20, 20}, t.accent.with_alpha(shown));
+            p.text_in({mark.x + 48, bar.y, name_w, bar.h}, "Lyren", {.size = t.fs(15), .color = (window_->activated() ? t.text : t.text_dim).with_alpha(shown)});
         } else {
             ui::cut_left(r, 8);
         }
         shell_.top_bar(ui_, r, bar.w / 2);
+        ui_.use_theme(saved);
     }
 
     bool App::window_button(ui::Id id, ui::Rect r, std::string_view icon, float size, bool close) {
         auto &p = *painter_;
-        const auto &t = frame_theme_;
+        const auto &t = ui_.theme();
         auto it = ui_.interact(id, r);
         float hot = ui_.anim(id, it.hovered ? 1 : 0, 150);
         bool down = it.held && it.hovered;
@@ -508,11 +528,9 @@ namespace lyren {
         for (int pass = 0; pass < 2; ++pass) {
             atlas_->begin_frame();
             painter_->begin(static_cast<float>(lyrics_->scale()), 0, 0);
-            lyrics_theme_ = theme_;
+            // Desktop lyrics sit over any wallpaper: light on dark, like the stage.
             bool accent_moving = false;
-            if (theme_.auto_accent) {
-                lyrics_theme_.accent = shell_.accent(now, theme_.dark, accent_moving);
-            }
+            lyrics_theme_ = theme_.stage(theme_.auto_accent ? shell_.accent(now, true, accent_moving) : theme_.accent);
             lyrics_ui_.begin(*painter_, lyrics_theme_, w, h, now, lyrics_input_);
             if (accent_moving) {
                 lyrics_ui_.keep_animating();

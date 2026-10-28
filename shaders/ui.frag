@@ -63,6 +63,8 @@ void main() {
         float cov = clamp(0.5 - d, 0.0, 1.0);
         if ((p.info.z & FLAG_GRADIENT) != 0u) {
             o = mix(p.color, p.color2, clamp(local.y / p.rect.w + 0.5, 0.0, 1.0)) * cov;
+        } else if ((p.info.z & FLAG_HGRADIENT) != 0u) {
+            o = mix(p.color, p.color2, clamp(local.x / p.rect.z + 0.5, 0.0, 1.0)) * cov;
         } else if (p.params.x > 0.0) {
             float inner = clamp(0.5 - d - p.params.x, 0.0, 1.0);
             o = p.color * inner + p.color2 * (cov - inner);

@@ -9,6 +9,7 @@ const uint KIND_ARC = 4u;
 const uint KIND_WAVE = 5u;
 const uint FLAG_GRADIENT = 1u;
 const uint FLAG_CUTOUT = 2u;
+const uint FLAG_HGRADIENT = 4u;
 
 struct Prim {
     vec4 rect;   // x, y, w, h in buffer pixels

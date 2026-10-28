@@ -118,6 +118,8 @@ add_library(
     src/app/state.cpp
     src/app/shell.cpp
     src/app/settings.cpp
+    src/app/stage.cpp
+    src/app/panel.cpp
     src/app/desktop.cpp)
 target_link_libraries(lyren_lib PUBLIC lyren_base PkgConfig::SYSLIBS PkgConfig::UILIBS PkgConfig::SDBUS vulkan_headers nanosvg)
 add_wayland_protocols(

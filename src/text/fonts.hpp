@@ -30,6 +30,7 @@ namespace lyren::text {
         hb_font_t *hb = nullptr;
         float upem = 1000;
         float ascender = 0.8f, descender = 0.2f; // in em
+        bool color = false;                      // colour bitmaps (emoji), which have their own atlas
     };
 
     class Fonts {
@@ -40,8 +41,9 @@ namespace lyren::text {
         Fonts(const Fonts &) = delete;
         Fonts &operator=(const Fonts &) = delete;
 
-        // First face in the chain that covers cp (0 when none does).
-        uint16_t face_for(char32_t cp) const;
+        // First face in the chain that covers cp (0 when none does). emoji: cp is shown as an emoji, which the colour
+        // face takes when it covers it.
+        uint16_t face_for(char32_t cp, bool emoji = false) const;
         // Opens the face on first use.
         Face &face(uint16_t i);
         // Drops the mapped font pages from this process's RSS; they stay in the page cache.
@@ -51,6 +53,7 @@ namespace lyren::text {
         void open(Face &f);
         FT_Library ft_ = nullptr;
         std::vector<Face> faces_;
+        int color_ = -1; // the colour emoji face
     };
 
 } // namespace lyren::text

@@ -9,10 +9,11 @@ namespace lyren::ui {
         float operator()(float t) const;
     };
 
-    // Critically damped motion: response is the time to cover 99% of a step, in seconds.
+    // Spring motion: response is the time to cover 99% of a step, in seconds. With bounce (0..1) it overshoots a
+    // little and settles back; 0 is critically damped.
     struct Spring {
         float value = 0, velocity = 0;
-        void advance(float target, float dt, float response);
+        void advance(float target, float dt, float response, float bounce = 0);
     };
 
     namespace ease {

@@ -4,12 +4,22 @@
 
 namespace lyren::ui {
 
-    void Spring::advance(float target, float dt, float response) {
+    void Spring::advance(float target, float dt, float response, float bounce) {
         float omega = 6.64f / response;
-        float offset = value - target, carry = velocity + omega * offset;
-        float decay = std::exp(-omega * dt);
-        value = target + (offset + carry * dt) * decay;
-        velocity = (velocity - omega * carry * dt) * decay;
+        float offset = value - target;
+        if (bounce <= 0) {
+            float carry = velocity + omega * offset;
+            float decay = std::exp(-omega * dt);
+            value = target + (offset + carry * dt) * decay;
+            velocity = (velocity - omega * carry * dt) * decay;
+            return;
+        }
+        // Underdamped: the same decay rate, ringing at the damped frequency.
+        float zeta = 1 - bounce, natural = omega / zeta, rate = zeta * natural, freq = natural * std::sqrt(1 - zeta * zeta);
+        float b = (velocity + rate * offset) / freq;
+        float decay = std::exp(-rate * dt), c = std::cos(freq * dt), s = std::sin(freq * dt);
+        value = target + decay * (offset * c + b * s);
+        velocity = decay * ((b * freq - rate * offset) * c - (offset * freq + rate * b) * s);
     }
 
     float Bezier::operator()(float x) const {

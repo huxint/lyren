@@ -102,12 +102,13 @@ namespace lyren {
                 // Network thread: decode here so the loop thread only uploads.
                 gfx::Image img;
                 std::string error = std::move(r.error);
-                float hue = -1;
+                float hue = -1, luma = 0;
                 if (error.empty() && r.status == 200) {
                     img = gfx::decode_square({reinterpret_cast<const uint8_t *>(r.body.data()), r.body.size()}, blurred ? 96 : px, error);
                     if (img.w) {
                         gfx::Image small = gfx::downscale(img, blur_px, blur_px);
                         hue = gfx::dominant_hue(small);
+                        luma = gfx::mean_luma(small);
                         if (blurred) {
                             gfx::blur(small, 5);
                             img = std::move(small);
@@ -116,7 +117,7 @@ namespace lyren {
                 } else if (error.empty()) {
                     error = std::format("HTTP {}", r.status);
                 }
-                loop_.post([this, key = std::move(key), img = std::move(img), hue, error = std::move(error)] {
+                loop_.post([this, key = std::move(key), img = std::move(img), hue, luma, error = std::move(error)] {
                     --in_flight_;
                     auto it = entries_.find(key);
                     if (it != entries_.end() && it->second.used + 2 < frame_) {
@@ -131,6 +132,7 @@ namespace lyren {
                             e.ready = true;
                             e.ready_at = now_();
                             e.hue = hue;
+                            e.luma = luma;
                             e.bytes = img.px.size();
                             bytes_ += e.bytes;
                         } else {

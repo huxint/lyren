@@ -147,6 +147,12 @@ namespace lyren::ui {
         const Theme &theme() const {
             return *theme_;
         }
+        // Widgets drawn until it is set back use t (the stage lit by the cover); returns the theme to restore.
+        const Theme &use_theme(const Theme &t) {
+            const Theme &old = *theme_;
+            theme_ = &t;
+            return old;
+        }
         double now = 0;
         float width = 0, height = 0;
         float toast_bottom = 24; // distance of the toast stack from the bottom edge
@@ -186,6 +192,9 @@ namespace lyren::ui {
         // interact before its parent; parents can draw their hover state with hovering() first.
         Interaction interact(Id id, Rect r);
         bool hovering(Rect r) const;
+        // The pointer is over r, even while a widget is held: for a surface that has to stay put while its buttons are
+        // pressed.
+        bool pointing(Rect r) const;
         bool is_active(Id id) const {
             return active_ == id;
         }
@@ -198,8 +207,14 @@ namespace lyren::ui {
 
         // Eased value that follows target over ms (scaled by theme motion). The first call returns target.
         float anim(Id id, float target, float ms = 160, Bezier curve = ease::standard);
-        // Position and velocity stay continuous when retargeted. response_ms reaches 99% of a step.
-        float spring(Id id, float target, float response_ms = 280);
+        // Position and velocity stay continuous when retargeted. response_ms reaches 99% of a step; bounce (0..1)
+        // overshoots a little.
+        float spring(Id id, float target, float response_ms = 280, float bounce = 0);
+        // A spring's value as of its last call, or fallback before the first.
+        float spring_value(Id id, float fallback) const {
+            auto it = springs_.find(id);
+            return it == springs_.end() ? fallback : it->second.motion.value;
+        }
         // Eased 0..1 for a transition that started at the given time.
         float progress(double since, float ms, Bezier curve = ease::emphasized);
         void keep_animating() {
@@ -227,6 +242,8 @@ namespace lyren::ui {
         bool slider(Id id, Rect r, float &value, SliderStyle style = {});
         bool tabs(Id id, Rect r, std::span<const std::string_view> labels, int &selected, TabStyle style = TabStyle::underline);
         bool toggle(Id id, Rect r, bool &on);
+        // Equal segments under a thumb that glides to the selected one; -1 selects none. True when one is picked.
+        bool segmented(Id id, Rect r, std::span<const std::string_view> labels, int &selected);
         void spinner(Rect r, Color color, float thickness = 2);
         void label(Rect r, std::string_view s, const TextStyle &style, Align align = Align::left);
 
@@ -234,7 +251,12 @@ namespace lyren::ui {
         // draws the scrollbar. Wheel scrolling is smoothed, touchpad scrolling keeps its momentum.
         float begin_scroll(Id id, Rect viewport, float content_height);
         void end_scroll();
-        void scroll_to(Id id, float offset);
+        // smooth: glide there like the wheel does.
+        void scroll_to(Id id, float offset, bool smooth = false);
+        float scroll_offset(Id id) const {
+            auto it = scrolls_.find(id);
+            return it == scrolls_.end() ? 0 : it->second.offset;
+        }
 
         void open_menu(float x, float y, std::vector<MenuItem> items);
         bool menu_open() const {

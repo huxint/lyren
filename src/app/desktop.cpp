@@ -1,39 +1,42 @@
 #include "app/shell.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <numbers>
 #include <utility>
 
+#include "app/draw.hpp"
 #include "core/i18n.hpp"
 
+// Desktop lyrics on their own layer surface: a floating line near the bottom of the screen, or the Dynamic Island at the
+// top. The settings page draws both as live previews.
 namespace lyren {
-    namespace {
-        constexpr ui::Color white{1, 1, 1, 1};
-        constexpr float toolbar_height = 40;
 
-        struct Fade {
-            ui::Painter &p;
-            float previous;
-            Fade(ui::Painter &painter, float alpha)
-            : p(painter),
-              previous(p.alpha()) {
-                p.set_alpha(previous * alpha);
-            }
-            ~Fade() {
-                p.set_alpha(previous);
-            }
-        };
+    using ui::Rect;
+    namespace ease = ui::ease;
+
+    namespace {
+        constexpr ui::Color white{1, 1, 1, 1}, ink{0.03f, 0.03f, 0.035f, 1};
+        constexpr float toolbar_height = 44, tau = 2 * std::numbers::pi_v<float>;
+        constexpr float island_surface = 264; // the open card and its shadow
+        constexpr double lead = 0.2;          // a line lights up a little early, with the voice rather than after it
 
         float reveal(float value, float from, float to) {
-            const float t = std::clamp((value - from) / (to - from), 0.f, 1.f);
-            return t * t * (3 - 2 * t);
+            return smooth01((value - from) / (to - from));
+        }
+
+        // A level meter that dances while the music plays: each bar mixes two slow waves.
+        float level(double now, int bar) {
+            auto b = static_cast<double>(bar);
+            double a = 0.5 + 0.5 * std::sin(now * (6.1 + 1.9 * b) + 1.3 * b), c = 0.5 + 0.5 * std::sin(now * (3.7 + 1.1 * b) + 2.6 * b);
+            return static_cast<float>(0.2 + 0.8 * a * c);
         }
     } // namespace
 
     float Shell::desktop_height(float size) const {
         if (dl_island_) {
-            const auto &options = config_.desktop_lyrics.island;
-            return options.details ? 196 : options.controls || options.volume ? 156 : 96;
+            return island_surface;
         }
         return toolbar_height + std::round(size * 1.35f) + std::round(size * 0.58f * 1.35f) + 12;
     }
@@ -44,11 +47,13 @@ namespace lyren {
         desktop_changed_();
     }
 
-    void Shell::toggle_desktop_mode() {
-        dl_island_ = !dl_island_;
-        dl_locked_ = dl_dragging_ = false;
-        changed();
-        desktop_changed_();
+    void Shell::set_desktop_island(bool island) {
+        if (dl_island_ != island) {
+            dl_island_ = island;
+            dl_locked_ = dl_dragging_ = false;
+            changed();
+            desktop_changed_();
+        }
     }
 
     void Shell::toggle_translation() {
@@ -58,234 +63,341 @@ namespace lyren {
         redraw_();
     }
 
-    ui::Rect Shell::desktop_lyrics(ui::Ui &ui, float width, float height) {
-        using ui::Rect;
-        auto &p = ui.painter();
-        const auto &theme = ui.theme();
-        const Track *track = current();
-        const double elapsed = position();
-        const double now = clip_start_ + elapsed;
-        constexpr double lead = 0.2;
-        const int current_line = lyric_at(lyrics_, now + lead);
-        const LyricLine *line = current_line >= 0 ? &lyrics_[static_cast<size_t>(current_line)] : nullptr;
-        const std::string_view text = line ? line->text : track ? track->title : tr("Nothing playing");
-        const std::string_view below = dl_island_ ? std::string_view{}
-                                       : line     ? (lyric_translation_ ? std::string_view(line->translation) : std::string_view{})
-                                       : track    ? track->artist
-                                                  : std::string_view{};
-        const bool timed = line && !line->words.empty();
-        if (text != dl_line_.text || below != dl_line_.sub || timed != dl_line_.timed) {
-            dl_prev_ = std::exchange(dl_line_, {std::string(text), std::string(below), timed});
-            dl_changed_ = ui.now;
+    float Shell::show_line(ui::Ui &ui, LineChange &c, std::string_view text, std::string_view sub, bool timed) {
+        if (text != c.shown.text || sub != c.shown.sub || timed != c.shown.timed) {
+            c.prev = std::exchange(c.shown, {std::string(text), std::string(sub), timed});
+            c.prev_since = c.since, c.since = ui.now;
         }
-        const float change = ui.progress(dl_changed_, 300, ui::ease::standard);
-        auto schedule = [&] {
-            if (!playing()) {
-                return;
-            }
-            if (timed) {
-                ui.keep_animating();
-            } else if (const size_t next = static_cast<size_t>(current_line + 1); next < lyrics_.size()) {
-                ui.wake(ui.now + lyrics_[next].time - lead - now);
+        return ui.progress(c.since, 360, ease::standard);
+    }
+
+    void Shell::lyric_frames(ui::Ui &ui, int line, bool timed) {
+        if (!playing()) {
+            return;
+        }
+        if (timed) {
+            ui.keep_animating();
+        } else if (const auto next = static_cast<size_t>(line + 1); next < lyrics_.size()) {
+            ui.wake(ui.now + lyrics_[next].time - lead - (clip_start_ + position()));
+        }
+    }
+
+    Rect Shell::desktop_lyrics(ui::Ui &ui, float width, float height) {
+        return dl_island_ ? island(ui, width / 2, 8) : floating(ui, width, height);
+    }
+
+    Rect Shell::island(ui::Ui &ui, float center, float top) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const auto &options = config_.desktop_lyrics.island;
+        const bool art = options.cover, ring = art && options.progress;
+        const Track *track = current();
+        const double elapsed = position(), now = clip_start_ + elapsed;
+        const int at = lyric_at(lyrics_, now + lead);
+        const LyricLine *line = at >= 0 ? &lyrics_[static_cast<size_t>(at)] : nullptr;
+        const std::string_view text = line ? std::string_view(line->text) : track ? std::string_view(track->title) : lyren::tr("Nothing playing");
+        const bool timed = line && !line->words.empty();
+        const float change = show_line(ui, island_line_, text, {}, timed);
+        const double duration = player_.duration() > 0 ? player_.duration() : track ? track->duration : 0;
+        const float done = duration > 0 ? static_cast<float>(std::clamp(elapsed / duration, 0.0, 1.0)) : 0;
+
+        // Closed it is a pill: the cover in its progress ring, the line being sung and a level meter. While the pointer
+        // rests on it, it opens into a card with the track, the whole line, progress and controls.
+        constexpr float pill_h = 40, line_size = 14, open_w = 400, pad = 18;
+        const float left = art ? 46.f : 20.f, right = 42;
+        const float text_w = p.measure(text, {.size = line_size});
+        const float pill_w = ui.spring(ui.id("island-w"), std::clamp(left + text_w + right, 230.f, 460.f), 420, 0.2f);
+        const auto lines = wrap(p, text, 16, open_w - 2 * pad);
+        const size_t shown_lines = std::min(lines.size(), size_t{2});
+        const float head_h = art ? 52.f : 40.f, lines_h = static_cast<float>(shown_lines) * 23;
+        const float open_h = pad + head_h + 14 + lines_h + 16 + 14 + 12 + 40 + 16;
+        const Rect pill{center - pill_w / 2, top, pill_w, pill_h};
+        const Rect card{center - open_w / 2, top, open_w, open_h};
+
+        const float was = std::clamp(ui.spring_value(ui.id("island-open"), 0), 0.f, 1.f);
+        // Pressing one of its buttons still counts as pointing at it, so it stays open for the click.
+        const bool pointed = ui.pointing(mix(pill, card, was).inset(-2)) || island_dragging_;
+        // It opens once the pointer rests on it, so passing over it on the way to something else leaves it be, and
+        // closes a moment after the pointer leaves, so slipping past its edge does not.
+        const float rest = ui.anim(ui.id("island-rest"), pointed ? 1 : 0, pointed ? 220 : 180, ease::linear);
+        const bool opened = rest >= 1 || (rest > 0 && was > 0.5f);
+        const float k = ui.spring(ui.id("island-open"), opened ? 1 : 0, 440, 0.24f);
+        const float open = std::clamp(k, 0.f, 1.f);
+        const Rect panel = mix(pill, card, k);
+        const float radius = std::lerp(pill_h / 2, 28.f, open);
+        p.shadow({panel.x, panel.y + 6, panel.w, panel.h}, radius, 22, {0, 0, 0, 0.28f + 0.1f * open});
+        p.rect(panel, ink.with_alpha(0.97f), radius);
+        p.rect(panel.inset(0.5f), {}, radius, white.with_alpha(0.05f), 1);
+
+        const float closed_a = 1 - reveal(open, 0.04f, 0.4f), open_a = reveal(open, 0.38f, 0.9f);
+        const float live = ui.anim(ui.id("island-live"), playing() ? 1 : 0, 420);
+        auto meter = [&](float cx, float cy, float alpha) {
+            for (int i = 0; i < 4; ++i) {
+                float h = 3 + 11 * live * level(ui.now, i);
+                p.rect({cx - 8.75f + 5 * static_cast<float>(i), cy - h / 2, 2.5f, h}, t.accent.with_alpha(alpha), 1.25f);
             }
         };
-        auto button = [&](std::string_view name, Rect rect, std::string_view icon, bool active = false, bool primary = false) {
-            const auto id = ui.id(name);
-            const auto interaction = ui.interact(id, rect);
-            if (interaction.hovered) {
+        if (live > 0 && playing()) {
+            ui.keep_animating();
+        }
+
+        // The cover travels from the pill into the card's corner, a disc becoming a rounded square.
+        if (art) {
+            const Rect small = ring ? Rect{pill.x + 8, top + 8, 24, 24} : Rect{pill.x + 7, top + 7, 26, 26};
+            const Rect big{card.x + pad, card.y + pad, 52, 52};
+            const Rect a = mix(small, big, open);
+            const float r = std::lerp(a.w / 2, 12.f, open);
+            if (track) {
+                cover(ui, a, track->cover, r, "music");
+            } else {
+                p.rect(a, white.with_alpha(0.08f), r);
+                p.icon("music", ui::center(a, a.w * 0.5f, a.w * 0.5f), white.with_alpha(0.6f));
+            }
+            if (ring && closed_a > 0) {
+                Fade fade(p, closed_a);
+                const float shown = ui.spring(ui.id("island-progress"), done, 260);
+                p.arc(a.inset(-4), 2, 0, tau, white.with_alpha(0.14f));
+                p.arc(a.inset(-4), 2, 0, tau * shown, t.accent);
+            }
+            const auto press = ui.interact(ui.id("island-artwork"), a.inset(-4));
+            if (press.hovered && track && open < 0.5f) {
                 ui.cursor = wl::Cursor::pointer;
+                p.rect(a, {0, 0, 0, 0.35f}, r);
+                p.icon(playing() ? "pause-fill" : "play-fill", ui::center(a, 12, 12), white);
             }
-            const float hot = ui.anim(id, interaction.hovered ? 1 : 0, 150);
-            const float down = ui.anim(ui::sub_id(id, 1), interaction.held ? 1 : 0, 100);
-            const Rect face = rect.inset(down * 1.5f);
-            p.rect(face, primary ? white.with_alpha(0.94f) : white.with_alpha((active ? 0.14f : 0) + 0.1f * hot), face.h / 2);
-            p.icon(icon, ui::center(face, primary ? 15.f : 16.f, primary ? 15.f : 16.f), primary ? ui::Color{0.04f, 0.04f, 0.05f, 1} : white.with_alpha(0.7f + 0.3f * hot));
-            return interaction.clicked;
-        };
-        auto primary_text = [&](std::string_view value, const LyricLine *live, float x, float baseline, float size, float max_width, ui::Color color, ui::Color unsung) {
-            if (live && !live->words.empty()) {
+            if (press.clicked && track && open < 0.5f) {
+                toggle_play();
+            }
+        }
+
+        // The line, sung words bright: in the pill it slides along under the voice when it is too long to fit.
+        auto sung = [&](std::string_view value, float x, float baseline, float size, float limit) {
+            if (line && timed) {
                 const float soft = size * 0.7f;
-                p.set_wipe(x + sung_x(p, *live, value, size, soft, now), soft, unsung);
+                p.set_wipe(x + sung_x(p, *line, value, size, soft, now), soft, white.with_alpha(0.42f));
             }
-            p.text(x, baseline, value, {.size = size, .color = color}, max_width);
+            p.text(x, baseline, value, {.size = size, .color = white.with_alpha(0.96f)}, limit);
             p.clear_wipe();
         };
-
-        if (dl_island_) {
-            const auto &options = config_.desktop_lyrics.island;
-            const bool show_art = options.cover || options.progress;
-            const bool extras = options.details || options.controls || options.volume;
-            constexpr float compact_size = 16, expanded_size = 18;
-            const float center = width / 2;
-            const float limit = std::min(560.f, width - 48);
-            const float compact_target = std::clamp(p.measure(text, {.size = compact_size}) + (show_art ? 82 : 36), show_art ? 264.f : 220.f, std::min(400.f, limit));
-            const float text_left = show_art ? (extras ? 80.f : 70.f) : 20.f;
-            const float text_right = extras ? 18.f : 82.f;
-            const float expanded_width = extras ? std::min(500.f, limit) : std::clamp(p.measure(text, {.size = expanded_size}) + text_left + text_right + 1, compact_target, limit);
-            const float compact_width = ui.spring(ui.id("island-content-width"), compact_target, 320);
-            constexpr float compact_height = 54;
-            const bool hovered = ui.hovering({center - expanded_width / 2, 2, expanded_width, height - 4});
-            const float open = std::clamp(ui.spring(ui.id("island-open"), hovered ? 1 : 0, 340), 0.f, 1.f);
-            const float text_width = expanded_width - text_left - text_right;
-            const auto main_lines = wrap(p, text, expanded_size, text_width);
-            const float lines_height = static_cast<float>(std::min(main_lines.size(), size_t{2})) * 23;
-            const float details_height = options.details && track ? 42 : 0;
-            const float expanded_height = extras ? 18 + std::max(show_art ? 48.f : 0.f, lines_height + details_height) + 50 : std::max(compact_height, lines_height + 20);
-            const float panel_width = std::lerp(compact_width, expanded_width, open);
-            const float panel_height = std::lerp(compact_height, expanded_height, open);
-            const Rect panel{center - panel_width / 2, 2, panel_width, panel_height};
-            const float radius = std::min(std::lerp(compact_height / 2, 30.f, open), panel_height / 2);
-            p.shadow({panel.x, panel.y + 6, panel.w, panel.h}, radius, 20, {0, 0, 0, 0.25f});
-            p.rect(panel, {0.018f, 0.02f, 0.025f, 0.98f}, radius);
-            p.rect(panel.inset(0.5f), {}, radius, white.with_alpha(0.045f), 1);
-
-            const float art_size = std::lerp(34.f, extras ? 48.f : 38.f, open);
-            const Rect artwork{panel.x + std::lerp(10.f, 18.f, open), panel.y + (extras ? std::lerp((compact_height - 34) / 2, 18.f, open) : (panel_height - art_size) / 2),
-                               art_size, art_size};
-            if (show_art) {
-                if (options.cover && track) {
-                    cover(ui, artwork, track->cover, art_size / 2, "music");
-                } else {
-                    p.rect(artwork, white.with_alpha(0.07f), art_size / 2);
-                    p.icon("music", ui::center(artwork, 18, 18), white.with_alpha(0.7f));
+        if (closed_a > 0) {
+            Fade fade(p, closed_a);
+            const float x = pill.x + left, avail = pill.right() - right - x;
+            const Rect area{x, pill.y, avail, pill_h};
+            ui.push_clip(area);
+            auto slide = [&](std::string_view value, double since, bool current) {
+                const float overflow = p.measure(value, {.size = line_size}) - avail;
+                if (overflow <= 0) {
+                    return 0.f;
                 }
-                if (options.progress) {
-                    const double duration = player_.duration() > 0 ? player_.duration() : track ? track->duration : 0;
-                    const float progress = ui.spring(ui.id("island-progress"), duration > 0 ? static_cast<float>(elapsed / duration) : 0, 260);
-                    const Rect ring = artwork.inset(-3);
-                    p.arc(ring, 1.5f, 0, 6.283185f, white.with_alpha(0.12f));
-                    p.arc(ring, 1.8f, 0, 6.283185f * std::clamp(progress, 0.f, 1.f), theme.accent.mix(white, 0.65f));
-                    if (playing()) {
-                        ui.keep_animating();
-                    }
+                float target = 0;
+                if (current && line && timed) {
+                    target = std::clamp(sung_x(p, *line, value, line_size, 8, now) - avail * 0.6f, 0.f, overflow);
+                } else if (current && line) {
+                    const double from = line->time, to = static_cast<size_t>(at + 1) < lyrics_.size() ? lyrics_[static_cast<size_t>(at + 1)].time : from + 5;
+                    target = overflow * smooth01((static_cast<float>((now + lead - from) / std::max(to - from, 0.5)) - 0.15f) / 0.6f);
                 }
-                const auto artwork_action = ui.interact(ui.id("island-artwork"), artwork.inset(-3));
-                if (artwork_action.hovered && track) {
-                    ui.cursor = wl::Cursor::pointer;
-                    p.rect(artwork, {0, 0, 0, 0.3f}, art_size / 2);
-                    p.icon(playing() ? "pause-fill" : "play-fill", ui::center(artwork, 14, 14), white);
-                }
-                if (artwork_action.clicked && track) {
-                    toggle_play();
-                }
+                return ui.spring(ui::sub_id(ui.id("island-slide"), std::bit_cast<uint64_t>(since)), target, 700);
+            };
+            const float baseline = pill.y + 25;
+            if (change < 1) {
+                Fade old(p, 1 - change);
+                const float shift = slide(island_line_.prev.text, island_line_.prev_since, false);
+                p.text(x - shift, baseline - 7 * change, island_line_.prev.text, {.size = line_size, .color = white.with_alpha(0.96f)});
             }
-            ui.push_clip(panel.inset(3));
-            const float compact_alpha = 1 - reveal(open, 0.12f, 0.6f);
-            if (compact_alpha > 0) {
-                Fade compact(p, compact_alpha);
-                const float x = show_art ? artwork.right() + 12 : panel.x + 18;
-                const float available = panel.right() - x - 18;
-                const float baseline = panel.y + 33;
-                if (change < 1) {
-                    Fade old(p, 1 - change);
-                    p.text(x, baseline - 6 * change, dl_prev_.text, {.size = compact_size, .color = white.with_alpha(0.94f)}, available);
+            {
+                Fade incoming(p, change);
+                const float shift = slide(text, island_line_.since, true);
+                sung(text, x - shift, baseline + 7 * (1 - change), line_size, 1e9f);
+                // Soft edges where the line runs on past the pill.
+                if (shift > 0.5f) {
+                    p.hgradient({x, pill.y, 16, pill_h}, ink, ink.with_alpha(0));
                 }
-                {
-                    Fade incoming(p, change);
-                    primary_text(text, line, x, baseline + 6 * (1 - change), compact_size, available, white.with_alpha(0.96f), white.with_alpha(0.45f));
-                }
-            }
-            const float expanded_alpha = reveal(open, 0.3f, 0.88f);
-            if (expanded_alpha > 0) {
-                Fade expanded(p, expanded_alpha);
-                const float x = show_art ? artwork.right() + 14 : panel.x + 20;
-                const float available = panel.right() - x - (extras ? 18 : 82);
-                float baseline = panel.y + (extras || main_lines.size() == 1 ? 34 : 27) + 5 * (1 - open);
-                if (options.details && track) {
-                    p.text(x, baseline - 2, track->title, {.size = 13, .color = white.with_alpha(0.84f)}, available);
-                    p.text(x, baseline + 15, track->artist, {.size = 11, .color = white.with_alpha(0.45f)}, available);
-                    baseline += 42;
-                }
-                for (size_t i = 0; i < std::min(main_lines.size(), size_t{2}); ++i) {
-                    auto value = main_lines[i];
-                    if (i == 1 && main_lines.size() > 2) {
-                        value = text.substr(static_cast<size_t>(value.data() - text.data()));
-                    }
-                    Fade incoming(p, change);
-                    primary_text(value, line, x, baseline, expanded_size, available, white.with_alpha(0.96f), white.with_alpha(0.45f));
-                    baseline += 23;
-                }
-                const float controls_y = extras ? panel.bottom() - 42 : panel.y + (panel.h - 32) / 2;
-                const float mode_x = options.controls || options.volume ? panel.x + 14 : panel.right() - 76;
-                if (button("island-mode", {mode_x, controls_y + 2, 28, 28}, "move")) {
-                    toggle_desktop_mode();
-                }
-                if (options.controls) {
-                    ui.disabled = track == nullptr;
-                    if (button("island-previous", {center - 59, controls_y + 3, 28, 28}, "skip-back")) {
-                        skip(-1);
-                    }
-                    if (button("island-play", {center - 17, controls_y, 34, 34}, playing() ? "pause-fill" : "play-fill", false, true)) {
-                        toggle_play();
-                    }
-                    if (button("island-next", {center + 31, controls_y + 3, 28, 28}, "skip-forward")) {
-                        skip(1);
-                    }
-                    ui.disabled = false;
-                }
-                if (options.volume) {
-                    const Rect volume{panel.x + 60, controls_y + 4, 76, 24};
-                    const auto interaction = ui.interact(ui.id("island-volume"), volume);
-                    if (interaction.pressed || interaction.held) {
-                        volume_ = std::clamp((ui.input().x - volume.x) / volume.w, 0.f, 1.f);
-                        muted_ = false;
-                        apply_volume();
-                        changed();
-                    }
-                    const float value = muted_ ? 0 : volume_;
-                    p.rect({volume.x, volume.y + 11, volume.w, 2}, white.with_alpha(0.15f), 1);
-                    p.rect({volume.x, volume.y + 11, volume.w * value, 2}, white.with_alpha(0.8f), 1);
-                    if (interaction.hovered || interaction.held) {
-                        p.rect({volume.x + volume.w * value - 3, volume.y + 9, 6, 6}, white, 3);
-                    }
-                }
-                if (button("island-close", {panel.right() - 42, controls_y + 2, 28, 28}, "x")) {
-                    set_desktop_enabled(false);
+                if (text_w - shift > avail + 0.5f) {
+                    p.hgradient({x + avail - 16, pill.y, 16, pill_h}, ink.with_alpha(0), ink);
                 }
             }
             ui.pop_clip();
-            schedule();
-            return panel;
+            meter(pill.right() - 22, pill.y + pill_h / 2, closed_a);
         }
 
-        const bool translated = std::ranges::any_of(lyrics_, [](const LyricLine &lyric) {
-            return !lyric.translation.empty();
+        if (open_a > 0) {
+            Fade fade(p, open_a);
+            ui.disabled = open_a < 0.6f;
+            const float x = art ? card.x + pad + 52 + 14 : card.x + pad, tw = card.right() - pad - 30 - x;
+            const float head_y = card.y + pad + (art ? 6.f : 0.f);
+            p.text(x, head_y + 15, track ? std::string_view(track->title) : std::string_view("Lyren"), {.size = 15, .color = white.with_alpha(0.95f)}, tw);
+            p.text(x, head_y + 35, track ? std::string_view(track->artist) : lyren::tr("Nothing playing"), {.size = 12.5f, .color = white.with_alpha(0.55f)}, tw);
+            meter(card.right() - pad - 9, head_y + 12, 1);
+
+            float baseline = card.y + pad + head_h + 14 + 17;
+            for (size_t i = 0; i < shown_lines; ++i) {
+                std::string_view value = lines[i];
+                if (i == 1 && lines.size() > 2) {
+                    value = text.substr(static_cast<size_t>(value.data() - text.data()));
+                }
+                Fade incoming(p, change);
+                sung(value, card.x + pad, baseline + 5 * (1 - change), 16, card.w - 2 * pad);
+                baseline += 23;
+            }
+
+            // Progress: drag to preview, release to seek.
+            const float py = card.y + pad + head_h + 14 + lines_h + 16;
+            const ui::TextStyle times{.size = 11, .color = white.with_alpha(0.5f), .features = text::tabular_nums};
+            const Rect bar{card.x + pad + 42, py, card.w - 2 * pad - 84, 14};
+            ui.disabled = ui.disabled || !track;
+            float v = island_dragging_ ? island_drag_v_ : done;
+            if (ui.slider(ui.id("island-seek"), bar, v) || ui.is_active(ui.id("island-seek"))) {
+                island_dragging_ = true, island_drag_v_ = v;
+            }
+            if (island_dragging_ && !ui.is_active(ui.id("island-seek"))) {
+                island_dragging_ = false;
+                seek(island_drag_v_ * duration);
+            }
+            auto clock = [](double s) {
+                const int v = static_cast<int>(std::max(0.0, s));
+                return std::format("{}:{:02}", v / 60, v % 60);
+            };
+            ui.label({card.x + pad, py, 38, 14}, clock(island_dragging_ ? island_drag_v_ * duration : elapsed), times);
+            ui.label({bar.right() + 4, py, 38, 14}, clock(duration), times, ui::Align::right);
+
+            // Controls: the floating mode and hiding on the sides, the transport in the middle.
+            const float cy = py + 14 + 12 + 20;
+            auto button = [&](std::string_view name, Rect b, std::string_view icon, bool primary = false) {
+                const auto id = ui.id(name);
+                const auto it = ui.interact(id, b);
+                const float hot = ui.anim(id, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(id, 0xd0), it.held ? 1 : 0, 90);
+                const Rect face = b.inset(down * 1.5f);
+                p.rect(face, primary ? white.with_alpha(0.95f) : white.with_alpha(0.1f * hot), face.h / 2);
+                const float s = primary ? 16 : 17;
+                p.icon(icon, ui::center(face, s, s), primary ? ink : white.with_alpha(0.7f + 0.3f * hot));
+                return it.clicked;
+            };
+            if (button("island-previous", {center - 64, cy - 16, 32, 32}, "skip-back")) {
+                skip(-1);
+            }
+            if (button("island-play", {center - 20, cy - 20, 40, 40}, playing() ? "pause-fill" : "play-fill", true)) {
+                toggle_play();
+            }
+            if (button("island-next", {center + 32, cy - 16, 32, 32}, "skip-forward")) {
+                skip(1);
+            }
+            ui.disabled = open_a < 0.6f;
+            if (button("island-floating", {card.x + pad - 6, cy - 16, 32, 32}, "panel-bottom")) {
+                set_desktop_island(false);
+            }
+            if (button("island-hide", {card.right() - pad - 26, cy - 16, 32, 32}, "x")) {
+                set_desktop_enabled(false);
+            }
+            ui.disabled = false;
+        }
+        lyric_frames(ui, at, timed);
+        return panel;
+    }
+
+    void Shell::floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color,
+                              ui::Color rest) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        // Long lines shrink to fit, down to 70%, before they are cut short.
+        const float font = std::max(size * 0.7f, std::min(size, size * max_width / std::max(p.measure(text, {.size = size}), 1.f)));
+        const float x = center - std::min(p.measure(text, {.size = font}), max_width) / 2;
+        // The outline is eight offset copies under the text, so it reads over any wallpaper.
+        const float outline = std::max(1.f, font / 22);
+        for (int i = 0; i < 8; ++i) {
+            const float angle = static_cast<float>(i) * tau / 8;
+            p.text(x + outline * std::cos(angle), baseline + outline * std::sin(angle), text, {.size = font, .color = t.lyric_outline, .silhouette = true}, max_width);
+        }
+        if (live && !live->words.empty()) {
+            const float soft = font * 0.7f;
+            p.set_wipe(x + sung_x(p, *live, text, font, soft, clip_start_ + position()), soft, rest);
+        }
+        p.text(x, baseline, text, {.size = font, .color = color}, max_width);
+        p.clear_wipe();
+    }
+
+    Rect Shell::floating(ui::Ui &ui, float width, float height) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const Track *track = current();
+        const double now = clip_start_ + position();
+        const int at = lyric_at(lyrics_, now + lead);
+        const LyricLine *line = at >= 0 ? &lyrics_[static_cast<size_t>(at)] : nullptr;
+        const std::string_view text = line ? std::string_view(line->text) : track ? std::string_view(track->title) : lyren::tr("Nothing playing");
+        const std::string_view below = line ? (lyric_translation_ ? std::string_view(line->translation) : std::string_view{}) : track ? track->artist : std::string_view{};
+        const bool timed = line && !line->words.empty();
+        const float change = show_line(ui, floating_line_, text, below, timed);
+        const bool translated = std::ranges::any_of(lyrics_, [](const LyricLine &l) {
+            return !l.translation.empty();
         });
-        const float size = theme.lyric_size, sub = std::round(size * 0.58f), line_height = std::round(size * 1.35f);
+
+        const float size = t.lyric_size, sub = std::round(size * 0.58f), line_height = std::round(size * 1.35f);
         const float max_width = width - 64;
-        auto fit = [&](std::string_view value, float base) {
-            return std::max(base * 0.7f, std::min(base, base * max_width / std::max(p.measure(value, {.size = base}), 1.f)));
-        };
-        const float text_width = std::max(p.measure(text, {.size = fit(text, size)}), p.measure(below, {.size = fit(below, sub)}));
-        const float panel_width = ui.spring(ui.id("floating-width"), std::clamp(text_width + 64, 280.f, width - 16), 320);
+        const float text_width = std::max(p.measure(text, {.size = size}), p.measure(below, {.size = sub}));
+        const float panel_width = ui.spring(ui.id("floating-width"), std::clamp(std::min(text_width, max_width) + 64, 360.f, width - 16), 320);
         const float center = std::clamp(width / 2 + dl_x_, panel_width / 2 + 8, width - panel_width / 2 - 8);
         const Rect panel{center - panel_width / 2, 4, panel_width, height - 8};
-        const Rect lock{center - 44, 6, 32, 32};
+        auto button = [&](std::string_view name, Rect rect, std::string_view icon, bool on = false) {
+            const auto id = ui.id(name);
+            const auto it = ui.interact(id, rect);
+            if (it.hovered) {
+                ui.cursor = wl::Cursor::pointer;
+            }
+            const float hot = ui.anim(id, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(id, 1), it.held ? 1 : 0, 100);
+            const Rect face = rect.inset(down * 1.5f);
+            p.rect(face, white.with_alpha((on ? 0.16f : 0) + 0.12f * hot), face.h / 2);
+            p.icon(icon, ui::center(face, 16, 16), white.with_alpha(on ? 1 : 0.72f + 0.28f * hot));
+            return it.clicked;
+        };
+
         Rect input = panel;
+        const Rect lock{center - 16, 6, 32, 32};
         if (dl_locked_) {
+            // Locked, clicks fall through everywhere but the unlock button, which shows when pointed at.
             input = lock;
-            Fade visible(p, ui.anim(ui.id("floating-unlock"), ui.hovering(lock) ? 1 : 0, 150));
-            p.rect(lock, {0, 0, 0, 0.72f}, 16);
+            Fade visible(p, ui.anim(ui.id("floating-unlock"), ui.pointing(lock) ? 1 : 0, 150));
+            p.rect(lock, ink.with_alpha(0.8f), 16);
             if (button("floating-unlock-button", lock, "lock-open")) {
                 dl_locked_ = false;
                 changed();
             }
         } else {
-            const float visible = ui.anim(ui.id("floating-tools"), ui.hovering(panel) || dl_dragging_ ? 1 : 0, 180);
+            const float visible = ui.anim(ui.id("floating-tools"), ui.pointing(panel) || dl_dragging_ ? 1 : 0, 180);
             if (visible > 0) {
+                // The toolbar: the transport, then translation, the island, locking and hiding.
                 Fade tools(p, visible);
-                p.rect({center - 112, 4, 224, 36}, {0.02f, 0.02f, 0.025f, 0.86f}, 18);
-                if (button("floating-mode", {center - 100, 6, 32, 32}, "panel-top")) {
-                    toggle_desktop_mode();
+                const float n = translated ? 7 : 6, bar_w = n * 34 + 26;
+                const Rect bar{center - bar_w / 2, 4, bar_w, 36};
+                p.rect(bar, ink.with_alpha(0.82f), 18);
+                float x = bar.x + 8;
+                auto next_slot = [&](float gap = 0) {
+                    const Rect r{x + gap, 6, 32, 32};
+                    x += 34 + gap;
+                    return r;
+                };
+                ui.disabled = !track;
+                if (button("floating-previous", next_slot(), "skip-back")) {
+                    skip(-1);
                 }
-                if (button("floating-lock", lock, "lock")) {
+                if (button("floating-play", next_slot(), playing() ? "pause-fill" : "play-fill")) {
+                    toggle_play();
+                }
+                if (button("floating-next", next_slot(), "skip-forward")) {
+                    skip(1);
+                }
+                ui.disabled = false;
+                p.rect({x + 4, 14, 1, 16}, white.with_alpha(0.16f));
+                x += 10;
+                if (translated && button("floating-translation", next_slot(), "languages", lyric_translation_)) {
+                    toggle_translation();
+                }
+                if (button("floating-island", next_slot(), "panel-top")) {
+                    set_desktop_island(true);
+                }
+                if (button("floating-lock", next_slot(), "lock")) {
                     dl_locked_ = true;
                     changed();
                 }
-                if (translated && button("floating-translation", {center + 12, 6, 32, 32}, "languages", lyric_translation_)) {
-                    toggle_translation();
-                }
-                if (button("floating-close", {center + 68, 6, 32, 32}, "x")) {
+                if (button("floating-close", next_slot(), "x")) {
                     set_desktop_enabled(false);
                 }
             }
@@ -309,31 +421,25 @@ namespace lyren {
                 changed();
             }
         }
-        const ui::Color sung = theme.lyric_sung.value_or(theme.accent);
+
+        const ui::Color sung = t.lyric_sung.value_or(t.accent);
         auto draw = [&](const ShownLine &shown, const LyricLine *live, float dy, float alpha) {
             Fade fade(p, alpha);
-            auto one = [&](std::string_view value, float base, float baseline, ui::Color color, bool words) {
-                const float font = fit(value, base), x = center - std::min(p.measure(value, {.size = font}), max_width) / 2;
-                const float outline = std::max(1.f, font / 22);
-                for (int i = 0; i < 8; ++i) {
-                    const float angle = static_cast<float>(i) * 0.785398f;
-                    p.text(x + outline * std::cos(angle), baseline + outline * std::sin(angle), value, {.size = font, .color = theme.lyric_outline}, max_width);
-                }
-                primary_text(value, words ? live : nullptr, x, baseline, font, max_width, color, theme.lyric_text);
-            };
             const float top = toolbar_height + dy;
-            one(live && shown.timed ? live->text : shown.text, size, top + line_height * 0.76f, shown.timed ? sung : theme.lyric_text, live && shown.timed);
+            floating_text(ui, center, top + line_height * 0.76f, live && shown.timed ? std::string_view(live->text) : std::string_view(shown.text),
+                          live && shown.timed ? live : nullptr, size, max_width, shown.timed ? sung : t.lyric_text, t.lyric_text);
             if (!shown.sub.empty()) {
-                one(shown.sub, sub, top + line_height + sub * 1.1f, theme.lyric_text.with_alpha(0.85f), false);
+                floating_text(ui, center, top + line_height + sub * 1.1f, shown.sub, nullptr, sub, max_width, t.lyric_text.with_alpha(0.85f), t.lyric_text);
             }
         };
         ui.push_clip({0, toolbar_height - 2, width, height - toolbar_height + 2});
         if (change < 1) {
-            draw(dl_prev_, nullptr, -10 * change, 1 - change);
+            draw(floating_line_.prev, nullptr, -10 * change, 1 - change);
         }
-        draw(dl_line_, line, 10 * (1 - change), change);
+        draw(floating_line_.shown, line, 10 * (1 - change), change);
         ui.pop_clip();
-        schedule();
+        lyric_frames(ui, at, timed);
         return input;
     }
+
 } // namespace lyren

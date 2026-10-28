@@ -36,6 +36,7 @@ namespace lyren::ui {
         float size = 14;
         Color color;
         uint8_t features = 0;
+        bool silhouette = false; // colour glyphs (emoji) take the colour as a solid shape, for outlines
     };
 
     // Turns logical-pixel drawing calls into renderer primitives in buffer pixels. Rectangle edges and text
@@ -59,6 +60,7 @@ namespace lyren::ui {
         void rect(Rect r, Color fill, float radius, Color border, float border_width);
         void rect(Rect r, Color fill, const std::array<float, 4> &radii);
         void gradient(Rect r, Color top, Color bottom, float radius = 0);
+        void hgradient(Rect r, Color left, Color right, float radius = 0);
         void shadow(Rect r, float radius, float blur, Color color, bool cutout = false);
         void icon(std::string_view name, Rect r, Color color);
         // uv selects the part of the texture that fills r.
@@ -81,6 +83,16 @@ namespace lyren::ui {
         }
         float descent(float size) {
             return fonts_.face(0).descender * size;
+        }
+
+        // Primitives drawn while deferring are held back until draw_deferred(), so they land above what is drawn in
+        // between while their widgets still take input first (the title bar over the now-playing stage).
+        void defer(bool on) {
+            deferring_ = on;
+        }
+        void draw_deferred() {
+            prims_.insert(prims_.end(), deferred_.begin(), deferred_.end());
+            deferred_.clear();
         }
 
         void push_clip(Rect r);
@@ -124,12 +136,13 @@ namespace lyren::ui {
         gfx::Prim &emit(gfx::Kind kind, float x0, float y0, float x1, float y1);
         gfx::Prim &emit_zoomed(gfx::Kind kind, float x0, float y0, float w, float h);
         float snap(float v) const;
-        void glyphs(const text::Shaped &shaped, size_t count, float x, float baseline, float size, Color color);
+        void glyphs(const text::Shaped &shaped, size_t count, float x, float baseline, const TextStyle &style);
 
         text::Atlas &atlas_;
         text::Shaper &shaper_;
         text::Fonts &fonts_;
-        std::vector<gfx::Prim> prims_;
+        std::vector<gfx::Prim> prims_, deferred_;
+        bool deferring_ = false;
         std::vector<std::array<float, 4>> clips_;
         float scale_ = 1, ox_ = 0, oy_ = 0, alpha_ = 1;
         float zoom_ = 1, zx_ = 0, zy_ = 0; // zx_, zy_ in buffer pixels

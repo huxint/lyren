@@ -19,7 +19,8 @@ namespace lyren::gfx {
     };
     enum Flag : uint32_t {
         flag_gradient = 1,
-        flag_cutout = 2
+        flag_cutout = 2,
+        flag_hgradient = 4
     };
 
     // One instanced quad; layout matches shaders/prim.glsl. Coordinates are buffer pixels, colours premultiplied.

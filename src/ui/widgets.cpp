@@ -155,6 +155,34 @@ namespace lyren::ui {
         return it.clicked;
     }
 
+    bool Ui::segmented(Id id, Rect r, std::span<const std::string_view> labels, int &selected) {
+        const Theme &t = *theme_;
+        const float n = static_cast<float>(labels.size()), w = r.w / n;
+        p_->rect(r, t.text.with_alpha(t.dark ? 0.07f : 0.055f), r.h / 2);
+        float shown = anim(sub_id(id, 2), selected >= 0 ? 1 : 0, 150);
+        float x = spring(sub_id(id, 1), r.x + w * static_cast<float>(std::max(selected, 0)), 260);
+        if (shown > 0) {
+            Rect thumb = Rect{x, r.y, w, r.h}.inset(3);
+            if (!t.dark) {
+                p_->shadow({thumb.x, thumb.y + 1, thumb.w, thumb.h}, thumb.h / 2, 6, t.shadow.with_alpha(0.7f * shown));
+            }
+            p_->rect(thumb, (t.dark ? t.elevated.mix(t.text, 0.1f) : t.surface).with_alpha(shown), thumb.h / 2);
+        }
+        bool changed = false;
+        for (size_t i = 0; i < labels.size(); ++i) {
+            Rect cell{r.x + w * static_cast<float>(i), r.y, w, r.h};
+            Id cid = sub_id(id, 0x100 + i);
+            auto it = interact(cid, cell);
+            if (it.clicked && selected != static_cast<int>(i)) {
+                selected = static_cast<int>(i), changed = true;
+            }
+            float hot = anim(cid, it.hovered ? 1 : 0, 120);
+            bool on = selected == static_cast<int>(i);
+            label(cell, labels[i], {.size = t.fs(13), .color = on ? t.text : t.text_dim.mix(t.text, 0.5f * hot)}, Align::center);
+        }
+        return changed;
+    }
+
     void Ui::spinner(Rect r, Color color, float thickness) {
         constexpr float tau = 2 * std::numbers::pi_v<float>;
         float start = static_cast<float>(std::fmod(now * 1.3, 1.0)) * tau;

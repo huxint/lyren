@@ -21,5 +21,7 @@ namespace lyren::gfx {
 
     // The cover's most prominent hue (0..1), or a negative value for a colourless image.
     float dominant_hue(const Image &img);
+    // Mean relative luminance, 0..1.
+    float mean_luma(const Image &img);
 
 } // namespace lyren::gfx

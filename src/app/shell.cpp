@@ -12,6 +12,7 @@
 #include <numbers>
 #include <ranges>
 
+#include "app/draw.hpp"
 #include "core/i18n.hpp"
 #include "core/log.hpp"
 #include "core/utf8.hpp"
@@ -20,6 +21,7 @@
 namespace lyren {
 
     using ui::Align;
+    using ui::hsl;
     using ui::Rect;
     using ui::TextStyle;
     using State = audio::Player::State;
@@ -34,15 +36,6 @@ namespace lyren {
         z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
         z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
         return z ^ (z >> 31);
-    }
-
-    static ui::Color hsl(float h, float s, float l) {
-        h -= std::floor(h);
-        auto f = [&](float n) {
-            float k = std::fmod(n + h * 12, 12.f);
-            return l - s * std::min(l, 1 - l) * std::max(-1.f, std::min({k - 3, 9 - k, 1.f}));
-        };
-        return {f(0), f(8), f(4), 1};
     }
 
     static std::string mmss(double seconds) {
@@ -60,20 +53,6 @@ namespace lyren {
         float s = std::round(r.w * 0.36f);
         p.icon(icon, ui::center(r, s, s), white.with_alpha(0.85f));
     }
-
-    // Multiplies the painter's alpha for one scope.
-    struct Fade {
-        ui::Painter &p;
-        float saved;
-        Fade(ui::Painter &painter, float a)
-        : p(painter),
-          saved(painter.alpha()) {
-            p.set_alpha(saved * a);
-        }
-        ~Fade() {
-            p.set_alpha(saved);
-        }
-    };
 
     struct Columns {
         Rect index, title, album, source, like, duration;
@@ -128,52 +107,10 @@ namespace lyren {
         }
     };
 
-    static Rect mix(Rect a, Rect b, float k) {
-        return {std::lerp(a.x, b.x, k), std::lerp(a.y, b.y, k), std::lerp(a.w, b.w, k), std::lerp(a.h, b.h, k)};
-    }
-
-    static float smooth01(float t) {
-        t = std::clamp(t, 0.f, 1.f);
-        return t * t * t * (t * (6 * t - 15) + 10);
-    }
-
-    // The now-playing view: wide, a large cover with the lyrics beside it; narrow, a small cover above them.
-    struct NowPlayingLayout {
-        Rect cover, lyrics;
-    };
-
-    static NowPlayingLayout now_playing_layout(Rect r, bool wide) {
-        Rect body = r.inset(56, 44);
-        if (!wide) {
-            return {{body.x, body.y + 4, 64, 64}, {body.x, body.y + 96, body.w, body.h - 96}};
-        }
-        Rect left = ui::cut_left(body, std::round(body.w * 0.42f));
-        ui::cut_left(body, 40);
-        float cs = std::floor(std::min({left.w - 20, left.h - 120, 420.f}));
-        return {{left.x + (left.w - cs) / 2, left.y + (left.h - cs - 110) / 2, cs, cs}, body};
-    }
-
-    // The title's baseline origin, the two sizes, the artist's baseline below the title's, and the width the artist
-    // line may take; the title leaves room for the heart.
-    struct Caption {
-        float x, y, title, sub, gap, w;
-    };
-
-    static Caption mix(const Caption &a, const Caption &b, float k) {
-        return {std::lerp(a.x, b.x, k), std::lerp(a.y, b.y, k), std::lerp(a.title, b.title, k), std::lerp(a.sub, b.sub, k), std::lerp(a.gap, b.gap, k), std::lerp(a.w, b.w, k)};
-    }
-
     static void page_title(ui::Ui &ui, Rect body, float y, std::string_view title, std::string_view subtitle) {
         const auto &t = ui.theme();
         ui.label({body.x, y, body.w, 38}, title, {.size = t.fs(28), .color = t.text});
         ui.label({body.x, y + 42, body.w, 20}, subtitle, {.size = t.fs(13), .color = t.text_dim});
-    }
-
-    static std::string short_count(int n) {
-        if (language() == Language::zh) {
-            return n >= 10000 ? lyren::trf("{:.1f}w", n / 1e4) : std::to_string(n);
-        }
-        return n >= 1000 ? std::format("{:.1f}k", n / 1e3) : std::to_string(n);
     }
 
     static std::string date_label(std::string_view date) {
@@ -246,7 +183,8 @@ namespace lyren {
       set_setting_(std::move(d.set_setting)),
       redraw_(std::move(d.redraw)),
       now_(std::move(d.now)),
-      silent_(d.silent) {
+      silent_(d.silent),
+      open_config_(std::move(d.open_config)) {
         set_language(config_.interface.language);
         std::time_t now = std::time(nullptr);
         std::tm lt;
@@ -404,30 +342,33 @@ namespace lyren {
     ui::Color Shell::accent(double now, bool dark, bool &animating) {
         // -2: not known yet (cover still loading), -1: a colourless cover.
         float hue = current() ? cover_hue(current()->cover, bar_cover_px_) : 0.98f;
-        auto color = [&](float h) {
+        auto color = [](float h, bool on_dark) {
             if (h == -1) {
-                return dark ? ui::Color{0.86f, 0.86f, 0.88f, 1} : ui::Color{0.29f, 0.33f, 0.40f, 1};
+                return on_dark ? ui::Color{0.86f, 0.86f, 0.88f, 1} : ui::Color{0.29f, 0.33f, 0.40f, 1};
             }
-            return hsl(h < 0 ? 0.98f : h, 0.62f, dark ? 0.64f : 0.38f);
+            return ui::accent_for_hue(h, on_dark);
         };
         const double duration = 0.8 * config_.theme.motion;
-        const float progress = duration > 0 ? std::clamp(static_cast<float>((now - accent_time_) / duration), 0.f, 1.f) : 1;
+        auto progress = [&] {
+            return duration > 0 ? ease::standard(std::clamp(static_cast<float>((now - accent_time_) / duration), 0.f, 1.f)) : 1.f;
+        };
         if (accent_hue_ == -2 && hue == -2) {
             hue = 0.98f;
         }
         if (hue != -2 && hue != accent_hue_) {
             bool first = accent_hue_ == -2;
-            accent_from_ = first ? color(hue) : accent_from_.mix(accent_to_, ease::standard(progress));
+            for (bool on_dark : {false, true}) {
+                auto &from = accent_from_[on_dark];
+                from = first ? color(hue, on_dark) : from.mix(color(accent_hue_, on_dark), progress());
+            }
             accent_hue_ = hue;
             accent_time_ = first ? -10 : now;
         }
-        accent_to_ = color(accent_hue_);
-        const float t = duration > 0 ? static_cast<float>((now - accent_time_) / duration) : 1;
-        if (t >= 1) {
-            return accent_to_;
+        float t = progress();
+        if (t < 1) {
+            animating = true;
         }
-        animating = true;
-        return accent_from_.mix(accent_to_, ease::standard(t));
+        return accent_from_[dark].mix(color(accent_hue_, dark), t);
     }
 
     float Shell::cover_hue(const std::string &url, float size) {
@@ -1091,8 +1032,8 @@ namespace lyren {
         if (source == active_) {
             return;
         }
-        // Search stays global, with its query, results and scroll position intact.
-        if (route_.page == Page::search) {
+        // Search and settings stay, search with its query, results and scroll position intact.
+        if (route_.page == Page::search || route_.page == Page::settings) {
             active_ = route_.card.source = source;
             changed();
             ui.redraw();
@@ -1133,7 +1074,7 @@ namespace lyren {
     // Back closes the now-playing view first.
     void Shell::back(ui::Ui &ui) {
         if (np_open_) {
-            np_open_ = false;
+            show_stage(false);
             return;
         }
         if (history_.empty()) {
@@ -1809,11 +1750,10 @@ namespace lyren {
         return out;
     }
 
-    // wrap() for text with line breaks; blank lines stay.
-    static std::vector<std::string_view> wrap_lines(ui::Painter &p, std::string_view s, float size, float width) {
+    std::vector<std::string_view> Shell::wrap_lines(ui::Painter &p, std::string_view s, float size, float width) {
         std::vector<std::string_view> out;
         for (auto part : std::views::split(s, '\n')) {
-            auto lines = Shell::wrap(p, std::string_view(part.begin(), part.end()), size, width);
+            auto lines = wrap(p, std::string_view(part.begin(), part.end()), size, width);
             out.insert(out.end(), lines.begin(), lines.end());
         }
         return out;
@@ -1829,7 +1769,7 @@ namespace lyren {
         std::vector<std::vector<std::string_view>> wrapped;
         float content = 0;
         for (const auto &[head, text] : sections) {
-            wrapped.push_back(wrap_lines(p, text, body.size, w));
+            wrapped.push_back(Shell::wrap_lines(p, text, body.size, w));
             content += (head.empty() ? 0 : head_h) + static_cast<float>(wrapped.back().size()) * lh + gap;
         }
         float off = ui.begin_scroll(id, r, content);
@@ -1882,6 +1822,13 @@ namespace lyren {
     void Shell::top_bar(ui::Ui &ui, Rect bar, float center_x) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
+        // The stage keeps only the window buttons in its title strip.
+        float covered = stage(ui);
+        if (covered >= 1) {
+            return;
+        }
+        Fade under_stage(p, 1 - covered);
+        ui.disabled = covered > 0.5f;
         Rect r = bar;
         Rect nav = ui::cut_left(r, 40);
         {
@@ -1908,7 +1855,7 @@ namespace lyren {
             std::vector<ui::MenuItem> items;
             for (const auto &entry : platforms) {
                 items.push_back({entry.source == active_ ? "check" : "music", std::string(lyren::tr(entry.name)), [this, &ui, source = entry.source] {
-                                     np_open_ = false;
+                                     show_stage(false);
                                      switch_platform(ui, source);
                                  }});
             }
@@ -1916,10 +1863,12 @@ namespace lyren {
         }
         ui::cut_left(r, 8);
         Rect settings = ui::cut_right(r, 40);
-        if (ui.icon_button(ui.id("settings"), ui::center(settings, 32, 32), "settings", 18)) {
-            ui.open_modal(840, 656, [this](ui::Ui &u, Rect body) {
-                settings_modal(u, body);
-            });
+        if (ui.icon_button(ui.id("settings"), ui::center(settings, 32, 32), "settings", 18, route_.page == Page::settings)) {
+            if (route_.page == Page::settings) {
+                back(ui);
+            } else {
+                open(ui, Page::settings);
+            }
         }
         Rect account = ui::cut_right(r, 40);
         const auto &profile = library().account;
@@ -1940,10 +1889,11 @@ namespace lyren {
         }
         float w = std::min(440.f, r.w - 32);
         float x = std::clamp(center_x - w / 2, r.x + 16, r.right() - 16 - w);
-        if (ui.text_box(ui.id("search"), {x, bar.y + (bar.h - 34) / 2, w, 34}, query_, lyren::tr("Search music across platforms"), "search")) {
-            np_open_ = false;
+        if (ui.text_box(ui.id("search"), {x, bar.y + (bar.h - 34) / 2, w, 34}, query_, lyren::tr("Search all platforms"), "search")) {
+            show_stage(false);
             search(ui);
         }
+        ui.disabled = false;
     }
 
     void Shell::open_account(ui::Ui &ui) {
@@ -1953,7 +1903,19 @@ namespace lyren {
         });
     }
 
-    void Shell::draw(ui::Ui &ui, Rect area) {
+    float Shell::stage(ui::Ui &ui) {
+        return ui.spring(ui.id("np-open"), np_open_ ? 1 : 0, 400);
+    }
+
+    void Shell::show_stage(bool open) {
+        if (!open && panel_ == Panel::comments && thread_follows_) {
+            show_panel(Panel::none);
+        }
+        np_open_ = open;
+    }
+
+    void Shell::draw(ui::Ui &ui, Rect area, const ui::Theme &stage_theme) {
+        stage_ = &stage_theme;
         if (pending_source_) {
             switch_platform(ui, *pending_source_);
         }
@@ -1985,18 +1947,23 @@ namespace lyren {
         float side_w = ui.spring(ui.id("side-w"), compact_ ? 72 : 220, 320);
         Rect side = ui::cut_left(area, side_w);
         ui::cut_right(area, 8);
-        float qw = ui.spring(ui.id("queue-w"), queue_open_ ? 328 : 0, 340);
-        if (qw > 0.5f) {
-            Rect q = ui::cut_right(area, qw);
-            ui.push_clip(q);
-            queue_panel(ui, {q.x + 8, q.y, 320, q.h});
-            ui.pop_clip();
+        // On the stage the comments follow the music, loaded ahead for the count on its button, unless the panel is
+        // showing others.
+        if (const Track *tr = current(); tr && np_open_ && !(panel_ == Panel::comments && !thread_follows_) &&
+                                         !(thread_follows_ && thread_subject_ == Subject::song && thread_id_ == tr->id && thread_source_ == tr->source)) {
+            set_thread(ui, tr->source, Subject::song, tr->id, std::format("{} · {}", tr->title, tr->artist), tr->cover, true);
         }
+        // The panel beside the page slides in from the right.
+        float pw = ui.spring(ui.id("panel-w"), panel_width(panel_), 340);
+        Rect slot = pw > 0.5f ? ui::cut_right(area, pw) : Rect{};
 
-        // The now-playing view rises over the sidebar and the page; once it covers them they are not drawn.
-        float np = ui.spring(ui.id("np-open"), np_open_ ? 1 : 0, 400);
+        // The now-playing stage comes up over the whole window; once it covers it the sidebar and page are not drawn.
+        float np = stage(ui);
         if (!(np_open_ && np >= 1)) {
             // Content panel with a wash of the page's colour; the page slides in from the side it was reached from.
+            if (!t.dark) {
+                p.shadow({area.x, area.y + 1, area.w, area.h}, t.radius_l(), 10, t.shadow.with_alpha(0.45f));
+            }
             p.rect(area, t.surface, t.radius_l());
             float enter = ui.progress(page_time_, 420);
             float hue = -1;
@@ -2006,8 +1973,8 @@ namespace lyren {
                 hue = cover_hue(route_.artist->info->avatar, 148 * p.scale());
             }
             ui::Color tint = hue >= 0 ? hsl(hue, 0.55f, 0.5f) : t.accent;
-            if (route_.page != Page::search) {
-                p.gradient({area.x, area.y, area.w, 320}, tint.with_alpha(0.16f * enter), tint.with_alpha(0), t.radius_l());
+            if (route_.page != Page::search && route_.page != Page::settings) {
+                p.gradient({area.x, area.y, area.w, 320}, tint.with_alpha((t.dark ? 0.16f : 0.09f) * enter), tint.with_alpha(0), t.radius_l());
             }
             ui.push_clip(area);
             {
@@ -2036,6 +2003,9 @@ namespace lyren {
                     case Page::search:
                         search_page(ui, r);
                         break;
+                    case Page::settings:
+                        settings_page(ui, r);
+                        break;
                     case Page::recent:
                         if (library().recent_tab == 0 || !signed_in()) {
                             route_.card.subtitle = lyren::trf("{} songs · On this device", library().recent.size());
@@ -2052,7 +2022,7 @@ namespace lyren {
                         } else if (route_.page == Page::cloud && route_.list) {
                             route_.card.subtitle = lyren::trf("Cloud uploads · {} songs", list.tracks.size());
                         } else if (route_.page == Page::recent) {
-                            route_.card.subtitle = lyren::trf("{} songs · Listening history across devices", list.tracks.size());
+                            route_.card.subtitle = lyren::trf("{} songs · From all your devices", list.tracks.size());
                         }
                         list_page(ui, r, list.tracks, list.loading, list.error, std::max(list.since, tab_time_));
                         break;
@@ -2063,18 +2033,28 @@ namespace lyren {
             sidebar(ui, side);
         }
         Rect np_page{side.x + 8, area.y, area.right() - side.x - 8, area.h};
-        // Below 720 px of content the view turns narrow; the slack keeps resizing near it from flipping it back and forth.
-        if (np_page.w - 112 >= 732) {
+        // Narrower than 900 px (a panel open beside it, say) the view stacks the lyrics under a small cover; the slack keeps
+        // resizing near it from flipping it back and forth.
+        if (np_page.w >= 912) {
             np_wide_ = true;
-        } else if (np_page.w - 112 < 708) {
+        } else if (np_page.w < 888) {
             np_wide_ = false;
         }
         float wide = ui.spring(ui.id("np-wide"), np_wide_ ? 1 : 0, 420);
         if (np > 0) {
-            now_playing(ui, np_page, np, wide);
+            UseTheme on_stage(ui, stage_theme);
+            now_playing(ui, {0, 0, ui.width, ui.height}, np_page, np, wide);
         }
-        player_bar(ui, player);
-        player_art(ui, player, np_page, np, wide);
+        {
+            // The panel and the player bar take the stage's colours as it comes up.
+            ui::Theme over = t.mix(stage_theme, np);
+            UseTheme use(ui, over);
+            if (slot.w > 0) {
+                side_panel(ui, slot, np);
+            }
+            player_bar(ui, player, np);
+            player_art(ui, player, np_page, np, wide);
+        }
         handle_keys(ui);
         images_.end_frame();
 
@@ -2102,13 +2082,15 @@ namespace lyren {
             bool ctrl = k->mods & wl::mod_ctrl, alt = k->mods & wl::mod_alt, used = true;
             if (k->keysym == XKB_KEY_space && !k->repeat) {
                 toggle_play();
+            } else if (k->keysym == XKB_KEY_Escape && panel_ == Panel::comments && !ui.menu_open()) {
+                show_panel(Panel::none);
             } else if (k->keysym == XKB_KEY_Escape && np_open_ && !ui.menu_open()) {
-                np_open_ = false;
+                show_stage(false);
             } else if (ctrl && (k->keysym == XKB_KEY_f || k->keysym == XKB_KEY_F)) {
                 ui.focus = ui.id("search");
             } else if (ctrl && k->keysym == XKB_KEY_Tab) {
                 int count = static_cast<int>(platforms.size()), delta = k->mods & wl::mod_shift ? -1 : 1;
-                np_open_ = false;
+                show_stage(false);
                 switch_platform(ui, platforms[static_cast<size_t>((static_cast<int>(active_) + delta + count) % count)].source);
             } else if (ctrl && k->keysym == XKB_KEY_Right) {
                 skip(1);
@@ -2137,7 +2119,7 @@ namespace lyren {
         };
         const auto entries = std::to_array<Nav>({{Page::recommend, "compass", lyren::tr("For you")},
                                                  {Page::toplist, "list-ordered", lyren::tr("Charts")},
-                                                 {Page::square, "layout-grid", lyren::tr("Browse playlists")},
+                                                 {Page::square, "layout-grid", lyren::tr("Browse")},
                                                  {Page::fm, "radio", lyren::tr("Personal FM")},
                                                  {Page::liked, "heart", lyren::tr("Liked songs")},
                                                  {Page::recent, "history", lyren::tr("Recently played")},
@@ -2262,7 +2244,8 @@ namespace lyren {
             p.rect(ic, t.text.with_alpha(0.06f), 22);
             p.icon("user", ui::center(ic, 20, 20), t.text_dim);
             ui.label({c.x, c.y + 58, c.w, 22}, lyren::tr("Sign in to use this page"), {.size = t.fs(15), .color = t.text}, Align::center);
-            if (ui.button(ui.id("page-login"), {c.x + (c.w - 120) / 2, c.y + 96, 120, 36}, lyren::tr("Scan to sign in"), ui::ButtonKind::primary, "qr-code")) {
+            float bw = button_width(ui, lyren::tr("Scan to sign in"), true);
+            if (ui.button(ui.id("page-login"), {c.x + (c.w - bw) / 2, c.y + 96, bw, 36}, lyren::tr("Scan to sign in"), ui::ButtonKind::primary, "qr-code")) {
                 open_account(ui);
                 login_step_ = static_cast<int>(active_);
                 login_time_ = ui.now;
@@ -2378,12 +2361,12 @@ namespace lyren {
             float hx = body.x;
             if (features.daily) {
                 std::string day = today_.substr(3);
-                if (hero(ui, ui.id("hero-daily"), {hx, y, hw, hero_h}, day, lyren::tr("Daily mix"), lyren::tr("Made for your taste, refreshed daily"), 0.98f)) {
+                if (hero(ui, ui.id("hero-daily"), {hx, y, hw, hero_h}, day, lyren::tr("Daily mix"), lyren::tr("Fresh picks, every day"), 0.98f)) {
                     open(ui, Page::daily);
                 }
                 hx += hw + Grid::gap;
             }
-            if (features.fm && hero(ui, ui.id("hero-fm"), {hx, y, hw, hero_h}, "FM", lyren::tr("Personal FM"), lyren::tr("Your personal station. Skip what you don't like"), 0.62f)) {
+            if (features.fm && hero(ui, ui.id("hero-fm"), {hx, y, hw, hero_h}, "FM", lyren::tr("Personal FM"), lyren::tr("A station that learns your taste"), 0.62f)) {
                 open(ui, Page::fm);
             }
             y += hero_h + 40;
@@ -2430,7 +2413,7 @@ namespace lyren {
         float content = 28 + grid_y + std::max(g.height(lib.square.cards.size()), 120.f) + (lib.square.more() ? 64 : 32);
         float off = ui.begin_scroll(ui.id("square"), r, content);
         float y = r.y + 28 - off;
-        page_title(ui, body, y, lyren::tr("Browse playlists"), lyren::tr("Explore playlists by category"));
+        page_title(ui, body, y, lyren::tr("Browse"), lyren::tr("Explore playlists by category"));
 
         // The popular categories as far as they fit, the picked one among them, the rest behind More categories.
         const Category all;
@@ -2487,7 +2470,7 @@ namespace lyren {
         auto &lib = library();
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        page_title(ui, r.inset(32, 0), r.y + 28, lyren::tr("Personal FM"), lyren::tr("Based on your listening. Dislike songs to hear fewer like them"));
+        page_title(ui, r.inset(32, 0), r.y + 28, lyren::tr("Personal FM"), lyren::tr("Tuned to what you play"));
         Rect below{r.x, r.y + 100, r.w, r.h - 100};
         if (page_status(ui, below, lib.fm_loading && lib.fm.empty(), lib.fm.empty() ? lib.fm_error : "", !signed_in())) {
             return;
@@ -2598,7 +2581,8 @@ namespace lyren {
         }
         ui.label({tx, head.y + 62, tw, 20}, about, {.size = t.fs(13), .color = t.text_dim});
         std::vector<Track> &songs = a.songs.tracks;
-        if (ui.button(ui.id("play-all"), {tx, head.bottom() - 40, 124, 40}, lyren::tr("Play all"), ui::ButtonKind::primary, "play-fill") && !songs.empty()) {
+        float play_w = button_width(ui, lyren::tr("Play all"), true);
+        if (ui.button(ui.id("play-all"), {tx, head.bottom() - 40, play_w, 40}, lyren::tr("Play all"), ui::ButtonKind::primary, "play-fill") && !songs.empty()) {
             if (mode_ == Mode::shuffle) {
                 set_mode(Mode::list);
             }
@@ -2606,7 +2590,8 @@ namespace lyren {
         }
         if (a.info) {
             bool on = a.info->followed;
-            if (ui.button(ui.id("follow"), {tx + 136, head.bottom() - 40, 100, 40}, on ? lyren::tr("Following") : lyren::tr("Follow"), ui::ButtonKind::secondary,
+            float follow_w = std::max(button_width(ui, lyren::tr("Following"), true), button_width(ui, lyren::tr("Follow"), true));
+            if (ui.button(ui.id("follow"), {tx + play_w + 12, head.bottom() - 40, follow_w, 40}, on ? lyren::tr("Following") : lyren::tr("Follow"), ui::ButtonKind::secondary,
                           on ? "user-check" : "user-plus")) {
                 toggle_follow(route_.artist, {.kind = CardKind::artist, .source = c.source, .id = c.id, .title = a.info->name, .cover = a.info->avatar});
             }
@@ -2785,17 +2770,20 @@ namespace lyren {
             const std::string subtitle = route_.page == Page::daily ? lyren::trf("{} · Made for your taste", date_label(today_)) : card_subtitle(c);
             ui.label({tx, head.y + 62, tw, 20}, built_in ? lyren::tr(subtitle) : std::string_view(subtitle), sub);
         }
-        if (ui.button(ui.id("play-all"), {tx, head.bottom() - 40, 124, 40}, lyren::tr("Play all"), ui::ButtonKind::primary, "play-fill") && !tracks.empty()) {
+        float bx = tx;
+        float play_w = button_width(ui, lyren::tr("Play all"), true), shuffle_w = button_width(ui, lyren::tr("Shuffle"), true);
+        if (ui.button(ui.id("play-all"), {bx, head.bottom() - 40, play_w, 40}, lyren::tr("Play all"), ui::ButtonKind::primary, "play-fill") && !tracks.empty()) {
             if (mode_ == Mode::shuffle) {
                 set_mode(Mode::list);
             }
             play(tracks, 0);
         }
-        if (ui.button(ui.id("shuffle-all"), {tx + 136, head.bottom() - 40, 112, 40}, lyren::tr("Shuffle"), ui::ButtonKind::secondary, "shuffle") && !tracks.empty()) {
+        bx += play_w + 12;
+        if (ui.button(ui.id("shuffle-all"), {bx, head.bottom() - 40, shuffle_w, 40}, lyren::tr("Shuffle"), ui::ButtonKind::secondary, "shuffle") && !tracks.empty()) {
             set_mode(Mode::shuffle);
             play(tracks, static_cast<int>(next(rng_) % tracks.size()));
         }
-        list_actions(ui, tx + 260, head.bottom() - 40);
+        list_actions(ui, bx + shuffle_w + 12, head.bottom() - 40);
         Rect body{r.x + 16, head.bottom() + 28, r.w - 32, r.bottom() - head.bottom() - 36};
         bool login = needs_login(route_.page) && !signed_in();
         std::string error = list_error;
@@ -2818,12 +2806,12 @@ namespace lyren {
         ui.label(c.index, "#", hs, Align::center);
         ui.label(c.title, lyren::tr("Title"), hs);
         if (c.album.w > 0) {
-            ui.label(c.album, lyren::tr("Albums"), hs);
+            ui.label(c.album, lyren::tr("Album"), hs);
         }
         if (c.source.w > 0) {
             ui.label(c.source, lyren::tr("Platform"), hs, Align::center);
         }
-        ui.label(c.duration, lyren::tr("Duration"), hs, Align::right);
+        ui.label(c.duration, lyren::tr("Time"), hs, Align::right);
         p.rect({head.x + 12, head.bottom() - 1, head.w - 24, 1}, t.border);
         ui::cut_top(r, 4);
 
@@ -2927,24 +2915,28 @@ namespace lyren {
             x += 52;
             return clicked;
         };
+        auto labelled = [&](std::string_view id, std::string_view label, std::string_view icon, float w) {
+            bool clicked = ui.button(ui.id(id), {x, y, w, 40}, label, ui::ButtonKind::secondary, icon);
+            x += w + 12;
+            return clicked;
+        };
         if (route_.page == Page::album) {
             if (!route_.list || route_.list->loading) {
                 return;
             }
             bool on = route_.list->album.collected;
-            if (ui.button(ui.id("collect"), {x, y, 100, 40}, on ? std::string(lyren::tr("Saved")) : std::string(lyren::tr("Save")), ui::ButtonKind::secondary,
-                          on ? "star-fill" : "star")) {
+            float w = std::max(button_width(ui, lyren::tr("Saved"), true), button_width(ui, lyren::tr("Save"), true));
+            if (labelled("collect", on ? lyren::tr("Saved") : lyren::tr("Save"), on ? "star-fill" : "star", w)) {
                 toggle_collect(route_.list, {.kind = CardKind::album, .source = c.source, .id = c.id, .title = c.title, .subtitle = route_.list->album.artist, .cover = c.cover});
             }
-            x += 112;
             if (square("album-comments", "message-square")) {
-                open_comments(ui, c.source, Subject::album, route_.list->album.thread, c.title);
+                open_comments(ui, c.source, Subject::album, route_.list->album.thread, c.title, c.cover);
             }
         } else if (route_.page == Page::liked) {
             if (!provider().features.heartbeat || !signed_in() || library().liked.id.empty() || !route_.list || route_.list->tracks.empty()) {
                 return;
             }
-            if (ui.button(ui.id("heartbeat"), {x, y, 124, 40}, std::string(lyren::tr("Heartbeat mode")), ui::ButtonKind::secondary, "heart-pulse")) {
+            if (labelled("heartbeat", lyren::tr("Heartbeat"), "heart-pulse", button_width(ui, lyren::tr("Heartbeat"), true))) {
                 // From the picked song, otherwise from any of them.
                 const auto &v = route_.list->tracks;
                 size_t seed = selected_ >= 0 && selected_ < static_cast<int>(v.size()) ? static_cast<size_t>(selected_) : next(rng_) % v.size();
@@ -2952,7 +2944,8 @@ namespace lyren {
             }
         } else if (route_.page == Page::recent) {
             const std::array<std::string_view, 2> tabs = {lyren::tr("This device"), lyren::tr("Cloud")};
-            if (provider().features.recent_plays && signed_in() && ui.tabs(ui.id("recent-tabs"), {x, y, 140, 40}, tabs, library().recent_tab, ui::TabStyle::pill)) {
+            const float tabs_w = button_width(ui, tabs[0], false) + button_width(ui, tabs[1], false);
+            if (provider().features.recent_plays && signed_in() && ui.tabs(ui.id("recent-tabs"), {x, y, tabs_w, 40}, tabs, library().recent_tab, ui::TabStyle::pill)) {
                 tab_time_ = ui.now;
                 selected_ = -1;
                 ui.scroll_to(ui.id("tracks"), 0);
@@ -2960,7 +2953,7 @@ namespace lyren {
             }
         } else if (route_.page == Page::playlist) {
             if (c.commentable && square("playlist-comments", "message-square")) {
-                open_comments(ui, c.source, Subject::playlist, c.thread.empty() ? c.id : c.thread, c.title);
+                open_comments(ui, c.source, Subject::playlist, c.thread.empty() ? c.id : c.thread, c.title, c.cover);
             }
             if (c.owned && square("playlist-more", "ellipsis")) {
                 ui.open_menu(x - 52, y + 46,
@@ -3010,9 +3003,9 @@ namespace lyren {
              [this, &ui, tr] {
                  open(ui, Page::artist, {.kind = CardKind::artist, .source = tr.source, .id = tr.artist_id, .title = tr.artist.substr(0, tr.artist.find(" / "))});
              }},
-            {"message-square", std::string(lyren::tr("View comments")),
+            {"message-square", std::string(lyren::tr("Comments")),
              [this, &ui, tr] {
-                 open_comments(ui, tr.source, Subject::song, tr.id, std::format("{} · {}", tr.title, tr.artist));
+                 open_comments(ui, tr.source, Subject::song, tr.id, std::format("{} · {}", tr.title, tr.artist), tr.cover);
              }},
             {},
             {like ? "heart-off" : "heart", like ? std::string(lyren::tr("Unlike")) : std::string(lyren::tr("Like")),
@@ -3028,7 +3021,7 @@ namespace lyren {
                      picker_modal(u, r, tr);
                  });
              }},
-            {"copy", std::string(lyren::tr("Copy song and artist")),
+            {"copy", std::string(lyren::tr("Copy title and artist")),
              [&ui, tr] {
                  ui.copy = std::format("{} - {}", tr.title, tr.artist);
                  ui.toast(lyren::trf("Copied to clipboard"), "copy");
@@ -3056,86 +3049,11 @@ namespace lyren {
         ui.open_menu(x, y, std::move(items));
     }
 
-    void Shell::queue_panel(ui::Ui &ui, Rect r) {
-        auto &p = ui.painter();
-        const auto &t = ui.theme();
-        p.rect(r, t.surface, t.radius_l());
-        ui.label({r.x + 20, r.y + 18, 160, 28}, lyren::tr("Queue"), {.size = t.fs(16), .color = t.text});
-        ui.label({r.x + 104, r.y + 22, 80, 24}, lyren::trf("{} songs", queue_.size()), {.size = t.fs(12), .color = t.text_dim});
-        if (ui.button(ui.id("queue-clear"), {r.right() - 76, r.y + 18, 60, 28}, lyren::tr("Clear"), ui::ButtonKind::ghost) && !queue_.empty()) {
-            queue_.clear();
-            current_ = -1;
-            ++play_gen_;
-            want_play_ = fetching_ = false;
-            stop_player();
-            shuffle_history_.clear();
-            changed();
-            ui.toast(lyren::trf("Queue cleared"), "trash");
-        }
-        constexpr float row_h = 54;
-        Rect view{r.x + 8, r.y + 60, r.w - 16, r.h - 68};
-        float off = ui.begin_scroll(ui.id("queue"), view, static_cast<float>(queue_.size()) * row_h);
-        int remove = -1;
-        // One highlight glides to the playing row.
-        float hy = ui.spring(ui.id("queue-current"), static_cast<float>(current_) * row_h, 260);
-        float ha = ui.anim(ui.id("queue-current-a"), current_ >= 0 ? 1 : 0, 200);
-        if (ha > 0) {
-            p.rect({view.x + 2, view.y + hy - off + 2, view.w - 4, row_h - 4}, t.accent.with_alpha(0.14f * ha), t.radius_s());
-        }
-        ui.push_id(ui.id("queue-rows"));
-        int first = static_cast<int>(off / row_h), last = static_cast<int>((off + view.h) / row_h) + 1;
-        for (int i = first; i <= last && i < static_cast<int>(queue_.size()); ++i) {
-            const Track &tr = queue_[static_cast<size_t>(i)];
-            Rect row{view.x, view.y + static_cast<float>(i) * row_h - off, view.w, row_h};
-            ui.push_id(ui.id(static_cast<uint64_t>(i)));
-            ui::Id row_id = ui.id("row");
-            bool hot = ui.hovering(row) || ui.is_active(row_id), cur = i == current_;
-            float h = ui.anim(row_id, hot ? 1 : 0, 140);
-            if (!cur && h > 0) {
-                p.rect(row.inset(2), t.hover.with_alpha(h), t.radius_s());
-            }
-            cover(ui, {row.x + 10, row.y + 9, 36, 36}, tr.cover, t.radius_s());
-            float tw = row.w - 58 - (hot ? 40 : 12);
-            p.text(row.x + 58, row.y + 23, tr.title, {.size = t.fs(13), .color = cur ? t.accent : t.text}, tw);
-            p.text(row.x + 58, row.y + 41, std::format("{} · {}", lyren::tr(platform(tr.source).short_name), tr.artist), {.size = t.fs(12), .color = t.text_dim}, tw);
-            if (hot && ui.icon_button(ui.id("remove"), {row.right() - 38, row.y + 13, 28, 28}, "x", 14)) {
-                remove = i;
-            }
-            if (ui.interact(row_id, row).double_clicked) {
-                play(queue_, i);
-            }
-            ui.pop_id();
-        }
-        ui.pop_id();
-        ui.end_scroll();
-        if (remove >= 0) {
-            queue_.erase(queue_.begin() + remove);
-            shuffle_history_.clear();
-            shuffle_next_ = -1;
-            if (remove < current_) {
-                --current_;
-            } else if (remove == current_) {
-                // The playing track goes: carry on with the one after it.
-                bool was_playing = playing();
-                current_ = queue_.empty() ? -1 : std::min(current_, static_cast<int>(queue_.size()) - 1);
-                ++play_gen_;
-                stop_player();
-                fetching_ = false;
-                if (current_ >= 0 && was_playing) {
-                    start();
-                } else {
-                    want_play_ = false;
-                }
-            }
-            changed();
-        }
-    }
-
-    void Shell::player_bar(ui::Ui &ui, Rect r) {
+    void Shell::player_bar(ui::Ui &ui, Rect r, float stage) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         float side_w = std::min(330.f, std::round(r.w * 0.3f));
-        ui::cut_left(r, side_w);
+        Rect left = ui::cut_left(r, side_w);
         Rect right = ui::cut_right(r, side_w), mid = r;
         const Track *tr = current();
         auto st = player_.state();
@@ -3184,7 +3102,7 @@ namespace lyren {
                 skip(1);
             }
             if (ui.icon_button(ui.id("lyrics"), {cx + 92, cy - 16, 32, 32}, "mic-vocal", 17, np_open_)) {
-                np_open_ = !np_open_;
+                show_stage(!np_open_);
             }
         }
 
@@ -3250,8 +3168,8 @@ namespace lyren {
             apply_volume();
             changed();
         }
-        if (ui.icon_button(ui.id("queue"), {vol.x - 80, cy - 16, 32, 32}, "list-music", 18, queue_open_)) {
-            queue_open_ = !queue_open_;
+        if (ui.icon_button(ui.id("queue"), {vol.x - 80, cy - 16, 32, 32}, "list-music", 18, panel_ == Panel::queue)) {
+            show_panel(panel_ == Panel::queue ? Panel::none : Panel::queue);
         }
         const Rect desktop{vol.x - 120, cy - 16, 32, 32};
         const auto toggle = ui.interact(ui.id("desktop-lyrics"), desktop);
@@ -3266,11 +3184,9 @@ namespace lyren {
             for (bool island : {false, true}) {
                 menu.push_back({dl_enabled_ && dl_island_ == island ? "check"
                                 : island                            ? "panel-top"
-                                                                    : "move",
+                                                                    : "panel-bottom",
                                 std::string(lyren::tr(island ? "Dynamic Island" : "Floating lyrics")), [this, island] {
-                                    if (dl_island_ != island) {
-                                        toggle_desktop_mode();
-                                    }
+                                    set_desktop_island(island);
                                     set_desktop_enabled(true);
                                 }});
             }
@@ -3281,152 +3197,58 @@ namespace lyren {
             }
             ui.open_menu(desktop.x, desktop.y, std::move(menu));
         }
-    }
 
-    void Shell::player_art(ui::Ui &ui, Rect player, Rect page, float np, float wide) {
-        auto &p = ui.painter();
-        const auto &t = ui.theme();
-        Rect left{player.x, player.y, std::min(330.f, std::round(player.w * 0.3f)), player.h};
-        Rect small{left.x + 16, left.y + 14, 56, 56};
-        bar_cover_px_ = small.w * p.scale();
-        const Track *tr = current();
-        if (!tr) {
-            if (np == 0) {
-                p.rect(small, t.text.with_alpha(0.06f), t.radius_s());
-                p.icon("music", ui::center(small, 22, 22), t.text_dim);
-                ui.label({small.right() + 14, left.y, left.w - 100, left.h}, lyren::tr("Nothing playing"), {.size = t.fs(13), .color = t.text_dim});
-            }
-            return;
-        }
-
-        // In the view the text sits under a large cover and beside a small one; it goes round the cover's corner while
-        // the cover is small.
-        NowPlayingLayout wl = now_playing_layout(page, true), nl = now_playing_layout(page, false);
-        Rect body = page.inset(56, 44);
-        Rect vc = mix(nl.cover, wl.cover, wide);
-        float under = smooth01((vc.w - nl.cover.w) / (std::min(160.f, wl.cover.w) - nl.cover.w));
-        Caption beside{vc.right() + 20, vc.y + 22, t.fs(20), t.fs(13), 24, body.right() - vc.right() - 20};
-        Caption below{vc.x, vc.bottom() + 46, t.fs(22), t.fs(14), 26, vc.w};
-        Caption view = mix(beside, below, under);
-        view.x = std::lerp(beside.x, below.x, smooth01((under - 0.4f) / 0.6f));
-        view.y = std::lerp(beside.y, below.y, smooth01(under / 0.6f));
-
-        // From the bar to a small cover the text stays beside it. To a large one the cover first rises out of the bar
-        // and then grows, and the text sets off once the cover is out of its way.
-        Caption bar{small.right() + 14, small.y + 24, t.fs(14), t.fs(12), 19, left.right() - small.right() - 18};
-        float rise = std::lerp(np, 1 - (1 - np) * (1 - np), under), grow = std::lerp(np, np * np, under);
-        float size = std::lerp(small.w, vc.w, grow);
-        Rect cov{std::lerp(small.x, vc.x, rise), std::lerp(small.bottom(), vc.bottom(), rise) - size, size, size};
-        float late = smooth01((np - 0.35f) / 0.65f), f = std::lerp(np, late, under);
-        Caption cap = mix(bar, view, f);
-        float ax = cov.right() + std::lerp(14.f, 20.f, np) + (view.x - beside.x) * np;
-        float ay = cov.y + std::lerp(24.f, 22.f, np) + (view.y - beside.y) * np;
-        cap.x = std::lerp(ax, std::lerp(bar.x, view.x, late), under);
-        cap.y = std::lerp(ay, std::lerp(bar.y, view.y, late), under);
-
-        float depth = smooth01((size - 64) / 136);
-        float radius = std::lerp(t.radius_s(), t.radius_l(), depth);
-        p.shadow({cov.x, cov.y + std::lerp(4.f, 18.f, depth), cov.w, cov.h}, radius, std::lerp(12.f, 48.f, depth), t.shadow.with_alpha(std::lerp(0.6f, 0.9f, depth)));
-
-        // The thumbnail stays through the move; the view's larger picture fades in over it once it has loaded.
-        float change = ui.progress(cover_time_, 520);
-        int preview_px = Images::tier(small.w * p.scale()), sharp_px = Images::tier((np_wide_ ? 420.f : nl.cover.w) * p.scale());
-        auto artwork = [&](const std::string &url) {
-            const auto &preview = images_.get(cover_url(url, preview_px), static_cast<uint32_t>(preview_px));
-            float shown = preview.ready ? ui.progress(preview.ready_at, 320, ease::standard) : 0;
-            if (shown < 1) {
-                p.rect(cov, t.text.with_alpha(0.07f), radius);
-                p.set_zoom(cov.w * 0.36f / 24, cov.x + cov.w / 2, cov.y + cov.h / 2);
-                p.icon("music", ui::center(cov, 24, 24), t.text_dim.with_alpha(0.5f * (1 - shown)));
-                p.set_zoom(1);
-            }
-            if (preview.ready) {
-                Fade fade(p, shown);
-                p.image(cov, preview.tex, radius);
-            }
-            if (np > 0 && sharp_px > preview_px) {
-                const auto &sharp = images_.get(cover_url(url, sharp_px), static_cast<uint32_t>(sharp_px));
-                if (sharp.ready) {
-                    Fade fade(p, ui.progress(sharp.ready_at, 240, ease::standard));
-                    p.image(cov, sharp.tex, radius);
-                }
-            }
-        };
-        if (change < 1 && !prev_.cover.empty()) {
-            artwork(prev_.cover);
-        }
-        {
-            Fade fade(p, change);
-            artwork(tr->cover);
-        }
-        if (np == 0) {
-            ui::Id id = ui.id("bar-cover");
-            auto it = ui.interact(id, cov);
-            float hot = ui.anim(id, it.hovered ? 1 : 0, 150);
+        // On the stage the cover and title have gone up, and their place holds what goes with the song on show: its
+        // comments, with how many there are, and the translation of its lyrics. They come once the title is clear, and
+        // keep their places while the next song's comments and lyrics load.
+        if (const float shown = smooth01((stage - 0.7f) / 0.3f); tr && shown > 0) {
+            Fade fade(p, shown);
+            ui.disabled = shown < 0.9f;
+            const bool following = thread_follows_ && thread_subject_ == Subject::song && thread_id_ == tr->id && thread_source_ == tr->source;
+            const bool on = panel_ == Panel::comments && following;
+            const Feed &feed = feeds_[0];
+            const std::string total = following && feed.total > 0 ? short_count(feed.total) : "";
+            TextStyle count{.size = t.fs(12), .features = text::tabular_nums};
+            const ui::Id id = ui.id("comments"), wid = ui::sub_id(id, 1);
+            const float target = total.empty() ? 32 : std::round(30 + p.measure(total, count) + 12);
+            const float bw = ui.spring(wid, following && feed.loading ? ui.spring_value(wid, 32) : target, 300);
+            const Rect b{left.x + 20, cy - 16, bw, 32};
+            const auto it = ui.interact(id, b);
+            const float hot = ui.anim(id, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(id, 0xd0), it.held && it.hovered ? 1 : 0, 90);
+            const Rect face = b.inset(down * 2);
             if (hot > 0) {
-                p.rect(cov, ui::Color{0, 0, 0, 0.45f * hot}, radius);
-                p.icon("chevron-up", ui::center(cov, 22, 22), white.with_alpha(hot));
+                p.rect(face, t.text.with_alpha((0.08f + 0.05f * down) * hot), face.h / 2);
+            }
+            const ui::Color fg = on ? t.accent : t.text_dim.mix(t.text, hot);
+            p.icon("message-square", ui::center({b.x, b.y, 32, 32}, 17 - down * 1.5f, 17 - down * 1.5f), fg);
+            // The count is uncovered as the button widens.
+            if (const float a = ui.anim(ui::sub_id(id, 2), total.empty() ? 0 : 1, 220); !total.empty()) {
+                count.color = fg.with_alpha(a);
+                ui.push_clip(b);
+                p.text_in({b.x + 30, b.y, 200, b.h}, total, count);
+                ui.pop_clip();
             }
             if (it.clicked) {
-                np_open_ = true;
-            }
-        }
-
-        // While it moves, the text is scaled from glyphs at the view's sizes instead of being rasterized at a new size
-        // every frame. A line that does not fit fades out at its end.
-        bool settled = np == 0 || (np == 1 && (under == 0 || under == 1));
-        auto line = [&](float x, float y, std::string_view s, float size, float raster, ui::Color c, float w) {
-            if (settled) {
-                raster = size;
-            }
-            float z = size / raster, limit = w / z;
-            p.set_zoom(z, x, y);
-            TextStyle st{.size = raster, .color = c};
-            float width = p.measure(s, st);
-            if (width > limit) {
-                p.set_wipe(x + limit - 16 / z, 32 / z, c.with_alpha(0));
-            }
-            p.text(x, y, s, st);
-            p.clear_wipe();
-            p.set_zoom(1);
-            return std::min(width, limit) * z;
-        };
-        // The album and the stream format belong to the view and come in as the text arrives there.
-        float detail = smooth01((f - 0.6f) / 0.4f);
-        auto caption = [&](const Track &track, float alpha, float dy, bool live) {
-            Fade fade(p, alpha);
-            float y = cap.y + dy, k = cap.sub / t.fs(14);
-            float tw = line(cap.x, y, track.title, cap.title, t.fs(22), t.text, cap.w - 44);
-            float aw = line(cap.x, y + cap.gap, track.artist, cap.sub, t.fs(14), t.text_dim, cap.w);
-            if (detail > 0 && under > 0 && !track.album.empty()) {
-                Fade more(p, detail * under);
-                line(cap.x + aw, y + cap.gap, std::format(" · {}", track.album), cap.sub, t.fs(14), t.text_dim, cap.w - aw);
-            }
-            if (detail > 0 && live && !player_.codec().empty()) {
-                Fade more(p, detail);
-                line(cap.x, y + cap.gap + 24 * k, std::format("{} · {:.1f} kHz", player_.codec(), player_.format().rate / 1000.0), t.fs(12) * k, t.fs(12),
-                     t.text_dim.with_alpha(0.7f), cap.w);
-            }
-            // The heart follows the title.
-            bool like = liked(track);
-            float hs = heart_size(ui, track, std::lerp(17.f, 20.f, f));
-            Rect hr{cap.x + std::min(tw + 10, cap.w - 34), y - 0.35f * cap.title - 16, 32, 32};
-            if (live && settled) {
-                if (ui.icon_button(ui.id("np-like"), hr, like ? "heart-fill" : "heart", hs, like)) {
-                    toggle_like(track);
+                if (on) {
+                    show_panel(Panel::none);
+                } else {
+                    open_comments(ui, tr->source, Subject::song, tr->id, std::format("{} · {}", tr->title, tr->artist), tr->cover, true);
                 }
-                return;
             }
-            p.set_zoom(hs / 20, hr.x + 16, hr.y + 16);
-            p.icon(like ? "heart-fill" : "heart", ui::center(hr, 20, 20), like ? t.accent : t.text_dim);
-            p.set_zoom(1);
-        };
-        // A new track's text rises in as the old one leaves upwards.
-        float out = smooth01(change / 0.45f), in = smooth01((change - 0.25f) / 0.75f);
-        if (out < 1 && !prev_.title.empty()) {
-            caption(prev_, 1 - out, -10 * out, false);
+            const bool translated = std::ranges::any_of(lyrics_, [](const LyricLine &line) {
+                return !line.translation.empty();
+            });
+            const ui::Id tid = ui.id("translation"), present_id = ui::sub_id(tid, 1);
+            const float present = ui.spring(present_id, lyrics_loading_ ? ui.spring_value(present_id, 0) : translated ? 1 : 0, 260);
+            if (present > 0.01f) {
+                Fade appear(p, std::clamp(present, 0.f, 1.f));
+                ui.disabled = ui.disabled || present < 0.5f;
+                if (ui.icon_button(tid, {b.right() + 6, cy - 16, 32, 32}, "languages", 17, lyric_translation_)) {
+                    toggle_translation();
+                }
+            }
+            ui.disabled = false;
         }
-        caption(*tr, in, 10 * (1 - in), true);
     }
 
     float Shell::heart_size(ui::Ui &ui, const Track &t, float size) const {
@@ -3441,283 +3263,6 @@ namespace lyren {
         // Up past its size and back, then a little under it.
         float s = k < 0.55f ? 1 + 0.32f * std::sin(std::numbers::pi_v<float> * k / 0.55f) : 1 - 0.06f * std::sin(std::numbers::pi_v<float> * (k - 0.55f) / 0.45f);
         return size * s;
-    }
-
-    void Shell::now_playing(ui::Ui &ui, Rect r, float k, float wide) {
-        auto &p = ui.painter();
-        const auto &t = ui.theme();
-        Fade fade(p, k);
-        r.y += (1 - k) * 56;
-        const Track *tr = current();
-        float radius = t.radius_l();
-
-        // Background: the cover, blurred and stretched to fill, under a veil that keeps the text readable.
-        p.rect(r, t.bg.mix(t.surface, 0.5f), radius);
-        float aspect = r.w / r.h;
-        Rect uv = aspect > 1 ? Rect{0, (1 - 1 / aspect) / 2, 1, 1 / aspect} : Rect{(1 - aspect) / 2, 0, aspect, 1};
-        auto backdrop = [&](const std::string &url, float a) {
-            const auto &e = images_.get(cover_url(url, 128), 128, true);
-            if (!e.ready) {
-                return;
-            }
-            Fade f(p, a * ui.progress(e.ready_at, 600, ease::standard));
-            p.image(r, e.tex, radius, white, uv);
-        };
-        float change = ui.progress(cover_time_, 800, ease::standard);
-        if (change < 1 && !prev_.cover.empty()) {
-            backdrop(prev_.cover, 1 - change);
-        }
-        if (tr) {
-            backdrop(tr->cover, change);
-        }
-        p.gradient(r, t.bg.with_alpha(t.dark ? 0.42f : 0.84f), t.bg.with_alpha(t.dark ? 0.78f : 0.96f), radius);
-
-        // Over a bright cover a plain icon button disappears, so these keep a backing circle.
-        auto backed = [&](std::string_view id, Rect b, std::string_view icon, float size) {
-            ui::Id bid = ui.id(id);
-            auto it = ui.interact(bid, b);
-            float hot = ui.anim(bid, it.hovered ? 1 : 0, 150);
-            float down = ui.anim(ui::sub_id(bid, 0xd0), it.held && it.hovered ? 1 : 0, 90);
-            p.rect(b.inset(down * 2), t.surface.with_alpha(0.7f + 0.2f * hot), b.w / 2 - down * 2);
-            p.icon(icon, ui::center(b, size - down * 1.5f, size - down * 1.5f), t.text);
-            return it.clicked;
-        };
-        if (backed("np-close", {r.x + 16, r.y + 16, 36, 36}, "chevron-down", 22)) {
-            np_open_ = false;
-        }
-        if (tr && backed("np-comments", {r.right() - 52, r.y + 16, 36, 36}, "message-square", 18)) {
-            open_comments(ui, tr->source, Subject::song, tr->id, std::format("{} · {}", tr->title, tr->artist));
-        }
-        if (!tr) {
-            ui.label(r, lyren::tr("Nothing playing"), {.size = t.fs(14), .color = t.text_dim}, Align::center);
-            return;
-        }
-        const bool translated = std::ranges::any_of(lyrics_, [](const LyricLine &line) {
-            return !line.translation.empty();
-        });
-        if (translated && ui.button(ui.id("lyric-translation"), {r.right() - 210, r.y + 17, 148, 34}, lyren::tr(lyric_translation_ ? "Hide translation" : "Show translation"),
-                                    ui::ButtonKind::secondary, "languages")) {
-            toggle_translation();
-        }
-        // The lyrics move between the column beside the cover and the space under it.
-        lyrics_view(ui, mix(now_playing_layout(r, false).lyrics, now_playing_layout(r, true).lyrics, wide), 1 - wide);
-    }
-
-    void Shell::lyrics_view(ui::Ui &ui, Rect r, float centered) {
-        auto &p = ui.painter();
-        const auto &t = ui.theme();
-        TextStyle main{.size = t.fs(20)}, sub{.size = t.fs(14)};
-        const float main_lh = std::round(main.size * 1.5f), sub_lh = std::round(sub.size * 1.5f), gap = 18, soft = main.size * 0.8f;
-        if (lyrics_loading_) {
-            ui.spinner(ui::center(r, 22, 22), t.text_dim, 2);
-            return;
-        }
-        if (lyrics_.empty()) {
-            TextStyle st{.size = t.fs(16), .color = t.text_dim};
-            float w = p.measure(lyren::tr("No lyrics available"), st);
-            ui.label({r.x + (r.w - w) / 2 * centered, r.y, w + 1, r.h}, lyren::tr("No lyrics available"), st);
-            return;
-        }
-        if (lyric_layout_.size() != lyrics_.size() || lyric_layout_w_ != r.w || lyric_layout_size_ != main.size || lyric_layout_font_ != config_.theme.font) {
-            lyric_layout_.clear();
-            float y = 0;
-            for (const auto &l : lyrics_) {
-                LyricBlock b{.lines = wrap(p, l.text, main.size, r.w), .y = y};
-                if (lyric_translation_ && !l.translation.empty()) {
-                    b.translation = wrap(p, l.translation, sub.size, r.w);
-                }
-                b.h = static_cast<float>(b.lines.size()) * main_lh + static_cast<float>(b.translation.size()) * sub_lh;
-                y += b.h + gap;
-                lyric_layout_.push_back(std::move(b));
-            }
-            lyric_layout_w_ = r.w;
-            lyric_layout_size_ = main.size;
-            lyric_layout_font_ = config_.theme.font;
-        }
-        const auto &blocks = lyric_layout_;
-        float total = blocks.back().y + blocks.back().h;
-        // The line a little ahead, so its highlight lands with the voice rather than after it.
-        const double now = clip_start_ + last_pos_, lead = 0.2;
-        int cur = lyric_at(lyrics_, now + lead);
-        // A long pause before a line, at the start or after a word-timed line (the others do not say where they end):
-        // three dots take the stage and fill up until the line comes.
-        int pause = -1;
-        double pause_from = 0, pause_to = 0;
-        if (size_t n = static_cast<size_t>(cur + 1); n < lyrics_.size()) {
-            const LyricLine *before = cur >= 0 ? &lyrics_[static_cast<size_t>(cur)] : nullptr;
-            double from = !before ? 0 : before->words.empty() ? -1 : before->words.back().time() + before->words.back().duration() + 0.3;
-            double to = lyrics_[n].time - lead;
-            if (from >= 0 && to - from >= 5 && now >= from) {
-                pause = static_cast<int>(n), pause_from = from, pause_to = to;
-            }
-        }
-        // What the view centres on: 2i is line i, 2i - 1 the dots before it, which push it and the lines after it down.
-        const float dots_h = main_lh, room = dots_h + gap;
-        int focus = pause >= 0 ? 2 * pause - 1 : 2 * std::max(cur, 0);
-        float anchor = r.h * 0.4f;
-        auto aim = [&](int f, size_t i) {
-            int n = (f + 1) / 2;
-            const LyricBlock &b = blocks[static_cast<size_t>(n)];
-            float centre = (f % 2 ? b.y + dots_h / 2 : b.y + b.h / 2) - anchor;
-            return f % 2 && static_cast<int>(i) >= n ? centre - room : centre;
-        };
-        if (lyric_y_.size() != blocks.size()) {
-            lyric_y_.clear();
-            for (size_t i = 0; i < blocks.size(); ++i) {
-                lyric_y_.push_back({aim(focus, i)});
-            }
-            lyric_from_ = lyric_to_ = focus;
-        } else if (focus != lyric_to_) {
-            lyric_from_ = lyric_to_, lyric_to_ = focus, lyric_switch_ = ui.now;
-        }
-
-        // The wheel browses freely for a few seconds, then the view glides back to the current line.
-        if (ui.hovering(r) && ui.input().scroll_y != 0) {
-            if (ui.now >= lyric_manual_until_) {
-                lyric_manual_ = lyric_y_[static_cast<size_t>((focus + 1) / 2)].value;
-            }
-            lyric_manual_ = std::clamp(lyric_manual_ + ui.input().scroll_y, -anchor, total - anchor);
-            ui.input().scroll_y = 0;
-            lyric_manual_until_ = ui.now + 3;
-            ui.redraw();
-        }
-        bool manual = ui.now < lyric_manual_until_;
-        if (manual) {
-            ui.wake(lyric_manual_until_);
-        }
-        // Each line switches to the new position at its own time; frames can be far apart, so the time before and after
-        // that moment is stepped separately.
-        double last = lyric_last_;
-        lyric_last_ = ui.now;
-        bool moving = false;
-        for (size_t i = 0; i < blocks.size(); ++i) {
-            ui::Spring &s = lyric_y_[i];
-            float target = manual ? lyric_manual_ : aim(lyric_to_, i);
-            if (t.motion == 0) {
-                s = {target};
-                continue;
-            }
-            if (manual) {
-                s.advance(target, static_cast<float>(ui.now - last), 0.18f * t.motion);
-            } else {
-                double at = lyric_switch_ + 0.045 * std::clamp(static_cast<int>(i) - (lyric_to_ + 1) / 2, 0, 8) * t.motion;
-                if (at > last) {
-                    s.advance(aim(lyric_from_, i), static_cast<float>(std::min(ui.now, at) - last), 0.56f * t.motion);
-                }
-                if (at < ui.now) {
-                    s.advance(target, static_cast<float>(ui.now - std::max(last, at)), 0.56f * t.motion);
-                }
-                if (at > ui.now) {
-                    target = aim(lyric_from_, i);
-                }
-            }
-            if (std::abs(s.value - target) < 0.25f && std::abs(s.velocity) < 4) {
-                s = {target};
-            } else {
-                moving = true;
-            }
-        }
-        if (moving) {
-            ui.keep_animating();
-        }
-
-        ui.push_clip({r.x - 12, r.y, r.w + 24, r.h});
-        ui.push_id(ui.id("lyrics"));
-        int shown = 0;
-        std::vector<ui::Painter::Lift> lifts;
-        auto edge = [&](float top, float h) {
-            return std::clamp(std::min(top - r.y, r.bottom() - top - h) / 80, 0.f, 1.f);
-        };
-        for (size_t i = 0; i < blocks.size(); ++i) {
-            const LyricBlock &b = blocks[i];
-            float top = r.y + b.y - lyric_y_[i].value;
-            if (static_cast<int>(i) == pause) {
-                // The dots grow in, breathe, light up one by one over the pause and shrink away just before the line.
-                float dt = static_cast<float>(now - pause_from), done = static_cast<float>((now - pause_from) / (pause_to - pause_from));
-                float show = std::min(smooth01(dt / 0.4f), smooth01(static_cast<float>(pause_to - now) / 0.45f));
-                float d = std::round(main.size * 0.5f), step = d * 1.75f, w = d + 2 * step;
-                float cy = top - gap - dots_h / 2;
-                float s = (0.6f + 0.4f * show) * (1 + (t.motion > 0 ? 0.06f : 0) * std::sin(dt * std::numbers::pi_v<float> * 1.25f));
-                float x0 = r.x + (r.w - w) / 2 * centered + d / 2;
-                for (int k = 0; k < 3; ++k) {
-                    float fill = smooth01(done * 3 - static_cast<float>(k)), dd = d * s;
-                    float cx = x0 + (static_cast<float>(k) * step) * s + (1 - s) * (w / 2 - d / 2) * centered;
-                    p.rect({cx - dd / 2, cy - dd / 2, dd, dd}, t.text.with_alpha((0.3f + 0.65f * fill) * show * edge(cy - dots_h / 2, dots_h)), dd / 2);
-                }
-            }
-            if (top + b.h < r.y || top > r.bottom()) {
-                continue;
-            }
-            // When the lyrics arrive, the lines come in one after another.
-            float in = ui.progress(lyrics_since_ + 0.03 * std::min(shown++, 12), 420);
-            top += (1 - in) * 14;
-            ui::Id id = ui.id(static_cast<uint64_t>(i));
-            Rect hit{r.x - 12, top - gap / 2, r.w + 24, b.h + gap};
-            auto it = ui.interact(id, hit);
-            float hot = ui.anim(id, it.hovered ? 1 : 0, 150);
-            bool current = static_cast<int>(i) == cur && pause < 0;
-            float on = ui.anim(ui::sub_id(id, 1), current ? 1 : 0, 420, ease::standard);
-            // The current line stands a little larger than the rest.
-            float scale = ui.spring(ui::sub_id(id, 2), current ? 1 : 0.94f, 480);
-            // Lines fade with distance from the current one and towards the edges.
-            float d = static_cast<float>(std::abs(static_cast<int>(i) - (focus + 1) / 2));
-            float base = std::max(0.2f, 0.5f - 0.06f * (d - 1));
-            float a = (base + (1 - base) * on) * edge(top, b.h) * in;
-            // A word-timed current line lights up as it is sung, and each word rises a little as it starts.
-            const LyricLine &l = lyrics_[i];
-            bool wipe = current && !l.words.empty();
-            ui::Color unsung = t.text.with_alpha((base + (1 - base) * 0.25f * on) * edge(top, b.h) * in);
-            if (hot > 0) {
-                p.rect(hit, t.text.with_alpha(0.06f * hot), t.radius_s());
-            }
-            p.set_zoom(scale, r.x + r.w / 2 * centered, top + b.h / 2);
-            float y = top;
-            auto line = [&](std::string_view s, const TextStyle &st, float lh, ui::Color c, bool wiped) {
-                float x = r.x + (r.w - std::min(p.measure(s, st), r.w)) / 2 * centered;
-                if (wiped) {
-                    p.set_wipe(x + sung_x(p, l, s, st.size, soft, now), soft, unsung);
-                }
-                lifts.clear();
-                if (on > 0 && &st == &main) {
-                    auto from = static_cast<uint32_t>(s.data() - l.text.data());
-                    for (const LyricWord &w : l.words) {
-                        if (w.to <= from || w.from >= from + s.size()) {
-                            continue;
-                        }
-                        double sung = w.duration() > 0 ? std::clamp((now - w.time()) / w.duration(), 0.0, 1.0) : now >= w.time();
-                        lifts.push_back({w.from > from ? w.from - from : 0, main.size * 0.1f * on * static_cast<float>(1 - (1 - sung) * (1 - sung))});
-                    }
-                }
-                p.set_lifts(lifts);
-                p.text(x, y + lh * 0.72f, s, {.size = st.size, .color = c}, r.w);
-                p.set_lifts({});
-                p.clear_wipe();
-                y += lh;
-            };
-            for (auto s : b.lines) {
-                line(s, main, main_lh, t.text.with_alpha(a), wipe);
-            }
-            for (auto s : b.translation) {
-                line(s, sub, sub_lh, t.text.with_alpha(a * 0.75f), false);
-            }
-            p.set_zoom(1);
-            if (it.clicked) {
-                seek(std::max(0.0, lyrics_[i].time - clip_start_));
-                lyric_manual_until_ = 0;
-            }
-        }
-        ui.pop_id();
-        ui.pop_clip();
-
-        // A wipe or the dots move with the music; otherwise nothing changes before the next line.
-        if (!playing()) {
-            return;
-        }
-        if (pause >= 0 || (cur >= 0 && !lyrics_[static_cast<size_t>(cur)].words.empty())) {
-            ui.keep_animating();
-        } else if (size_t next = static_cast<size_t>(cur + 1); next < lyrics_.size()) {
-            ui.wake(ui.now + (lyrics_[next].time - lead - now));
-        }
     }
 
     void Shell::account_modal(ui::Ui &ui, Rect r) {
@@ -3751,8 +3296,10 @@ namespace lyren {
                                                                                : lyren::tr("Not signed in");
                 ui.label({avatar.right() + 14, row.y + 34, 180, 18}, status, {.size = t.fs(12), .color = signed_in ? t.accent : t.text_dim});
                 ui::Id id = ui.id(entry.id);
-                Rect b{row.right() - 108, row.y + 15, 94, 34};
-                if (provider(entry.source).logged_in()) {
+                const bool in = provider(entry.source).logged_in();
+                const float bw = button_width(ui, in ? lyren::tr("Sign out") : lyren::tr("Scan to sign in"), true);
+                Rect b{row.right() - 14 - bw, row.y + 15, bw, 34};
+                if (in) {
                     if (ui.button(id, b, lyren::tr("Sign out"), ui::ButtonKind::ghost, "log-out")) {
                         spawn(logout(entry.source));
                     }
@@ -3762,7 +3309,7 @@ namespace lyren {
                     spawn(qr_login());
                 }
             }
-            ui.label({r.x, r.bottom() - 18, r.w, 18}, lyren::tr("Credentials are encrypted on this device for your account"), {.size = t.fs(12), .color = t.text_dim});
+            ui.label({r.x, r.bottom() - 18, r.w, 18}, lyren::tr("Sign-ins are encrypted on this device"), {.size = t.fs(12), .color = t.text_dim});
             return;
         }
 
@@ -3848,7 +3395,8 @@ namespace lyren {
         }
         ui.label({sx + (spin ? 26 : 0), sy, tw + 1, 20}, line1, st);
         ui.label({r.x, sy + 30, r.w, 20}, line2, {.size = t.fs(12), .color = t.text_dim}, Align::center);
-        if (ui.button(ui.id("qr-refresh"), {r.x + (r.w - 132) / 2, r.bottom() - 36, 132, 34}, lyren::tr("Refresh QR code"), ui::ButtonKind::secondary, "refresh-cw")) {
+        float refresh_w = button_width(ui, lyren::tr("Refresh QR code"), true);
+        if (ui.button(ui.id("qr-refresh"), {r.x + (r.w - refresh_w) / 2, r.bottom() - 36, refresh_w, 34}, lyren::tr("Refresh QR code"), ui::ButtonKind::secondary, "refresh-cw")) {
             spawn(qr_login());
         }
     }
@@ -3897,163 +3445,6 @@ namespace lyren {
         }
     }
 
-    void Shell::open_comments(ui::Ui &ui, Source source, Subject subject, std::string id, std::string title) {
-        thread_source_ = source;
-        thread_subject_ = subject;
-        thread_id_ = std::move(id);
-        thread_title_ = std::move(title);
-        thread_tab_ = 0;
-        thread_time_ = ui.now;
-        ++thread_gen_;
-        for (auto &f : feeds_) {
-            f = {};
-        }
-        for (const char *sid : {"comments-hot", "comments-new"}) {
-            ui.scroll_to(ui.id(sid), 0);
-        }
-        load_comments(0);
-        ui.open_modal(600, 640, [this](ui::Ui &u, Rect r) {
-            comments_modal(u, r);
-        });
-    }
-
-    void Shell::load_comments(int tab) {
-        Feed &f = feeds_[tab];
-        if (f.loading || !f.more || (f.page && !f.error.empty())) {
-            return;
-        }
-        f.loading = true;
-        f.error.clear();
-        spawn(fetch_comments(thread_gen_, tab, f.page + 1, f.cursor));
-    }
-
-    Task<void> Shell::fetch_comments(uint64_t gen, int tab, int page, std::string cursor) {
-        auto r = co_await provider(thread_source_).comments(thread_subject_, thread_id_, tab == 0, page, std::move(cursor));
-        if (gen != thread_gen_) {
-            co_return;
-        }
-        Feed &f = feeds_[tab];
-        f.loading = false;
-        if (!r) {
-            f.error = r.error();
-            co_return redraw_();
-        }
-        if (!f.page) {
-            f.since = now_();
-        }
-        f.page = page;
-        f.total = r->total;
-        f.more = r->more && !r->comments.empty();
-        f.cursor = std::move(r->cursor);
-        f.comments.insert(f.comments.end(), std::make_move_iterator(r->comments.begin()), std::make_move_iterator(r->comments.end()));
-        redraw_();
-    }
-
-    void Shell::comments_modal(ui::Ui &ui, Rect r) {
-        auto &p = ui.painter();
-        const auto &t = ui.theme();
-        ui.resize_modal(600, std::min(ui.height - 80, 720.f));
-        ui.label({r.x, r.y, r.w - 40, 30}, lyren::tr("Comments"), {.size = t.fs(20), .color = t.text});
-        ui.label({r.x, r.y + 32, r.w - 40, 20}, thread_title_, {.size = t.fs(13), .color = t.text_dim});
-        const std::array<std::string_view, 2> tabs = {lyren::tr("Popular"), lyren::tr("Newest")};
-        if (ui.tabs(ui.id("comment-tabs"), {r.x, r.y + 66, 140, 34}, tabs, thread_tab_)) {
-            thread_time_ = ui.now;
-            load_comments(thread_tab_);
-        }
-        Feed &f = feeds_[thread_tab_];
-        if (f.total > 0) {
-            ui.label({r.x, r.y + 74, r.w, 20}, lyren::trf("{} comments", f.total), {.size = t.fs(12), .color = t.text_dim}, Align::right);
-        }
-        p.rect({r.x, r.y + 100, r.w, 1}, t.border);
-
-        float enter = ui.progress(thread_time_, 380);
-        Fade fade(p, enter);
-        // The view reaches into the panel's padding so the scrollbar sits by its edge.
-        Rect view{r.x + (1 - enter) * 28 * (thread_tab_ ? 1 : -1), r.y + 101, r.w + 18, r.h - 101};
-        const float w = r.w;
-        if (f.comments.empty()) {
-            page_status(ui, view, f.loading, f.error.empty() && !f.loading ? std::string(lyren::tr("No comments yet")) : f.error, false);
-            return;
-        }
-        // Heights are kept, the wrapped lines are not: they would point into comments that move as more arrive.
-        float size = t.fs(14);
-        if (f.heights_w != w || f.heights_size != size) {
-            f.heights.clear(), f.heights_w = w, f.heights_size = size;
-        }
-        while (f.heights.size() < f.comments.size()) {
-            f.heights.push_back(comment(ui, f.comments[f.heights.size()], 0, 0, w, false));
-        }
-        float content = (f.loading ? 64 : 16);
-        for (float h : f.heights) {
-            content += h;
-        }
-        float off = ui.begin_scroll(ui.id(thread_tab_ ? "comments-new" : "comments-hot"), view, content);
-        Rect clip = ui.clip();
-        float y = view.y - off;
-        for (size_t i = 0; i < f.comments.size(); ++i) {
-            float h = f.heights[i];
-            if (y + h > clip.y && y < clip.bottom()) {
-                // The first page arrives one comment after another.
-                float a = ui.progress(f.since + 0.03 * static_cast<double>(std::min<size_t>(i, 10)), 380);
-                Fade arrive(p, a);
-                comment(ui, f.comments[i], view.x, y + (1 - a) * 12, w, true);
-            }
-            y += h;
-        }
-        if (f.loading) {
-            ui.spinner(ui::center({view.x, y, w, 64}, 20, 20), t.text_dim, 2);
-        } else if (f.more && y < view.bottom() + 400) {
-            load_comments(thread_tab_);
-        }
-        ui.end_scroll();
-    }
-
-    float Shell::comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw) {
-        auto &p = ui.painter();
-        const auto &t = ui.theme();
-        TextStyle body{.size = t.fs(14), .color = t.text}, quote{.size = t.fs(13), .color = t.text_dim}, small{.size = t.fs(12), .color = t.text_dim};
-        const float lh = std::round(body.size * 1.6f), qh = std::round(quote.size * 1.6f), tx = x + 50, tw = w - 50;
-        std::string replied = c.reply.empty() ? "" : std::format("@{}：{}", c.reply_user, c.reply);
-        auto lines = wrap_lines(p, c.text, body.size, tw);
-        std::vector<std::string_view> quoted;
-        if (!replied.empty()) {
-            quoted = wrap_lines(p, replied, quote.size, tw - 24);
-        }
-        // Avatar and name, the text, the comment it answers, the time.
-        float quote_h = quoted.empty() ? 0 : static_cast<float>(quoted.size()) * qh + 26;
-        float h = 18 + 22 + static_cast<float>(lines.size()) * lh + quote_h + 26 + 16;
-        if (!draw) {
-            return h;
-        }
-        float top = y + 18;
-        cover(ui, {x, top, 36, 36}, c.avatar, 18, "user");
-        if (c.likes > 0) {
-            std::string n = short_count(c.likes);
-            float nw = p.measure(n, small);
-            ui.label({x + w - nw, top, nw + 1, 18}, n, small);
-            p.icon("thumbs-up", {x + w - nw - 19, top + 2, 14, 14}, t.text_dim);
-        }
-        p.text(tx, top + 14, c.user, {.size = t.fs(13), .color = t.text_dim}, tw - 90);
-        float ly = top + 22;
-        for (auto l : lines) {
-            p.text(tx, ly + lh * 0.72f, l, body, tw);
-            ly += lh;
-        }
-        if (!quoted.empty()) {
-            Rect q{tx, ly + 10, tw, quote_h - 10};
-            p.rect(q, t.text.with_alpha(0.05f), t.radius_s());
-            float qy = q.y + 8;
-            for (auto l : quoted) {
-                p.text(q.x + 12, qy + qh * 0.72f, l, quote, tw - 24);
-                qy += qh;
-            }
-            ly += quote_h;
-        }
-        p.text(tx, ly + 20, c.time, {.size = small.size, .color = t.text_dim.with_alpha(0.7f)}, tw);
-        p.rect({tx, y + h - 1, tw, 1}, t.border);
-        return h;
-    }
-
     void Shell::open_editor(ui::Ui &ui, Card card, std::optional<Track> track) {
         edit_name_ = card.title;
         edit_hidden_ = false;
@@ -4083,8 +3474,10 @@ namespace lyren {
             ui.label({r.x, y + 22, r.w - 60, 18}, lyren::tr("Only you can see it"), {.size = t.fs(12), .color = t.text_dim});
             ui.toggle(ui.id("playlist-hidden"), {r.right() - 40, y + 9, 40, 22}, edit_hidden_);
         }
-        Rect ok{r.right() - 96, r.bottom() - 38, 96, 38};
-        if (ui.button(ui.id("playlist-cancel"), {ok.x - 92, ok.y, 84, 38}, lyren::tr("Cancel"), ui::ButtonKind::ghost)) {
+        float ok_w = std::max(96.f, button_width(ui, create ? lyren::tr("Create") : lyren::tr("Save changes"), false));
+        float cancel_w = std::max(84.f, button_width(ui, lyren::tr("Cancel"), false));
+        Rect ok{r.right() - ok_w, r.bottom() - 38, ok_w, 38};
+        if (ui.button(ui.id("playlist-cancel"), {ok.x - cancel_w - 8, ok.y, cancel_w, 38}, lyren::tr("Cancel"), ui::ButtonKind::ghost)) {
             ui.close_modal();
         }
         submit |= ui.button(ui.id("playlist-save"), ok, create ? lyren::tr("Create") : lyren::tr("Save changes"), ui::ButtonKind::primary);
@@ -4134,8 +3527,9 @@ namespace lyren {
             const auto &t = u.theme();
             u.label({r.x, r.y, r.w - 40, 30}, lyren::tr("Delete playlist"), {.size = t.fs(20), .color = t.text});
             u.label({r.x, r.y + 48, r.w, 20}, lyren::trf("{} will be permanently deleted.", card.title), {.size = t.fs(13), .color = t.text_dim});
-            Rect ok{r.right() - 96, r.bottom() - 38, 96, 38};
-            if (u.button(u.id("delete-cancel"), {ok.x - 92, ok.y, 84, 38}, lyren::tr("Cancel"), ui::ButtonKind::ghost)) {
+            float ok_w = std::max(96.f, button_width(u, lyren::tr("Delete"), true)), cancel_w = std::max(84.f, button_width(u, lyren::tr("Cancel"), false));
+            Rect ok{r.right() - ok_w, r.bottom() - 38, ok_w, 38};
+            if (u.button(u.id("delete-cancel"), {ok.x - cancel_w - 8, ok.y, cancel_w, 38}, lyren::tr("Cancel"), ui::ButtonKind::ghost)) {
                 u.close_modal();
             }
             if (!u.button(u.id("delete-ok"), ok, lyren::tr("Delete"), ui::ButtonKind::primary, "trash")) {

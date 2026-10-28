@@ -20,6 +20,7 @@ namespace lyren {
             bool ready = false, failed = false;
             double ready_at = 0; // for the fade-in; for failures, when to try again
             float hue = -1;      // dominant hue, negative for colourless images
+            float luma = 0;      // mean luminance (0..1)
             uint32_t px = 0;
             size_t bytes = 0;
             uint64_t used = 0; // last frame it was asked for

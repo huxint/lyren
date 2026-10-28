@@ -73,8 +73,7 @@ namespace lyren {
             std::string color = "#ffffff";
             std::string outline = "#000000a0";
             struct Island {
-                bool cover = true, progress = true;
-                bool details = false, controls = false, volume = false;
+                bool cover = true, progress = true; // the ring goes round the cover, so it needs it
             } island;
         } desktop_lyrics;
     };

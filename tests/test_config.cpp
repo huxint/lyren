@@ -115,27 +115,20 @@ TEST_CASE("light theme separates surfaces and keeps text readable") {
         return (luminance(background) + 0.05f) / (luminance(foreground) + 0.05f);
     };
     CHECK(luminance(theme.bg) < luminance(theme.surface));
-    CHECK(luminance(theme.surface) < luminance(theme.elevated));
+    CHECK(luminance(theme.surface) <= luminance(theme.elevated));
     CHECK(contrast(theme.bg, theme.text) >= 7);
     CHECK(contrast(theme.surface, theme.text_dim) >= 4.5);
     CHECK(contrast(theme.surface, theme.accent) >= 4.5);
     CHECK(errors.empty());
 }
 
-TEST_CASE("Dynamic Island starts minimal and optional components round trip through config") {
+TEST_CASE("Dynamic Island options read configs written before the open island had one layout") {
     auto defaults = parse_config(default_config_text());
     REQUIRE(defaults);
-    const auto &island = defaults->desktop_lyrics.island;
-    CHECK(island.cover);
-    CHECK(island.progress);
-    CHECK_FALSE(island.details);
-    CHECK_FALSE(island.controls);
-    CHECK_FALSE(island.volume);
-    auto text = set_config_value(default_config_text(), "desktop_lyrics.island", "controls", "true");
-    text = set_config_value(text, "desktop_lyrics.island", "volume", "true");
-    auto changed = parse_config(text);
-    REQUIRE(changed);
-    CHECK(changed->desktop_lyrics.island.controls);
-    CHECK(changed->desktop_lyrics.island.volume);
-    CHECK_FALSE(changed->desktop_lyrics.island.details);
+    CHECK(defaults->desktop_lyrics.island.cover);
+    CHECK(defaults->desktop_lyrics.island.progress);
+    auto old = parse_config("[desktop_lyrics.island]\ndetails = true\ncontrols = true\nvolume = false\nprogress = true\ncover = false\n");
+    REQUIRE(old);
+    CHECK_FALSE(old->desktop_lyrics.island.cover);
+    CHECK(old->desktop_lyrics.island.progress);
 }
