@@ -83,6 +83,10 @@ namespace lyren::wl {
 
         void move();
         void resize(uint32_t xdg_edges);
+        // Takes another size, as a floating window may; the compositor follows the next commit (scripted runs).
+        void set_size(int width, int height) {
+            width_ = width, height_ = height, geometry_dirty_ = true;
+        }
         void show_menu(int x, int y);
         void minimize();
         void toggle_maximize();

@@ -253,6 +253,17 @@ namespace lyren::ui {
         void end_scroll();
         // smooth: glide there like the wheel does.
         void scroll_to(Id id, float offset, bool smooth = false);
+        // Where the view stands, as of its last frame.
+        float scroll_offset(Id id) const {
+            auto it = scrolls_.find(id);
+            return it == scrolls_.end() ? 0 : it->second.offset;
+        }
+        // Moves the view, and any glide under way, by delta at once; the next begin_scroll keeps it in range. For keeping
+        // what is on show in place when the content around it is laid out anew.
+        void scroll_by(Id id, float delta) {
+            Scroll &s = scrolls_[id];
+            s.offset += delta, s.target += delta;
+        }
 
         void open_menu(float x, float y, std::vector<MenuItem> items);
         bool menu_open() const {

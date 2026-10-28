@@ -223,7 +223,8 @@ namespace lyren {
 
         float enter = ui.progress(thread_time_, 380);
         Fade fade(p, enter);
-        Rect view{r.x, r.y + 125, r.w, r.h - 125};
+        // Like the queue, the list stops 8 px short of the panel's bottom edge.
+        Rect view{r.x, r.y + 125, r.w, r.h - 125 - 8};
         const float x = r.x + 18 + (1 - enter) * 20 * (thread_tab_ ? 1 : -1), w = r.w - 36;
         if (f.comments.empty()) {
             page_status(ui, view, f.loading, f.error.empty() && !f.loading ? std::string(lyren::tr("No comments yet")) : f.error, false);

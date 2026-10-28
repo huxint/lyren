@@ -75,6 +75,16 @@ TEST_CASE("scroll motion requests paced animation frames after consuming input")
         frame(1);
         CHECK(frame(2) == doctest::Approx(400));
     }
+    SUBCASE("layout anchoring preserves a wheel glide") {
+        input.scroll_y = 400;
+        input.wheel = true;
+        frame(1);
+        const float before = frame(1.016);
+        ui.scroll_by(ui.id("scroll"), 300);
+        CHECK(frame(1.032) > before + 300);
+        CHECK(ui.animating());
+        CHECK(frame(2) == doctest::Approx(700));
+    }
     SUBCASE("coast distance is independent of frame rate") {
         for (int fps : {15, 60, 144}) {
             CAPTURE(fps);

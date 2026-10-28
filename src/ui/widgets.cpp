@@ -115,8 +115,9 @@ namespace lyren::ui {
             }
             return {x, r.y, p_->measure(labels[static_cast<size_t>(i)], st) + pad, r.h};
         };
+        // The indicator springs within the bar, so it stays under its tab while the bar itself moves.
         Rect sel = cell(selected);
-        float ix = spring(sub_id(id, 1), sel.x, 260), iw = spring(sub_id(id, 2), sel.w, 260);
+        float ix = r.x + spring(sub_id(id, 1), sel.x - r.x, 260), iw = spring(sub_id(id, 2), sel.w, 260);
         if (pill) {
             p_->rect(r, t.text.with_alpha(0.06f), r.h / 2);
             p_->shadow({ix + 2, r.y + 3, iw - 4, r.h - 4}, (r.h - 4) / 2, 6, t.shadow.with_alpha(0.5f));
@@ -160,7 +161,7 @@ namespace lyren::ui {
         const float n = static_cast<float>(labels.size()), w = r.w / n;
         p_->rect(r, t.text.with_alpha(t.dark ? 0.07f : 0.055f), r.h / 2);
         float shown = anim(sub_id(id, 2), selected >= 0 ? 1 : 0, 150);
-        float x = spring(sub_id(id, 1), r.x + w * static_cast<float>(std::max(selected, 0)), 260);
+        float x = r.x + w * spring(sub_id(id, 1), static_cast<float>(std::max(selected, 0)), 260);
         if (shown > 0) {
             Rect thumb = Rect{x, r.y, w, r.h}.inset(3);
             if (!t.dark) {

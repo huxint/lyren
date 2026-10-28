@@ -1947,8 +1947,8 @@ namespace lyren {
         float side_w = ui.spring(ui.id("side-w"), compact_ ? 72 : 220, 320);
         Rect side = ui::cut_left(area, side_w);
         ui::cut_right(area, 8);
-        // On the stage the comments follow the music, loaded ahead for the count on its button, unless the panel is
-        // showing others.
+        // On the stage the comments follow the music, loaded ahead so they open at once, unless the panel is showing
+        // others.
         if (const Track *tr = current(); tr && np_open_ && !(panel_ == Panel::comments && !thread_follows_) &&
                                          !(thread_follows_ && thread_subject_ == Subject::song && thread_id_ == tr->id && thread_source_ == tr->source)) {
             set_thread(ui, tr->source, Subject::song, tr->id, tr->title + " · " + tr->artist, tr->cover, true);
@@ -3053,7 +3053,7 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         float side_w = std::min(330.f, std::round(r.w * 0.3f));
-        Rect left = ui::cut_left(r, side_w);
+        ui::cut_left(r, side_w);
         Rect right = ui::cut_right(r, side_w), mid = r;
         const Track *tr = current();
         auto st = player_.state();
@@ -3198,37 +3198,16 @@ namespace lyren {
             ui.open_menu(desktop.x, desktop.y, std::move(menu));
         }
 
-        // On the stage the cover and title have gone up, and their place holds what goes with the song on show: its
-        // comments, with how many there are, and the translation of its lyrics. They come once the title is clear, and
-        // keep their places while the next song's comments and lyrics load.
+        // On the stage, before the desktop lyrics: the comments on the song on show, under the panel they open, and the
+        // translation of its lyrics when they have one, which keeps its place while the next song's lyrics load. They
+        // come in once the stage is nearly up.
         if (const float shown = smooth01((stage - 0.7f) / 0.3f); tr && shown > 0) {
             Fade fade(p, shown);
             ui.disabled = shown < 0.9f;
+            const float x = desktop.x + 8 * (1 - shown);
             const bool following = thread_follows_ && thread_subject_ == Subject::song && thread_id_ == tr->id && thread_source_ == tr->source;
             const bool on = panel_ == Panel::comments && following;
-            const Feed &feed = feeds_[0];
-            const std::string total = following && feed.total > 0 ? short_count(feed.total) : "";
-            TextStyle count{.size = t.fs(12), .features = text::tabular_nums};
-            const ui::Id id = ui.id("comments"), wid = ui::sub_id(id, 1);
-            const float target = total.empty() ? 32 : std::round(30 + p.measure(total, count) + 12);
-            const float bw = ui.spring(wid, following && feed.loading ? ui.spring_value(wid, 32) : target, 300);
-            const Rect b{left.x + 20, cy - 16, bw, 32};
-            const auto it = ui.interact(id, b);
-            const float hot = ui.anim(id, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(id, 0xd0), it.held && it.hovered ? 1 : 0, 90);
-            const Rect face = b.inset(down * 2);
-            if (hot > 0) {
-                p.rect(face, t.text.with_alpha((0.08f + 0.05f * down) * hot), face.h / 2);
-            }
-            const ui::Color fg = on ? t.accent : t.text_dim.mix(t.text, hot);
-            p.icon("message-square", ui::center({b.x, b.y, 32, 32}, 17 - down * 1.5f, 17 - down * 1.5f), fg);
-            // The count is uncovered as the button widens.
-            if (const float a = ui.anim(ui::sub_id(id, 2), total.empty() ? 0 : 1, 220); !total.empty()) {
-                count.color = fg.with_alpha(a);
-                ui.push_clip(b);
-                p.text_in({b.x + 30, b.y, 200, b.h}, total, count);
-                ui.pop_clip();
-            }
-            if (it.clicked) {
+            if (ui.icon_button(ui.id("comments"), {x - 40, cy - 16, 32, 32}, "message-square", 17, on)) {
                 if (on) {
                     show_panel(Panel::none);
                 } else {
@@ -3243,7 +3222,7 @@ namespace lyren {
             if (present > 0.01f) {
                 Fade appear(p, std::clamp(present, 0.f, 1.f));
                 ui.disabled = ui.disabled || present < 0.5f;
-                if (ui.icon_button(tid, {b.right() + 6, cy - 16, 32, 32}, "languages", 17, lyric_translation_)) {
+                if (ui.icon_button(tid, {x - 80, cy - 16, 32, 32}, "languages", 17, lyric_translation_)) {
                     toggle_translation();
                 }
             }

@@ -765,6 +765,11 @@ namespace lyren {
                 });
                 (to_lyrics ? lyrics_hash_ : frame_hash_) = 0;
                 request_redraw();
+            } else if (cmd == "resize") {
+                int w = 0, h = 0;
+                args >> w >> h;
+                window_->set_size(std::max(w, 720), std::max(h, 480));
+                request_redraw();
             } else if (cmd == "exec") {
                 pid_t pid;
                 std::array<const char *, 4> argv = {"sh", "-c", rest.c_str(), nullptr};

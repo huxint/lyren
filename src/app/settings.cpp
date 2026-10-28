@@ -27,6 +27,11 @@ namespace lyren {
         constexpr std::array<double, 3> motions{0, 1, 1.5};
         constexpr std::array<int, 6> frame_rates{0, 30, 60, 90, 120, 144};
         constexpr float bar_h = 52; // the tab bar
+        // The cards sit in one column up to 720 wide or, once two of 460 fit, each section's side by side, up to 1160 in
+        // all. The nine cards in order: the section each is in and its column when there are two.
+        constexpr float one_column = 720, two_columns = 1160, column_gap = 20, two_from = 2 * 460 + column_gap;
+        constexpr float card_gap = 14, section_gap = 44;
+        constexpr std::array<int, 9> card_section{0, 0, 1, 1, 2, 2, 2, 3, 3}, card_column{0, 1, 0, 1, 0, 1, 0, 0, 1};
 
         bool same_color(std::string_view a, std::string_view b) {
             auto x = ui::parse_color(a), y = ui::parse_color(b);
@@ -39,17 +44,90 @@ namespace lyren {
         const auto &t = ui.theme();
         const std::array<std::string_view, 4> sections{lyren::tr("Appearance"), lyren::tr("Playback"), lyren::tr("Lyrics"), lyren::tr("General")};
         const ui::Id scroll_id = ui.id("settings");
-        const float off = ui.begin_scroll(scroll_id, r, settings_height_);
-        const float x = r.x + 32, w = std::min(r.w - 64, 720.f);
+
+        // The layout in content coordinates, from the cards' heights as last drawn: the four headings, the nine cards, and
+        // last the title and tab bar, whose height is the content's. A 12 px dead band keeps the columns from flipping
+        // back and forth.
+        const float room = r.w - 64;
+        const int columns = room >= two_from + (settings_columns_ == 2 ? -12.f : settings_columns_ == 1 ? 12.f : 0.f) ? 2 : 1;
+        const float content_w = std::min(room, columns == 2 ? two_columns : one_column), column_w = columns == 2 ? (content_w - column_gap) / 2 : content_w;
+        const float left = 32 + (room - content_w) / 2;
+        std::array<Rect, 14> layout;
+        {
+            float y = 28 + 76 + bar_h + 12;
+            for (size_t s = 0; s < sections.size(); ++s) {
+                layout[s] = {left, y, content_w, 28};
+                settings_tops_[s] = y;
+                std::array<float, 2> bottom{y + 44, y + 44};
+                for (size_t c = 0; c < card_section.size(); ++c) {
+                    if (card_section[c] == static_cast<int>(s)) {
+                        const size_t col = columns == 2 ? static_cast<size_t>(card_column[c]) : 0;
+                        layout[4 + c] = {left + static_cast<float>(col) * (column_w + column_gap), bottom[col], column_w, settings_heights_[c]};
+                        bottom[col] += settings_heights_[c] + card_gap;
+                    }
+                }
+                y = std::max(bottom[0], bottom[1]) - card_gap + section_gap;
+            }
+            layout[13] = {left, 0, content_w, y - section_gap + 54};
+        }
+        // Between one column and two, everything glides from where it was drawn, and the section on show keeps its place
+        // in the view. A page entered afresh starts in place.
+        if (settings_drawn_ < page_time_) {
+            settings_columns_ = columns;
+            settings_moved_ = -10;
+        }
+        if (columns != settings_columns_) {
+            const auto section = static_cast<size_t>(settings_section_);
+            const float view = ui.scroll_offset(scroll_id);
+            const float moved = std::clamp(view + layout[section].y - settings_shown_[section].y, 0.f, std::max(0.f, layout[13].h - r.h)) - view;
+            ui.scroll_by(scroll_id, moved);
+            settings_from_ = settings_shown_;
+            for (Rect &from : settings_from_) {
+                from.y += moved;
+            }
+            settings_columns_ = columns, settings_moved_ = ui.now;
+        }
+        settings_drawn_ = ui.now;
+        std::array<Rect, 14> at = layout;
+        if (const float k = ui.progress(settings_moved_, 460); k < 1) {
+            for (size_t i = 0; i < at.size(); ++i) {
+                at[i] = mix(settings_from_[i], layout[i], k);
+            }
+        }
+        settings_shown_ = at;
+
+        const float off = ui.begin_scroll(scroll_id, r, layout[13].h);
         const float origin = r.y - off; // content coordinates start here
-        float y = origin + 28;
-        ui.label({x, y, w, 38}, lyren::tr("Settings"), {.size = t.fs(28), .color = t.text});
-        ui.label({x, y + 42, w, 20}, lyren::tr("Changes apply right away"), {.size = t.fs(13), .color = t.text_dim});
-        y += 76;
-        // The tab bar sits here until it reaches the top, then stays there over the content.
-        const float bar_natural = y, bar_y = std::max(r.y, bar_natural);
-        y += bar_h + 12;
+        const Rect frame{r.x + at[13].x, origin, at[13].w, 0};
+        ui.label({frame.x, origin + 28, frame.w, 38}, lyren::tr("Settings"), {.size = t.fs(28), .color = t.text});
+        ui.label({frame.x, origin + 70, frame.w, 20}, lyren::tr("Changes apply right away"), {.size = t.fs(13), .color = t.text_dim});
+        // The tab bar sits under the title until it reaches the top, then stays there over the content.
+        const float bar_natural = origin + 104, bar_y = std::max(r.y, bar_natural);
         ui.push_clip({r.x, bar_y + bar_h, r.w, std::max(0.f, r.bottom() - bar_y - bar_h)});
+
+        // Each card is drawn where the layout puts it, its rows stacked from its top, and its height kept for the next
+        // frame's layout. The cards rise in one after another as the page opens.
+        const float page_alpha = p.alpha();
+        float x = 0, w = 0, y = 0, top = 0;
+        int drawing = -1;
+        auto place = [&](int c) {
+            if (drawing >= 0) {
+                settings_heights_[static_cast<size_t>(drawing)] = y - top;
+            }
+            drawing = c;
+            if (c < 0) {
+                p.set_alpha(page_alpha);
+                return;
+            }
+            const Rect &b = at[4 + static_cast<size_t>(c)];
+            const float in = ui.progress(page_time_ + 0.03 * c, 420);
+            p.set_alpha(page_alpha * in);
+            x = r.x + b.x, w = b.w, y = top = origin + b.y + (1 - in) * 12;
+        };
+        auto heading = [&](size_t s) {
+            p.set_alpha(page_alpha);
+            ui.label({r.x + at[s].x, origin + at[s].y, at[s].w, 28}, sections[s], {.size = t.fs(20), .color = t.text});
+        };
 
         // Cards are rows stacked edge to edge: the first and last round the corners, hairlines part the rest.
         const float radius = t.radius_l() * 0.8f;
@@ -60,7 +138,7 @@ namespace lyren {
             if (!first) {
                 p.rect({x + 18, y, w - 36, 1}, t.border.with_alpha(t.dark ? 0.8f : 1));
             }
-            y += h + (last ? 14 : 0);
+            y += h;
             return rr;
         };
         // A row's title and hint on the left of a control control_w wide.
@@ -121,11 +199,16 @@ namespace lyren {
             caption(rr, title, hint, bw);
             return ui.button(ui.id(id), {rr.right() - 18 - bw, rr.y + (rr.h - 34) / 2, bw, 34}, label, ui::ButtonKind::secondary, icon);
         };
-        // A row of colour swatches, right-aligned; one ring glides to the chosen one. paint draws swatch i into its circle.
-        auto swatches = [&](std::string_view id, Rect rr, size_t count, int chosen, auto paint) {
-            constexpr float d = 24;
-            const float gap = std::clamp((rr.w * 0.5f - d * static_cast<float>(count)) / static_cast<float>(count - 1), 6.f, 12.f);
-            const float x0 = rr.right() - 18 - d * static_cast<float>(count) - gap * static_cast<float>(count - 1), cy = rr.y + rr.h / 2;
+        // Colour swatches beside their caption, right-aligned and as large as the room the caption leaves allows; one ring
+        // glides to the chosen one. paint draws swatch i into its circle. Returns the swatch clicked, or -1.
+        auto swatch_row = [&](std::string_view id, std::string_view title, std::string_view hint, size_t count, int chosen, bool first, bool last, auto paint) {
+            const Rect rr = row(hint.empty() ? 58 : 66, first, last);
+            const float n = static_cast<float>(count);
+            const float label = std::max(p.measure(title, {.size = t.fs(14)}), p.measure(hint, {.size = t.fs(12)}));
+            const float space = rr.w - 36 - std::min(label, rr.w * 0.4f) - 24;
+            const float d = std::clamp((space - 5 * (n - 1)) / n, 18.f, 24.f), gap = std::clamp((space - d * n) / (n - 1), 5.f, 12.f);
+            const float span = d * n + gap * (n - 1), x0 = rr.right() - 18 - span, cy = rr.y + rr.h / 2;
+            caption(rr, title, hint, span);
             int clicked = -1;
             ui.push_id(ui.id(id));
             for (size_t i = 0; i < count; ++i) {
@@ -140,19 +223,13 @@ namespace lyren {
                     clicked = static_cast<int>(i);
                 }
             }
-            const float ring_x = ui.spring(ui.id("ring-x"), x0 + static_cast<float>(std::max(chosen, 0)) * (d + gap), 280);
+            const float ring_x = x0 + ui.spring(ui.id("ring-x"), static_cast<float>(std::max(chosen, 0)), 280) * (d + gap);
             const float ring_a = ui.anim(ui.id("ring-a"), chosen >= 0 ? 1 : 0, 160);
             if (ring_a > 0) {
                 p.rect({ring_x - 4, cy - d / 2 - 4, d + 8, d + 8}, {}, d / 2 + 4, t.text.with_alpha(0.85f * ring_a), 2);
             }
             ui.pop_id();
             return clicked;
-        };
-        auto heading = [&](size_t i) {
-            y += i ? 30 : 0;
-            settings_tops_[i] = y - origin;
-            ui.label({x, y, w, 28}, sections[i], {.size = t.fs(20), .color = t.text});
-            y += 44;
         };
         auto group = [&](std::string_view label) {
             ui.label({x + 2, y, w, 18}, label, {.size = t.fs(12), .color = t.text_dim});
@@ -162,6 +239,7 @@ namespace lyren {
 
         // Appearance.
         heading(0);
+        place(0);
         {
             // The two themes as small windows, in their own colours with the current accent.
             Config variant = config_;
@@ -173,7 +251,7 @@ namespace lyren {
             if (t.auto_accent) {
                 dark.accent = accent(ui.now, true, moving), light.accent = accent(ui.now, false, moving);
             }
-            const Rect rr = row(196, true, false);
+            const Rect rr = row(196, true, true);
             const float tw = (rr.w - 36 - 16) / 2;
             for (size_t i = 0; i < 2; ++i) {
                 const ui::Theme &look = i == 0 ? dark : light;
@@ -194,9 +272,9 @@ namespace lyren {
                 }
             }
         }
+        place(1);
         {
             // The accent: the cover's own colour first, then a few fixed ones.
-            const Rect rr = row(66, false, false);
             const bool automatic = config_.theme.accent == "auto";
             int chosen = automatic ? 0 : -1;
             for (size_t i = 0; i < accents.size(); ++i) {
@@ -204,12 +282,8 @@ namespace lyren {
                     chosen = static_cast<int>(i + 1);
                 }
             }
-            caption(rr, lyren::tr("Accent color"),
-                    automatic    ? lyren::tr("Follows the album cover")
-                    : chosen > 0 ? lyren::tr("Fixed color")
-                                 : std::string_view(config_.theme.accent),
-                    rr.w * 0.5f);
-            const int picked = swatches("accent", rr, accents.size() + 1, chosen, [&](size_t i, Rect s) {
+            const std::string_view hint = automatic ? lyren::tr("Follows the album cover") : chosen > 0 ? lyren::tr("Fixed color") : std::string_view(config_.theme.accent);
+            const int picked = swatch_row("accent", lyren::tr("Accent color"), hint, accents.size() + 1, chosen, true, false, [&](size_t i, Rect s) {
                 if (i > 0) {
                     p.rect(s, *ui::parse_color(accents[i - 1]), s.w / 2);
                     return;
@@ -250,6 +324,7 @@ namespace lyren {
 
         // Playback.
         heading(1);
+        place(2);
         {
             const Rect head = row(60, true, false);
             caption(head, lyren::tr("Audio quality"), lyren::tr("What you get depends on your accounts"), 0);
@@ -276,6 +351,7 @@ namespace lyren {
                 }
             }
         }
+        place(3);
         {
             bool skip = skip_trials();
             if (toggle_row("trial", lyren::tr("Skip previews"), lyren::tr("Pass over songs that only play a short clip"), skip, true, false)) {
@@ -289,6 +365,7 @@ namespace lyren {
 
         // Lyrics on the desktop.
         heading(2);
+        place(4);
         {
             bool shown = dl_enabled_;
             if (toggle_row("desktop-lyrics", lyren::tr("Desktop lyrics"), lyren::tr("Show the line being sung over your desktop"), shown, true, false)) {
@@ -317,6 +394,7 @@ namespace lyren {
                 }
             }
         }
+        place(5);
         {
             group(lyren::tr("Floating lyrics"));
             // The line as it shows on the desktop, over the blurred cover.
@@ -328,18 +406,18 @@ namespace lyren {
             {
                 UseTheme on_desktop(ui, *stage_);
                 const double now = clip_start_ + position();
-                const int at = lyric_at(lyrics_, now + 0.2);
-                const LyricLine *line = at >= 0 ? &lyrics_[static_cast<size_t>(at)] : nullptr;
+                const int at_line = lyric_at(lyrics_, now + 0.2);
+                const LyricLine *line = at_line >= 0 ? &lyrics_[static_cast<size_t>(at_line)] : nullptr;
                 const std::string_view text = line ? std::string_view(line->text) : current() ? std::string_view(current()->title) : lyren::tr("Lyrics appear here");
                 const std::string_view below = line ? (lyric_translation_ ? std::string_view(line->translation) : std::string_view{}) : current() ? current()->artist : "";
-                const float lh = std::round(size * 1.35f), top = wall.y + (wall.h - lh - (below.empty() ? 0 : sub * 1.35f)) / 2;
+                const float lh = std::round(size * 1.35f), line_top = wall.y + (wall.h - lh - (below.empty() ? 0 : sub * 1.35f)) / 2;
                 const ui::Color sung = t.lyric_sung.value_or(stage_->accent);
                 const bool timed = line && !line->words.empty();
-                floating_text(ui, wall.x + wall.w / 2, top + lh * 0.76f, text, timed ? line : nullptr, size, wall.w - 32, timed ? sung : t.lyric_text, t.lyric_text);
+                floating_text(ui, wall.x + wall.w / 2, line_top + lh * 0.76f, text, timed ? line : nullptr, size, wall.w - 32, timed ? sung : t.lyric_text, t.lyric_text);
                 if (!below.empty()) {
-                    floating_text(ui, wall.x + wall.w / 2, top + lh + sub * 1.1f, below, nullptr, sub, wall.w - 32, t.lyric_text.with_alpha(0.85f), t.lyric_text);
+                    floating_text(ui, wall.x + wall.w / 2, line_top + lh + sub * 1.1f, below, nullptr, sub, wall.w - 32, t.lyric_text.with_alpha(0.85f), t.lyric_text);
                 }
-                lyric_frames(ui, at, timed);
+                lyric_frames(ui, at_line, timed);
             }
             ui.pop_clip();
             slider_row(
@@ -349,7 +427,6 @@ namespace lyren {
                 },
                 "desktop_lyrics", "font_size", false, false);
             {
-                const Rect sr = row(58, false, false);
                 const bool follows = config_.desktop_lyrics.highlight == "accent";
                 int chosen = follows ? 0 : -1;
                 for (size_t i = 0; i < sung_colors.size(); ++i) {
@@ -357,8 +434,7 @@ namespace lyren {
                         chosen = static_cast<int>(i + 1);
                     }
                 }
-                caption(sr, lyren::tr("Sung words"), {}, sr.w * 0.5f);
-                const int picked = swatches("sung", sr, sung_colors.size() + 1, chosen, [&](size_t i, Rect s) {
+                const int picked = swatch_row("sung", lyren::tr("Sung words"), {}, sung_colors.size() + 1, chosen, false, false, [&](size_t i, Rect s) {
                     p.rect(s, i == 0 ? stage_->accent : *ui::parse_color(sung_colors[i - 1]), s.w / 2);
                     if (i == 0) {
                         p.icon("sparkles", ui::center(s, 12, 12), white.with_alpha(0.9f));
@@ -369,15 +445,13 @@ namespace lyren {
                 }
             }
             {
-                const Rect sr = row(58, false, false);
                 int chosen = -1;
                 for (size_t i = 0; i < rest_colors.size(); ++i) {
                     if (same_color(config_.desktop_lyrics.color, rest_colors[i])) {
                         chosen = static_cast<int>(i);
                     }
                 }
-                caption(sr, lyren::tr("Other words"), {}, sr.w * 0.5f);
-                const int picked = swatches("rest", sr, rest_colors.size(), chosen, [&](size_t i, Rect s) {
+                const int picked = swatch_row("rest", lyren::tr("Other words"), {}, rest_colors.size(), chosen, false, false, [&](size_t i, Rect s) {
                     p.rect(s, *ui::parse_color(rest_colors[i]), s.w / 2);
                 });
                 if (picked >= 0 && picked != chosen) {
@@ -389,6 +463,7 @@ namespace lyren {
                 set_setting_("desktop_lyrics", "outline", outlined ? outline_on : outline_off);
             }
         }
+        place(6);
         {
             group(lyren::tr("Dynamic Island"));
             // The island itself, live: point at it to open it. Its space grows as it does.
@@ -419,6 +494,7 @@ namespace lyren {
 
         // General.
         heading(3);
+        place(7);
         {
             const std::array<std::string_view, 2> language_labels{"中文", "English"};
             int language = config_.interface.language == Language::zh ? 0 : 1;
@@ -461,6 +537,7 @@ namespace lyren {
                 set_setting_("gpu", "device", gpu == 0 ? "\"integrated\"" : "\"discrete\"");
             }
         }
+        place(8);
         if (button_row("config-file", lyren::tr("Config file"), lyren::tr("Fonts, corner radius and individual colors live here"), lyren::tr("Open"), "file-cog", true, false)) {
             open_config_();
         }
@@ -475,17 +552,17 @@ namespace lyren {
                 set_setting_("theme.colors", key, {});
             }
         }
+        place(-1);
         if (moving) {
             ui.keep_animating();
         }
         ui.pop_clip();
-        settings_height_ = y - origin + 40;
 
         // The tab bar: it follows the scroll, and a tab glides there.
         const float stuck = std::clamp((r.y - bar_natural) / 12, 0.f, 1.f);
         p.rect({r.x, bar_y, r.w, bar_h}, t.surface, {r.y >= bar_y ? t.radius_l() : 0, r.y >= bar_y ? t.radius_l() : 0, 0, 0});
         p.rect({r.x, bar_y + bar_h - 1, r.w, 1}, t.border.with_alpha(stuck));
-        const float max_offset = std::max(0.f, settings_height_ - r.h);
+        const float max_offset = std::max(0.f, layout[13].h - r.h);
         int active = 0;
         for (size_t i = 0; i < settings_tops_.size(); ++i) {
             if (origin + settings_tops_[i] <= bar_y + bar_h + (r.bottom() - bar_y - bar_h) * 0.35f) {
@@ -498,8 +575,9 @@ namespace lyren {
         if (ui.now < settings_jump_until_) {
             active = settings_jump_;
         }
+        settings_section_ = active;
         int picked = active;
-        if (ui.tabs(ui.id("settings-tabs"), {x, bar_y + 8, w, 36}, sections, picked)) {
+        if (ui.tabs(ui.id("settings-tabs"), {frame.x, bar_y + 8, frame.w, 36}, sections, picked)) {
             settings_jump_ = picked, settings_jump_until_ = ui.now + 0.6 * t.motion;
             ui.scroll_to(scroll_id, settings_tops_[static_cast<size_t>(picked)] - bar_h - 20, true);
         }
