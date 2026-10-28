@@ -318,7 +318,7 @@ static int ncm_command(const std::vector<std::string> &args) {
 
 static void print_tracks(const std::vector<Track> &tracks) {
     for (auto &t : tracks) {
-        std::println("{:>12} {:>14} {:>14}  {}{}  {} · {}  {}:{:02}{}", t.id, t.mid, t.media, t.title, t.alias.empty() ? "" : std::format(" ({})", t.alias), t.artist, t.album,
+        std::println("{:>12} {:>14} {:>14}  {}{}  {} · {}  {}:{:02}{}", t.id, t.mid, t.media, t.title, t.alias.empty() ? "" : " (" + t.alias + ')', t.artist, t.album,
                      t.duration / 60, t.duration % 60, t.paid ? "  paid" : "");
     }
 }

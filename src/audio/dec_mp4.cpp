@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <format>
 #include <vector>
 
 #include "audio/decoder.hpp"
@@ -424,7 +423,7 @@ namespace lyren::audio {
         }
         if (t.codec != fourcc("mp4a") || t.asc.empty()) {
             std::string cc = {static_cast<char>(t.codec >> 24), static_cast<char>(t.codec >> 16), static_cast<char>(t.codec >> 8), static_cast<char>(t.codec)};
-            error = std::format("unsupported mp4 codec {}", cc);
+            error = "unsupported mp4 codec " + cc;
             return nullptr;
         }
         if (t.offsets.empty()) {

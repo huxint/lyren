@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <glaze/toml.hpp>
 
 #include "core/log.hpp"
@@ -158,7 +159,8 @@ namespace lyren {
         if (!out.empty() && out.back() != '\n') {
             out += '\n';
         }
-        return out + std::format("\n[{}]\n{}\n", section, line);
+        std::format_to(std::back_inserter(out), "\n[{}]\n{}\n", section, line);
+        return out;
     }
 
     ConfigFile load_config() {
@@ -191,11 +193,11 @@ namespace lyren {
             std::ofstream out(tmp, std::ios::trunc);
             out << text;
             if (!out) {
-                return std::unexpected(std::format("Settings were not saved: could not write {}", tmp.string()));
+                return std::unexpected("Settings were not saved: could not write " + tmp.string());
             }
         }
         if (std::rename(tmp.c_str(), f.path.c_str()) != 0) {
-            return std::unexpected(std::format("Settings were not saved: could not replace {}", f.path.string()));
+            return std::unexpected("Settings were not saved: could not replace " + f.path.string());
         }
         f.config = *c;
         f.error.clear();

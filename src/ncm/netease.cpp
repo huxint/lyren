@@ -5,6 +5,7 @@
 
 #include <array>
 #include <format>
+#include <iterator>
 #include <map>
 
 #include "core/log.hpp"
@@ -450,7 +451,7 @@ namespace lyren::ncm {
                         page.cards.push_back({.kind = CardKind::album,
                                               .id = std::to_string(a.id),
                                               .title = a.name.value_or(""),
-                                              .subtitle = year.empty() ? artist : std::format("{} · {}", artist, year),
+                                              .subtitle = year.empty() ? artist : artist + " · " + year,
                                               .cover = https(a.picUrl.value_or("")),
                                               .count = static_cast<int>(a.size)});
                     }
@@ -565,7 +566,7 @@ namespace lyren::ncm {
         for (size_t i = 0; i < ids.size(); i += 500) {
             std::string c = "[";
             for (size_t k = i; k < std::min(ids.size(), i + 500); ++k) {
-                c += std::format("{}{{\"id\":{}}}", k > i ? "," : "", ids[k]);
+                std::format_to(std::back_inserter(c), "{}{{\"id\":{}}}", k > i ? "," : "", ids[k]);
             }
             c += "]";
             auto r = parse<SongsReply>(co_await client.call("/api/v3/song/detail", std::format(R"("c":{})", glz::write_json(c).value()), Api::weapi));
@@ -613,7 +614,7 @@ namespace lyren::ncm {
                 s.state = QrState::confirmed;
                 break;
             default:
-                co_return std::unexpected(std::format("Sign-in failed ({})", reply.code));
+                co_return std::unexpected("Sign-in failed (" + std::to_string(reply.code) + ')');
         }
         co_return s;
     }
@@ -959,11 +960,11 @@ namespace lyren::ncm {
     }
 
     Task<Result<void>> Netease::follow(std::string artist, bool on) {
-        co_return done(co_await client.call(std::format("/api/artist/{}", on ? "sub" : "unsub"), std::format(R"("artistId":"{}","artistIds":"[{}]")", artist, artist), Api::weapi));
+        co_return done(co_await client.call(on ? "/api/artist/sub" : "/api/artist/unsub", std::format(R"("artistId":"{}","artistIds":"[{}]")", artist, artist), Api::weapi));
     }
 
     Task<Result<void>> Netease::collect(std::string album, bool on) {
-        co_return done(co_await client.call(std::format("/api/album/{}", on ? "sub" : "unsub"), std::format(R"("id":"{}")", album), Api::weapi));
+        co_return done(co_await client.call(on ? "/api/album/sub" : "/api/album/unsub", std::format(R"("id":"{}")", album), Api::weapi));
     }
 
     Task<Result<std::vector<Card>>> Netease::collected_albums() {

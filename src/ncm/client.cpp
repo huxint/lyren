@@ -7,6 +7,7 @@
 #include <charconv>
 #include <chrono>
 #include <format>
+#include <iterator>
 #include <random>
 
 #include "core/log.hpp"
@@ -32,7 +33,7 @@ namespace lyren::ncm {
             if (std::isalnum(c) || std::string_view("-_.!~*'()").contains(static_cast<char>(c))) {
                 out += static_cast<char>(c);
             } else {
-                out += std::format("%{:02X}", c);
+                std::format_to(std::back_inserter(out), "%{:02X}", c);
             }
         }
         return out;
@@ -43,7 +44,7 @@ namespace lyren::ncm {
     static std::string cookie_header(const Pairs &p) {
         std::string s = "Cookie: ";
         for (size_t i = 0; i < p.size(); ++i) {
-            s += std::format("{}{}={}", i ? "; " : "", uri_encode(p[i].first), uri_encode(p[i].second));
+            std::format_to(std::back_inserter(s), "{}{}={}", i ? "; " : "", uri_encode(p[i].first), uri_encode(p[i].second));
         }
         return s;
     }
@@ -65,14 +66,14 @@ namespace lyren::ncm {
             c["_ntes_nuid"] = random_hex(32);
         }
         if (!c.contains("_ntes_nnid")) {
-            c["_ntes_nnid"] = std::format("{},{}", c["_ntes_nuid"], now_ms());
+            c["_ntes_nnid"] = c["_ntes_nuid"] + ',' + std::to_string(now_ms());
         }
         if (!c.contains("WNMCID")) {
             std::string s;
             for (int i = 0; i < 6; ++i) {
                 s += static_cast<char>('a' + rng() % 26);
             }
-            c["WNMCID"] = std::format("{}.{}.01.0", s, now_ms());
+            c["WNMCID"] = s + '.' + std::to_string(now_ms()) + ".01.0";
         }
         c.try_emplace("WEVNSM", "1.0.0");
         if (!c.contains("deviceId")) {
@@ -198,7 +199,7 @@ namespace lyren::ncm {
         Status st;
         if (auto e = glz::read<glz::opts{.error_on_unknown_keys = false}>(st, res.body)) {
             r.code = res.status;
-            r.error = std::format("Unrecognized server response (HTTP {})", res.status);
+            r.error = "Unrecognized server response (HTTP " + std::to_string(res.status) + ')';
             log::warn("ncm {}: HTTP {}, {} bytes not JSON", uri, res.status, res.body.size());
             co_return r;
         }
@@ -213,7 +214,7 @@ namespace lyren::ncm {
         }
         static constexpr std::array ok = {200, 201, 302, 400, 502, 800, 801, 802, 803};
         if (!std::ranges::contains(ok, r.code)) {
-            r.error = st.message.value_or(st.msg.value_or(std::format("Request failed ({})", r.code)));
+            r.error = st.message.value_or(st.msg.value_or("Request failed (" + std::to_string(r.code) + ')'));
             if (r.code == 301) {
                 r.error = "Session expired; scan again to sign in";
             }

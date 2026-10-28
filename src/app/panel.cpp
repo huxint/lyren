@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <format>
 
 #include "app/draw.hpp"
 #include "app/shell.hpp"
@@ -72,7 +71,7 @@ namespace lyren {
             stop_player();
             shuffle_history_.clear();
             changed();
-            ui.toast(lyren::trf("Queue cleared"), "trash");
+            ui.toast(std::string(lyren::tr("Queue cleared")), "trash");
         }
         constexpr float row_h = 54;
         Rect view{r.x + 8, r.y + 60, r.w - 16, r.h - 68};
@@ -277,7 +276,7 @@ namespace lyren {
         const auto &t = ui.theme();
         TextStyle body{.size = t.fs(14), .color = t.text}, quote{.size = t.fs(13), .color = t.text_dim}, small{.size = t.fs(12), .color = t.text_dim};
         const float lh = std::round(body.size * 1.6f), qh = std::round(quote.size * 1.55f), tx = x + 44, tw = w - 44;
-        std::string replied = c.reply.empty() ? "" : std::format("@{}：{}", c.reply_user, c.reply);
+        std::string replied = c.reply.empty() ? "" : '@' + c.reply_user + "：" + c.reply;
         auto lines = wrap_lines(p, c.text, body.size, tw);
         std::vector<std::string_view> quoted;
         if (!replied.empty()) {

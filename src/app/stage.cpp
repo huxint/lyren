@@ -161,7 +161,7 @@ namespace lyren {
             float aw = line(cap.x, y + cap.gap, track.artist, cap.sub, t.fs(14), t.text_dim, cap.w);
             if (detail > 0 && under > 0 && !track.album.empty()) {
                 Fade more(p, detail * under);
-                line(cap.x + aw, y + cap.gap, std::format(" · {}", track.album), cap.sub, t.fs(14), t.text_dim, cap.w - aw);
+                line(cap.x + aw, y + cap.gap, " · " + track.album, cap.sub, t.fs(14), t.text_dim, cap.w - aw);
             }
             if (detail > 0 && live && !player_.codec().empty()) {
                 Fade more(p, detail);

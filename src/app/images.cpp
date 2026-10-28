@@ -115,7 +115,7 @@ namespace lyren {
                         }
                     }
                 } else if (error.empty()) {
-                    error = std::format("HTTP {}", r.status);
+                    error = "HTTP " + std::to_string(r.status);
                 }
                 loop_.post([this, key = std::move(key), img = std::move(img), hue, luma, error = std::move(error)] {
                     --in_flight_;

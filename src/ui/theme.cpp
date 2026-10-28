@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cmath>
 #include <format>
+#include <iterator>
 
 namespace lyren::ui {
 
@@ -43,7 +44,10 @@ namespace lyren::ui {
             return static_cast<int>(std::lround(std::clamp(v, 0.f, 1.f) * 255));
         };
         std::string s = std::format("#{:02x}{:02x}{:02x}", byte(c.r), byte(c.g), byte(c.b));
-        return c.a < 1 ? s + std::format("{:02x}", byte(c.a)) : s;
+        if (c.a < 1) {
+            std::format_to(std::back_inserter(s), "{:02x}", byte(c.a));
+        }
+        return s;
     }
 
     Color hsl(float h, float s, float l) {
@@ -147,7 +151,7 @@ namespace lyren::ui {
             if (auto c = parse_color(*v)) {
                 dst = *c;
             } else {
-                errors += std::format("theme.colors.{}: invalid color \"{}\"\n", key, *v);
+                std::format_to(std::back_inserter(errors), "theme.colors.{}: invalid color \"{}\"\n", key, *v);
             }
         };
         apply(t.colors.bg, th.bg, "bg");
@@ -164,7 +168,7 @@ namespace lyren::ui {
             if (auto c = parse_color(t.accent)) {
                 accent = *c;
             } else {
-                errors += std::format("theme.accent: invalid color \"{}\"\n", t.accent);
+                std::format_to(std::back_inserter(errors), "theme.accent: invalid color \"{}\"\n", t.accent);
             }
         }
         th.accent = accent;
@@ -182,7 +186,7 @@ namespace lyren::ui {
             if (auto c = parse_color(v)) {
                 dst = *c;
             } else {
-                errors += std::format("desktop_lyrics.{}: invalid color \"{}\"\n", key, v);
+                std::format_to(std::back_inserter(errors), "desktop_lyrics.{}: invalid color \"{}\"\n", key, v);
             }
         };
         lyric(d.color, th.lyric_text, "color");

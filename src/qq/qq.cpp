@@ -5,6 +5,7 @@
 #include <array>
 #include <ctime>
 #include <format>
+#include <iterator>
 #include <random>
 #include <source_location>
 #include <curl/curl.h>
@@ -366,7 +367,7 @@ namespace lyren::qq {
                 return std::unexpected("Sign in to QQ Music and try again");
             }
             if (p->code != 0) {
-                return std::unexpected(std::format("QQ Music request failed ({})", p->code));
+                return std::unexpected("QQ Music request failed (" + std::to_string(p->code) + ')');
             }
             if (!p->data) {
                 return std::unexpected("QQ Music returned no data");
@@ -482,7 +483,7 @@ namespace lyren::qq {
             }
             int code = d->retCode != 0 ? d->retCode : d->result ? d->result->retCode : 0;
             if (code != 0) {
-                return std::unexpected(std::format("QQ Music did not complete the operation ({})", code));
+                return std::unexpected("QQ Music did not complete the operation (" + std::to_string(code) + ')');
             }
             return *d;
         }
@@ -534,7 +535,7 @@ namespace lyren::qq {
 
         // The text of the next <tag><![CDATA[…]]></tag> in s after at, moving at past it; at becomes npos when there is none.
         std::string cdata(std::string_view s, std::string_view tag, size_t &at) {
-            std::string open = std::format("<{}><![CDATA[", tag);
+            std::string open = '<' + std::string(tag) + "><![CDATA[";
             size_t b = s.find(open, at), e = b == s.npos ? b : s.find("]]>", b);
             if (e == s.npos) {
                 at = s.npos;
@@ -800,7 +801,7 @@ namespace lyren::qq {
                     for (const auto &a : *b.album->list) {
                         Card c = album_card(a.albumMID.value_or(""), a.albumName.value_or(""), a.publicTime.value_or(""), a.song_count);
                         std::string year = a.publicTime.value_or("").substr(0, 4);
-                        c.subtitle = year.empty() ? a.singerName.value_or("") : std::format("{} · {}", a.singerName.value_or(""), year);
+                        c.subtitle = year.empty() ? a.singerName.value_or("") : a.singerName.value_or("") + " · " + year;
                         out.cards.push_back(std::move(c));
                     }
                 }
@@ -854,9 +855,9 @@ namespace lyren::qq {
         std::string mids, types, names;
         for (size_t i = first; i < files.size(); ++i) {
             std::string_view sep = i == first ? "" : ",";
-            mids += std::format("{}\"{}\"", sep, t.mid);
-            types += std::format("{}{}", sep, t.type);
-            names += std::format("{}\"{}{}.{}\"", sep, files[i].prefix, t.media, files[i].ext);
+            std::format_to(std::back_inserter(mids), "{}\"{}\"", sep, t.mid);
+            std::format_to(std::back_inserter(types), "{}{}", sep, t.type);
+            std::format_to(std::back_inserter(names), "{}\"{}{}.{}\"", sep, files[i].prefix, t.media, files[i].ext);
         }
         std::string uin = client.logged_in() ? client.get("musicid") : "0";
         std::string vkey = std::format(R"({{"uin":"{}","guid":"{}","songmid":[{}],"songtype":[{}],"filename":[{}],"ctx":0}})", uin, guid_, mids, types, names);
@@ -1043,7 +1044,7 @@ namespace lyren::qq {
                     for (const auto &t : *g.toplist) {
                         out.push_back({.kind = CardKind::playlist,
                                        .source = Source::qq,
-                                       .id = std::format("{}{}", top_prefix, t.topId),
+                                       .id = top_prefix + std::to_string(t.topId),
                                        .title = t.title.value_or(""),
                                        .subtitle = t.updateTips.value_or(""),
                                        .cover = t.frontPicUrl.value_or("")});
@@ -1196,7 +1197,7 @@ namespace lyren::qq {
             out.emplace_back("", trimmed(summary));
         }
         for (std::string_view block : {"basic", "other"}) {
-            size_t b = wiki.find(std::format("<{}>", block)), end = wiki.find(std::format("</{}>", block));
+            size_t b = wiki.find('<' + std::string(block) + '>'), end = wiki.find("</" + std::string(block) + '>');
             if (b == wiki.npos || end == wiki.npos) {
                 continue;
             }
@@ -1209,7 +1210,7 @@ namespace lyren::qq {
                 }
                 std::string value = trimmed(cdata(items, "value", i));
                 if (block == "basic") {
-                    facts += std::format("{}{}：{}", facts.empty() ? "" : "\n", key, value);
+                    std::format_to(std::back_inserter(facts), "{}{}：{}", facts.empty() ? "" : "\n", key, value);
                 } else if (!value.empty()) {
                     out.emplace_back(std::move(key), std::move(value));
                 }
@@ -1569,7 +1570,7 @@ namespace lyren::qq {
             co_return QrStatus{.state = QrState::expired};
         }
         if ((*args)[0] != "0") {
-            co_return std::unexpected(std::format("QQ QR sign-in failed ({})", (*args)[0]));
+            co_return std::unexpected("QQ QR sign-in failed (" + (*args)[0] + ')');
         }
         auto confirm = qr_confirmation((*args)[2]);
         if (!confirm) {

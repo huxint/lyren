@@ -222,7 +222,7 @@ namespace lyren {
             if (picked == 0 && !automatic) {
                 set_setting_("theme", "accent", "\"auto\"");
             } else if (picked > 0 && picked != chosen) {
-                set_setting_("theme", "accent", std::format(R"("{}")", accents[static_cast<size_t>(picked - 1)]));
+                set_setting_("theme", "accent", '"' + std::string(accents[static_cast<size_t>(picked - 1)]) + '"');
             }
         }
         {
@@ -230,7 +230,7 @@ namespace lyren {
             int size = static_cast<int>(std::ranges::find(text_sizes, config_.theme.font_size) - text_sizes.begin());
             size = size < static_cast<int>(text_sizes.size()) ? size : -1;
             if (segmented_row("text-size", lyren::tr("Text size"), {}, sizes, size, false, false)) {
-                set_setting_("theme", "font_size", std::format("{}", text_sizes[static_cast<size_t>(size)]));
+                set_setting_("theme", "font_size", std::to_string(text_sizes[static_cast<size_t>(size)]));
             }
         }
         {
@@ -272,7 +272,7 @@ namespace lyren {
                     p.icon("check", ui::center({rr.right() - 46, rr.y, 28, rr.h}, 17 * (0.6f + 0.4f * check), 17 * (0.6f + 0.4f * check)), t.accent.with_alpha(check));
                 }
                 if (it.clicked && !on) {
-                    set_setting_("playback", "quality", std::format(R"("{}")", values[i]));
+                    set_setting_("playback", "quality", '"' + std::string(values[i]) + '"');
                 }
             }
         }
@@ -365,7 +365,7 @@ namespace lyren {
                     }
                 });
                 if (picked >= 0 && picked != chosen) {
-                    set_setting_("desktop_lyrics", "highlight", picked == 0 ? "\"accent\"" : std::format(R"("{}")", sung_colors[static_cast<size_t>(picked - 1)]));
+                    set_setting_("desktop_lyrics", "highlight", picked == 0 ? "\"accent\"" : '"' + std::string(sung_colors[static_cast<size_t>(picked - 1)]) + '"');
                 }
             }
             {
@@ -381,7 +381,7 @@ namespace lyren {
                     p.rect(s, *ui::parse_color(rest_colors[i]), s.w / 2);
                 });
                 if (picked >= 0 && picked != chosen) {
-                    set_setting_("desktop_lyrics", "color", std::format(R"("{}")", rest_colors[static_cast<size_t>(picked)]));
+                    set_setting_("desktop_lyrics", "color", '"' + std::string(rest_colors[static_cast<size_t>(picked)]) + '"');
                 }
             }
             bool outlined = t.lyric_outline.a > 0;
@@ -436,7 +436,7 @@ namespace lyren {
                 const float cw = 150;
                 caption(rr, lyren::tr("Animation frame rate"), lyren::tr("Lower rates save power"), cw);
                 auto name = [](int fps) {
-                    return fps == 0 ? std::string(lyren::tr("Display rate")) : std::format("{} fps", fps);
+                    return fps == 0 ? std::string(lyren::tr("Display rate")) : std::to_string(fps) + " fps";
                 };
                 const Rect control{rr.right() - 18 - cw, rr.y + (rr.h - 34) / 2, cw, 34};
                 const ui::Id id = ui.id("frame-rate");

@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
-#include <format>
 #include <limits>
 #include <string_view>
 
@@ -203,7 +202,10 @@ namespace lyren::net {
         t->cb = std::move(cb);
         setup(*t, get.url, get.headers);
         curl_easy_setopt(t->easy, CURLOPT_FAILONERROR, 1L);
-        std::string range = get.end ? std::format("{}-{}", get.from, get.end - 1) : std::format("{}-", get.from);
+        std::string range = std::to_string(get.from) + '-';
+        if (get.end) {
+            range += std::to_string(get.end - 1);
+        }
         curl_easy_setopt(t->easy, CURLOPT_RANGE, range.c_str());
         log::debug("http: GET {} range {}", get.url.substr(0, get.url.find('?')), range);
         return add(std::move(t), get.delay);

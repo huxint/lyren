@@ -3,6 +3,7 @@
 #include <glaze/glaze.hpp>
 
 #include <format>
+#include <iterator>
 
 #include "core/log.hpp"
 #include "net/fetch.hpp"
@@ -28,8 +29,8 @@ namespace lyren::qq {
         std::string body = comm == Comm::app ? R"({"comm":{"ct":20,"cv":1770,"tmeAppID":"qqmusic"})" : R"({"comm":{"ct":19,"cv":1,"tmeAppID":"qqmusic"})";
         std::string what;
         for (size_t i = 0; i < parts.size(); ++i) {
-            body += std::format(R"(,"req_{}":{{"module":"{}","method":"{}","param":{}}})", i, parts[i].module, parts[i].method, parts[i].param);
-            what += std::format("{}{}.{}", i ? ", " : "", parts[i].module, parts[i].method);
+            std::format_to(std::back_inserter(body), R"(,"req_{}":{{"module":"{}","method":"{}","param":{}}})", i, parts[i].module, parts[i].method, parts[i].param);
+            std::format_to(std::back_inserter(what), "{}{}.{}", i ? ", " : "", parts[i].module, parts[i].method);
         }
         body += '}';
         std::string url = comm == Comm::linux ? "https://u.y.qq.com/cgi-bin/musicu.fcg" : "https://u.y.qq.com/cgi-bin/musics.fcg?sign=" + sign(body);
@@ -55,18 +56,18 @@ namespace lyren::qq {
             co_return r;
         }
         if (res.status < 200 || res.status >= 300) {
-            r.error = std::format("QQ Music request failed (HTTP {})", res.status);
+            r.error = "QQ Music request failed (HTTP " + std::to_string(res.status) + ')';
             log::warn("qq {}: HTTP {}", what, res.status);
             co_return r;
         }
         Top top;
         if (glz::read<glz::opts{.error_on_unknown_keys = false}>(top, res.body)) {
-            r.error = std::format("Unrecognized QQ Music response (HTTP {})", res.status);
+            r.error = "Unrecognized QQ Music response (HTTP " + std::to_string(res.status) + ')';
             log::warn("qq {}: HTTP {}, {} bytes not JSON", what, res.status, res.body.size());
             co_return r;
         }
         if (top.code != 0) {
-            r.error = std::format("QQ Music request failed ({})", top.code);
+            r.error = "QQ Music request failed (" + std::to_string(top.code) + ')';
             log::warn("qq {}: code {}, trace {}", what, top.code, top.traceid.value_or(""));
             co_return r;
         }

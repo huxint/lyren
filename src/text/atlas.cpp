@@ -4,7 +4,6 @@
 #include <array>
 #include <cmath>
 #include <cstring>
-#include <format>
 
 #include "text/icons.hpp"
 
@@ -189,7 +188,7 @@ namespace lyren::text {
     }
 
     const AtlasEntry &Atlas::icon(std::string_view name, int size) {
-        std::string key = std::format("{}@{}", name, size);
+        std::string key = std::string(name) + '@' + std::to_string(size);
         if (auto it = icons_.find(key); it != icons_.end()) {
             return it->second;
         }
