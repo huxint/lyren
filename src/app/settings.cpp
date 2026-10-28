@@ -6,7 +6,6 @@
 #include "app/draw.hpp"
 #include "app/shell.hpp"
 #include "core/i18n.hpp"
-#include "core/json.hpp"
 
 // The settings page: cards of settings under a tab bar that sticks to the top and follows the scroll. Settings that
 // change how something looks show it live: the themes as small windows, the accent beside the cover it comes from,
@@ -223,7 +222,7 @@ namespace lyren {
             if (picked == 0 && !automatic) {
                 set_setting_("theme", "accent", "\"auto\"");
             } else if (picked > 0 && picked != chosen) {
-                set_setting_("theme", "accent", json_string(accents[static_cast<size_t>(picked - 1)]));
+                set_setting_("theme", "accent", std::format(R"("{}")", accents[static_cast<size_t>(picked - 1)]));
             }
         }
         {
@@ -273,7 +272,7 @@ namespace lyren {
                     p.icon("check", ui::center({rr.right() - 46, rr.y, 28, rr.h}, 17 * (0.6f + 0.4f * check), 17 * (0.6f + 0.4f * check)), t.accent.with_alpha(check));
                 }
                 if (it.clicked && !on) {
-                    set_setting_("playback", "quality", json_string(values[i]));
+                    set_setting_("playback", "quality", std::format(R"("{}")", values[i]));
                 }
             }
         }
@@ -366,7 +365,7 @@ namespace lyren {
                     }
                 });
                 if (picked >= 0 && picked != chosen) {
-                    set_setting_("desktop_lyrics", "highlight", picked == 0 ? "\"accent\"" : json_string(sung_colors[static_cast<size_t>(picked - 1)]));
+                    set_setting_("desktop_lyrics", "highlight", picked == 0 ? "\"accent\"" : std::format(R"("{}")", sung_colors[static_cast<size_t>(picked - 1)]));
                 }
             }
             {
@@ -382,7 +381,7 @@ namespace lyren {
                     p.rect(s, *ui::parse_color(rest_colors[i]), s.w / 2);
                 });
                 if (picked >= 0 && picked != chosen) {
-                    set_setting_("desktop_lyrics", "color", json_string(rest_colors[static_cast<size_t>(picked)]));
+                    set_setting_("desktop_lyrics", "color", std::format(R"("{}")", rest_colors[static_cast<size_t>(picked)]));
                 }
             }
             bool outlined = t.lyric_outline.a > 0;

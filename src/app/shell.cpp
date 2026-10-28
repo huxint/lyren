@@ -1921,7 +1921,6 @@ namespace lyren {
         }
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        dark_ = t.dark;
         for (auto &m : toasts_) {
             ui.toast(std::move(m.text), std::move(m.icon), m.error);
         }

@@ -1,6 +1,5 @@
 #include <doctest/doctest.h>
 
-#include "ncm/client.hpp"
 #include "ncm/crypto.hpp"
 
 using namespace lyren::ncm;
@@ -36,8 +35,4 @@ TEST_CASE("base64 matches RFC 4648 vectors and UTF-8 bytes") {
         CHECK(base64(plain) == encoded);
         CHECK(unbase64(encoded) == plain);
     }
-}
-
-TEST_CASE("JSON strings escape quotes slashes and control characters") {
-    CHECK(lyren::json_string("a\"b\\c\nd\x01") == R"("a\"b\\c\nd\u0001")");
 }

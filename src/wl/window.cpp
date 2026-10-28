@@ -59,8 +59,7 @@ namespace lyren::wl {
       cb_(std::move(cb)),
       width_(width),
       height_(height),
-      csd_(client_side),
-      want_csd_(client_side) {
+      csd_(client_side) {
         surface_ = wl_compositor_create_surface(display_.compositor);
         wl_surface_set_user_data(surface_, static_cast<SurfaceSink *>(this));
         viewport_ = wp_viewporter_get_viewport(display_.viewporter, surface_);
@@ -109,7 +108,6 @@ namespace lyren::wl {
     }
 
     void Window::set_decorations(bool client_side) {
-        want_csd_ = client_side;
         if (decoration_) {
             zxdg_toplevel_decoration_v1_set_mode(decoration_, client_side ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE : ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
         } else {

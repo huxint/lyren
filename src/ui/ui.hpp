@@ -253,10 +253,6 @@ namespace lyren::ui {
         void end_scroll();
         // smooth: glide there like the wheel does.
         void scroll_to(Id id, float offset, bool smooth = false);
-        float scroll_offset(Id id) const {
-            auto it = scrolls_.find(id);
-            return it == scrolls_.end() ? 0 : it->second.offset;
-        }
 
         void open_menu(float x, float y, std::vector<MenuItem> items);
         bool menu_open() const {

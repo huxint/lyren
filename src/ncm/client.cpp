@@ -150,16 +150,12 @@ namespace lyren::ncm {
                 header.emplace_back("MUSIC_A", get("MUSIC_A"));
             }
             header.emplace_back("NMTID", get("NMTID"));
-            std::string h;
-            for (auto &[k, v] : header) {
-                h += std::format("{}{}:{}", h.empty() ? "" : ",", json_string(k), json_string(v));
-            }
-            std::string text = std::format("{{{}{}\"header\":{{{}}},\"e_r\":false}}", fields, sep, h);
+            std::string text = std::format("{{{}{}\"header\":{},\"e_r\":false}}", fields, sep, glz::write_json(header).value());
             req.url = std::format("https://{}/eapi/{}", log ? "clientlog.music.163.com" : "interfacepc.music.163.com", uri.substr(5));
             req.body = "params=" + eapi(uri, text);
             req.headers = {log ? ua_osx : ua_eapi, cookie_header(header), form};
         } else {
-            std::string text = std::format("{{{}{}\"csrf_token\":{}}}", fields, sep, json_string(get("__csrf")));
+            std::string text = std::format("{{{}{}\"csrf_token\":{}}}", fields, sep, glz::write_json(get("__csrf")).value());
             auto w = weapi(text);
             Pairs all(cookies.begin(), cookies.end());
             if (!logged_in()) {

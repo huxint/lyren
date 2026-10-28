@@ -134,7 +134,7 @@ namespace lyren::wl {
         int pending_w_ = 0, pending_h_ = 0;
         bool pending_max_ = false, pending_full_ = false, pending_act_ = false, pending_tiled_ = false;
         bool maximized_ = false, fullscreen_ = false, activated_ = false, tiled_ = false;
-        bool csd_ = true, want_csd_ = true;
+        bool csd_ = true;
         int shadow_ = 0, resize_border_ = 0, radius_ = 0, margin_ = 0;
         uint32_t scale120_ = 120;
         uint32_t ack_serial_ = 0;

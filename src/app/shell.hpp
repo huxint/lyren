@@ -494,7 +494,6 @@ namespace lyren {
         void floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color, ui::Color rest);
 
         // Accent.
-        bool dark_ = true;
         float accent_hue_ = -2;
         std::array<ui::Color, 2> accent_from_{}; // where a change set off from, on light and on dark backgrounds
         double accent_time_ = -10;

@@ -427,8 +427,9 @@ namespace lyren::ncm {
 
     Task<Result<Batch>> Netease::search(std::string query, SearchKind kind, int offset, int limit) {
         static constexpr std::array types = {1, 10, 100, 1000};
-        auto r = parse<SearchReply>(co_await client.call(
-            "/api/cloudsearch/pc", std::format(R"("s":{},"type":{},"limit":{},"offset":{},"total":true)", json_string(query), types[static_cast<int>(kind)], limit, offset)));
+        auto r = parse<SearchReply>(
+            co_await client.call("/api/cloudsearch/pc", std::format(R"("s":{},"type":{},"limit":{},"offset":{},"total":true)", glz::write_json(glz::escape_bytes_t{query}).value(),
+                                                                    types[static_cast<int>(kind)], limit, offset)));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -567,7 +568,7 @@ namespace lyren::ncm {
                 c += std::format("{}{{\"id\":{}}}", k > i ? "," : "", ids[k]);
             }
             c += "]";
-            auto r = parse<SongsReply>(co_await client.call("/api/v3/song/detail", std::format(R"("c":{})", json_string(c)), Api::weapi));
+            auto r = parse<SongsReply>(co_await client.call("/api/v3/song/detail", std::format(R"("c":{})", glz::write_json(c).value()), Api::weapi));
             if (!r) {
                 co_return std::unexpected(r.error());
             }
@@ -590,7 +591,7 @@ namespace lyren::ncm {
     }
 
     Task<Result<QrStatus>> Netease::qr_poll() {
-        Reply reply = co_await client.call("/api/login/qrcode/client/login", std::format(R"("key":{},"type":3)", json_string(qr_key_)));
+        Reply reply = co_await client.call("/api/login/qrcode/client/login", std::format(R"("key":{},"type":3)", glz::write_json(qr_key_).value()));
         auto r = parse<QrCheckReply>(reply);
         if (!r) {
             co_return std::unexpected(r.error());
@@ -839,8 +840,9 @@ namespace lyren::ncm {
         if (category.empty()) {
             category = "\u5168\u90e8";
         }
-        auto r = parse<SquareReply>(
-            co_await client.call("/api/playlist/list", std::format(R"("cat":{},"order":"hot","limit":50,"offset":{},"total":true)", json_string(category), offset), Api::weapi));
+        auto r = parse<SquareReply>(co_await client.call(
+            "/api/playlist/list", std::format(R"("cat":{},"order":"hot","limit":50,"offset":{},"total":true)", glz::write_json(glz::escape_bytes_t{category}).value(), offset),
+            Api::weapi));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -957,12 +959,11 @@ namespace lyren::ncm {
     }
 
     Task<Result<void>> Netease::follow(std::string artist, bool on) {
-        co_return done(
-            co_await client.call(std::format("/api/artist/{}", on ? "sub" : "unsub"), std::format(R"("artistId":{},"artistIds":"[{}]")", json_string(artist), artist), Api::weapi));
+        co_return done(co_await client.call(std::format("/api/artist/{}", on ? "sub" : "unsub"), std::format(R"("artistId":"{}","artistIds":"[{}]")", artist, artist), Api::weapi));
     }
 
     Task<Result<void>> Netease::collect(std::string album, bool on) {
-        co_return done(co_await client.call(std::format("/api/album/{}", on ? "sub" : "unsub"), std::format(R"("id":{})", json_string(album)), Api::weapi));
+        co_return done(co_await client.call(std::format("/api/album/{}", on ? "sub" : "unsub"), std::format(R"("id":"{}")", album), Api::weapi));
     }
 
     Task<Result<std::vector<Card>>> Netease::collected_albums() {
@@ -1010,8 +1011,8 @@ namespace lyren::ncm {
     }
 
     Task<Result<Card>> Netease::create_playlist(std::string name, bool hidden) {
-        auto r = parse<CreateReply>(
-            co_await client.call("/api/playlist/create", std::format(R"("name":{},"privacy":"{}","type":"NORMAL")", json_string(name), hidden ? 10 : 0), Api::weapi));
+        auto r = parse<CreateReply>(co_await client.call(
+            "/api/playlist/create", std::format(R"("name":{},"privacy":"{}","type":"NORMAL")", glz::write_json(glz::escape_bytes_t{name}).value(), hidden ? 10 : 0), Api::weapi));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -1024,7 +1025,7 @@ namespace lyren::ncm {
     }
 
     Task<Result<void>> Netease::rename_playlist(std::string id, std::string name) {
-        co_return done(co_await client.call("/api/playlist/update/name", std::format(R"("id":{},"name":{})", json_string(id), json_string(name))));
+        co_return done(co_await client.call("/api/playlist/update/name", std::format(R"("id":"{}","name":{})", id, glz::write_json(glz::escape_bytes_t{name}).value())));
     }
 
     Task<Result<void>> Netease::delete_playlist(std::string id) {
@@ -1034,7 +1035,7 @@ namespace lyren::ncm {
     Task<Result<void>> Netease::edit_playlist(std::string id, Track t, bool add) {
         std::string track = std::move(t.id);
         auto fields = [&](std::string_view ids) {
-            return std::format(R"("op":"{}","pid":{},"trackIds":{},"imme":"true")", add ? "add" : "del", json_string(id), json_string(ids));
+            return std::format(R"("op":"{}","pid":"{}","trackIds":{},"imme":"true")", add ? "add" : "del", id, glz::write_json(ids).value());
         };
         Reply r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}"])", track)));
         // The server sometimes answers 512 for a single id; listing it twice goes through.
@@ -1053,9 +1054,9 @@ namespace lyren::ncm {
         if (cursor.empty()) {
             cursor = hot ? "normalHot#0" : "0";
         }
-        auto r = parse<CommentsReply>(
-            co_await client.call("/api/v2/resource/comments", std::format(R"("threadId":"{}{}","pageNo":{},"showInner":true,"pageSize":20,"cursor":{},"sortType":{})",
-                                                                          threads[static_cast<int>(subject)], id, page, json_string(cursor), hot ? 2 : 3)));
+        auto r = parse<CommentsReply>(co_await client.call(
+            "/api/v2/resource/comments", std::format(R"("threadId":"{}{}","pageNo":{},"showInner":true,"pageSize":20,"cursor":{},"sortType":{})",
+                                                     threads[static_cast<int>(subject)], id, page, glz::write_json(glz::escape_bytes_t{cursor}).value(), hot ? 2 : 3)));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -1090,14 +1091,14 @@ namespace lyren::ncm {
     // does not count others).
     Task<void> Netease::report_start(std::string id, std::string source) {
         std::string logs = std::format(R"([{{"action":"startplay","json":{{"id":"{}","type":"song","mainsite":"1","mainsiteWeb":"1","content":"id={}"}}}}])", id, source);
-        co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", json_string(logs)), Api::clientlog);
+        co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", glz::write_json(logs).value()), Api::clientlog);
     }
 
     Task<void> Netease::report_play(std::string id, std::string source, int seconds) {
         std::string logs = std::format(R"([{{"action":"play","json":{{"download":0,"end":"playend","id":"{}","sourceId":"{}","time":"{}","type":"song","wifi":0,)"
                                        R"("source":"list","mainsite":"1","mainsiteWeb":"1","content":"id={}"}}}}])",
                                        id, source, seconds, source);
-        co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", json_string(logs)), Api::clientlog);
+        co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", glz::write_json(logs).value()), Api::clientlog);
     }
 
 } // namespace lyren::ncm

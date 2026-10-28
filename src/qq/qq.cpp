@@ -9,7 +9,6 @@
 #include <source_location>
 #include <curl/curl.h>
 
-#include "core/json.hpp"
 #include "core/i18n.hpp"
 #include "core/log.hpp"
 #include "net/fetch.hpp"
@@ -775,8 +774,8 @@ namespace lyren::qq {
     Task<Result<Batch>> Qq::search(std::string query, SearchKind kind, int offset, int limit) {
         static constexpr std::array types = {0, 2, 1, 3}; // songs, albums, artists, playlists
         std::mt19937_64 rng{std::random_device{}()};
-        std::string param = std::format(R"({{"query":{},"search_type":{},"page_num":{},"num_per_page":{},"searchid":"{}"}})", json_string(query), types[static_cast<int>(kind)],
-                                        offset / limit + 1, limit, rng() % 100000000000000);
+        std::string param = std::format(R"({{"query":{},"search_type":{},"page_num":{},"num_per_page":{},"searchid":"{}"}})", glz::write_json(glz::escape_bytes_t{query}).value(),
+                                        types[static_cast<int>(kind)], offset / limit + 1, limit, rng() % 100000000000000);
         auto r = parse<One<QSearch>>(co_await client.call({{"music.search.SearchCgiService", "DoSearchForQQMusicDesktop", param}}));
         if (!r) {
             co_return std::unexpected(r.error());
@@ -904,7 +903,7 @@ namespace lyren::qq {
     }
 
     Task<Result<Track>> Qq::song_detail(std::string mid) {
-        auto r = parse<One<QDetail>>(co_await client.call({{"music.pf_song_detail_svr", "get_song_detail", std::format(R"({{"song_mid":{}}})", json_string(mid))}}));
+        auto r = parse<One<QDetail>>(co_await client.call({{"music.pf_song_detail_svr", "get_song_detail", std::format(R"({{"song_mid":"{}"}})", mid)}}));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -936,9 +935,9 @@ namespace lyren::qq {
         if (card.id.starts_with("dir:")) {
             std::vector<Track> out;
             for (int offset = 0;;) {
-                auto page = parse_playlist(co_await client.call(
-                    {{"music.musicasset.PlaylistDetailRead", "GetUniformSongDetailInfo",
-                      std::format(R"({{"uin":{},"dirid":{},"bPaged":true,"offset":{},"size":100}})", json_string(client.get("musicid")), card.id.substr(4), offset)}}));
+                auto page = parse_playlist(
+                    co_await client.call({{"music.musicasset.PlaylistDetailRead", "GetUniformSongDetailInfo",
+                                           std::format(R"({{"uin":"{}","dirid":{},"bPaged":true,"offset":{},"size":100}})", client.get("musicid"), card.id.substr(4), offset)}}));
                 if (!page) {
                     co_return std::unexpected(page.error());
                 }
@@ -1227,7 +1226,8 @@ namespace lyren::qq {
         if (id.starts_with(top_prefix)) {
             biz = 4, id = id.substr(top_prefix.size());
         }
-        std::string common = std::format(R"("BizType":{},"BizId":"{}","LastCommentSeqNo":{},"PageSize":20,"PageNum":{})", biz, id, json_string(cursor), page - 1);
+        std::string common =
+            std::format(R"("BizType":{},"BizId":"{}","LastCommentSeqNo":{},"PageSize":20,"PageNum":{})", biz, id, glz::write_json(glz::escape_bytes_t{cursor}).value(), page - 1);
         Rpc rpc{"music.globalComment.CommentReadServer", hot ? "GetHotCommentList" : "GetNewCommentList",
                 hot ? std::format(R"({{{},"HotType":1,"WithAirborne":0}})", common) : std::format(R"({{{},"FromCommentId":"","WithHot":0}})", common)};
         auto r = parse<One<QComments>>(co_await client.call({rpc}));
@@ -1266,7 +1266,7 @@ namespace lyren::qq {
     }
 
     Task<Result<std::pair<Card, std::vector<Card>>>> Qq::user_playlists(std::string uid) {
-        auto r = parse<One<QDirectories>>(co_await client.call({{"music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", std::format(R"({{"uin":{}}})", json_string(uid))}}));
+        auto r = parse<One<QDirectories>>(co_await client.call({{"music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", std::format(R"({{"uin":"{}"}})", uid)}}));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -1295,8 +1295,8 @@ namespace lyren::qq {
             }
         }
         for (int offset = 0;;) {
-            auto page = parse_favorite_playlists(co_await client.call(
-                {{"music.musicasset.PlaylistFavRead", "GetPlaylistFavInfo_v2", std::format(R"({{"uin":{},"offset":{},"size":100}})", json_string(uid), offset)}}));
+            auto page = parse_favorite_playlists(
+                co_await client.call({{"music.musicasset.PlaylistFavRead", "GetPlaylistFavInfo_v2", std::format(R"({{"uin":"{}","offset":{},"size":100}})", uid, offset)}}));
             if (!page) {
                 co_return std::unexpected(page.error());
             }
@@ -1339,9 +1339,10 @@ namespace lyren::qq {
     }
 
     Task<Result<Card>> Qq::create_playlist(std::string name, bool hidden) {
-        auto r = written(co_await client.call({{"music.musicasset.PlaylistBaseWrite", "AddPlaylist",
-                                                std::format(R"({{"dirName":{},"dirShow":{},"dirDesc":"","dirPicUrl":"","taglist":""}})", json_string(name), hidden ? 0 : 1)}},
-                                              Comm::app, false));
+        auto r = written(co_await client.call(
+            {{"music.musicasset.PlaylistBaseWrite", "AddPlaylist",
+              std::format(R"({{"dirName":{},"dirShow":{},"dirDesc":"","dirPicUrl":"","taglist":""}})", glz::write_json(glz::escape_bytes_t{name}).value(), hidden ? 0 : 1)}},
+            Comm::app, false));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -1372,11 +1373,12 @@ namespace lyren::qq {
                 tags += (tags.empty() ? "" : ",") + std::to_string(tag);
             }
         }
-        auto w = written(
-            co_await client.call({{"music.musicasset.PlaylistBaseWrite", "EditPlaylist",
-                                   std::format(R"({{"dirId":{},"mask":15,"dirNewName":{},"dirNewDesc":{},"dirNewPicUrl":{},"dirNewtaglist":{}}})", id.substr(4), json_string(name),
-                                               json_string(d->dirinfo->desc.value_or("")), json_string(d->dirinfo->picurl.value_or("")), json_string(tags))}},
-                                 Comm::app, false));
+        const std::string description = d->dirinfo->desc.value_or("");
+        auto w = written(co_await client.call({{"music.musicasset.PlaylistBaseWrite", "EditPlaylist",
+                                                std::format(R"({{"dirId":{},"mask":15,"dirNewName":{},"dirNewDesc":{},"dirNewPicUrl":{},"dirNewtaglist":"{}"}})", id.substr(4),
+                                                            glz::write_json(glz::escape_bytes_t{name}).value(), glz::write_json(glz::escape_bytes_t{description}).value(),
+                                                            glz::write_json(d->dirinfo->picurl.value_or("")).value(), tags)}},
+                                              Comm::app, false));
         if (!w) {
             co_return std::unexpected(w.error());
         }
@@ -1392,9 +1394,9 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::collect(std::string mid, bool on) {
-        auto r = written(co_await client.call({{"music.musicasset.AlbumFavWrite", on ? "FavAlbum" : "CancelFavAlbum",
-                                                std::format(R"({{"uin":{},"v_albumMid":[{}]}})", json_string(client.get("musicid")), json_string(mid))}},
-                                              Comm::app, false));
+        auto r = written(co_await client.call(
+            {{"music.musicasset.AlbumFavWrite", on ? "FavAlbum" : "CancelFavAlbum", std::format(R"({{"uin":"{}","v_albumMid":["{}"]}})", client.get("musicid"), mid)}}, Comm::app,
+            false));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -1402,8 +1404,7 @@ namespace lyren::qq {
     }
 
     Task<Result<std::vector<Card>>> Qq::collected_albums() {
-        auto r = parse<One<QAlbumFavorites>>(
-            co_await client.call({{"music.musicasset.AlbumFavRead", "GetAlbumFavInfo", std::format(R"({{"uin":{}}})", json_string(client.get("musicid")))}}));
+        auto r = parse<One<QAlbumFavorites>>(co_await client.call({{"music.musicasset.AlbumFavRead", "GetAlbumFavInfo", std::format(R"({{"uin":"{}"}})", client.get("musicid"))}}));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -1430,10 +1431,9 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::follow(std::string mid, bool on) {
-        auto r = written(
-            co_await client.call({{"Concern.ConcernSystemServer", "cgi_concern_user_v2",
-                                   std::format(R"({{"opertype":{},"source":0,"encrypt_singerid":1,"userinfo":{{"usertype":1,"userid":{}}}}})", on ? 0 : 1, json_string(mid))}},
-                                 Comm::app, false));
+        auto r = written(co_await client.call({{"Concern.ConcernSystemServer", "cgi_concern_user_v2",
+                                                std::format(R"({{"opertype":{},"source":0,"encrypt_singerid":1,"userinfo":{{"usertype":1,"userid":"{}"}}}})", on ? 0 : 1, mid)}},
+                                              Comm::app, false));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -1624,9 +1624,10 @@ namespace lyren::qq {
         if (code.empty() || query_value(authorized.location, "state") != state) {
             co_return std::unexpected("QQ authorization state did not match; scan again");
         }
-        auto session = login_session(co_await client.call(
-            {{"QQConnectLogin.LoginServer", "QQLogin", std::format(R"({{"onlyNeedAccessToken":0,"forceRefreshToken":0,"appid":100497308,"code":{}}})", json_string(code))}},
-            Comm::linux, false));
+        auto session =
+            login_session(co_await client.call({{"QQConnectLogin.LoginServer", "QQLogin",
+                                                 std::format(R"({{"onlyNeedAccessToken":0,"forceRefreshToken":0,"appid":100497308,"code":{}}})", glz::write_json(code).value())}},
+                                               Comm::linux, false));
         if (gen != qr_gen_) {
             co_return QrStatus{};
         }
@@ -1646,8 +1647,8 @@ namespace lyren::qq {
         auto reply =
             co_await client.call({{"QQConnectLogin.LoginServer", "QQLogin",
                                    std::format(R"({{"openid":{},"access_token":{},"refresh_token":{},"musicid":{},"musickey":{},"onlyNeedAccessToken":0,"forceRefreshToken":0}})",
-                                               json_string(client.get("openid")), json_string(client.get("access_token")), json_string(client.get("refresh_token")),
-                                               client.get("musicid"), json_string(client.get("musickey")))}},
+                                               glz::write_json(client.get("openid")).value(), glz::write_json(client.get("access_token")).value(),
+                                               glz::write_json(client.get("refresh_token")).value(), client.get("musicid"), glz::write_json(client.get("musickey")).value())}},
                                  Comm::linux, false);
         if (gen != qr_gen_) {
             co_return Result<void>{};
@@ -1672,7 +1673,7 @@ namespace lyren::qq {
 
     Task<Result<Account>> Qq::account() {
         std::string uid = client.get("musicid");
-        auto r = parse<One<QUsers>>(co_await client.call({{"userInfo.BaseUserInfoServer", "get_user_baseinfo_v2", std::format(R"({{"vec_uin":[{}]}})", json_string(uid))}}));
+        auto r = parse<One<QUsers>>(co_await client.call({{"userInfo.BaseUserInfoServer", "get_user_baseinfo_v2", std::format(R"({{"vec_uin":["{}"]}})", uid)}}));
         if (!r) {
             co_return std::unexpected(r.error());
         }
