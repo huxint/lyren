@@ -176,11 +176,12 @@ namespace lyren {
 
     struct Stream {
         std::string url;
-        bool trial = false;     // only a preview clip is playable
-        double trial_start = 0; // where the clip begins in the song, s
-        std::string level;      // the quality the server granted
-        float gain = 0;         // loudness correction, dB
-        float peak = 0;         // sample peak, 0 when unknown
+        bool trial = false;                          // only a preview clip is playable
+        double trial_start = 0;                      // where the preview file starts in the song, s (QQ's RS02 file: always 0)
+        double highlight_from = 0, highlight_to = 0; // the service's chorus window in the song, s; empty when the end is not after the start
+        std::string level;                           // the quality the server granted
+        float gain = 0;                              // loudness correction, dB
+        float peak = 0;                              // sample peak, 0 when unknown
     };
 
     struct Account {

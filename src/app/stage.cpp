@@ -165,8 +165,12 @@ namespace lyren {
             }
             if (detail > 0 && live && !player_.codec().empty()) {
                 Fade more(p, detail);
-                line(cap.x, y + cap.gap + 24 * k, std::format("{} · {:.1f} kHz", player_.codec(), player_.format().rate / 1000.0), t.fs(12) * k, t.fs(12),
-                     t.text_dim.with_alpha(0.7f), cap.w);
+                std::string text = std::format("{} · {:.1f} kHz", player_.codec(), player_.format().rate / 1000.0);
+                if (trial_) {
+                    text += " · ";
+                    text += lyren::tr("Preview");
+                }
+                line(cap.x, y + cap.gap + 24 * k, text, t.fs(12) * k, t.fs(12), t.text_dim.with_alpha(0.7f), cap.w);
             }
             // The heart follows the title.
             bool like = liked(track);

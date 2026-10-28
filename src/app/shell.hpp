@@ -442,7 +442,8 @@ namespace lyren {
         // Lyrics and the now-playing view.
         std::vector<LyricLine> lyrics_;
         std::string lyrics_id_;
-        double clip_start_ = 0; // where a trial clip sits in the song the lyrics are timed for
+        double clip_start_ = 0;                        // where a trial clip sits in the song the lyrics are timed for
+        double highlight_from_ = 0, highlight_to_ = 0; // the stream's chorus window, s in song time; empty when the end is not after the start
         bool lyrics_loading_ = false;
         bool np_open_ = false, np_wide_ = true;
         double drift_ = 0, drift_last_ = 0; // how far the backdrop has drifted: it moves only while the music plays

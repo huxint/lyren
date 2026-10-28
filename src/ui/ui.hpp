@@ -119,6 +119,8 @@ namespace lyren::ui {
         bool accent = true;                              // accent fill, or a neutral one
         float wave = 0;                                  // amplitude (px) of the moving sine drawn over the filled part
         std::span<const std::pair<float, float>> marked; // ranges (0..1) drawn lighter on the track, e.g. what is buffered
+        float span_from = 0, span_to = 1;                // the playable stretch; outside it the rail is dotted
+        float band_from = -1, band_to = -1;              // a window under the rail, e.g. the chorus; negative: none
     };
 
     struct Interaction {

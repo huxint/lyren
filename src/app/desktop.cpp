@@ -98,8 +98,8 @@ namespace lyren {
         const std::string_view text = line ? std::string_view(line->text) : track ? std::string_view(track->title) : lyren::tr("Nothing playing");
         const bool timed = line && !line->words.empty();
         const float change = show_line(ui, island_line_, text, {}, timed);
-        const double duration = player_.duration() > 0 ? player_.duration() : track ? track->duration : 0;
-        const float done = duration > 0 ? static_cast<float>(std::clamp(elapsed / duration, 0.0, 1.0)) : 0;
+        const double duration = std::max(player_.duration(), track ? static_cast<double>(track->duration) : 0.0);
+        const float done = duration > 0 ? static_cast<float>(std::clamp((clip_start_ + elapsed) / duration, 0.0, 1.0)) : 0;
 
         // Closed it is a pill: the cover in its progress ring, the line being sung and a level meter. While the pointer
         // rests on it, it opens into a card with the track, the whole line, progress and controls.

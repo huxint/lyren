@@ -63,29 +63,51 @@ namespace lyren::ui {
         auto it = interact(id, r);
         bool changed = false;
         if (it.pressed || it.held) {
-            float v = std::clamp((in_->x - r.x) / r.w, 0.f, 1.f);
-            changed = v != value;
-            value = v;
+            float raw = (in_->x - r.x) / r.w;
+            // A press on the unavailable stretch does not move the value; a drag keeps following the pointer.
+            if (it.held || (raw >= style.span_from && raw <= style.span_to)) {
+                float v = std::clamp(raw, style.span_from, style.span_to);
+                changed = v != value;
+                value = v;
+            }
         }
         float hot = anim(id, it.hovered || it.held ? 1 : 0, 150);
         float th = 4 + hot;
-        float cy = r.y + r.h / 2, filled = r.w * value;
+        float cy = r.y + r.h / 2;
+        float sx0 = r.x + r.w * std::clamp(style.span_from, 0.f, 1.f), sx1 = r.x + r.w * std::clamp(style.span_to, style.span_from, 1.f);
+        float filled = std::clamp(r.x + r.w * value - sx0, 0.f, sx1 - sx0);
+        // What the file cannot play shows as a dotted line at the rail's height.
+        for (float x = r.x; x + 3 <= sx0; x += 7) {
+            p_->rect({x, cy - 1, 3, 2}, t.text.with_alpha(0.10f), 1);
+        }
+        for (float x = sx1 + 4; x + 3 <= r.right(); x += 7) {
+            p_->rect({x, cy - 1, 3, 2}, t.text.with_alpha(0.10f), 1);
+        }
         Color fill = style.accent ? t.accent : t.text_dim.mix(t.text, hot);
         bool flowing = style.wave > 0 && filled > 0 && t.motion > 0;
         float phase = flowing ? -static_cast<float>(std::fmod(now * 1.4, 1.0)) * tau : 0;
-        p_->wave({r.x, cy - th / 2, r.w, th}, filled, style.wave, 26, phase, fill, t.text.with_alpha(0.14f));
+        p_->wave({sx0, cy - th / 2, sx1 - sx0, th}, filled, style.wave, 26, phase, fill, t.text.with_alpha(0.14f));
         if (flowing) {
             animating_ = true;
         }
         for (auto [a, b] : style.marked) {
-            float x0 = std::max(r.x + r.w * a, r.x + filled), x1 = r.x + r.w * b;
+            float x0 = std::max({r.x + r.w * a, sx0 + filled, sx0}), x1 = std::min(r.x + r.w * b, sx1);
             if (x1 - x0 > 0.5f) {
                 p_->rect({x0, cy - th / 2, x1 - x0, th}, t.text.with_alpha(0.12f), th / 2);
             }
         }
+        // A marked window under the rail; a nearly empty one shows as a dot.
+        if (style.band_from >= 0 && style.band_to > style.band_from) {
+            float x0 = r.x + r.w * style.band_from, x1 = r.x + r.w * style.band_to;
+            if (x1 - x0 < 3) {
+                float mid_x = (x0 + x1) / 2;
+                x0 = mid_x - 1.5f, x1 = mid_x + 1.5f;
+            }
+            p_->rect({x0, cy + th / 2 + 2.5f, x1 - x0, 2.5f}, t.accent.with_alpha(0.30f + 0.18f * hot), 1.25f);
+        }
         float knob = 13 * hot;
         if (knob > 0.5f) {
-            Rect k{r.x + filled - knob / 2, cy - knob / 2, knob, knob};
+            Rect k{sx0 + filled - knob / 2, cy - knob / 2, knob, knob};
             p_->shadow(k, knob / 2, 8, t.shadow);
             p_->rect(k, white, knob / 2);
         }

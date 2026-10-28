@@ -55,7 +55,7 @@ namespace lyren::qq {
         };
         struct QFile {
             Str media_mid;
-            uint32_t try_begin = 0;
+            uint32_t try_begin = 0, try_end = 0;
         };
         struct QPay {
             int pay_play = 0;
@@ -892,6 +892,9 @@ namespace lyren::qq {
             auto d = take_data(r->req_1);
             if (d && d->track_info) {
                 const QSong &song = *d->track_info;
+                if (song.file && song.file->try_end > song.file->try_begin) {
+                    s.highlight_from = song.file->try_begin / 1000.0, s.highlight_to = song.file->try_end / 1000.0;
+                }
                 // A clip's loudness is not the song's.
                 if (song.volume && !s.trial) {
                     s.gain = song.volume->gain, s.peak = song.volume->peak;
