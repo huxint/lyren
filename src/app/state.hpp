@@ -19,6 +19,7 @@ namespace lyren {
         // Desktop lyrics: offset of the text from the screen's centre, height above the bottom, click-through.
         float lyrics_x = 0, lyrics_bottom = 48;
         bool lyrics_locked = false;
+        bool lyrics_enabled = false, lyrics_island = false, lyrics_translation = true;
     };
 
     SavedState load_state();

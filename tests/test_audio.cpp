@@ -42,7 +42,7 @@ namespace {
     std::vector<float> decode_all(Decoder &d) {
         std::vector<float> out, buf(1000 * d.format.channels);
         while (size_t n = d.read(buf.data(), 1000)) {
-            out.insert(out.end(), buf.begin(), buf.begin() + ptrdiff_t(n * d.format.channels));
+            out.insert(out.end(), buf.begin(), buf.begin() + static_cast<ptrdiff_t>(n * d.format.channels));
         }
         return out;
     }
@@ -73,11 +73,11 @@ TEST_CASE("decoders: format, length, seek") {
         REQUIRE_MESSAGE(d, error);
         CHECK(d->codec == c.codec);
         CHECK(d->format == Format{22050, 2});
-        CHECK(std::abs(double(d->length) - 22050) < 2200);
+        CHECK(std::abs(static_cast<double>(d->length) - 22050) < 2200);
 
         auto all = decode_all(*d);
         size_t frames = all.size() / 2;
-        REQUIRE(std::abs(double(frames) - 22050) < 2200);
+        REQUIRE(std::abs(static_cast<double>(frames) - 22050) < 2200);
         // Left is 440 Hz at 0.5, right 660 Hz at 0.25.
         float peak_l = 0, peak_r = 0;
         for (size_t i = 0; i < frames; ++i) {
@@ -117,4 +117,24 @@ TEST_CASE("MP4 constant-size sample tables decode every AAC packet") {
     CHECK(decoder->format == Format{22050, 2});
     CHECK(decoder->length == 32 * 1024);
     CHECK(decode_all(*decoder).size() == 32 * 1024 * 2);
+}
+
+TEST_CASE("MP3 seeks before a frame index is built retain the exact sample timeline") {
+    auto spool = Spool::file(LYREN_TEST_DATA "/seek-vbr.mp3");
+    std::string error;
+    auto reference = open_decoder(*spool, error);
+    REQUIRE_MESSAGE(reference, error);
+    const auto samples = decode_all(*reference);
+    const auto format = reference->format;
+    for (uint64_t second : {8, 16, 20}) {
+        CAPTURE(second);
+        auto source = Spool::file(LYREN_TEST_DATA "/seek-vbr.mp3");
+        auto decoder = open_decoder(*source, error);
+        REQUIRE_MESSAGE(decoder, error);
+        const uint64_t target = second * format.rate + 137;
+        REQUIRE(decoder->seek(target));
+        std::vector<float> actual(2048 * format.channels);
+        REQUIRE(decoder->read(actual.data(), 2048) == 2048);
+        CHECK(max_diff(actual.data(), samples.data() + target * format.channels, actual.size()) < 1e-4f);
+    }
 }

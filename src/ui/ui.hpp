@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -99,17 +100,17 @@ namespace lyren::ui {
         modal,
         popup
     };
-    enum class ButtonKind {
+    enum class ButtonKind : uint8_t {
         primary,
         secondary,
         ghost
     };
-    enum class Align {
+    enum class Align : uint8_t {
         left,
         center,
         right
     };
-    enum class TabStyle {
+    enum class TabStyle : uint8_t {
         underline,
         pill
     };

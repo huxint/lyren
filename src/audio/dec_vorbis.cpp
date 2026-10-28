@@ -23,9 +23,9 @@ namespace lyren::audio {
                 }
                 open_ = true;
                 vorbis_info *vi = ov_info(&vf_, -1);
-                format = {uint32_t(vi->rate), uint32_t(vi->channels)};
+                format = {static_cast<uint32_t>(vi->rate), static_cast<uint32_t>(vi->channels)};
                 ogg_int64_t n = ov_pcm_total(&vf_, -1);
-                length = n > 0 ? uint64_t(n) : 0;
+                length = n > 0 ? static_cast<uint64_t>(n) : 0;
                 codec = "vorbis";
                 return true;
             }
@@ -35,7 +35,7 @@ namespace lyren::audio {
                 while (done < frames) {
                     float **pcm;
                     int section;
-                    long n = ov_read_float(&vf_, &pcm, int(frames - done), &section);
+                    long n = ov_read_float(&vf_, &pcm, static_cast<int>(frames - done), &section);
                     if (n == OV_HOLE) {
                         continue;
                     }
@@ -44,16 +44,16 @@ namespace lyren::audio {
                     }
                     for (long i = 0; i < n; ++i) {
                         for (size_t c = 0; c < ch; ++c) {
-                            out[(done + size_t(i)) * ch + c] = pcm[c][i];
+                            out[(done + static_cast<size_t>(i)) * ch + c] = pcm[c][i];
                         }
                     }
-                    done += size_t(n);
+                    done += static_cast<size_t>(n);
                 }
                 return done;
             }
 
             bool seek(uint64_t frame) override {
-                return ov_pcm_seek(&vf_, ogg_int64_t(frame)) == 0;
+                return ov_pcm_seek(&vf_, static_cast<ogg_int64_t>(frame)) == 0;
             }
 
         private:
@@ -65,12 +65,12 @@ namespace lyren::audio {
             }
             static int seek_cb(void *ud, ogg_int64_t off, int whence) {
                 auto *d = static_cast<Vorbis *>(ud);
-                int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? int64_t(d->pos_) : int64_t(d->s_.size());
-                d->pos_ = uint64_t(base + off);
+                int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(d->pos_) : static_cast<int64_t>(d->s_.size());
+                d->pos_ = static_cast<uint64_t>(base + off);
                 return 0;
             }
             static long tell_cb(void *ud) {
-                return long(static_cast<Vorbis *>(ud)->pos_);
+                return static_cast<long>(static_cast<Vorbis *>(ud)->pos_);
             }
 
             Spool &s_;

@@ -40,6 +40,19 @@ struct glz::meta<lyren::ThemeMode> {
     static constexpr auto value = enumerate(dark, light);
 };
 
+template <>
+struct glz::meta<lyren::Language> {
+    using enum lyren::Language;
+    static constexpr auto value = enumerate(en, zh);
+};
+template <>
+struct glz::meta<lyren::Config::DesktopLyrics> {
+    using T = lyren::Config::DesktopLyrics;
+    // The old visibility setting is now persisted with the player state.
+    static constexpr auto value =
+        object("enabled", glz::skip{}, "font_size", &T::font_size, "highlight", &T::highlight, "color", &T::color, "outline", &T::outline, "island", &T::island);
+};
+
 namespace lyren {
 
     static const unsigned char default_config[] = {
@@ -71,7 +84,7 @@ namespace lyren {
         auto colon = head.find(':');
         std::string line = head.substr(0, colon);
         std::string code = head.substr(head.find(": ") == std::string::npos ? head.size() : head.find(": ") + 2);
-        return std::format("配置第 {} 行有误（{}）：{}，已保留之前的设置", line, code, context);
+        return std::format("Config line {} is invalid ({}): {}; previous settings were kept", line, code, context);
     }
 
     static std::string_view trim(std::string_view s) {
@@ -118,13 +131,19 @@ namespace lyren {
                 }
             } else if (current == section && !l.empty() && !l.starts_with('#')) {
                 if (l.starts_with(key) && trim(l.substr(key.size())).starts_with('=')) {
+                    if (value.empty()) {
+                        return std::string(toml.substr(0, pos)) + std::string(toml.substr(std::min(end + 1, toml.size())));
+                    }
                     auto old = trim(l.substr(l.find('=') + 1));
-                    size_t begin = size_t(old.data() - toml.data());
+                    size_t begin = static_cast<size_t>(old.data() - toml.data());
                     return std::format("{}{}{}", toml.substr(0, begin), value, toml.substr(begin + value_size(old)));
                 }
                 insert = end;
             }
             pos = end + 1;
+        }
+        if (value.empty()) {
+            return std::string(toml);
         }
         if (insert != std::string_view::npos) {
             return std::format("{}\n{}{}", toml.substr(0, insert), line, toml.substr(insert));
@@ -166,11 +185,11 @@ namespace lyren {
             std::ofstream out(tmp, std::ios::trunc);
             out << text;
             if (!out) {
-                return std::unexpected(std::format("设置没有保存：无法写入 {}", tmp.string()));
+                return std::unexpected(std::format("Settings were not saved: could not write {}", tmp.string()));
             }
         }
         if (std::rename(tmp.c_str(), f.path.c_str()) != 0) {
-            return std::unexpected(std::format("设置没有保存：无法替换 {}", f.path.string()));
+            return std::unexpected(std::format("Settings were not saved: could not replace {}", f.path.string()));
         }
         f.config = *c;
         f.error.clear();
@@ -178,7 +197,7 @@ namespace lyren {
         return {};
     }
 
-    ConfigWatcher::ConfigWatcher(Loop &loop, std::filesystem::path path, std::function<void()> on_change)
+    ConfigWatcher::ConfigWatcher(Loop &loop, std::filesystem::path path, std::move_only_function<void()> on_change)
     : loop_(loop),
       path_(std::move(path)),
       on_change_(std::move(on_change)),

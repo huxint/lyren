@@ -41,7 +41,7 @@ namespace lyren {
         watches_.erase(fd);
     }
 
-    Loop::TimerId Loop::at(Clock::time_point when, std::function<void()> fn) {
+    Loop::TimerId Loop::at(Clock::time_point when, std::move_only_function<void() &> fn) {
         TimerId id = next_timer_++;
         auto at = timer_queue_.emplace(when, id);
         timers_.emplace(id, std::pair{at, std::move(fn)});
@@ -86,7 +86,7 @@ namespace lyren {
         arm_timer();
     }
 
-    void Loop::post(std::function<void()> fn) {
+    void Loop::post(std::move_only_function<void() &> fn) {
         {
             std::lock_guard lock(post_mutex_);
             posted_.push_back(std::move(fn));
@@ -96,7 +96,7 @@ namespace lyren {
     }
 
     void Loop::run_posted() {
-        std::vector<std::function<void()>> batch;
+        std::vector<std::move_only_function<void() &>> batch;
         {
             std::lock_guard lock(post_mutex_);
             batch.swap(posted_);
@@ -106,7 +106,7 @@ namespace lyren {
         }
     }
 
-    void Loop::defer(std::function<void()> fn) {
+    void Loop::defer(std::move_only_function<void() &> fn) {
         deferred_.push_back(std::move(fn));
     }
 
@@ -139,7 +139,7 @@ namespace lyren {
                 }
                 break;
             }
-            int n = epoll_wait(epoll_, events.data(), int(events.size()), deferred_.empty() ? -1 : 0);
+            int n = epoll_wait(epoll_, events.data(), static_cast<int>(events.size()), deferred_.empty() ? -1 : 0);
             if (hook_.after) {
                 bool readable = false;
                 for (int i = 0; i < n; ++i) {

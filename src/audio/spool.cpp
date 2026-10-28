@@ -70,7 +70,7 @@ namespace lyren::audio {
             s->size_ = 0;
             return s;
         }
-        s->size_ = uint64_t(st.st_size);
+        s->size_ = static_cast<uint64_t>(st.st_size);
         s->have_.add(0, s->size_);
         return s;
     }
@@ -147,14 +147,14 @@ namespace lyren::audio {
     void Spool::on_data(uint64_t req, uint64_t offset, std::span<const std::byte> d) {
         // Bytes from a cancelled request are still the right bytes.
         for (size_t done = 0; done < d.size();) {
-            ssize_t n = ::pwrite(fd_, d.data() + done, d.size() - done, off_t(offset + done));
+            ssize_t n = ::pwrite(fd_, d.data() + done, d.size() - done, static_cast<off_t>(offset + done));
             if (n <= 0) {
                 std::lock_guard lk(m_);
                 error_ = std::format("cache write: {}", std::strerror(errno));
                 cv_.notify_all();
                 return;
             }
-            done += size_t(n);
+            done += static_cast<size_t>(n);
         }
         std::lock_guard lk(m_);
         have_.add(offset, offset + d.size());
@@ -215,8 +215,8 @@ namespace lyren::audio {
             }
             if (uint64_t a = have_.available(off)) {
                 lk.unlock();
-                ssize_t r = ::pread(fd_, buf, std::min<uint64_t>(n, a), off_t(off));
-                return r > 0 ? size_t(r) : 0;
+                ssize_t r = ::pread(fd_, buf, std::min<uint64_t>(n, a), static_cast<off_t>(off));
+                return r > 0 ? static_cast<size_t>(r) : 0;
             }
             if (!error_.empty()) {
                 return 0;

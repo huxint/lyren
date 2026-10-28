@@ -32,19 +32,19 @@ namespace lyren::utf8 {
 
     void append(std::string &out, char32_t cp) {
         if (cp < 0x80) {
-            out += char(cp);
+            out += static_cast<char>(cp);
         } else if (cp < 0x800) {
-            out += char(0xc0 | (cp >> 6));
-            out += char(0x80 | (cp & 0x3f));
+            out += static_cast<char>(0xc0 | (cp >> 6));
+            out += static_cast<char>(0x80 | (cp & 0x3f));
         } else if (cp < 0x10000) {
-            out += char(0xe0 | (cp >> 12));
-            out += char(0x80 | ((cp >> 6) & 0x3f));
-            out += char(0x80 | (cp & 0x3f));
+            out += static_cast<char>(0xe0 | (cp >> 12));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+            out += static_cast<char>(0x80 | (cp & 0x3f));
         } else {
-            out += char(0xf0 | (cp >> 18));
-            out += char(0x80 | ((cp >> 12) & 0x3f));
-            out += char(0x80 | ((cp >> 6) & 0x3f));
-            out += char(0x80 | (cp & 0x3f));
+            out += static_cast<char>(0xf0 | (cp >> 18));
+            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3f));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+            out += static_cast<char>(0x80 | (cp & 0x3f));
         }
     }
 

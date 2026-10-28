@@ -12,7 +12,7 @@ namespace lyren {
     static constexpr size_t max_entries = 512;
     static constexpr uint32_t blur_px = 48;
 
-    Images::Images(Loop &loop, net::Http &http, gfx::Renderer &renderer, std::function<void()> redraw, std::function<double()> now)
+    Images::Images(Loop &loop, net::Http &http, gfx::Renderer &renderer, std::move_only_function<void()> redraw, std::move_only_function<double()> now)
     : loop_(loop),
       http_(http),
       renderer_(renderer),
@@ -29,7 +29,7 @@ namespace lyren {
 
     int Images::tier(float d) {
         for (int t : {64, 128, 256, 512}) {
-            if (d <= float(t)) {
+            if (d <= static_cast<float>(t)) {
                 return t;
             }
         }

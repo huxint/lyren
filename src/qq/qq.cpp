@@ -10,6 +10,7 @@
 #include <curl/curl.h>
 
 #include "core/json.hpp"
+#include "core/i18n.hpp"
 #include "core/log.hpp"
 #include "net/fetch.hpp"
 #include "qq/crypto.hpp"
@@ -54,13 +55,13 @@ namespace lyren::qq {
         };
         struct QFile {
             Str media_mid;
-            double try_begin = 0;
+            uint32_t try_begin = 0;
         };
         struct QPay {
             int pay_play = 0;
         };
         struct QVolume {
-            double gain = 0, peak = 0;
+            float gain = 0, peak = 0;
         };
         struct QSong {
             uint64_t id = 0;
@@ -126,7 +127,6 @@ namespace lyren::qq {
 
         struct QLyric {
             Str lyric, trans;
-            int qrc = 0;
         };
 
         struct QDiss {
@@ -160,6 +160,53 @@ namespace lyren::qq {
         };
         struct QRecommend {
             Vec<QModule> modules;
+        };
+        struct QCategory {
+            uint32_t id = 0;
+            Str name;
+            uint8_t status = 0, source = 0;
+        };
+        struct QCategoryGroup {
+            uint32_t group_id = 0;
+            Str group_name;
+            Vec<QCategory> v_item;
+        };
+        struct QCategories {
+            Vec<QCategoryGroup> v_group;
+        };
+        struct QPlaylistCover {
+            Str medium_url, default_url;
+        };
+        struct QPlaylistBasic {
+            uint64_t tid = 0;
+            Str title;
+            std::optional<QGridCreator> creator;
+            std::optional<QPlaylistCover> cover;
+            int song_cnt = 0;
+        };
+        struct QCategoryItem {
+            std::optional<QPlaylistBasic> basic;
+        };
+        struct QCategoryContent {
+            int total_cnt = 0;
+            Vec<QCategoryItem> v_item;
+        };
+        struct QCategoryPlaylists {
+            std::optional<QCategoryContent> content;
+        };
+        struct QFeedItem {
+            std::optional<QCategoryItem> Playlist;
+        };
+        struct QSquare {
+            Vec<QFeedItem> List;
+            int FromLimit = 0;
+            bool HasMore = false;
+        };
+        struct QRelatedSong {
+            std::optional<QSong> track;
+        };
+        struct QSimilar {
+            Vec<QRelatedSong> vecSong;
         };
         struct QTop {
             int topId = 0;
@@ -302,7 +349,7 @@ namespace lyren::qq {
             T v{};
             if (auto e = glz::read<lax>(v, r.body)) {
                 log::warn("qq {} at line {}: {} at byte {} ({} bytes)", origin.function_name(), origin.line(), glz::format_error(e.ec), e.count, r.body.size());
-                return std::unexpected("QQ 音乐返回的数据无法解析");
+                return std::unexpected("Could not parse QQ Music response");
             }
             return v;
         }
@@ -311,19 +358,19 @@ namespace lyren::qq {
         template <class T>
         Result<T> take_data(std::optional<Part<T>> &p, std::source_location origin = std::source_location::current()) {
             if (!p) {
-                return std::unexpected("QQ 音乐没有返回数据");
+                return std::unexpected("QQ Music returned no data");
             }
             if (p->code != 0) {
                 log::warn("qq {} at line {}: code {}", origin.function_name(), origin.line(), p->code);
             }
             if (p->code == 2001) {
-                return std::unexpected("QQ 音乐要求登录后再试");
+                return std::unexpected("Sign in to QQ Music and try again");
             }
             if (p->code != 0) {
-                return std::unexpected(std::format("QQ 音乐请求失败（{}）", p->code));
+                return std::unexpected(std::format("QQ Music request failed ({})", p->code));
             }
             if (!p->data) {
-                return std::unexpected("QQ 音乐没有返回数据");
+                return std::unexpected("QQ Music returned no data");
             }
             return std::move(*p->data);
         }
@@ -331,6 +378,16 @@ namespace lyren::qq {
         // Covers by mid: T001 is an artist's picture, T002 an album's.
         std::string photo(int kind, std::string_view mid) {
             return mid.empty() ? "" : std::format("https://y.gtimg.cn/music/photo_new/T00{}R300x300M000{}.jpg", kind, mid);
+        }
+
+        Card playlist_card(const QPlaylistBasic &p) {
+            return {.source = Source::qq,
+                    .id = std::to_string(p.tid),
+                    .title = p.title.value_or(""),
+                    .subtitle = p.creator ? p.creator->nick.value_or("") : "",
+                    .cover = p.cover ? p.cover->medium_url.value_or(p.cover->default_url.value_or("")) : "",
+                    .count = p.song_cnt,
+                    .count_kind = Card::Count::songs};
         }
 
         Track track(const QSong &s) {
@@ -404,11 +461,11 @@ namespace lyren::qq {
                 QSong s;
                 if (auto e = glz::read<lax>(s, json)) {
                     log::warn("qq playlist item {} ({}): {} at byte {} ({} bytes)", i, path, glz::format_error(e.ec), e.count, json.size());
-                    return std::unexpected("QQ 音乐返回的歌曲资料无法解析");
+                    return std::unexpected("Could not parse QQ Music song details");
                 }
                 if (s.id == 0) {
                     log::warn("qq playlist item {} ({}): missing song id", i, path);
-                    return std::unexpected("QQ 音乐返回了不完整的歌曲资料");
+                    return std::unexpected("QQ Music returned incomplete song details");
                 }
                 out.push_back(track(s));
             }
@@ -426,25 +483,22 @@ namespace lyren::qq {
             }
             int code = d->retCode != 0 ? d->retCode : d->result ? d->result->retCode : 0;
             if (code != 0) {
-                return std::unexpected(std::format("QQ 音乐没有完成操作（{}）", code));
+                return std::unexpected(std::format("QQ Music did not complete the operation ({})", code));
             }
             return *d;
         }
 
         Card album_card(std::string mid, std::string title, std::string_view date, int count) {
             std::string year(date.substr(0, 4));
-            std::string sub = count > 0 ? std::format("{} 首", count) : "";
-            if (!year.empty()) {
-                sub = sub.empty() ? year : std::format("{} · {}", year, sub);
-            }
             std::string cover = photo(2, mid);
             return {.kind = CardKind::album,
                     .source = Source::qq,
                     .id = std::move(mid),
                     .title = std::move(title),
-                    .subtitle = std::move(sub),
+                    .subtitle = std::move(year),
                     .cover = std::move(cover),
-                    .count = count};
+                    .count = count,
+                    .count_kind = Card::Count::songs};
         }
 
         std::string trimmed(const Str &s) {
@@ -458,9 +512,9 @@ namespace lyren::qq {
             return std::string(v);
         }
 
-        // Comment times as the apps put them: 14:05, 昨天 14:05, 3月2日, 2024年3月2日.
+        // Comment times use the day and year relative to today.
         std::string when(int64_t seconds) {
-            std::time_t t = std::time_t(seconds), now = std::time(nullptr);
+            std::time_t t = static_cast<std::time_t>(seconds), now = std::time(nullptr);
             std::tm a, b;
             localtime_r(&t, &a);
             localtime_r(&now, &b);
@@ -471,12 +525,12 @@ namespace lyren::qq {
                 return std::format("{:02}:{:02}", a.tm_hour, a.tm_min);
             }
             if (a.tm_year == y.tm_year && a.tm_yday == y.tm_yday) {
-                return std::format("昨天 {:02}:{:02}", a.tm_hour, a.tm_min);
+                return lyren::trf("Yesterday {:02}:{:02}", a.tm_hour, a.tm_min);
             }
             if (a.tm_year == b.tm_year) {
-                return std::format("{}月{}日", a.tm_mon + 1, a.tm_mday);
+                return lyren::trf("{}-{}", a.tm_mon + 1, a.tm_mday);
             }
-            return std::format("{}年{}月{}日", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
+            return lyren::trf("{}-{}-{}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
         }
 
         // The text of the next <tag><![CDATA[…]]></tag> in s after at, moving at past it; at becomes npos when there is none.
@@ -514,7 +568,7 @@ namespace lyren::qq {
                 return std::unexpected(s.error());
             }
             if (!s->musicid || s->musickey.value_or("").empty() || s->openid.value_or("").empty() || s->refresh_token.value_or("").empty()) {
-                return std::unexpected("QQ 音乐没有返回完整的登录凭据");
+                return std::unexpected("QQ Music returned incomplete credentials");
             }
             return std::map<std::string, std::string>{{"musicid", std::to_string(s->musicid)},        {"musickey", *s->musickey},           {"openid", *s->openid},
                                                       {"access_token", s->access_token.value_or("")}, {"refresh_token", *s->refresh_token}, {"unionid", s->unionid.value_or("")},
@@ -556,14 +610,119 @@ namespace lyren::qq {
         if (d->v_list) {
             for (const auto &p : *d->v_list) {
                 if (!p.tid) {
-                    return std::unexpected("QQ 音乐返回了无法识别的收藏歌单");
+                    return std::unexpected("QQ Music returned an invalid saved playlist");
                 }
                 out.playlists.push_back({.source = Source::qq,
                                          .id = std::to_string(p.tid),
                                          .title = p.name.value_or(""),
-                                         .subtitle = std::format("{} 首", p.songNum),
                                          .cover = p.pic.value_or(""),
-                                         .count = p.songNum});
+                                         .count = p.songNum,
+                                         .count_kind = Card::Count::songs});
+            }
+        }
+        return out;
+    }
+
+    Result<Categories> parse_categories(const Reply &reply) {
+        auto r = parse<One<QCategories>>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        auto d = take_data(r->req_0);
+        if (!d) {
+            return std::unexpected(d.error());
+        }
+        Categories out;
+        if (d->v_group) {
+            for (const auto &group : *d->v_group) {
+                if (!group.v_item) {
+                    continue;
+                }
+                std::vector<Category> entries;
+                for (const auto &item : *group.v_item) {
+                    // AI categories have a separate content contract; only expose the installed reader.
+                    if (item.status != 0 || item.source != 0 || !item.id || !item.name) {
+                        continue;
+                    }
+                    entries.push_back({std::to_string(item.id), *item.name});
+                    if (group.group_id == 1) {
+                        out.hot.push_back(entries.back());
+                    }
+                }
+                if (!entries.empty()) {
+                    out.groups.emplace_back(group.group_name.value_or(""), std::move(entries));
+                }
+            }
+        }
+        return out;
+    }
+
+    Result<Batch> parse_square(const Reply &reply, int offset) {
+        auto r = parse<One<QSquare>>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        auto d = take_data(r->req_0);
+        if (!d) {
+            return std::unexpected(d.error());
+        }
+        Batch out;
+        if (d->List) {
+            out.cards.reserve(d->List->size());
+            for (const auto &item : *d->List) {
+                if (!item.Playlist || !item.Playlist->basic || !item.Playlist->basic->tid) {
+                    return std::unexpected("QQ Music returned an invalid recommended playlist");
+                }
+                out.cards.push_back(playlist_card(*item.Playlist->basic));
+            }
+        }
+        const int end = offset + static_cast<int>(out.cards.size());
+        out.total = d->HasMore && !out.cards.empty() ? std::max(d->FromLimit, end + 1) : end;
+        return out;
+    }
+
+    Result<Batch> parse_category_playlists(const Reply &reply) {
+        auto r = parse<One<QCategoryPlaylists>>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        auto d = take_data(r->req_0);
+        if (!d) {
+            return std::unexpected(d.error());
+        }
+        Batch out;
+        if (d->content) {
+            out.total = d->content->total_cnt;
+            if (d->content->v_item) {
+                out.cards.reserve(d->content->v_item->size());
+                for (const auto &item : *d->content->v_item) {
+                    if (!item.basic || !item.basic->tid) {
+                        return std::unexpected("QQ Music returned an invalid category playlist");
+                    }
+                    out.cards.push_back(playlist_card(*item.basic));
+                }
+            }
+        }
+        return out;
+    }
+
+    Result<std::vector<Track>> parse_similar(const Reply &reply) {
+        auto r = parse<One<QSimilar>>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        auto d = take_data(r->req_0);
+        if (!d) {
+            return std::unexpected(d.error());
+        }
+        std::vector<Track> out;
+        if (d->vecSong) {
+            out.reserve(d->vecSong->size());
+            for (const auto &item : *d->vecSong) {
+                if (!item.track || !item.track->id || !item.track->mid) {
+                    return std::unexpected("QQ Music returned incomplete related song details");
+                }
+                out.push_back(track(*item.track));
             }
         }
         return out;
@@ -574,6 +733,15 @@ namespace lyren::qq {
       loop_(loop),
       http_(http) {
         reload_after_edit = true;
+        features.categories = [this] {
+            return categories();
+        };
+        features.square = [this](std::string category, int offset) {
+            return square(std::move(category), offset);
+        };
+        features.similar = [this](std::string id) {
+            return similar(std::move(id));
+        };
         std::mt19937_64 rng{std::random_device{}()};
         guid_ = std::to_string(1000000000 + rng() % 9000000000);
     }
@@ -585,10 +753,29 @@ namespace lyren::qq {
         co_return Result<void>{};
     }
 
+    Task<Result<Categories>> Qq::categories() {
+        co_return parse_categories(co_await client.call({{"playlist.PlaylistAllCategoriesServer", "get_all_categories", R"({"qq":""})"}}));
+    }
+
+    Task<Result<Batch>> Qq::square(std::string category, int offset) {
+        constexpr int page_size = 50;
+        if (category.empty()) {
+            co_return parse_square(co_await client.call({{"music.playlist.PlaylistSquare", "GetRecommendFeed", std::format(R"({{"From":{},"Size":{}}})", offset, page_size)}}),
+                                   offset);
+        }
+        co_return parse_category_playlists(
+            co_await client.call({{"playlist.PlayListCategoryServer", "get_category_content",
+                                   std::format(R"({{"caller":"0","category_id":{},"page":{},"use_page":1,"size":{}}})", category, offset / page_size, page_size)}}));
+    }
+
+    Task<Result<std::vector<Track>>> Qq::similar(std::string id) {
+        co_return parse_similar(co_await client.call({{"music.recommend.TrackRelationServer", "GetSimilarSongs", std::format(R"({{"songid":{}}})", id)}}));
+    }
+
     Task<Result<Batch>> Qq::search(std::string query, SearchKind kind, int offset, int limit) {
         static constexpr std::array types = {0, 2, 1, 3}; // songs, albums, artists, playlists
         std::mt19937_64 rng{std::random_device{}()};
-        std::string param = std::format(R"({{"query":{},"search_type":{},"page_num":{},"num_per_page":{},"searchid":"{}"}})", json_string(query), types[int(kind)],
+        std::string param = std::format(R"({{"query":{},"search_type":{},"page_num":{},"num_per_page":{},"searchid":"{}"}})", json_string(query), types[static_cast<int>(kind)],
                                         offset / limit + 1, limit, rng() % 100000000000000);
         auto r = parse<One<QSearch>>(co_await client.call({{"music.search.SearchCgiService", "DoSearchForQQMusicDesktop", param}}));
         if (!r) {
@@ -626,17 +813,18 @@ namespace lyren::qq {
                                              .source = Source::qq,
                                              .id = a.singerMID.value_or(""),
                                              .title = a.singerName.value_or(""),
-                                             .subtitle = a.songNum > 0 ? std::format("单曲 {}", a.songNum) : "",
-                                             .cover = a.singerPic.value_or(photo(1, a.singerMID.value_or("")))});
+                                             .cover = a.singerPic.value_or(photo(1, a.singerMID.value_or(""))),
+                                             .count = a.songNum,
+                                             .count_kind = Card::Count::songs});
                     }
                 }
                 break;
             case SearchKind::playlists:
                 if (b.songlist && b.songlist->list) {
                     for (const auto &p : *b.songlist->list) {
-                        std::string sub = std::format("{} 首", p.song_count);
+                        std::string sub;
                         if (p.creator && p.creator->name) {
-                            sub += " · " + *p.creator->name;
+                            sub = *p.creator->name;
                         }
                         out.cards.push_back({.kind = CardKind::playlist,
                                              .source = Source::qq,
@@ -644,7 +832,8 @@ namespace lyren::qq {
                                              .title = p.dissname.value_or(""),
                                              .subtitle = std::move(sub),
                                              .cover = p.imgurl.value_or(""),
-                                             .count = p.song_count});
+                                             .count = p.song_count,
+                                             .count_kind = Card::Count::songs});
                     }
                 }
                 break;
@@ -654,7 +843,7 @@ namespace lyren::qq {
 
     Task<Result<Stream>> Qq::stream(Track t, Quality quality) {
         if (t.mid.empty()) {
-            co_return std::unexpected("QQ 音乐未提供这首歌的播放信息");
+            co_return std::unexpected("QQ Music returned no playback details for this song");
         }
         // Down from the quality asked for; the preview clip comes last, for songs that need a membership.
         struct File {
@@ -667,7 +856,7 @@ namespace lyren::qq {
         for (size_t i = first; i < files.size(); ++i) {
             std::string_view sep = i == first ? "" : ",";
             mids += std::format("{}\"{}\"", sep, t.mid);
-            types += std::format("{}0", sep);
+            types += std::format("{}{}", sep, t.type);
             names += std::format("{}\"{}{}.{}\"", sep, files[i].prefix, t.media, files[i].ext);
         }
         std::string uin = client.logged_in() ? client.get("musicid") : "0";
@@ -683,7 +872,7 @@ namespace lyren::qq {
             co_return std::unexpected(v.error());
         }
         if (!v->sip || v->sip->empty() || !v->midurlinfo) {
-            co_return std::unexpected("这首歌暂时不能播放（需要会员或没有版权）");
+            co_return std::unexpected("This song is unavailable (membership or licensing restriction)");
         }
         for (size_t i = first; i < files.size(); ++i) {
             std::string name = std::format("{}{}.{}", files[i].prefix, t.media, files[i].ext);
@@ -702,16 +891,16 @@ namespace lyren::qq {
             if (d && d->track_info) {
                 const QSong &song = *d->track_info;
                 if (song.file) {
-                    s.trial_start = s.trial ? song.file->try_begin / 1000 : 0;
+                    s.trial_start = s.trial ? song.file->try_begin / 1000.0 : 0;
                 }
                 // A clip's loudness is not the song's.
                 if (song.volume && !s.trial) {
-                    s.gain = float(song.volume->gain), s.peak = float(song.volume->peak);
+                    s.gain = song.volume->gain, s.peak = song.volume->peak;
                 }
             }
             co_return s;
         }
-        co_return std::unexpected("这首歌暂时不能播放（需要会员或没有版权）");
+        co_return std::unexpected("This song is unavailable (membership or licensing restriction)");
     }
 
     Task<Result<Track>> Qq::song_detail(std::string mid) {
@@ -724,13 +913,13 @@ namespace lyren::qq {
             co_return std::unexpected(d.error());
         }
         if (!d->track_info) {
-            co_return std::unexpected("QQ 音乐没有返回这首歌的资料");
+            co_return std::unexpected("QQ Music returned no details for this song");
         }
         co_return track(*d->track_info);
     }
 
     Task<Result<std::vector<LyricLine>>> Qq::lyrics(Track t) {
-        std::string param = std::format(R"({{"songId":{},"type":0,"crypt":1,"qrc":1,"trans":1,"roma":0,"lrc_t":0,"qrc_t":0,"trans_t":0,"roma_t":0}})", t.id);
+        std::string param = std::format(R"({{"songId":{},"type":{},"crypt":1,"qrc":1,"trans":1,"roma":0,"lrc_t":0,"qrc_t":0,"trans_t":0,"roma_t":0}})", t.id, t.type);
         auto r = parse<One<QLyric>>(co_await client.call({{"music.musichallSong.PlayLyricInfo", "GetPlayLyricInfo", param}}));
         if (!r) {
             co_return std::unexpected(r.error());
@@ -740,11 +929,7 @@ namespace lyren::qq {
             co_return std::unexpected(d.error());
         }
         std::string text = qrc_decode(d->lyric.value_or("")), trans = qrc_decode(d->trans.value_or(""));
-        // Songs without word timing send LRC in the same wrapping.
-        if (d->qrc == 1 && text.starts_with("<?xml")) {
-            co_return parse_qrc(text, trans);
-        }
-        co_return parse_lyrics(text, trans);
+        co_return parse_qrc(text, trans);
     }
 
     Task<Result<std::vector<Track>>> Qq::tracks(Card card) {
@@ -758,7 +943,7 @@ namespace lyren::qq {
                     co_return std::unexpected(page.error());
                 }
                 bool end = page->tracks.empty() || !page->more;
-                offset += int(page->tracks.size());
+                offset += static_cast<int>(page->tracks.size());
                 out.insert(out.end(), std::make_move_iterator(page->tracks.begin()), std::make_move_iterator(page->tracks.end()));
                 if (end) {
                     break;
@@ -807,7 +992,7 @@ namespace lyren::qq {
             if (part.empty()) {
                 break;
             }
-            begin += int(part.size());
+            begin += static_cast<int>(part.size());
             out.insert(out.end(), std::make_move_iterator(part.begin()), std::make_move_iterator(part.end()));
             if (begin >= d->total_song_num) {
                 break;
@@ -928,7 +1113,7 @@ namespace lyren::qq {
             co_return std::unexpected(d.error());
         }
         if (!d->singer_list || d->singer_list->empty()) {
-            co_return std::unexpected("没有找到这位歌手");
+            co_return std::unexpected("Artist not found");
         }
         const QSingerEntry &e = d->singer_list->front();
         ArtistInfo out{.name = e.basic_info ? e.basic_info->name.value_or("") : ""};
@@ -1001,7 +1186,7 @@ namespace lyren::qq {
             co_return out;
         }
         const QSingerEntry &e = d->singer_list->front();
-        // The wiki: <desc> is the summary, <basic> short facts (外文名, 生日…), <other> headed sections; all in CDATA.
+        // The wiki: <desc> is the summary, <basic> short facts, <other> headed sections; all in CDATA.
         std::string wiki = e.wiki.value_or("");
         size_t at = 0;
         std::string summary = cdata(wiki, "desc", at);
@@ -1031,7 +1216,7 @@ namespace lyren::qq {
                 }
             }
             if (!facts.empty()) {
-                out.emplace_back("基本资料", std::move(facts));
+                out.emplace_back(lyren::tr("Basic information"), std::move(facts));
             }
         }
         co_return out;
@@ -1089,22 +1274,22 @@ namespace lyren::qq {
         if (!d) {
             co_return std::unexpected(d.error());
         }
-        std::pair<Card, std::vector<Card>> out{{.source = Source::qq, .id = "dir:201", .title = "我喜欢的音乐", .owned = true}, {}};
+        std::pair<Card, std::vector<Card>> out{{.source = Source::qq, .id = "dir:201", .title = "Liked songs", .owned = true}, {}};
         if (d->v_playlist) {
             for (const auto &p : *d->v_playlist) {
                 if (p.dirId == 201) {
                     continue;
                 }
                 if (!p.dirId || p.dirName.value_or("").empty()) {
-                    co_return std::unexpected("QQ 音乐返回了无法识别的歌单目录");
+                    co_return std::unexpected("QQ Music returned an invalid playlist directory");
                 }
                 out.second.push_back({.source = Source::qq,
                                       .id = "dir:" + std::to_string(p.dirId),
                                       .title = *p.dirName,
-                                      .subtitle = std::format("{} 首", p.songNum),
                                       .cover = p.dirPicUrl.value_or(""),
                                       .thread = p.tid ? std::to_string(p.tid) : "",
                                       .count = p.songNum,
+                                      .count_kind = Card::Count::songs,
                                       .owned = true,
                                       .commentable = p.tid != 0});
             }
@@ -1118,7 +1303,7 @@ namespace lyren::qq {
             if (page->playlists.empty()) {
                 break;
             }
-            offset += int(page->playlists.size());
+            offset += static_cast<int>(page->playlists.size());
             out.second.insert(out.second.end(), std::make_move_iterator(page->playlists.begin()), std::make_move_iterator(page->playlists.end()));
             if (!page->more || offset >= page->total) {
                 break;
@@ -1161,9 +1346,10 @@ namespace lyren::qq {
             co_return std::unexpected(r.error());
         }
         if (!r->result || !r->result->dirId) {
-            co_return std::unexpected("QQ 音乐没有返回新歌单的目录 ID");
+            co_return std::unexpected("QQ Music returned no directory ID for the new playlist");
         }
-        co_return Card{.source = Source::qq, .id = "dir:" + std::to_string(r->result->dirId), .title = std::move(name), .subtitle = "0 首", .owned = true, .commentable = false};
+        co_return Card{
+            .source = Source::qq, .id = "dir:" + std::to_string(r->result->dirId), .title = std::move(name), .count_kind = Card::Count::songs, .owned = true, .commentable = false};
     }
 
     Task<Result<void>> Qq::rename_playlist(std::string id, std::string name) {
@@ -1178,7 +1364,7 @@ namespace lyren::qq {
             co_return std::unexpected(d.error());
         }
         if (!d->dirinfo) {
-            co_return std::unexpected("QQ 音乐没有返回歌单资料");
+            co_return std::unexpected("QQ Music returned no playlist details");
         }
         std::string tags;
         if (d->dirinfo->vec_tagid) {
@@ -1229,7 +1415,7 @@ namespace lyren::qq {
         if (d->v_list) {
             for (const auto &a : *d->v_list) {
                 if (a.albumMid.value_or("").empty()) {
-                    co_return std::unexpected("QQ 音乐返回了无法识别的收藏专辑");
+                    co_return std::unexpected("QQ Music returned an invalid saved album");
                 }
                 out.push_back({.kind = CardKind::album,
                                .source = Source::qq,
@@ -1270,7 +1456,7 @@ namespace lyren::qq {
             }
             for (const auto &a : *d->List) {
                 if (a.SingerMid.value_or("").empty()) {
-                    co_return std::unexpected("QQ 音乐返回了无法识别的关注歌手");
+                    co_return std::unexpected("QQ Music returned an invalid followed artist");
                 }
                 out.push_back({.kind = CardKind::artist,
                                .source = Source::qq,
@@ -1278,7 +1464,7 @@ namespace lyren::qq {
                                .title = a.SingerName.value_or(""),
                                .cover = a.SingerPic.value_or(photo(1, *a.SingerMid))});
             }
-            from += int(d->List->size());
+            from += static_cast<int>(d->List->size());
             if (from >= d->Total) {
                 break;
             }
@@ -1296,15 +1482,15 @@ namespace lyren::qq {
                     form({{"appid", "716027609"}, {"daid", "383"}, {"pt_3rd_aid", "100497308"}, {"style", "40"}, {"s_url", "https://graph.qq.com/oauth2.0/login_jump"}}),
              .cookie_jar = cookies}};
         if (gen != qr_gen_) {
-            co_return std::unexpected("已取消扫码登录");
+            co_return std::unexpected("QR sign-in was canceled");
         }
         if (!page.error.empty() || page.status != 200) {
-            co_return std::unexpected("无法连接 QQ 登录服务");
+            co_return std::unexpected("Could not connect to the QQ sign-in service");
         }
         cookies = std::move(page.cookie_jar);
         std::string js_version = qr_version(page.body);
         if (js_version.empty()) {
-            co_return std::unexpected("QQ 登录页没有返回客户端版本");
+            co_return std::unexpected("QQ sign-in page returned no client version");
         }
         auto qr = co_await net::fetch{loop_,
                                       http_,
@@ -1321,14 +1507,14 @@ namespace lyren::qq {
                                        .headers = {"Referer: https://xui.ptlogin2.qq.com/"},
                                        .cookie_jar = cookies}};
         if (gen != qr_gen_) {
-            co_return std::unexpected("已取消扫码登录");
+            co_return std::unexpected("QR sign-in was canceled");
         }
         if (!qr.error.empty() || qr.status != 200 || !qr.body.starts_with("\x89PNG\r\n\x1a\n")) {
-            co_return std::unexpected("QQ 登录服务没有返回二维码");
+            co_return std::unexpected("QQ sign-in service returned no QR code");
         }
         cookies = std::move(qr.cookie_jar);
         if (cookies.get("qrsig", "ssl.ptlogin2.qq.com", "/ptqrlogin").empty()) {
-            co_return std::unexpected("QQ 登录服务没有返回二维码令牌");
+            co_return std::unexpected("QQ sign-in service returned no QR token");
         }
         qr_cookies_ = std::move(cookies);
         js_version_ = std::move(js_version);
@@ -1365,7 +1551,7 @@ namespace lyren::qq {
             co_return QrStatus{};
         }
         if (!poll.error.empty() || poll.status != 200) {
-            co_return std::unexpected("无法查询 QQ 二维码状态");
+            co_return std::unexpected("Could not check QQ QR code status");
         }
         cookies = std::move(poll.cookie_jar);
         qr_cookies_ = cookies;
@@ -1383,7 +1569,7 @@ namespace lyren::qq {
             co_return QrStatus{.state = QrState::expired};
         }
         if ((*args)[0] != "0") {
-            co_return std::unexpected(std::format("QQ 扫码登录失败（{}）", (*args)[0]));
+            co_return std::unexpected(std::format("QQ QR sign-in failed ({})", (*args)[0]));
         }
         auto confirm = qr_confirmation((*args)[2]);
         if (!confirm) {
@@ -1405,9 +1591,9 @@ namespace lyren::qq {
             log::warn("qq login confirmation: HTTP {}, URL {}, {} bytes, cookie names {}", checked.status, checked.url.substr(0, checked.url.find_first_of("?#")),
                       checked.body.size(), cookie_names);
             if (!checked.error.empty() || checked.status >= 400) {
-                co_return std::unexpected("QQ 登录确认失败，请重新扫码");
+                co_return std::unexpected("QQ sign-in confirmation failed; scan again");
             }
-            co_return std::unexpected("QQ 登录没有返回授权凭据，请重新扫码");
+            co_return std::unexpected("QQ sign-in returned no authorization credentials; scan again");
         }
         auto authorized = co_await net::fetch{loop_,
                                               http_,
@@ -1432,11 +1618,11 @@ namespace lyren::qq {
             co_return QrStatus{};
         }
         if (!authorized.error.empty() || authorized.status < 300 || authorized.status >= 400) {
-            co_return std::unexpected("QQ 授权没有完成，请重新扫码");
+            co_return std::unexpected("QQ authorization was not completed; scan again");
         }
         std::string code = query_value(authorized.location, "code");
         if (code.empty() || query_value(authorized.location, "state") != state) {
-            co_return std::unexpected("QQ 授权返回的数据不匹配，请重新扫码");
+            co_return std::unexpected("QQ authorization state did not match; scan again");
         }
         auto session = login_session(co_await client.call(
             {{"QQConnectLogin.LoginServer", "QQLogin", std::format(R"({{"onlyNeedAccessToken":0,"forceRefreshToken":0,"appid":100497308,"code":{}}})", json_string(code))}},
@@ -1475,7 +1661,7 @@ namespace lyren::qq {
             if (client.on_session) {
                 client.on_session();
             }
-            co_return std::unexpected("QQ 音乐登录已失效，请重新扫码");
+            co_return std::unexpected("QQ Music session expired; scan again");
         }
         client.session = std::move(*session);
         if (client.on_session) {
@@ -1495,7 +1681,7 @@ namespace lyren::qq {
             co_return std::unexpected(d.error());
         }
         if (d->code != 0 || !d->map_userinfo || !d->map_userinfo->contains(uid)) {
-            co_return std::unexpected("QQ 音乐没有返回账号资料");
+            co_return std::unexpected("QQ Music returned no account details");
         }
         const auto &u = d->map_userinfo->at(uid);
         co_return Account{.id = uid, .name = u.nick.value_or(""), .avatar = u.headurl.value_or("")};

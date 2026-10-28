@@ -50,23 +50,23 @@ namespace lyren::qq {
         }
         Reply r;
         if (!res.error.empty()) {
-            r.error = "网络连接失败";
+            r.error = "Network connection failed";
             log::warn("qq {}: {}", what, res.error);
             co_return r;
         }
         if (res.status < 200 || res.status >= 300) {
-            r.error = std::format("QQ 音乐请求失败（HTTP {}）", res.status);
+            r.error = std::format("QQ Music request failed (HTTP {})", res.status);
             log::warn("qq {}: HTTP {}", what, res.status);
             co_return r;
         }
         Top top;
         if (glz::read<glz::opts{.error_on_unknown_keys = false}>(top, res.body)) {
-            r.error = std::format("QQ 音乐返回了无法识别的内容（HTTP {}）", res.status);
+            r.error = std::format("Unrecognized QQ Music response (HTTP {})", res.status);
             log::warn("qq {}: HTTP {}, {} bytes not JSON", what, res.status, res.body.size());
             co_return r;
         }
         if (top.code != 0) {
-            r.error = std::format("QQ 音乐请求失败（{}）", top.code);
+            r.error = std::format("QQ Music request failed ({})", top.code);
             log::warn("qq {}: code {}, trace {}", what, top.code, top.traceid.value_or(""));
             co_return r;
         }

@@ -72,7 +72,7 @@ namespace lyren::ui {
         float cy = r.y + r.h / 2, filled = r.w * value;
         Color fill = style.accent ? t.accent : t.text_dim.mix(t.text, hot);
         bool flowing = style.wave > 0 && filled > 0 && t.motion > 0;
-        float phase = flowing ? -float(std::fmod(now * 1.4, 1.0)) * tau : 0;
+        float phase = flowing ? -static_cast<float>(std::fmod(now * 1.4, 1.0)) * tau : 0;
         p_->wave({r.x, cy - th / 2, r.w, th}, filled, style.wave, 26, phase, fill, t.text.with_alpha(0.14f));
         if (flowing) {
             animating_ = true;
@@ -94,7 +94,7 @@ namespace lyren::ui {
 
     bool Ui::tabs(Id id, Rect r, std::span<const std::string_view> labels, int &selected, TabStyle style) {
         const Theme &t = *theme_;
-        int n = int(labels.size());
+        int n = static_cast<int>(labels.size());
         bool pill = style == TabStyle::pill;
         TextStyle st{.size = pill ? t.fs(13) : t.fs(15), .color = t.text};
         constexpr float gap = 28;
@@ -106,14 +106,14 @@ namespace lyren::ui {
             for (auto l : labels) {
                 total += p_->measure(l, st);
             }
-            pad = (r.w - total) / float(n);
+            pad = (r.w - total) / static_cast<float>(n);
         }
         auto cell = [&](int i) -> Rect {
             float x = r.x;
             for (int k = 0; k < i; ++k) {
-                x += p_->measure(labels[size_t(k)], st) + (pill ? pad : gap);
+                x += p_->measure(labels[static_cast<size_t>(k)], st) + (pill ? pad : gap);
             }
-            return {x, r.y, p_->measure(labels[size_t(i)], st) + pad, r.h};
+            return {x, r.y, p_->measure(labels[static_cast<size_t>(i)], st) + pad, r.h};
         };
         Rect sel = cell(selected);
         float ix = spring(sub_id(id, 1), sel.x, 260), iw = spring(sub_id(id, 2), sel.w, 260);
@@ -125,13 +125,13 @@ namespace lyren::ui {
         bool changed = false;
         for (int i = 0; i < n; ++i) {
             Rect c = cell(i);
-            auto it = interact(sub_id(id, 0x100 + uint64_t(i)), pill ? c : c.inset(-gap / 2, 0));
+            auto it = interact(sub_id(id, 0x100 + static_cast<uint64_t>(i)), pill ? c : c.inset(-gap / 2, 0));
             if (it.clicked && selected != i) {
                 selected = i, changed = true;
             }
-            float hot = anim(sub_id(id, 0x100 + uint64_t(i)), it.hovered ? 1 : 0, 120);
+            float hot = anim(sub_id(id, 0x100 + static_cast<uint64_t>(i)), it.hovered ? 1 : 0, 120);
             Color fg = i == selected ? t.text : t.text_dim.mix(t.text, hot * 0.6f);
-            label(c, labels[size_t(i)], {.size = st.size, .color = fg}, pill ? Align::center : Align::left);
+            label(c, labels[static_cast<size_t>(i)], {.size = st.size, .color = fg}, pill ? Align::center : Align::left);
         }
         if (!pill) {
             p_->rect({ix, r.bottom() - 3, iw, 3}, t.accent, 1.5f);
@@ -157,8 +157,8 @@ namespace lyren::ui {
 
     void Ui::spinner(Rect r, Color color, float thickness) {
         constexpr float tau = 2 * std::numbers::pi_v<float>;
-        float start = float(std::fmod(now * 1.3, 1.0)) * tau;
-        float sweep = tau * (0.18f + 0.16f * float(std::sin(now * 2.4)));
+        float start = static_cast<float>(std::fmod(now * 1.3, 1.0)) * tau;
+        float sweep = tau * (0.18f + 0.16f * static_cast<float>(std::sin(now * 2.4)));
         p_->arc(r, thickness, start, sweep + 0.6f, color);
         animating_ = true;
     }

@@ -20,10 +20,11 @@ namespace lyren::audio {
                 if (!h_) {
                     return false;
                 }
-                // Fuzzy seeking uses the Xing TOC or the bitrate instead of reading every frame up to the target, which
-                // would download everything before it. Not peeking at the end for an ID3v1 tag saves a round trip at
-                // start; the size then has to be given and seekability forced.
-                mpg123_param2(h_, MPG123_ADD_FLAGS, MPG123_QUIET | MPG123_FUZZY | MPG123_NO_PEEK_END | MPG123_FORCE_SEEKABLE, 0);
+                // Exact seeks keep audio and lyrics on the same sample timeline. A fuzzy Xing seek can be off by a second.
+                // Supplying the file size avoids a separate request for a trailing ID3 tag.
+                mpg123_param2(h_, MPG123_ADD_FLAGS, MPG123_QUIET | MPG123_NO_PEEK_END | MPG123_FORCE_SEEKABLE, 0);
+                // Low-bitrate VBR frames need more history to refill the Layer III bit reservoir after a seek.
+                mpg123_param2(h_, MPG123_PREFRAMES, 32, 0);
                 mpg123_format_none(h_);
                 const long *rates;
                 size_t n;
@@ -37,13 +38,13 @@ namespace lyren::audio {
                 if (mpg123_open_handle64(h_, this) != MPG123_OK) {
                     return false;
                 }
-                mpg123_set_filesize64(h_, int64_t(s_.size()));
+                mpg123_set_filesize64(h_, static_cast<int64_t>(s_.size()));
                 if (mpg123_getformat(h_, &rate, &ch, &enc) != MPG123_OK) {
                     return false;
                 }
-                format = {uint32_t(rate), uint32_t(ch)};
+                format = {static_cast<uint32_t>(rate), static_cast<uint32_t>(ch)};
                 int64_t len = mpg123_length64(h_);
-                length = len > 0 ? uint64_t(len) : 0;
+                length = len > 0 ? static_cast<uint64_t>(len) : 0;
                 codec = "mp3";
                 return true;
             }
@@ -59,7 +60,7 @@ namespace lyren::audio {
             }
 
             bool seek(uint64_t frame) override {
-                return mpg123_seek64(h_, int64_t(frame), SEEK_SET) >= 0;
+                return mpg123_seek64(h_, static_cast<int64_t>(frame), SEEK_SET) >= 0;
             }
 
         private:
@@ -71,9 +72,9 @@ namespace lyren::audio {
             }
             static int64_t seek_cb(void *ud, int64_t off, int whence) {
                 auto *d = static_cast<Mp3 *>(ud);
-                int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? int64_t(d->pos_) : int64_t(d->s_.size());
-                d->pos_ = uint64_t(base + off);
-                return int64_t(d->pos_);
+                int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(d->pos_) : static_cast<int64_t>(d->s_.size());
+                d->pos_ = static_cast<uint64_t>(base + off);
+                return static_cast<int64_t>(d->pos_);
             }
 
             Spool &s_;

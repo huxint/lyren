@@ -136,7 +136,7 @@ namespace lyren::audio {
         if (!active_) {
             flags = flags | PW_STREAM_FLAG_INACTIVE;
         }
-        pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, pw_stream_flags(flags), params.data(), uint32_t(params.size()));
+        pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, pw_stream_flags(flags), params.data(), static_cast<uint32_t>(params.size()));
         pw_thread_loop_unlock(loop_);
         log::debug("pipewire stream: {} Hz, {} ch", f.rate, f.channels);
         return true;
@@ -155,18 +155,18 @@ namespace lyren::audio {
     }
 
     size_t Output::space() const {
-        return cap_ - size_t(w_.load(std::memory_order_relaxed) - r_.load(std::memory_order_acquire));
+        return cap_ - static_cast<size_t>(w_.load(std::memory_order_relaxed) - r_.load(std::memory_order_acquire));
     }
 
     size_t Output::queued() const {
-        return size_t(w_.load(std::memory_order_acquire) - r_.load(std::memory_order_acquire));
+        return static_cast<size_t>(w_.load(std::memory_order_acquire) - r_.load(std::memory_order_acquire));
     }
 
     void Output::write(const float *frames, size_t n) {
         uint64_t w = w_.load(std::memory_order_relaxed);
         size_t ch = fmt_.channels;
         for (size_t done = 0; done < n;) {
-            size_t at = size_t((w + done) % cap_), run = std::min(n - done, cap_ - at);
+            size_t at = static_cast<size_t>((w + done) % cap_), run = std::min(n - done, cap_ - at);
             std::copy_n(frames + done * ch, run * ch, ring_.data() + at * ch);
             done += run;
         }
@@ -191,8 +191,8 @@ namespace lyren::audio {
 
         if (!volume_ready_.load(std::memory_order_acquire)) {
             // Nothing is audible before our volume is in place.
-            std::fill_n(static_cast<float *>(d.data), size_t(n) * ch, 0.f);
-            d.chunk->offset = 0, d.chunk->stride = int32_t(stride), d.chunk->size = uint32_t(n * stride);
+            std::fill_n(static_cast<float *>(d.data), static_cast<size_t>(n) * ch, 0.f);
+            d.chunk->offset = 0, d.chunk->stride = static_cast<int32_t>(stride), d.chunk->size = static_cast<uint32_t>(n * stride);
             b->size = n;
             pw_stream_queue_buffer(stream_, b);
             return;
@@ -207,22 +207,22 @@ namespace lyren::audio {
         uint64_t r = r_.load(std::memory_order_relaxed), k = std::min(n, w_.load(std::memory_order_acquire) - r);
         auto *dst = static_cast<float *>(d.data);
         for (uint64_t done = 0; done < k;) {
-            size_t at = size_t((r + done) % cap_), run = std::min<size_t>(size_t(k - done), cap_ - at);
+            size_t at = static_cast<size_t>((r + done) % cap_), run = std::min<size_t>(static_cast<size_t>(k - done), cap_ - at);
             std::copy_n(ring_.data() + at * ch, run * ch, dst + done * ch);
             done += run;
         }
         if (float g = gain_.load(std::memory_order_relaxed); g != 1) {
-            for (size_t i = 0; i < size_t(k) * ch; ++i) {
+            for (size_t i = 0; i < static_cast<size_t>(k) * ch; ++i) {
                 dst[i] *= g;
             }
         }
-        std::fill_n(dst + k * ch, size_t(n - k) * ch, 0.f);
+        std::fill_n(dst + k * ch, static_cast<size_t>(n - k) * ch, 0.f);
         r_.store(r + k, std::memory_order_release);
         played_.store(played_.load(std::memory_order_relaxed) + k, std::memory_order_release);
 
         d.chunk->offset = 0;
-        d.chunk->stride = int32_t(stride);
-        d.chunk->size = uint32_t(n * stride);
+        d.chunk->stride = static_cast<int32_t>(stride);
+        d.chunk->size = static_cast<uint32_t>(n * stride);
         b->size = n;
         pw_stream_queue_buffer(stream_, b);
 
@@ -283,15 +283,16 @@ namespace lyren::audio {
         if (flush_applied_.load(std::memory_order_acquire) != flush_seq_.load(std::memory_order_acquire)) {
             return base_.load();
         }
-        double played = double(played_.load(std::memory_order_acquire));
+        double played = static_cast<double>(played_.load(std::memory_order_acquire));
         if (!ok) {
-            return uint64_t(played);
+            return static_cast<uint64_t>(played);
         }
         // Frames handed to PipeWire minus what is still queued, in the resampler and on the way to the device, plus
         // what the device played since the last graph cycle.
-        double delay = double(std::max<int64_t>(t.delay, 0)) * t.rate.num * rate / t.rate.denom;
-        double since = active_ && t.now ? std::clamp(double(int64_t(now - uint64_t(t.now))) * 1e-9 * rate, 0.0, double(t.size)) : 0;
-        return uint64_t(std::max(0.0, played - double(t.queued) - double(t.buffered) - delay + since));
+        double delay = static_cast<double>(std::max<int64_t>(t.delay, 0)) * t.rate.num * rate / t.rate.denom;
+        double since =
+            active_ && t.now ? std::clamp(static_cast<double>(static_cast<int64_t>(now - static_cast<uint64_t>(t.now))) * 1e-9 * rate, 0.0, static_cast<double>(t.size)) : 0;
+        return static_cast<uint64_t>(std::max(0.0, played - static_cast<double>(t.queued) - static_cast<double>(t.buffered) - delay + since));
     }
 
 } // namespace lyren::audio

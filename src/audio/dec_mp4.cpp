@@ -13,7 +13,8 @@ namespace lyren::audio {
     namespace {
 
         constexpr uint32_t fourcc(const char (&s)[5]) {
-            return uint32_t(uint8_t(s[0])) << 24 | uint32_t(uint8_t(s[1])) << 16 | uint32_t(uint8_t(s[2])) << 8 | uint8_t(s[3]);
+            return static_cast<uint32_t>(static_cast<uint8_t>(s[0])) << 24 | static_cast<uint32_t>(static_cast<uint8_t>(s[1])) << 16 |
+                   static_cast<uint32_t>(static_cast<uint8_t>(s[2])) << 8 | static_cast<uint8_t>(s[3]);
         }
 
         // Big-endian cursor over [at, end) of a buffer. Reading past the end sets bad and yields zeros.
@@ -40,13 +41,13 @@ namespace lyren::audio {
                 return v;
             }
             uint32_t u8() {
-                return uint32_t(be(1));
+                return static_cast<uint32_t>(be(1));
             }
             uint32_t u16() {
-                return uint32_t(be(2));
+                return static_cast<uint32_t>(be(2));
             }
             uint32_t u32() {
-                return uint32_t(be(4));
+                return static_cast<uint32_t>(be(4));
             }
             uint64_t u64() {
                 return be(8);
@@ -71,8 +72,8 @@ namespace lyren::audio {
                 if (c.bad || size < c.at - b || size > e - b) {
                     return;
                 }
-                f(type, c.at, b + size_t(size));
-                b += size_t(size);
+                f(type, c.at, b + static_cast<size_t>(size));
+                b += static_cast<size_t>(size);
             }
         }
 
@@ -122,7 +123,7 @@ namespace lyren::audio {
                     continue;
                 }
                 if (tag == 5 && c.end - c.at >= len) {
-                    t.asc.assign(c.buf.begin() + ptrdiff_t(c.at), c.buf.begin() + ptrdiff_t(c.at + len));
+                    t.asc.assign(c.buf.begin() + static_cast<ptrdiff_t>(c.at), c.buf.begin() + static_cast<ptrdiff_t>(c.at + len));
                     return;
                 }
                 c.skip(len);
@@ -179,7 +180,8 @@ namespace lyren::audio {
                     c.skip(4);
                     uint32_t fixed = c.u32(), n = c.u32();
                     if (c.bad || n > 1u << 24 || (!fixed && n > (end - c.at) / 4)) {
-                        return void(bad = true);
+                        bad = true;
+                        return;
                     }
                     t.sizes.resize(n, fixed);
                     if (!fixed) {
@@ -191,7 +193,8 @@ namespace lyren::audio {
                     c.skip(4);
                     uint32_t n = c.u32();
                     if (c.bad || n > (end - c.at) / (type == fourcc("co64") ? 8 : 4)) {
-                        return void(bad = true);
+                        bad = true;
+                        return;
                     }
                     chunks.resize(n);
                     for (auto &o : chunks) {
@@ -281,7 +284,7 @@ namespace lyren::audio {
                     return false;
                 }
                 CStreamInfo *si = aacDecoder_GetStreamInfo(h_);
-                format = {uint32_t(si->sampleRate), uint32_t(si->numChannels)};
+                format = {static_cast<uint32_t>(si->sampleRate), static_cast<uint32_t>(si->numChannels)};
                 fill(si);
                 length = t_.timescale ? t_.duration * format.rate / t_.timescale : 0;
                 codec = "aac";
@@ -313,7 +316,7 @@ namespace lyren::audio {
             bool seek(uint64_t frame) override {
                 uint64_t k = frame / frame_size_, start = k ? k - 1 : 0;
                 next_ = std::min<uint64_t>(start, t_.sizes.size());
-                skip_ = size_t(frame - start * frame_size_) * format.channels;
+                skip_ = static_cast<size_t>(frame - start * frame_size_) * format.channels;
                 buf_.clear(), head_ = 0;
                 return reset();
             }
@@ -326,7 +329,7 @@ namespace lyren::audio {
                 }
                 h_ = aacDecoder_Open(TT_MP4_RAW, 1);
                 UCHAR *conf = t_.asc.data();
-                UINT len = UINT(t_.asc.size());
+                UINT len = static_cast<UINT>(t_.asc.size());
                 if (!h_ || aacDecoder_ConfigRaw(h_, &conf, &len) != AAC_DEC_OK) {
                     return false;
                 }
@@ -344,9 +347,9 @@ namespace lyren::audio {
                     }
                     ++next_;
                     UCHAR *p = packet_.data();
-                    UINT size = UINT(packet_.size()), valid = size;
+                    UINT size = static_cast<UINT>(packet_.size()), valid = size;
                     aacDecoder_Fill(h_, &p, &size, &valid);
-                    if (aacDecoder_DecodeFrame(h_, pcm_.data(), INT(pcm_.size()), 0) == AAC_DEC_OK) {
+                    if (aacDecoder_DecodeFrame(h_, pcm_.data(), static_cast<INT>(pcm_.size()), 0) == AAC_DEC_OK) {
                         return true;
                     }
                 }
@@ -355,12 +358,12 @@ namespace lyren::audio {
 
             // Converts the decoded frame to float in the stream's channel layout.
             void fill(const CStreamInfo *si) {
-                size_t ch = format.channels, n = size_t(si->frameSize), src = size_t(si->numChannels);
+                size_t ch = format.channels, n = static_cast<size_t>(si->frameSize), src = static_cast<size_t>(si->numChannels);
                 frame_size_ = n;
                 buf_.resize(n * ch), head_ = 0;
                 for (size_t i = 0; i < n; ++i) {
                     for (size_t c = 0; c < ch; ++c) {
-                        buf_[i * ch + c] = float(pcm_[i * src + std::min(c, src - 1)]) / 32768.f;
+                        buf_[i * ch + c] = static_cast<float>(pcm_[i * src + std::min(c, src - 1)]) / 32768.f;
                     }
                 }
             }
@@ -386,8 +389,8 @@ namespace lyren::audio {
             if (!spool.read_exact(at, h.data(), std::min<uint64_t>(h.size(), size - at))) {
                 return nullptr;
             }
-            uint64_t n = uint64_t(h[0]) << 24 | h[1] << 16 | h[2] << 8 | h[3], hdr = 8;
-            uint32_t type = uint32_t(h[4]) << 24 | h[5] << 16 | h[6] << 8 | h[7];
+            uint64_t n = static_cast<uint64_t>(h[0]) << 24 | h[1] << 16 | h[2] << 8 | h[3], hdr = 8;
+            uint32_t type = static_cast<uint32_t>(h[4]) << 24 | h[5] << 16 | h[6] << 8 | h[7];
             if (n == 1) {
                 if (size - at < 16) {
                     break;
@@ -420,7 +423,7 @@ namespace lyren::audio {
             return nullptr;
         }
         if (t.codec != fourcc("mp4a") || t.asc.empty()) {
-            std::string cc = {char(t.codec >> 24), char(t.codec >> 16), char(t.codec >> 8), char(t.codec)};
+            std::string cc = {static_cast<char>(t.codec >> 24), static_cast<char>(t.codec >> 16), static_cast<char>(t.codec >> 8), static_cast<char>(t.codec)};
             error = std::format("unsupported mp4 codec {}", cc);
             return nullptr;
         }

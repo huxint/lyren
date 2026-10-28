@@ -52,7 +52,7 @@ namespace lyren {
                 std::string_view f = rest.substr(sep + 1);
                 int v = 0;
                 if (!f.empty() && std::from_chars(f.data(), f.data() + f.size(), v).ec == std::errc{}) {
-                    frac = v / std::pow(10.0, double(f.size()));
+                    frac = v / std::pow(10.0, static_cast<double>(f.size()));
                 }
             }
             return min * 60.0 + sec + frac;
@@ -78,6 +78,22 @@ namespace lyren {
             if (!trim(s).empty()) {
                 out.push_back({c.t / 1000, std::string(trim(s)), {}});
             }
+        }
+
+        std::optional<int32_t> lyric_offset(std::string_view line) {
+            if (!line.starts_with("[offset:") || !line.ends_with(']')) {
+                return std::nullopt;
+            }
+            auto value = trim(line.substr(8, line.size() - 9));
+            if (value.starts_with('+')) {
+                value.remove_prefix(1);
+            }
+            int32_t milliseconds = 0;
+            auto result = std::from_chars(value.data(), value.data() + value.size(), milliseconds);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size()) {
+                return std::nullopt;
+            }
+            return milliseconds;
         }
 
         std::vector<LyricLine> parse_lrc(std::string_view text) {
@@ -126,13 +142,13 @@ namespace lyren {
         }
 
         // The two leading numbers of "[start,duration]" or "(start,duration,0)" at the front of s, in ms; s moves past it.
-        std::optional<std::pair<int, int>> timing(std::string_view &s, char open, char close) {
+        std::optional<std::pair<uint32_t, uint32_t>> timing(std::string_view &s, char open, char close) {
             auto end = s.find(close);
             if (!s.starts_with(open) || end == s.npos) {
                 return std::nullopt;
             }
             const char *p = s.data() + 1, *e = s.data() + end;
-            int a = 0, b = 0;
+            uint32_t a = 0, b = 0;
             auto r = std::from_chars(p, e, a);
             if (r.ec != std::errc{} || r.ptr == e || *r.ptr != ',' || std::from_chars(r.ptr + 1, e, b).ec != std::errc{}) {
                 return std::nullopt;
@@ -157,8 +173,8 @@ namespace lyren {
                 // Each word's text runs to the next timing; a '(' that doesn't start one is text.
                 while (!line.empty()) {
                     if (auto w = timing(line, '(', ')')) {
-                        auto at = uint32_t(l.text.size());
-                        l.words.push_back({w->first / 1000.0, w->second / 1000.0, at, at});
+                        auto at = static_cast<uint32_t>(l.text.size());
+                        l.words.push_back({w->first, w->second, at, at});
                         continue;
                     }
                     size_t n = line.find('(', 1);
@@ -168,7 +184,7 @@ namespace lyren {
                     }
                     l.text += chunk;
                     if (!l.words.empty()) {
-                        l.words.back().to = uint32_t(l.text.size());
+                        l.words.back().to = static_cast<uint32_t>(l.text.size());
                     }
                     line = n == line.npos ? std::string_view{} : line.substr(n);
                 }
@@ -179,7 +195,7 @@ namespace lyren {
                     continue;
                 }
                 for (auto &w : l.words) {
-                    w.to = std::min(w.to, uint32_t(l.text.size())), w.from = std::min(w.from, w.to);
+                    w.to = std::min(w.to, static_cast<uint32_t>(l.text.size())), w.from = std::min(w.from, w.to);
                 }
                 out.push_back(std::move(l));
             }
@@ -210,8 +226,13 @@ namespace lyren {
 
         std::vector<LyricLine> parse_qrc_lines(std::string_view text) {
             std::vector<LyricLine> out;
+            int32_t offset = 0;
             while (!text.empty()) {
                 std::string_view line = next_line(text);
+                if (auto value = lyric_offset(line)) {
+                    offset = *value;
+                    continue;
+                }
                 auto head = timing(line, '[', ']');
                 if (!head) {
                     continue;
@@ -219,7 +240,7 @@ namespace lyren {
                 LyricLine l{.time = head->first / 1000.0};
                 // A word runs up to the "(start,duration)" after it; a '(' that starts none is part of the word.
                 while (!line.empty()) {
-                    std::optional<std::pair<int, int>> w;
+                    std::optional<std::pair<uint32_t, uint32_t>> w;
                     std::string_view rest;
                     size_t p = line.find('(');
                     for (; p != line.npos; p = line.find('(', p + 1)) {
@@ -233,10 +254,10 @@ namespace lyren {
                     if (l.text.empty() && trim(word).empty()) {
                         continue;
                     }
-                    auto from = uint32_t(l.text.size());
+                    auto from = static_cast<uint32_t>(l.text.size());
                     l.text += word;
                     if (w) {
-                        l.words.push_back({w->first / 1000.0, w->second / 1000.0, from, uint32_t(l.text.size())});
+                        l.words.push_back({w->first, w->second, from, static_cast<uint32_t>(l.text.size())});
                     }
                 }
                 while (l.text.ends_with(' ')) {
@@ -246,16 +267,35 @@ namespace lyren {
                     continue;
                 }
                 for (auto &w : l.words) {
-                    w.to = std::min(w.to, uint32_t(l.text.size())), w.from = std::min(w.from, w.to);
+                    w.to = std::min(w.to, static_cast<uint32_t>(l.text.size())), w.from = std::min(w.from, w.to);
                 }
                 out.push_back(std::move(l));
+            }
+            // QRC offsets affect both the line and its absolute word timestamps.
+            for (auto &line : out) {
+                line.time = std::max(0.0, line.time - offset / 1000.0);
+                for (auto &word : line.words) {
+                    const int64_t start = static_cast<int64_t>(word.start_ms) - offset;
+                    const int64_t end = std::clamp<int64_t>(start + word.duration_ms, 0, UINT32_MAX);
+                    word.start_ms = static_cast<uint32_t>(std::clamp<int64_t>(start, 0, UINT32_MAX));
+                    word.duration_ms = static_cast<uint32_t>(end - word.start_ms);
+                }
             }
             std::ranges::stable_sort(out, {}, &LyricLine::time);
             return out;
         }
 
-        void add_translation(std::vector<LyricLine> &lines, std::string_view translation) {
-            auto trans = parse_lrc(translation);
+        std::vector<LyricLine> parse_qq_text(std::string_view text) {
+            std::string xml;
+            if (text.find("LyricContent=") != text.npos) {
+                xml = xml_attribute(text, "LyricContent");
+                text = xml;
+            }
+            auto lines = parse_qrc_lines(text);
+            return lines.empty() ? parse_lrc(text) : std::move(lines);
+        }
+
+        void add_translation(std::vector<LyricLine> &lines, std::vector<LyricLine> trans) {
             // QQ Music marks the lines it leaves untranslated with "//".
             std::erase_if(trans, [](const LyricLine &l) {
                 return l.text == "//";
@@ -278,22 +318,22 @@ namespace lyren {
         if (lines.empty()) {
             lines = parse_lrc(lrc);
         }
-        add_translation(lines, translation);
+        add_translation(lines, parse_lrc(translation));
         return lines;
     }
 
     std::vector<LyricLine> parse_qrc(std::string_view qrc, std::string_view translation) {
-        auto lines = parse_qrc_lines(xml_attribute(qrc, "LyricContent"));
-        add_translation(lines, translation);
+        auto lines = parse_qq_text(qrc);
+        add_translation(lines, parse_qq_text(translation));
         return lines;
     }
 
     int lyric_at(const std::vector<LyricLine> &lines, double t) {
-        return int(std::ranges::upper_bound(lines, t, {}, &LyricLine::time) - lines.begin()) - 1;
+        return static_cast<int>(std::ranges::upper_bound(lines, t, {}, &LyricLine::time) - lines.begin()) - 1;
     }
 
     int word_at(const LyricLine &line, double t) {
-        return int(std::ranges::upper_bound(line.words, t, {}, &LyricWord::time) - line.words.begin()) - 1;
+        return static_cast<int>(std::ranges::upper_bound(line.words, t, {}, &LyricWord::time) - line.words.begin()) - 1;
     }
 
 } // namespace lyren

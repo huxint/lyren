@@ -80,7 +80,7 @@ TEST_CASE("QQ playlist pages reject songs without an id instead of returning a p
         {"id":1,"mid":"one"},{"songInfo":{"mid":"two"}}
     ]}}})"});
     REQUIRE_FALSE(page);
-    CHECK(page.error() == "QQ 音乐返回了不完整的歌曲资料");
+    CHECK(page.error() == "QQ Music returned incomplete song details");
 }
 
 TEST_CASE("QQ favorite playlists treat the empty collection response as a final page") {
@@ -96,13 +96,13 @@ TEST_CASE("QQ favorite playlists treat the empty collection response as a final 
 TEST_CASE("QQ favorite playlists keep authentication and other errors visible") {
     auto login = qq::parse_favorite_playlists({.body = R"({"req_0":{"code":2001}})"});
     REQUIRE_FALSE(login);
-    CHECK(login.error() == "QQ 音乐要求登录后再试");
+    CHECK(login.error() == "Sign in to QQ Music and try again");
     auto failure = qq::parse_favorite_playlists({.body = R"({"req_0":{"code":1000}})"});
     REQUIRE_FALSE(failure);
-    CHECK(failure.error() == "QQ 音乐请求失败（1000）");
+    CHECK(failure.error() == "QQ Music request failed (1000)");
     auto other_endpoint = qq::parse_playlist({.body = R"({"req_0":{"code":80050}})"});
     REQUIRE_FALSE(other_endpoint);
-    CHECK(other_endpoint.error() == "QQ 音乐请求失败（80050）");
+    CHECK(other_endpoint.error() == "QQ Music request failed (80050)");
 }
 
 TEST_CASE("qq request signature vectors") {
@@ -144,11 +144,11 @@ TEST_CASE("qrc lyrics") {
     REQUIRE(lines[0].words.size() == 6);
     CHECK(lines[0].words[3].from == 7);
     CHECK(lines[0].words[3].to == 8);
-    CHECK(lines[0].words[4].time == doctest::Approx(1.6));
+    CHECK(lines[0].words[4].time() == doctest::Approx(1.6));
     CHECK(lines[0].words[4].to == 11);
     CHECK(lines[1].time == doctest::Approx(29.264));
     CHECK(lines[1].text == "故事的 \"黄\"");
-    CHECK(lines[1].words.back().duration == doctest::Approx(0.5));
+    CHECK(lines[1].words.back().duration() == doctest::Approx(0.5));
     CHECK(lines[1].translation == "The story's little yellow flower");
 }
 
@@ -194,4 +194,65 @@ TEST_CASE("QQ untranslated markers stay out of lyrics") {
     REQUIRE(lines.size() == 2);
     CHECK(lines[0].translation.empty());
     CHECK(lines[1].translation == "二");
+}
+
+TEST_CASE("QQ categories preserve service IDs independently of labels") {
+    auto result = qq::parse_categories({.body = R"({"req_0":{"code":0,"data":{"v_group":[
+        {"group_id":1,"group_name":"Featured","v_item":[
+            {"id":3317,"name":"Official","status":0,"source":0},
+            {"id":9527,"name":"Generated","status":0,"source":1},
+            {"id":3417,"name":"Unavailable","status":2,"source":0}]},
+        {"group_id":2,"group_name":"Mood","v_item":[
+            {"id":167,"name":"Sweet","status":0,"source":0}]}
+    ]}}})"});
+    REQUIRE(result);
+    REQUIRE(result->groups.size() == 2);
+    REQUIRE(result->hot.size() == 1);
+    CHECK(result->hot[0].id == "3317");
+    CHECK(result->groups[1].second[0].id == "167");
+    CHECK(result->groups[1].second[0].name == "Sweet");
+    CHECK_FALSE(qq::parse_categories({.body = R"({"req_0":{"code":2001}})"}));
+}
+
+TEST_CASE("QQ discovery pagination preserves 64-bit playlist IDs and final pages") {
+    const qq::Reply reply{.body = R"({"req_0":{"code":0,"data":{
+        "List":[{"Playlist":{"basic":{"tid":8316781333,"title":"Road trip","song_cnt":1038,
+            "cover":{"medium_url":"https://example.com/cover.jpg"},"creator":{"nick":"DJ"}}}}],
+        "HasMore":true,"FromLimit":400
+    }}})"};
+    auto page = qq::parse_square(reply, 50);
+    REQUIRE(page);
+    REQUIRE(page->cards.size() == 1);
+    CHECK(page->cards[0].id == "8316781333");
+    CHECK(page->cards[0].source == Source::qq);
+    CHECK(page->cards[0].count == 1038);
+    CHECK(page->cards[0].subtitle == "DJ");
+    CHECK(page->total == 400);
+    auto end = qq::parse_square({.body = R"({"req_0":{"code":0,"data":{"List":[],"HasMore":false,"FromLimit":400}}})"}, 400);
+    REQUIRE(end);
+    CHECK(end->cards.empty());
+    CHECK(end->total == 400);
+    CHECK_FALSE(qq::parse_square({.body = R"({"req_0":{"code":0,"data":{"List":[{}]}}})"}, 0));
+}
+
+TEST_CASE("QQ category pages and related songs decode their distinct response envelopes") {
+    auto category = qq::parse_category_playlists({.body = R"({"req_0":{"code":0,"data":{"content":{
+        "total_cnt":986,"v_item":[{"basic":{"tid":7726401548,"title":"Classics","song_cnt":142}}]
+    }}}})"});
+    REQUIRE(category);
+    REQUIRE(category->cards.size() == 1);
+    CHECK(category->total == 986);
+    CHECK(category->cards[0].id == "7726401548");
+    auto similar = qq::parse_similar({.body = R"({"req_0":{"code":0,"data":{"vecSong":[{"track":{
+        "id":213326626,"mid":"song-mid","title":"Related","type":0,"interval":237,
+        "singer":[{"mid":"artist-mid","name":"Artist"}],"album":{"mid":"album-mid","title":"Album"},
+        "file":{"media_mid":"media-mid"}
+    }}]}}})"});
+    REQUIRE(similar);
+    REQUIRE(similar->size() == 1);
+    CHECK(similar->front().id == "213326626");
+    CHECK(similar->front().mid == "song-mid");
+    CHECK(similar->front().media == "media-mid");
+    CHECK(similar->front().duration == 237);
+    CHECK_FALSE(qq::parse_similar({.body = R"({"req_0":{"code":0,"data":{"vecSong":[{}]}}})"}));
 }

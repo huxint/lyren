@@ -22,7 +22,7 @@ namespace {
     // Real loopback connections; only the remote service is substituted.
     class Server {
     public:
-        explicit Server(std::function<std::string(std::string_view)> respond)
+        explicit Server(std::move_only_function<std::string(std::string_view)> respond)
         : respond_(std::move(respond)) {
             fd_ = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
             REQUIRE(fd_ >= 0);
@@ -45,7 +45,7 @@ namespace {
                         if (n <= 0) {
                             break;
                         }
-                        request.append(buffer, size_t(n));
+                        request.append(buffer, static_cast<size_t>(n));
                     }
                     std::string response = respond_(request);
                     for (size_t sent = 0; sent < response.size();) {
@@ -53,7 +53,7 @@ namespace {
                         if (n <= 0) {
                             break;
                         }
-                        sent += size_t(n);
+                        sent += static_cast<size_t>(n);
                     }
                     close(client);
                 }
@@ -73,7 +73,7 @@ namespace {
     private:
         int fd_;
         std::string url_;
-        std::function<std::string(std::string_view)> respond_;
+        std::move_only_function<std::string(std::string_view)> respond_;
         std::thread thread_;
     };
 
@@ -191,7 +191,7 @@ TEST_CASE("cookie sessions preserve domain and path scopes across separate reque
 TEST_CASE("chunked audio downloads expose the exact bytes and final size") {
     std::string body(4097, '\0');
     for (size_t i = 0; i < body.size(); ++i) {
-        body[i] = char(i % 251);
+        body[i] = static_cast<char>(i % 251);
     }
     Server server([&](std::string_view) {
         return std::string("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n") +
@@ -257,7 +257,7 @@ TEST_CASE("HTTP byte ranges retain the response offset and resource size") {
 TEST_CASE("partial audio responses fill subsequent gaps without overwriting earlier bytes") {
     std::string body(6145, '\0');
     for (size_t i = 0; i < body.size(); ++i) {
-        body[i] = char(i % 251);
+        body[i] = static_cast<char>(i % 251);
     }
     Server server([&](std::string_view request) {
         auto start = request.find("Range: bytes=") + 13;

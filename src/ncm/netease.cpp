@@ -1,4 +1,5 @@
 #include "ncm/netease.hpp"
+#include "core/i18n.hpp"
 
 #include <glaze/glaze.hpp>
 
@@ -30,7 +31,7 @@ namespace lyren::ncm {
             Str name;
             std::optional<std::vector<NArtist>> ar, artists;
             std::optional<NAlbum> al, album;
-            double dt = 0, duration = 0;
+            uint32_t dt = 0, duration = 0;
             int fee = 0;
             Strs alia, tns, alias, transNames;
         };
@@ -41,7 +42,7 @@ namespace lyren::ncm {
         struct NPlaylist {
             uint64_t id = 0;
             Str name, coverImgUrl, picUrl, updateFrequency;
-            double trackCount = 0;
+            int32_t trackCount = 0;
             std::optional<NCreator> creator;
             int specialType = 0;
             std::optional<bool> subscribed;
@@ -50,12 +51,13 @@ namespace lyren::ncm {
             uint64_t id = 0;
             Str name, picUrl;
             std::optional<NArtist> artist;
-            double publishTime = 0, size = 0;
+            int64_t publishTime = 0;
+            int32_t size = 0;
         };
         struct NArtistInfo {
             uint64_t id = 0;
             Str name, picUrl, img1v1Url;
-            double musicSize = 0, albumSize = 0;
+            int32_t musicSize = 0, albumSize = 0;
         };
 
         struct SearchResult {
@@ -63,7 +65,7 @@ namespace lyren::ncm {
             std::optional<std::vector<NAlbumInfo>> albums;
             std::optional<std::vector<NArtistInfo>> artists;
             std::optional<std::vector<NPlaylist>> playlists;
-            double songCount = 0, albumCount = 0, artistCount = 0, playlistCount = 0;
+            int32_t songCount = 0, albumCount = 0, artistCount = 0, playlistCount = 0;
         };
         struct SearchReply {
             std::optional<SearchResult> result;
@@ -75,7 +77,7 @@ namespace lyren::ncm {
         struct NUrl {
             Str url, level;
             std::optional<NTrial> freeTrialInfo;
-            std::optional<double> gain, peak;
+            std::optional<float> gain, peak;
         };
         struct UrlReply {
             std::optional<std::vector<NUrl>> data;
@@ -103,7 +105,7 @@ namespace lyren::ncm {
         };
         struct NAlbumFull {
             Str name, picUrl, description, company;
-            double publishTime = 0;
+            int64_t publishTime = 0;
             std::optional<std::vector<NArtist>> artists;
         };
         struct AlbumReply {
@@ -161,7 +163,7 @@ namespace lyren::ncm {
         };
         struct SquareReply {
             std::optional<std::vector<NPlaylist>> playlists;
-            double total = 0;
+            int32_t total = 0;
         };
         struct NCategory {
             Str name;
@@ -175,7 +177,7 @@ namespace lyren::ncm {
         struct NArtistHead {
             Str name, avatar;
             Strs alias, transNames;
-            double musicSize = 0, albumSize = 0;
+            int32_t musicSize = 0, albumSize = 0;
         };
         struct ArtistHeadData {
             std::optional<NArtistHead> artist;
@@ -188,7 +190,7 @@ namespace lyren::ncm {
         };
         struct ArtistSongsReply {
             std::optional<std::vector<NSong>> songs;
-            double total = 0;
+            int32_t total = 0;
         };
         struct ArtistAlbumsReply {
             std::optional<std::vector<NAlbumInfo>> hotAlbums;
@@ -230,12 +232,12 @@ namespace lyren::ncm {
         struct NComment {
             std::optional<NCommentUser> user;
             Str content, timeStr;
-            double likedCount = 0;
+            int32_t likedCount = 0;
             std::optional<std::vector<NReplied>> beReplied;
         };
         struct CommentsData {
             std::optional<std::vector<NComment>> comments;
-            double totalCount = 0;
+            int32_t totalCount = 0;
             std::optional<bool> hasMore;
             Str cursor;
         };
@@ -260,7 +262,7 @@ namespace lyren::ncm {
             T v{};
             if (auto e = glz::read<lax>(v, r.body)) {
                 log::warn("ncm: cannot parse reply: {}", glz::format_error(e, r.body).substr(0, 200));
-                return std::unexpected("服务器返回的数据无法解析");
+                return std::unexpected("Could not parse server response");
             }
             return v;
         }
@@ -297,7 +299,7 @@ namespace lyren::ncm {
                     break;
                 }
             }
-            t.duration = int((s.dt > 0 ? s.dt : s.duration) / 1000);
+            t.duration = static_cast<int>((s.dt > 0 ? s.dt : s.duration) / 1000);
             t.paid = s.fee == 1 || s.fee == 4;
             return t;
         }
@@ -317,8 +319,9 @@ namespace lyren::ncm {
         Card playlist_card(const NPlaylist &p) {
             Card c{.kind = CardKind::playlist, .id = std::to_string(p.id), .title = p.name.value_or("")};
             c.cover = https(p.coverImgUrl.value_or(p.picUrl.value_or("")));
-            c.count = int(p.trackCount);
-            c.subtitle = p.updateFrequency ? *p.updateFrequency : std::format("{} 首", c.count);
+            c.count = static_cast<int>(p.trackCount);
+            c.subtitle = p.updateFrequency.value_or("");
+            c.count_kind = p.updateFrequency ? Card::Count::none : Card::Count::songs;
             return c;
         }
 
@@ -326,19 +329,20 @@ namespace lyren::ncm {
         Card listed_playlist(const NPlaylist &p) {
             Card c = playlist_card(p);
             if (p.creator && p.creator->nickname) {
-                c.subtitle = std::format("{} 首 · {}", c.count, *p.creator->nickname);
+                c.subtitle = *p.creator->nickname;
+                c.count_kind = Card::Count::songs;
             }
             return c;
         }
 
-        std::tm local(double ms) {
-            std::time_t t = std::time_t(ms / 1000);
+        std::tm local(int64_t ms) {
+            std::time_t t = static_cast<std::time_t>(ms / 1000);
             std::tm tm;
             localtime_r(&t, &tm);
             return tm;
         }
 
-        std::string year_of(double ms) {
+        std::string year_of(int64_t ms) {
             return ms > 0 ? std::to_string(local(ms).tm_year + 1900) : "";
         }
 
@@ -424,7 +428,7 @@ namespace lyren::ncm {
     Task<Result<Batch>> Netease::search(std::string query, SearchKind kind, int offset, int limit) {
         static constexpr std::array types = {1, 10, 100, 1000};
         auto r = parse<SearchReply>(co_await client.call(
-            "/api/cloudsearch/pc", std::format(R"("s":{},"type":{},"limit":{},"offset":{},"total":true)", json_string(query), types[int(kind)], limit, offset)));
+            "/api/cloudsearch/pc", std::format(R"("s":{},"type":{},"limit":{},"offset":{},"total":true)", json_string(query), types[static_cast<int>(kind)], limit, offset)));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -436,7 +440,7 @@ namespace lyren::ncm {
         switch (kind) {
             case SearchKind::tracks:
                 page.tracks = tracks_of(res.songs);
-                page.total = int(res.songCount);
+                page.total = static_cast<int>(res.songCount);
                 break;
             case SearchKind::albums:
                 if (res.albums) {
@@ -447,10 +451,10 @@ namespace lyren::ncm {
                                               .title = a.name.value_or(""),
                                               .subtitle = year.empty() ? artist : std::format("{} · {}", artist, year),
                                               .cover = https(a.picUrl.value_or("")),
-                                              .count = int(a.size)});
+                                              .count = static_cast<int>(a.size)});
                     }
                 }
-                page.total = int(res.albumCount);
+                page.total = static_cast<int>(res.albumCount);
                 break;
             case SearchKind::artists:
                 if (res.artists) {
@@ -458,11 +462,12 @@ namespace lyren::ncm {
                         page.cards.push_back({.kind = CardKind::artist,
                                               .id = std::to_string(a.id),
                                               .title = a.name.value_or(""),
-                                              .subtitle = a.musicSize > 0 ? std::format("单曲 {}", int(a.musicSize)) : "",
-                                              .cover = https(a.picUrl.value_or(a.img1v1Url.value_or("")))});
+                                              .cover = https(a.picUrl.value_or(a.img1v1Url.value_or(""))),
+                                              .count = static_cast<int>(a.musicSize),
+                                              .count_kind = Card::Count::songs});
                     }
                 }
-                page.total = int(res.artistCount);
+                page.total = static_cast<int>(res.artistCount);
                 break;
             case SearchKind::playlists:
                 if (res.playlists) {
@@ -470,7 +475,7 @@ namespace lyren::ncm {
                         page.cards.push_back(listed_playlist(p));
                     }
                 }
-                page.total = int(res.playlistCount);
+                page.total = static_cast<int>(res.playlistCount);
                 break;
         }
         co_return page;
@@ -483,22 +488,23 @@ namespace lyren::ncm {
         if (t.cloud) {
             reply = co_await client.call("/api/song/enhance/player/url", std::format(R"("ids":"[{}]","br":999000)", t.id));
         } else {
-            reply = co_await client.call("/api/song/enhance/player/url/v1", std::format(R"("ids":"[{}]","level":"{}","encodeType":"flac")", t.id, levels[int(quality)]));
+            reply =
+                co_await client.call("/api/song/enhance/player/url/v1", std::format(R"("ids":"[{}]","level":"{}","encodeType":"flac")", t.id, levels[static_cast<int>(quality)]));
         }
         auto r = parse<UrlReply>(reply);
         if (!r) {
             co_return std::unexpected(r.error());
         }
         if (!r->data || r->data->empty() || !r->data->front().url || r->data->front().url->empty()) {
-            co_return std::unexpected("这首歌暂时不能播放（需要会员或没有版权）");
+            co_return std::unexpected("This song is unavailable (membership or licensing restriction)");
         }
         const NUrl &u = r->data->front();
         co_return Stream{.url = https(*u.url),
                          .trial = u.freeTrialInfo.has_value(),
                          .trial_start = u.freeTrialInfo ? u.freeTrialInfo->start : 0,
                          .level = u.level.value_or(""),
-                         .gain = float(u.gain.value_or(0)),
-                         .peak = float(u.peak.value_or(0))};
+                         .gain = u.gain.value_or(0.f),
+                         .peak = u.peak.value_or(0.f)};
     }
 
     Task<Result<std::vector<LyricLine>>> Netease::lyrics(Track t) {
@@ -577,7 +583,7 @@ namespace lyren::ncm {
             co_return std::unexpected(r.error());
         }
         if (!r->unikey) {
-            co_return std::unexpected("没有拿到二维码");
+            co_return std::unexpected("Could not get a QR code");
         }
         qr_key_ = *r->unikey;
         co_return QrCode{.text = "https://music.163.com/login?codekey=" + qr_key_};
@@ -606,7 +612,7 @@ namespace lyren::ncm {
                 s.state = QrState::confirmed;
                 break;
             default:
-                co_return std::unexpected(std::format("登录失败（{}）", reply.code));
+                co_return std::unexpected(std::format("Sign-in failed ({})", reply.code));
         }
         co_return s;
     }
@@ -617,7 +623,7 @@ namespace lyren::ncm {
         // QR logins cannot be refreshed; once the session is gone the user has to scan again.
         if (reply.code == 301 || (r && !r->profile)) {
             client.clear_login();
-            co_return std::unexpected("网易云音乐的登录已失效，请重新扫码登录");
+            co_return std::unexpected("NetEase Music session expired; scan again to sign in");
         }
         if (!r) {
             co_return std::unexpected(r.error());
@@ -814,28 +820,31 @@ namespace lyren::ncm {
             co_return out;
         }
         for (const auto &[key, heading] : *r->categories) {
-            auto &g = out.groups.emplace_back(heading, std::vector<std::string>{});
+            auto &g = out.groups.emplace_back(heading, std::vector<Category>{});
             for (const auto &c : *r->sub) {
                 if (std::to_string(c.category) == key) {
-                    g.second.push_back(c.name.value_or(""));
+                    g.second.push_back({c.name.value_or(""), c.name.value_or("")});
                 }
             }
         }
         for (const auto &c : *r->sub) {
             if (c.hot) {
-                out.hot.push_back(c.name.value_or(""));
+                out.hot.push_back({c.name.value_or(""), c.name.value_or("")});
             }
         }
         co_return out;
     }
 
     Task<Result<Batch>> Netease::square(std::string category, int offset) {
+        if (category.empty()) {
+            category = "\u5168\u90e8";
+        }
         auto r = parse<SquareReply>(
             co_await client.call("/api/playlist/list", std::format(R"("cat":{},"order":"hot","limit":50,"offset":{},"total":true)", json_string(category), offset), Api::weapi));
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        Batch out{.total = int(r->total)};
+        Batch out{.total = static_cast<int>(r->total)};
         if (r->playlists) {
             for (const auto &p : *r->playlists) {
                 out.cards.push_back(listed_playlist(p));
@@ -850,10 +859,10 @@ namespace lyren::ncm {
             co_return std::unexpected(r.error());
         }
         if (!r->data || !r->data->artist) {
-            co_return std::unexpected("没有找到这位歌手");
+            co_return std::unexpected("Artist not found");
         }
         const NArtistHead &a = *r->data->artist;
-        ArtistInfo out{.name = a.name.value_or(""), .avatar = https(a.avatar.value_or("")), .songs = int(a.musicSize), .albums = int(a.albumSize)};
+        ArtistInfo out{.name = a.name.value_or(""), .avatar = https(a.avatar.value_or("")), .songs = static_cast<int>(a.musicSize), .albums = static_cast<int>(a.albumSize)};
         for (const Strs *list : {&a.transNames, &a.alias}) {
             if (*list) {
                 for (const auto &n : **list) {
@@ -874,7 +883,7 @@ namespace lyren::ncm {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        co_return Batch{.tracks = tracks_of(r->songs), .total = int(r->total)};
+        co_return Batch{.tracks = tracks_of(r->songs), .total = static_cast<int>(r->total)};
     }
 
     Task<Result<Batch>> Netease::artist_albums(std::string id, int offset) {
@@ -882,16 +891,17 @@ namespace lyren::ncm {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        Batch out{.total = r->artist ? int(r->artist->albumSize) : 0};
+        Batch out{.total = r->artist ? static_cast<int>(r->artist->albumSize) : 0};
         if (r->hotAlbums) {
             for (const auto &a : *r->hotAlbums) {
                 std::string year = year_of(a.publishTime);
                 out.cards.push_back({.kind = CardKind::album,
                                      .id = std::to_string(a.id),
                                      .title = a.name.value_or(""),
-                                     .subtitle = year.empty() ? std::format("{} 首", int(a.size)) : std::format("{} · {} 首", year, int(a.size)),
+                                     .subtitle = std::move(year),
                                      .cover = https(a.picUrl.value_or("")),
-                                     .count = int(a.size)});
+                                     .count = static_cast<int>(a.size),
+                                     .count_kind = Card::Count::songs});
             }
         }
         co_return out;
@@ -987,8 +997,9 @@ namespace lyren::ncm {
                     out.push_back({.kind = CardKind::artist,
                                    .id = std::to_string(a.id),
                                    .title = a.name.value_or(""),
-                                   .subtitle = a.albumSize > 0 ? std::format("专辑 {}", int(a.albumSize)) : "",
-                                   .cover = https(a.picUrl.value_or(a.img1v1Url.value_or("")))});
+                                   .cover = https(a.picUrl.value_or(a.img1v1Url.value_or(""))),
+                                   .count = static_cast<int>(a.albumSize),
+                                   .count_kind = Card::Count::albums});
                 }
             }
             if (!r->hasMore.value_or(false) || !r->data || r->data->empty()) {
@@ -1005,7 +1016,7 @@ namespace lyren::ncm {
             co_return std::unexpected(r.error());
         }
         if (!r->playlist) {
-            co_return std::unexpected("没有拿到新歌单");
+            co_return std::unexpected("No playlist returned");
         }
         Card c = playlist_card(*r->playlist);
         c.owned = true;
@@ -1031,7 +1042,7 @@ namespace lyren::ncm {
             r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}","{}"])", track, track)));
         }
         if (r.code == 502 && add) {
-            co_return std::unexpected("这首歌已经在歌单里了");
+            co_return std::unexpected("This song is already in the playlist");
         }
         co_return done(r);
     }
@@ -1044,7 +1055,7 @@ namespace lyren::ncm {
         }
         auto r = parse<CommentsReply>(
             co_await client.call("/api/v2/resource/comments", std::format(R"("threadId":"{}{}","pageNo":{},"showInner":true,"pageSize":20,"cursor":{},"sortType":{})",
-                                                                          threads[int(subject)], id, page, json_string(cursor), hot ? 2 : 3)));
+                                                                          threads[static_cast<int>(subject)], id, page, json_string(cursor), hot ? 2 : 3)));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -1053,7 +1064,7 @@ namespace lyren::ncm {
             co_return out;
         }
         const CommentsData &d = *r->data;
-        out.total = int(d.totalCount);
+        out.total = d.totalCount;
         out.more = d.hasMore.value_or(false);
         out.cursor = d.cursor.value_or("");
         if (d.comments) {
@@ -1064,7 +1075,7 @@ namespace lyren::ncm {
                 }
                 m.text = trimmed(c.content);
                 m.time = c.timeStr.value_or("");
-                m.likes = int(c.likedCount);
+                m.likes = c.likedCount;
                 if (c.beReplied && !c.beReplied->empty()) {
                     const NReplied &b = c.beReplied->front();
                     m.reply_user = b.user ? b.user->nickname.value_or("") : "";

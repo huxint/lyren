@@ -145,7 +145,7 @@ namespace lyren::wl {
             if (n <= 0) {
                 break;
             }
-            off += size_t(n);
+            off += static_cast<size_t>(n);
         }
         close(fd);
     }
@@ -155,7 +155,7 @@ namespace lyren::wl {
         source_ = nullptr;
     }
 
-    void Clipboard::get_text(std::function<void(std::string)> fn) {
+    void Clipboard::get_text(std::move_only_function<void(std::string)> fn) {
         auto mime = selection_ ? mimes_.find(selection_) : mimes_.end();
         if (mime == mimes_.end() || mime->second.empty()) {
             fn({});
@@ -170,20 +170,24 @@ namespace lyren::wl {
         close(fds[1]);
         wl_display_flush(display_.display);
         // The owner may be this very process, so read from the loop instead of blocking.
-        auto buf = std::make_shared<std::string>();
+        struct Read {
+            std::string text;
+            std::move_only_function<void(std::string)> done;
+        };
+        auto pending = std::make_shared<Read>(std::string{}, std::move(fn));
         int rfd = fds[0];
-        display_.loop.watch(rfd, EPOLLIN, [this, rfd, buf, fn = std::move(fn)](uint32_t) {
+        display_.loop.watch(rfd, EPOLLIN, [this, rfd, pending](uint32_t) {
             std::array<char, 4096> chunk;
             ssize_t n;
             while ((n = read(rfd, chunk.data(), chunk.size())) > 0) {
-                buf->append(chunk.data(), size_t(n));
+                pending->text.append(chunk.data(), static_cast<size_t>(n));
             }
             if (n < 0 && errno == EAGAIN) {
                 return;
             }
             display_.loop.unwatch(rfd);
             close(rfd);
-            fn(std::move(*buf));
+            pending->done(std::move(pending->text));
         });
     }
 

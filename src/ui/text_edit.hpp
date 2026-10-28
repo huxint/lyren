@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -47,7 +48,7 @@ namespace lyren::ui {
         void insert(std::string &text, std::string_view s);
         void erase(std::string &text, size_t from, size_t to);
 
-        enum class Key {
+        enum class Key : uint8_t {
             ignored,
             edited,
             moved,

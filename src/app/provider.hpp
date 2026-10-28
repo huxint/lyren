@@ -27,12 +27,12 @@ namespace lyren {
     };
 
     inline constexpr std::array platforms{
-        Platform{Source::netease, "netease", "网易云音乐", "网易云", "用网易云音乐 App 扫一扫"},
-        Platform{Source::qq, "qq", "QQ 音乐", "QQ 音乐", "用 QQ 扫一扫，确认登录 QQ 音乐"},
+        Platform{Source::netease, "netease", "NetEase Music", "NetEase", "Scan with the NetEase Music app"},
+        Platform{Source::qq, "qq", "QQ Music", "QQ Music", "Scan with QQ, then confirm QQ Music sign-in"},
     };
 
     inline const Platform &platform(Source source) {
-        return platforms[size_t(source)];
+        return platforms[static_cast<size_t>(source)];
     }
 
     struct Track {
@@ -72,20 +72,28 @@ namespace lyren {
 
     // An album, artist or playlist tile.
     struct Card {
+        enum class Count : uint8_t {
+            none,
+            songs,
+            albums
+        };
         CardKind kind = CardKind::playlist;
         Source source = Source::netease;
         std::string id, title, subtitle, cover;
-        std::string thread;      // an owned QQ directory's public playlist id, for comments
-        int count = 0;           // tracks behind it, if known
+        std::string thread; // an owned QQ directory's public playlist id, for comments
+        int count = 0;      // tracks behind it, if known
+        Count count_kind = Count::none;
         bool owned = false;      // a playlist the signed-in user created, so it can be edited
         bool commentable = true; // private directories may not have a public comment thread
     };
+
+    std::string card_subtitle(const Card &card);
 
     inline bool same(const Card &a, const Card &b) {
         return a.source == b.source && a.kind == b.kind && a.id == b.id;
     }
     inline std::string key(const Card &c) {
-        return key(c.source, c.id) + ":" + std::to_string(int(c.kind));
+        return key(c.source, c.id) + ":" + std::to_string(static_cast<int>(c.kind));
     }
 
     enum class SearchKind : uint8_t {
@@ -121,10 +129,15 @@ namespace lyren {
         return out;
     }
 
+    struct Category {
+        std::string id; // empty for all categories; independent of the displayed name
+        std::string name = "All";
+    };
+
     // Playlist square categories, under their headings.
     struct Categories {
-        std::vector<std::string> hot;
-        std::vector<std::pair<std::string, std::vector<std::string>>> groups;
+        std::vector<Category> hot;
+        std::vector<std::pair<std::string, std::vector<Category>>> groups;
     };
 
     // The head of an artist's page.
@@ -193,16 +206,16 @@ namespace lyren {
 
     // Optional features expose both availability and the operation. Shared pages only offer installed features.
     struct Features {
-        std::function<Task<Result<std::vector<Track>>>()> daily, fm, cloud, recent_plays;
-        std::function<Task<Result<std::vector<Card>>>()> daily_playlists;
-        std::function<Task<Result<std::optional<Track>>>(std::string)> dislike_daily;
-        std::function<Task<Result<std::vector<Track>>>(std::string, std::string)> heartbeat;
-        std::function<Task<Result<std::vector<Track>>>(std::string)> similar;
-        std::function<Task<Result<void>>(std::string)> fm_trash;
-        std::function<Task<Result<Categories>>()> categories;
-        std::function<Task<Result<Batch>>(std::string, int)> square;
-        std::function<Task<void>(std::string, std::string)> report_start;
-        std::function<Task<void>(std::string, std::string, int)> report_play;
+        std::move_only_function<Task<Result<std::vector<Track>>>()> daily, fm, cloud, recent_plays;
+        std::move_only_function<Task<Result<std::vector<Card>>>()> daily_playlists;
+        std::move_only_function<Task<Result<std::optional<Track>>>(std::string)> dislike_daily;
+        std::move_only_function<Task<Result<std::vector<Track>>>(std::string, std::string)> heartbeat;
+        std::move_only_function<Task<Result<std::vector<Track>>>(std::string)> similar;
+        std::move_only_function<Task<Result<void>>(std::string)> fm_trash;
+        std::move_only_function<Task<Result<Categories>>()> categories;
+        std::move_only_function<Task<Result<Batch>>(std::string, int)> square;
+        std::move_only_function<Task<void>(std::string, std::string)> report_start;
+        std::move_only_function<Task<void>(std::string, std::string, int)> report_play;
     };
 
     // The shared platform contract; adapters supply their optional features without changing the shell.
@@ -213,7 +226,7 @@ namespace lyren {
         Features features;
         bool reload_after_edit = false; // server-assigned playlist metadata and order need a readback
         virtual std::map<std::string, std::string> &session() = 0;
-        virtual void on_session_changed(std::function<void()> changed) = 0;
+        virtual void on_session_changed(std::move_only_function<void()> changed) = 0;
         virtual Task<Result<void>> initialize() = 0;
         virtual void cancel_qr() = 0;
 

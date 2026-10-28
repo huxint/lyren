@@ -38,11 +38,11 @@ namespace lyren::text {
         }
         NSVGimage *image = nsvgParse(svg.data(), "px", 96);
         NSVGrasterizer *rast = nsvgCreateRasterizer();
-        std::vector<uint8_t> rgba(size_t(size) * size * 4);
-        nsvgRasterize(rast, image, 0, 0, float(size) / image->width, rgba.data(), size, size, size * 4);
+        std::vector<uint8_t> rgba(static_cast<size_t>(size) * size * 4);
+        nsvgRasterize(rast, image, 0, 0, static_cast<float>(size) / image->width, rgba.data(), size, size, size * 4);
         nsvgDeleteRasterizer(rast);
         nsvgDelete(image);
-        coverage.resize(size_t(size) * size);
+        coverage.resize(static_cast<size_t>(size) * size);
         for (size_t i = 0; i < coverage.size(); ++i) {
             coverage[i] = rgba[i * 4 + 3];
         }

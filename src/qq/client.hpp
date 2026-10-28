@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <map>
 #include <functional>
 #include <string>
@@ -20,7 +21,7 @@ namespace lyren::qq {
     };
 
     // The comm block: the app's for reads and playback, the Linux client's for the login exchange and its renewal.
-    enum class Comm {
+    enum class Comm : uint8_t {
         app,
         linux
     };
@@ -34,7 +35,7 @@ namespace lyren::qq {
 
         // The login: musicid, musickey and the open-platform tokens; persisted with the credentials.
         std::map<std::string, std::string> session;
-        std::function<void()> on_session;
+        std::move_only_function<void()> on_session;
 
         bool logged_in() const {
             return !get("musickey").empty();

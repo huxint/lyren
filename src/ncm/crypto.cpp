@@ -37,26 +37,26 @@ namespace lyren::ncm {
 
     std::string random_hex(size_t digits, bool upper) {
         std::string b((digits + 1) / 2, '\0');
-        RAND_bytes(reinterpret_cast<unsigned char *>(b.data()), int(b.size()));
+        RAND_bytes(reinterpret_cast<unsigned char *>(b.data()), static_cast<int>(b.size()));
         return hex(b, upper).substr(0, digits);
     }
 
     std::string base64(std::string_view bytes) {
         std::string out(4 * ((bytes.size() + 2) / 3), '\0');
-        int n = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(out.data()), reinterpret_cast<const unsigned char *>(bytes.data()), int(bytes.size()));
-        out.resize(size_t(n));
+        int n = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(out.data()), reinterpret_cast<const unsigned char *>(bytes.data()), static_cast<int>(bytes.size()));
+        out.resize(static_cast<size_t>(n));
         return out;
     }
 
     std::string unbase64(std::string_view text) {
         std::string out(3 * (text.size() / 4), '\0');
-        int n = EVP_DecodeBlock(reinterpret_cast<unsigned char *>(out.data()), reinterpret_cast<const unsigned char *>(text.data()), int(text.size()));
+        int n = EVP_DecodeBlock(reinterpret_cast<unsigned char *>(out.data()), reinterpret_cast<const unsigned char *>(text.data()), static_cast<int>(text.size()));
         if (n < 0) {
             return {};
         }
         // EVP_DecodeBlock keeps the bytes that padding stands for.
         size_t pad = text.ends_with("==") ? 2 : text.ends_with('=') ? 1 : 0;
-        out.resize(size_t(n) - pad);
+        out.resize(static_cast<size_t>(n) - pad);
         return out;
     }
 
@@ -66,9 +66,9 @@ namespace lyren::ncm {
         std::string out(data.size() + 16, '\0');
         int n1 = 0, n2 = 0;
         auto *o = reinterpret_cast<unsigned char *>(out.data());
-        EVP_EncryptUpdate(c.get(), o, &n1, reinterpret_cast<const unsigned char *>(data.data()), int(data.size()));
+        EVP_EncryptUpdate(c.get(), o, &n1, reinterpret_cast<const unsigned char *>(data.data()), static_cast<int>(data.size()));
         EVP_EncryptFinal_ex(c.get(), o + n1, &n2);
-        out.resize(size_t(n1 + n2));
+        out.resize(static_cast<size_t>(n1 + n2));
         return out;
     }
 
@@ -80,7 +80,7 @@ namespace lyren::ncm {
 
     std::string rsa_hex(std::string_view data) {
         BN_CTX *ctx = BN_CTX_new();
-        BIGNUM *n = nullptr, *e = BN_new(), *m = BN_bin2bn(reinterpret_cast<const unsigned char *>(data.data()), int(data.size()), nullptr), *c = BN_new();
+        BIGNUM *n = nullptr, *e = BN_new(), *m = BN_bin2bn(reinterpret_cast<const unsigned char *>(data.data()), static_cast<int>(data.size()), nullptr), *c = BN_new();
         BN_hex2bn(&n, modulus);
         BN_set_word(e, 65537);
         BN_mod_exp(c, m, e, n, ctx);
@@ -90,7 +90,7 @@ namespace lyren::ncm {
         BN_free(n), BN_free(e), BN_free(m), BN_free(c);
         BN_CTX_free(ctx);
         std::ranges::transform(s, s.begin(), [](unsigned char ch) {
-            return char(std::tolower(ch));
+            return static_cast<char>(std::tolower(ch));
         });
         return std::string(256 - std::min<size_t>(256, s.size()), '0') + s;
     }
@@ -106,7 +106,7 @@ namespace lyren::ncm {
     Weapi weapi(std::string_view text) {
         static constexpr std::string_view base62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         std::array<unsigned char, 16> r;
-        RAND_bytes(r.data(), int(r.size()));
+        RAND_bytes(r.data(), static_cast<int>(r.size()));
         std::string key(r.size(), '\0');
         for (size_t i = 0; i < r.size(); ++i) {
             key[i] = base62[r[i] % base62.size()];

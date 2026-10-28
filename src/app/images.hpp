@@ -26,7 +26,7 @@ namespace lyren {
         };
 
         // redraw is called when an image arrives; now gives the UI clock.
-        Images(Loop &loop, net::Http &http, gfx::Renderer &renderer, std::function<void()> redraw, std::function<double()> now);
+        Images(Loop &loop, net::Http &http, gfx::Renderer &renderer, std::move_only_function<void()> redraw, std::move_only_function<double()> now);
         ~Images();
         Images(const Images &) = delete;
         Images &operator=(const Images &) = delete;
@@ -46,8 +46,8 @@ namespace lyren {
         Loop &loop_;
         net::Http &http_;
         gfx::Renderer &renderer_;
-        std::function<void()> redraw_;
-        std::function<double()> now_;
+        std::move_only_function<void()> redraw_;
+        std::move_only_function<double()> now_;
         std::unordered_map<std::string, Entry> entries_;
         std::vector<std::string> queue_; // newest last, which is fetched first
         int in_flight_ = 0;

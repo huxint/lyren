@@ -14,7 +14,7 @@ namespace lyren::gfx {
         if (r >= 0) {
             return;
         }
-        log::error("{} failed: VkResult {}", what, int(r));
+        log::error("{} failed: VkResult {}", what, static_cast<int>(r));
         std::abort();
     }
 
@@ -82,7 +82,7 @@ namespace lyren::gfx {
                                  .pApplicationInfo = &app,
                                  .enabledLayerCount = validation ? 1u : 0u,
                                  .ppEnabledLayerNames = &layer,
-                                 .enabledExtensionCount = uint32_t(exts.size()),
+                                 .enabledExtensionCount = static_cast<uint32_t>(exts.size()),
                                  .ppEnabledExtensionNames = exts.data()};
         VK_CHECK(vkCreateInstance(&ici, nullptr, &instance));
         if (validation) {
@@ -157,7 +157,7 @@ namespace lyren::gfx {
                                .pNext = &f13,
                                .queueCreateInfoCount = 1,
                                .pQueueCreateInfos = &qci,
-                               .enabledExtensionCount = uint32_t(std::size(device_exts)),
+                               .enabledExtensionCount = static_cast<uint32_t>(std::size(device_exts)),
                                .ppEnabledExtensionNames = device_exts.data()};
         VK_CHECK(vkCreateDevice(physical, &dci, nullptr, &device));
         vkGetDeviceQueue(device, queue_family, 0, &queue);

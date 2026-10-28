@@ -156,11 +156,12 @@ namespace lyren::gfx {
                                                   .colorWriteMask = 0xf};
         VkPipelineColorBlendStateCreateInfo cb{.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &blend};
         std::array dyn = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-        VkPipelineDynamicStateCreateInfo ds{.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = uint32_t(dyn.size()), .pDynamicStates = dyn.data()};
+        VkPipelineDynamicStateCreateInfo ds{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = static_cast<uint32_t>(dyn.size()), .pDynamicStates = dyn.data()};
         VkPipelineRenderingCreateInfo ri{.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1, .pColorAttachmentFormats = &format};
         VkGraphicsPipelineCreateInfo gp{.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                                         .pNext = &ri,
-                                        .stageCount = uint32_t(stages.size()),
+                                        .stageCount = static_cast<uint32_t>(stages.size()),
                                         .pStages = stages.data(),
                                         .pVertexInputState = &vi,
                                         .pInputAssemblyState = &ia,
@@ -335,7 +336,7 @@ namespace lyren::gfx {
         s.prims_addr = vkGetBufferDeviceAddress(dev, &bai);
     }
 
-    void Renderer::draw(Target &t, std::span<const Prim> prims, const std::array<float, 4> &clear, const std::function<void()> &before_present) {
+    void Renderer::draw(Target &t, std::span<const Prim> prims, const std::array<float, 4> &clear, std::function_ref<void()> before_present) {
         VkDevice dev = ctx_.device;
         auto &s = t.slots[t.slot];
         t.slot ^= 1;
@@ -382,21 +383,22 @@ namespace lyren::gfx {
             .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {t.width, t.height}}, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att};
         vkCmdBeginRendering(cmd, &ri);
         if (!prims.empty()) {
-            VkViewport viewport{0, 0, float(t.width), float(t.height), 0, 1};
+            VkViewport viewport{0, 0, static_cast<float>(t.width), static_cast<float>(t.height), 0, 1};
             VkRect2D scissor{{0, 0}, {t.width, t.height}};
             vkCmdSetViewport(cmd, 0, 1, &viewport);
             vkCmdSetScissor(cmd, 0, 1, &scissor);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_for(t.format));
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0, nullptr);
-            PushConstants pc{s.prims_addr, {float(t.width), float(t.height)}};
+            PushConstants pc{s.prims_addr, {static_cast<float>(t.width), static_cast<float>(t.height)}};
             vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
-            vkCmdDraw(cmd, 4, uint32_t(prims.size()), 0, 0);
+            vkCmdDraw(cmd, 4, static_cast<uint32_t>(prims.size()), 0, 0);
         }
         vkCmdEndRendering(cmd);
         VkBuffer readback = VK_NULL_HANDLE;
         VkDeviceMemory readback_mem = VK_NULL_HANDLE;
         if (capture_ && capture_target_ == &t) {
-            VkBufferCreateInfo bci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = VkDeviceSize(t.width) * t.height * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+            VkBufferCreateInfo bci{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = static_cast<VkDeviceSize>(t.width) * t.height * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
             VK_CHECK(vkCreateBuffer(dev, &bci, nullptr, &readback));
             VkMemoryRequirements req;
             vkGetBufferMemoryRequirements(dev, readback, &req);
@@ -454,7 +456,7 @@ namespace lyren::gfx {
             vkMapMemory(dev, readback_mem, 0, VK_WHOLE_SIZE, 0, &map);
             auto *pixels = static_cast<uint8_t *>(map);
             if (t.format == VK_FORMAT_R8G8B8A8_UNORM) {
-                for (size_t i = 0; i < size_t(t.width) * t.height * 4; i += 4) {
+                for (size_t i = 0; i < static_cast<size_t>(t.width) * t.height * 4; i += 4) {
                     std::swap(pixels[i], pixels[i + 2]);
                 }
             }
@@ -513,11 +515,11 @@ namespace lyren::gfx {
 
     void Renderer::upload(TextureId tex, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void *pixels, uint32_t pitch) {
         const Texture &t = textures_[tex];
-        size_t row = size_t(w) * t.texel, bytes = row * h;
-        size_t offset = (staging_.used + 15) & ~size_t(15);
+        size_t row = static_cast<size_t>(w) * t.texel, bytes = row * h;
+        size_t offset = (staging_.used + 15) & ~static_cast<size_t>(15);
         if (offset + bytes > staging_.size) {
             // Grow, keeping what is already staged for this frame.
-            size_t size = std::max({size_t(256) << 10, staging_.size * 2, offset + bytes});
+            size_t size = std::max({static_cast<size_t>(256) << 10, staging_.size * 2, offset + bytes});
             Staging grown;
             VkBufferCreateInfo bci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
             VK_CHECK(vkCreateBuffer(ctx_.device, &bci, nullptr, &grown.buffer));
@@ -537,11 +539,14 @@ namespace lyren::gfx {
         }
         auto *src = static_cast<const uint8_t *>(pixels);
         for (uint32_t r = 0; r < h; ++r) {
-            std::memcpy(staging_.map + offset + r * row, src + size_t(r) * pitch, row);
+            std::memcpy(staging_.map + offset + r * row, src + static_cast<size_t>(r) * pitch, row);
         }
         staging_.used = offset + bytes;
-        copies_.push_back(
-            {tex, {.bufferOffset = offset, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageOffset = {int32_t(x), int32_t(y), 0}, .imageExtent = {w, h, 1}}});
+        copies_.push_back({tex,
+                           {.bufferOffset = offset,
+                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .imageOffset = {static_cast<int32_t>(x), static_cast<int32_t>(y), 0},
+                            .imageExtent = {w, h, 1}}});
         ++texture_version_;
     }
 
@@ -560,7 +565,7 @@ namespace lyren::gfx {
             Texture &t = textures_[id];
             image_barrier(cmd, t.image, t.layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT,
                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
-            vkCmdCopyBufferToImage(cmd, staging_.buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(regions.size()), regions.data());
+            vkCmdCopyBufferToImage(cmd, staging_.buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(regions.size()), regions.data());
             image_barrier(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             t.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -583,7 +588,7 @@ namespace lyren::gfx {
         });
     }
 
-    void Renderer::retire(std::function<void()> release) {
+    void Renderer::retire(std::move_only_function<void()> release) {
         if (submitted_ == completed_) {
             release();
         } else {

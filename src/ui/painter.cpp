@@ -27,7 +27,7 @@ namespace lyren::ui {
         gfx::Prim &p = prims_.emplace_back();
         p.rect[0] = x0, p.rect[1] = y0, p.rect[2] = x1 - x0, p.rect[3] = y1 - y0;
         p.clip = clips_.back();
-        p.info[0] = uint32_t(kind);
+        p.info[0] = static_cast<uint32_t>(kind);
         return p;
     }
 
@@ -90,7 +90,7 @@ namespace lyren::ui {
     }
 
     void Painter::icon(std::string_view name, Rect r, Color color) {
-        int size = int(std::lround(std::min(r.w, r.h) * scale_));
+        int size = static_cast<int>(std::lround(std::min(r.w, r.h) * scale_));
         const auto &e = atlas_.icon(name, size);
         if (!e.w) {
             return;
@@ -98,7 +98,7 @@ namespace lyren::ui {
         float x0 = snap(r.x + ox_ + (r.w - size / scale_) / 2), y0 = snap(r.y + oy_ + (r.h - size / scale_) / 2);
         auto &p = emit_zoomed(gfx::Kind::glyph, x0, y0, e.w, e.h);
         premul(p.color, color);
-        float inv = 1.f / float(atlas_.size());
+        float inv = 1.f / static_cast<float>(atlas_.size());
         p.uv[0] = e.x * inv, p.uv[1] = e.y * inv, p.uv[2] = (e.x + e.w) * inv, p.uv[3] = (e.y + e.h) * inv;
         p.info[1] = atlas_.texture();
     }
@@ -134,12 +134,12 @@ namespace lyren::ui {
         }
         float px = size * scale_;
         float bx = (x + ox_) * scale_, by = snap(baseline + oy_);
-        float inv = 1.f / float(atlas_.size());
+        float inv = 1.f / static_cast<float>(atlas_.size());
         for (size_t i = 0; i < count; ++i) {
             const auto &g = shaped.glyphs[i];
             float pen = bx + g.x * px;
             float whole = std::floor(pen);
-            int sub = std::min(3, int((pen - whole) * 4));
+            int sub = std::min(3, static_cast<int>((pen - whole) * 4));
             const auto &e = atlas_.glyph(g.face, g.gid, px, sub);
             if (!e.w) {
                 continue;

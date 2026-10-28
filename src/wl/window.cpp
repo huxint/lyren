@@ -274,7 +274,7 @@ namespace lyren::wl {
                     wl_region_add(blur, margin_, margin_ + r, width_, height_ - 2 * r);
                     for (int k = 0; k < r; ++k) {
                         double dy = r - k - 0.5;
-                        int inset = int(std::lround(r - std::sqrt(double(r) * r - dy * dy)));
+                        int inset = static_cast<int>(std::lround(r - std::sqrt(static_cast<double>(r) * r - dy * dy)));
                         wl_region_add(blur, margin_ + inset, margin_ + k, width_ - 2 * inset, 1);
                         wl_region_add(blur, margin_ + inset, margin_ + height_ - 1 - k, width_ - 2 * inset, 1);
                     }

@@ -15,10 +15,10 @@ namespace lyren::gfx {
         if (img.w == img.h) {
             return img;
         }
-        Image out{s, s, std::vector<uint8_t>(size_t(s) * s * 4)};
+        Image out{s, s, std::vector<uint8_t>(static_cast<size_t>(s) * s * 4)};
         uint32_t x0 = (img.w - s) / 2, y0 = (img.h - s) / 2;
         for (uint32_t y = 0; y < s; ++y) {
-            std::copy_n(img.px.data() + (size_t(y + y0) * img.w + x0) * 4, size_t(s) * 4, out.px.data() + size_t(y) * s * 4);
+            std::copy_n(img.px.data() + (static_cast<size_t>(y + y0) * img.w + x0) * 4, static_cast<size_t>(s) * 4, out.px.data() + static_cast<size_t>(y) * s * 4);
         }
         return out;
     }
@@ -34,13 +34,13 @@ namespace lyren::gfx {
             tjscalingfactor best{1, 1};
             for (int i = 0; i < n; ++i) {
                 int sw = TJSCALED(std::min(w, h), f[i]);
-                if (sw >= int(size) && sw < TJSCALED(std::min(w, h), best)) {
+                if (sw >= static_cast<int>(size) && sw < TJSCALED(std::min(w, h), best)) {
                     best = f[i];
                 }
             }
             tj3SetScalingFactor(tj, best);
-            img.w = uint32_t(TJSCALED(w, best)), img.h = uint32_t(TJSCALED(h, best));
-            img.px.resize(size_t(img.w) * img.h * 4);
+            img.w = static_cast<uint32_t>(TJSCALED(w, best)), img.h = static_cast<uint32_t>(TJSCALED(h, best));
+            img.px.resize(static_cast<size_t>(img.w) * img.h * 4);
             if (tj3Decompress8(tj, data.data(), data.size(), img.px.data(), 0, TJPF_RGBA) != 0 && tj3GetErrorCode(tj) == TJERR_FATAL) {
                 error = tj3GetErrorStr(tj);
                 img = {};
@@ -70,7 +70,7 @@ namespace lyren::gfx {
         png_image_free(&p);
         for (size_t i = 0; i < img.px.size(); i += 4) {
             for (int c = 0; c < 3; ++c) {
-                img.px[i + c] = uint8_t((img.px[i + c] * img.px[i + 3] + 127) / 255);
+                img.px[i + c] = static_cast<uint8_t>((img.px[i + c] * img.px[i + 3] + 127) / 255);
             }
         }
         return img;
@@ -90,26 +90,26 @@ namespace lyren::gfx {
     }
 
     Image downscale(const Image &src, uint32_t w, uint32_t h) {
-        Image out{w, h, std::vector<uint8_t>(size_t(w) * h * 4)};
-        double sx = double(src.w) / w, sy = double(src.h) / h;
+        Image out{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 4)};
+        double sx = static_cast<double>(src.w) / w, sy = static_cast<double>(src.h) / h;
         for (uint32_t y = 0; y < h; ++y) {
             double y0 = y * sy, y1 = y0 + sy;
             for (uint32_t x = 0; x < w; ++x) {
                 double x0 = x * sx, x1 = x0 + sx, acc[4] = {}, area = 0;
-                for (uint32_t yy = uint32_t(y0); yy < std::min<uint32_t>(src.h, uint32_t(std::ceil(y1))); ++yy) {
-                    double wy = std::min(y1, yy + 1.0) - std::max(y0, double(yy));
-                    for (uint32_t xx = uint32_t(x0); xx < std::min<uint32_t>(src.w, uint32_t(std::ceil(x1))); ++xx) {
-                        double wgt = wy * (std::min(x1, xx + 1.0) - std::max(x0, double(xx)));
-                        const uint8_t *p = &src.px[(size_t(yy) * src.w + xx) * 4];
+                for (uint32_t yy = static_cast<uint32_t>(y0); yy < std::min<uint32_t>(src.h, static_cast<uint32_t>(std::ceil(y1))); ++yy) {
+                    double wy = std::min(y1, yy + 1.0) - std::max(y0, static_cast<double>(yy));
+                    for (uint32_t xx = static_cast<uint32_t>(x0); xx < std::min<uint32_t>(src.w, static_cast<uint32_t>(std::ceil(x1))); ++xx) {
+                        double wgt = wy * (std::min(x1, xx + 1.0) - std::max(x0, static_cast<double>(xx)));
+                        const uint8_t *p = &src.px[(static_cast<size_t>(yy) * src.w + xx) * 4];
                         for (int c = 0; c < 4; ++c) {
                             acc[c] += p[c] * wgt;
                         }
                         area += wgt;
                     }
                 }
-                uint8_t *o = &out.px[(size_t(y) * w + x) * 4];
+                uint8_t *o = &out.px[(static_cast<size_t>(y) * w + x) * 4];
                 for (int c = 0; c < 4; ++c) {
-                    o[c] = uint8_t(std::lround(acc[c] / area));
+                    o[c] = static_cast<uint8_t>(std::lround(acc[c] / area));
                 }
             }
         }
@@ -118,27 +118,27 @@ namespace lyren::gfx {
 
     void blur(Image &img, int radius) {
         std::vector<float> a(img.px.begin(), img.px.end());
-        int w = int(img.w), h = int(img.h);
-        std::vector<float> line(size_t(std::max(w, h)) * 4);
-        float inv = 1.f / float(2 * radius + 1);
+        int w = static_cast<int>(img.w), h = static_cast<int>(img.h);
+        std::vector<float> line(static_cast<size_t>(std::max(w, h)) * 4);
+        float inv = 1.f / static_cast<float>(2 * radius + 1);
         auto pass = [&](bool horizontal) {
             int n = horizontal ? w : h, lines = horizontal ? h : w;
-            size_t stride = horizontal ? 4 : size_t(w) * 4;
+            size_t stride = horizontal ? 4 : static_cast<size_t>(w) * 4;
             for (int l = 0; l < lines; ++l) {
-                size_t start = horizontal ? size_t(l) * w * 4 : size_t(l) * 4;
+                size_t start = horizontal ? static_cast<size_t>(l) * w * 4 : static_cast<size_t>(l) * 4;
                 for (int i = 0; i < n; ++i) {
-                    std::copy_n(a.data() + start + size_t(i) * stride, 4, line.data() + size_t(i) * 4);
+                    std::copy_n(a.data() + start + static_cast<size_t>(i) * stride, 4, line.data() + static_cast<size_t>(i) * 4);
                 }
                 std::array<float, 4> acc{};
                 for (int k = -radius; k <= radius; ++k) {
                     for (int c = 0; c < 4; ++c) {
-                        acc[c] += line[size_t(std::clamp(k, 0, n - 1)) * 4 + c];
+                        acc[c] += line[static_cast<size_t>(std::clamp(k, 0, n - 1)) * 4 + c];
                     }
                 }
                 for (int i = 0; i < n; ++i) {
-                    size_t at = start + size_t(i) * stride;
-                    size_t leave = size_t(std::clamp(i - radius, 0, n - 1)) * 4;
-                    size_t enter = size_t(std::clamp(i + radius + 1, 0, n - 1)) * 4;
+                    size_t at = start + static_cast<size_t>(i) * stride;
+                    size_t leave = static_cast<size_t>(std::clamp(i - radius, 0, n - 1)) * 4;
+                    size_t enter = static_cast<size_t>(std::clamp(i + radius + 1, 0, n - 1)) * 4;
                     for (int c = 0; c < 4; ++c) {
                         a[at + c] = acc[c] * inv;
                         acc[c] += line[enter + c] - line[leave + c];
@@ -151,7 +151,7 @@ namespace lyren::gfx {
             pass(false);
         }
         for (size_t i = 0; i < a.size(); ++i) {
-            img.px[i] = uint8_t(a[i] + 0.5f);
+            img.px[i] = static_cast<uint8_t>(a[i] + 0.5f);
         }
     }
 
@@ -168,22 +168,22 @@ namespace lyren::gfx {
             }
             float h = mx == r ? std::fmod((g - b) / d + 6, 6.f) : mx == g ? (b - r) / d + 2 : (r - g) / d + 4;
             h /= 6;
-            double wgt = double(d) * mx;
-            int bin = std::min(bins - 1, int(h * bins));
+            double wgt = static_cast<double>(d) * mx;
+            int bin = std::min(bins - 1, static_cast<int>(h * bins));
             weight[bin] += wgt, total += wgt;
             sx[bin] += wgt * std::cos(h * 2 * std::numbers::pi), sy[bin] += wgt * std::sin(h * 2 * std::numbers::pi);
         }
-        if (total < 0.04 * double(img.w * img.h)) {
+        if (total < 0.04 * static_cast<double>(img.w * img.h)) {
             return -1;
         }
         // The heaviest bin with its neighbours.
-        int best = int(std::ranges::max_element(weight) - weight.begin());
+        int best = static_cast<int>(std::ranges::max_element(weight) - weight.begin());
         double x = 0, y = 0;
         for (int k = -1; k <= 1; ++k) {
             x += sx[(best + k + bins) % bins], y += sy[(best + k + bins) % bins];
         }
         double h = std::atan2(y, x) / (2 * std::numbers::pi);
-        return float(h < 0 ? h + 1 : h);
+        return static_cast<float>(h < 0 ? h + 1 : h);
     }
 
 } // namespace lyren::gfx

@@ -50,7 +50,7 @@ TEST_CASE("yrc word timing with a translation") {
     CHECK(bad.time == doctest::Approx(11.43));
     CHECK(bad.text == "Bad, (oh)");
     REQUIRE(bad.words.size() == 3);
-    CHECK(bad.words[1].duration == 0);
+    CHECK(bad.words[1].duration() == 0);
     CHECK(bad.text.substr(bad.words[1].from, bad.words[1].to - bad.words[1].from) == ", ");
     CHECK(bad.words[2].to == bad.text.size());
 
@@ -58,10 +58,71 @@ TEST_CASE("yrc word timing with a translation") {
     CHECK(young.text == "We were young");
     CHECK(young.translation == "我们都还年轻");
     REQUIRE(young.words.size() == 3);
-    CHECK(young.words[1].time == doctest::Approx(16.51));
-    CHECK(young.words[1].duration == doctest::Approx(0.21));
+    CHECK(young.words[1].time() == doctest::Approx(16.51));
+    CHECK(young.words[1].duration() == doctest::Approx(0.21));
     CHECK(young.text.substr(young.words[1].from, young.words[1].to - young.words[1].from) == "were ");
     CHECK(word_at(young, 16.0) == -1);
     CHECK(word_at(young, 16.6) == 1);
     CHECK(word_at(young, 99) == 2);
+}
+
+TEST_CASE("QRC offsets keep lines words and translated LRC on the same timeline") {
+    const auto lines = parse_qrc(R"qrc(<Lyric_1 LyricContent="[offset:+500]
+[10000,2000]First (10000,750)line(10750,1250)
+[14000,1000]Next(14000,1000)
+"/>)qrc",
+                                 "[offset:500]\n[00:10.00]Translated line\n");
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[0].time == doctest::Approx(9.5));
+    CHECK(lines[0].translation == "Translated line");
+    REQUIRE(lines[0].words.size() == 2);
+    CHECK(lines[0].words[0].time() == doctest::Approx(9.5));
+    CHECK(lines[0].words[1].time() == doctest::Approx(10.25));
+    CHECK(lines[0].words[1].duration() == doctest::Approx(1.25));
+    CHECK(lyric_at(lines, 9.49) == -1);
+    CHECK(lyric_at(lines, 9.5) == 0);
+    CHECK(word_at(lines[0], 10.24) == 0);
+    CHECK(word_at(lines[0], 10.25) == 1);
+}
+
+TEST_CASE("raw QRC handles negative offsets and metadata after lyric lines") {
+    const auto lines = parse_qrc("[1000,1000]One(1000,1000)\n[offset:-250]\n");
+    REQUIRE(lines.size() == 1);
+    CHECK(lines[0].time == doctest::Approx(1.25));
+    REQUIRE(lines[0].words.size() == 1);
+    CHECK(lines[0].words[0].time() == doctest::Approx(1.25));
+    CHECK(lines[0].words[0].duration() == doctest::Approx(1));
+}
+
+TEST_CASE("QRC offset clips word intervals crossing the start of the audio") {
+    const auto lines = parse_qrc("[offset:750]\n[0,2000]One(0,500) two(500,1500)\n");
+    REQUIRE(lines.size() == 1);
+    CHECK(lines[0].time == 0);
+    REQUIRE(lines[0].words.size() == 2);
+    CHECK(lines[0].words[0].time() == 0);
+    CHECK(lines[0].words[0].duration() == 0);
+    CHECK(lines[0].words[1].time() == 0);
+    CHECK(lines[0].words[1].duration() == doctest::Approx(1.25));
+}
+
+TEST_CASE("QQ plain and XML lyrics can use either word timing or LRC") {
+    auto lrc = parse_qrc("[00:10.12]First line\n[00:20.50]Second line\n");
+    REQUIRE(lrc.size() == 2);
+    CHECK(lrc[0].time == doctest::Approx(10.12));
+    CHECK(lrc[0].words.empty());
+    auto xml = parse_qrc(R"qrc(<Lyric_1 LyricContent="[00:10.12]First line
+"/>)qrc",
+                         "[10120,1000]Translation(10120,1000)\n");
+    REQUIRE(xml.size() == 1);
+    CHECK(xml[0].translation == "Translation");
+}
+
+TEST_CASE("long word timelines retain millisecond precision") {
+    auto lines = parse_qrc("[90000123,321]Word(90000123,321)\n");
+    REQUIRE(lines.size() == 1);
+    REQUIRE(lines[0].words.size() == 1);
+    CHECK(lines[0].words[0].start_ms == 90000123);
+    CHECK(lines[0].words[0].duration_ms == 321);
+    CHECK(word_at(lines[0], 90000.122) == -1);
+    CHECK(word_at(lines[0], 90000.123) == 0);
 }

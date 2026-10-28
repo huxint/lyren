@@ -15,13 +15,13 @@ namespace lyren::wl {
     class Window : public SurfaceSink {
     public:
         struct Callbacks {
-            std::function<void()> configure; // size, scale, state or decoration mode changed
-            std::function<void()> close;
-            std::function<void()> frame; // the compositor is ready for the next frame
-            std::function<void(const PointerEvent &)> pointer;
-            std::function<void(const KeyEvent &)> key;
-            std::function<void(bool)> focus;
-            std::function<void(const TextInputEvent &)> text_input;
+            std::move_only_function<void()> configure; // size, scale, state or decoration mode changed
+            std::move_only_function<void()> close;
+            std::move_only_function<void()> frame; // the compositor is ready for the next frame
+            std::move_only_function<void(const PointerEvent &)> pointer;
+            std::move_only_function<void(const KeyEvent &)> key;
+            std::move_only_function<void(bool)> focus;
+            std::move_only_function<void(const TextInputEvent &)> text_input;
         };
 
         Window(Display &display, Callbacks cb, bool client_side, int width, int height);
@@ -49,10 +49,10 @@ namespace lyren::wl {
             return scale120_ / 120.0;
         }
         uint32_t buffer_width() const {
-            return uint32_t(surface_width() * scale120_ / 120.0 + 0.5);
+            return static_cast<uint32_t>(surface_width() * scale120_ / 120.0 + 0.5);
         }
         uint32_t buffer_height() const {
-            return uint32_t(surface_height() * scale120_ / 120.0 + 0.5);
+            return static_cast<uint32_t>(surface_height() * scale120_ / 120.0 + 0.5);
         }
         bool client_side() const {
             return csd_;

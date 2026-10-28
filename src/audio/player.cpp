@@ -139,7 +139,7 @@ namespace lyren::audio {
         if (state_ == State::ended) {
             return duration_;
         }
-        double p = double(out_.position()) / format_.rate;
+        double p = static_cast<double>(out_.position()) / format_.rate;
         // Latency estimates jitter by a few milliseconds; never step backwards because of that.
         if (p < last_pos_ && last_pos_ - p < 0.25) {
             p = last_pos_;
@@ -207,7 +207,7 @@ namespace lyren::audio {
                             return;
                         }
                         format_ = f, codec_ = codec;
-                        duration_ = double(len) / f.rate;
+                        duration_ = static_cast<double>(len) / f.rate;
                         if (state_ == State::loading) {
                             state_ = want_play_ ? State::playing : State::paused;
                             out_.set_active(want_play_);
@@ -220,7 +220,7 @@ namespace lyren::audio {
                     if (!dec || c.gen != gen || superseded) {
                         continue;
                     }
-                    uint64_t frame = uint64_t(c.seconds * dec->format.rate);
+                    uint64_t frame = static_cast<uint64_t>(c.seconds * dec->format.rate);
                     if (dec->length) {
                         frame = std::min(frame, dec->length);
                     }

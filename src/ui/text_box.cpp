@@ -152,7 +152,7 @@ namespace lyren::ui {
             shown = composed;
             pre_begin = e.cursor, pre_end = e.cursor + box.preedit.size();
             show_caret = box.preedit_cursor >= 0;
-            caret = pre_begin + std::min(size_t(std::max(box.preedit_cursor, 0)), box.preedit.size());
+            caret = pre_begin + std::min(static_cast<size_t>(std::max(box.preedit_cursor, 0)), box.preedit.size());
         }
         const auto &sh = p_->shape(shown, st);
         auto x_of = [&](size_t b) {
@@ -199,7 +199,14 @@ namespace lyren::ui {
             if (show_caret && since <= blink_for) {
                 wake(box.blink + (std::floor(since / blink_half) + 1) * blink_half);
             }
-            text_input = {.enabled = true, .x = int(cx), .y = int(line_y), .w = 1, .h = int(line_h), .surrounding = text, .cursor = int(e.cursor), .anchor = int(e.anchor)};
+            text_input = {.enabled = true,
+                          .x = static_cast<int>(cx),
+                          .y = static_cast<int>(line_y),
+                          .w = 1,
+                          .h = static_cast<int>(line_h),
+                          .surrounding = text,
+                          .cursor = static_cast<int>(e.cursor),
+                          .anchor = static_cast<int>(e.anchor)};
         }
         pop_clip();
 

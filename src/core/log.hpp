@@ -1,10 +1,11 @@
 #pragma once
+#include <cstdint>
 #include <format>
 #include <string_view>
 
 namespace lyren::log {
 
-    enum class Level {
+    enum class Level : uint8_t {
         debug,
         info,
         warn,

@@ -17,7 +17,7 @@ namespace lyren::audio {
         std::string_view header(h.data(), h.size());
         if (header.starts_with("ID3")) {
             // Skip the tag to see what follows; FLAC files from some CDNs carry one too.
-            at = 10 + (uint64_t(h[6] & 0x7f) << 21 | uint64_t(h[7] & 0x7f) << 14 | uint64_t(h[8] & 0x7f) << 7 | (h[9] & 0x7f));
+            at = 10 + (static_cast<uint64_t>(h[6] & 0x7f) << 21 | static_cast<uint64_t>(h[7] & 0x7f) << 14 | static_cast<uint64_t>(h[8] & 0x7f) << 7 | (h[9] & 0x7f));
             if (h[5] & 0x10) {
                 at += 10;
             }
@@ -33,7 +33,7 @@ namespace lyren::audio {
             d = open_vorbis(spool);
         } else if (header.substr(4).starts_with("ftyp")) {
             d = open_mp4(spool, error);
-        } else if (at || (uint8_t(h[0]) == 0xff && (h[1] & 0xe0) == 0xe0 && (h[1] & 0x06))) {
+        } else if (at || (static_cast<uint8_t>(h[0]) == 0xff && (h[1] & 0xe0) == 0xe0 && (h[1] & 0x06))) {
             d = open_mp3(spool);
         } else {
             error = "unsupported format";

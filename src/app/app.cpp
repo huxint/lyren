@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 
 #include "core/log.hpp"
+#include "core/i18n.hpp"
 #include "wl/clipboard.hpp"
 #include "wl/input.hpp"
 
@@ -87,14 +88,29 @@ namespace lyren {
                        .config = config_.config,
                        .set_setting =
                            [this](std::string_view section, std::string_view key, std::string_view value) {
+                               Config previous = config_.config;
                                if (auto r = save_setting(config_, section, key, value); !r) {
                                    return toast(r.error());
                                }
                                log::info("config: {}.{} = {}", section, key, value);
+                               set_language(config_.config.interface.language);
                                shell_.config_changed();
-                               // Settings change mid-frame; the lyrics surface may be the one drawing.
+                               // Theme and font resources can only change after the current frame finishes.
+                               loop_.defer([this, previous] {
+                                   if (previous.theme.font != config_.config.theme.font) {
+                                       load_text(config_.config.theme.font);
+                                   }
+                                   apply_config(false);
+                                   if (previous.gpu.device != config_.config.gpu.device) {
+                                       toast(std::string(tr("GPU changes take effect after restarting")));
+                                   }
+                               });
+                           },
+                       .desktop_changed =
+                           [this] {
                                loop_.defer([this] {
                                    sync_desktop_lyrics();
+                                   request_redraw();
                                });
                            },
                        .redraw =
@@ -210,13 +226,14 @@ namespace lyren {
     }
 
     void App::apply_config(bool initial) {
+        set_language(config_.config.interface.language);
         std::string errors;
         theme_ = ui::Theme::from(config_.config, errors);
         if (!initial && !errors.empty()) {
             toast(errors.substr(0, errors.find('\n')));
         }
         window_->set_decorations(config_.config.window.decorations == Decorations::client);
-        window_->set_shadow(shadow_margin, resize_border, int(theme_.radius_l()));
+        window_->set_shadow(shadow_margin, resize_border, static_cast<int>(theme_.radius_l()));
         window_->set_blur(theme_.opacity < 1);
         sync_desktop_lyrics();
         request_redraw();
@@ -243,7 +260,7 @@ namespace lyren {
         }
         apply_config(false);
         if (parsed->gpu.device != old.gpu.device) {
-            toast("GPU 设置会在重启后生效");
+            toast(std::string(tr("GPU changes take effect after restarting")));
         }
     }
 
@@ -294,7 +311,7 @@ namespace lyren {
         // Reused texture IDs can carry new pixels without changing any primitives.
         auto prims = painter_->prims();
         uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char *>(prims.data()), prims.size_bytes()}) ^
-                        (uint64_t(window_->buffer_width()) << 32 | window_->buffer_height()) ^ renderer_.texture_version();
+                        (static_cast<uint64_t>(window_->buffer_width()) << 32 | window_->buffer_height()) ^ renderer_.texture_version();
         if (hash != frame_hash_ || window_->configure_pending()) {
             renderer_.draw(*target_, prims, {}, [this] {
                 window_->prepare_present();
@@ -305,9 +322,9 @@ namespace lyren {
     }
 
     void App::build(double now) {
-        float m = float(window_->margin()), w = float(window_->width()), h = float(window_->height());
+        float m = static_cast<float>(window_->margin()), w = static_cast<float>(window_->width()), h = static_cast<float>(window_->height());
         auto &p = *painter_;
-        p.begin(float(window_->scale()), m, m);
+        p.begin(static_cast<float>(window_->scale()), m, m);
         frame_theme_ = theme_;
         bool accent_moving = false;
         if (theme_.auto_accent) {
@@ -394,7 +411,7 @@ namespace lyren {
             }
         } else if (a.button == BTN_RIGHT) {
             int m = window_->margin();
-            window_->show_menu(int(a.x) + m, int(a.y) + m);
+            window_->show_menu(static_cast<int>(a.x) + m, static_cast<int>(a.y) + m);
         }
     }
 
@@ -426,11 +443,12 @@ namespace lyren {
     }
 
     void App::sync_desktop_lyrics() {
-        bool want = config_.config.desktop_lyrics.enabled;
+        bool want = shell_.desktop_enabled();
         if (want && !display_.layer_shell) {
-            return log::warn("desktop lyrics need wlr-layer-shell, which the compositor lacks");
+            shell_.set_desktop_enabled(false);
+            return toast(std::string(tr("Desktop lyrics require a compositor with layer-shell support")));
         }
-        int height = int(Shell::desktop_height(theme_.lyric_size));
+        int height = static_cast<int>(shell_.desktop_height(theme_.lyric_size));
         if (want && !lyrics_) {
             wl::LayerSurface::Callbacks cb{
                 .configure =
@@ -441,6 +459,7 @@ namespace lyren {
                     [this] {
                         loop_.defer([this] {
                             close_desktop_lyrics();
+                            shell_.set_desktop_enabled(false);
                         });
                     },
                 .frame =
@@ -453,7 +472,7 @@ namespace lyren {
                     },
             };
             // A scripted run keeps them under the windows, out of the way of whoever uses the desktop.
-            lyrics_ = std::make_unique<wl::LayerSurface>(display_, std::move(cb), script_.empty(), height, shell_.desktop_bottom());
+            lyrics_ = std::make_unique<wl::LayerSurface>(display_, std::move(cb), script_.empty(), height, shell_.desktop_bottom(), shell_.desktop_island());
             lyrics_target_ = renderer_.create_target(display_.display, lyrics_->surface());
             lyrics_hash_ = 0;
         } else if (!want && lyrics_) {
@@ -461,6 +480,7 @@ namespace lyren {
         }
         if (lyrics_) {
             lyrics_->set_height(height);
+            lyrics_->set_position(shell_.desktop_island(), shell_.desktop_bottom());
         }
         lyric_frames_.request();
     }
@@ -481,13 +501,13 @@ namespace lyren {
         }
         auto start = Clock::now();
         double now = std::chrono::duration<double>(start - start_).count();
-        float w = float(lyrics_->width()), h = float(lyrics_->height());
+        float w = static_cast<float>(lyrics_->width()), h = static_cast<float>(lyrics_->height());
         renderer_.resize(*lyrics_target_, lyrics_->buffer_width(), lyrics_->buffer_height());
         lyrics_input_.mods = display_.input->mods();
         ui::Rect input;
         for (int pass = 0; pass < 2; ++pass) {
             atlas_->begin_frame();
-            painter_->begin(float(lyrics_->scale()), 0, 0);
+            painter_->begin(static_cast<float>(lyrics_->scale()), 0, 0);
             lyrics_theme_ = theme_;
             bool accent_moving = false;
             if (theme_.auto_accent) {
@@ -505,11 +525,12 @@ namespace lyren {
             }
         }
         shaper_->end_frame();
-        lyrics_->set_bottom(shell_.desktop_bottom());
-        lyrics_->set_input(int(std::floor(input.x)), int(std::floor(input.y)), int(std::ceil(input.w)), int(std::ceil(input.h)));
+        lyrics_->set_position(shell_.desktop_island(), shell_.desktop_bottom());
+        lyrics_->set_input(static_cast<int>(std::floor(input.x)), static_cast<int>(std::floor(input.y)), static_cast<int>(std::ceil(input.w)),
+                           static_cast<int>(std::ceil(input.h)));
         auto prims = painter_->prims();
         uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char *>(prims.data()), prims.size_bytes()}) ^
-                        (uint64_t(lyrics_->buffer_width()) << 32 | lyrics_->buffer_height()) ^ renderer_.texture_version();
+                        (static_cast<uint64_t>(lyrics_->buffer_width()) << 32 | lyrics_->buffer_height()) ^ renderer_.texture_version();
         if (hash != lyrics_hash_ || lyrics_->needs_commit()) {
             renderer_.draw(*lyrics_target_, prims, {}, [this] {
                 lyrics_->prepare_present();
@@ -553,7 +574,7 @@ namespace lyren {
     }
 
     void App::on_pointer(const wl::PointerEvent &e) {
-        float m = float(window_->margin()), w = float(window_->width()), h = float(window_->height());
+        float m = static_cast<float>(window_->margin()), w = static_cast<float>(window_->width()), h = static_cast<float>(window_->height());
         float x = e.x - m, y = e.y - m;
         switch (e.type) {
             case wl::PointerEvent::enter:
@@ -626,11 +647,11 @@ namespace lyren {
     }
 
     static void write_png(const std::string &path, const uint8_t *bgra, uint32_t w, uint32_t h) {
-        std::vector<uint8_t> px(bgra, bgra + size_t(w) * h * 4);
+        std::vector<uint8_t> px(bgra, bgra + static_cast<size_t>(w) * h * 4);
         for (size_t i = 0; i < px.size(); i += 4) {
             if (int a = px[i + 3]; a && a < 255) {
                 for (int c = 0; c < 3; ++c) {
-                    px[i + c] = uint8_t(std::min(255, px[i + c] * 255 / a));
+                    px[i + c] = static_cast<uint8_t>(std::min(255, px[i + c] * 255 / a));
                 }
             }
         }
@@ -644,9 +665,9 @@ namespace lyren {
     void App::run_script(size_t i) {
         while (waitpid(-1, nullptr, WNOHANG) > 0) {
         }
-        float m = float(window_->margin());
+        float m = static_cast<float>(window_->margin());
         auto ms = [this] {
-            return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start_).count());
+            return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start_).count());
         };
         while (i < script_.size()) {
             std::istringstream in(script_[i++]);
@@ -718,7 +739,7 @@ namespace lyren {
             } else if (cmd == "commit" || cmd == "preedit") {
                 wl::TextInputEvent e;
                 (cmd == "commit" ? e.commit : e.preedit) = rest;
-                e.preedit_cursor = cmd == "preedit" ? int(rest.size()) : -1;
+                e.preedit_cursor = cmd == "preedit" ? static_cast<int>(rest.size()) : -1;
                 on_text_input(e);
             } else if (cmd == "shot") {
                 renderer_.capture_next(to_lyrics ? *lyrics_target_ : *target_, [path = rest](const uint8_t *px, uint32_t w, uint32_t h) {

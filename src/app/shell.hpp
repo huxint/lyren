@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -27,12 +28,13 @@ namespace lyren {
         Images &images;
         const Config &config;
         // Changes a setting in the config file; value is TOML. config reflects it once this returns.
-        std::function<void(std::string_view section, std::string_view key, std::string_view value)> set_setting;
-        std::function<void()> redraw;                      // async results arrived
-        std::function<double()> now;                       // the UI clock
-        bool silent;                                       // scripted runs: the stream volume stays 0
-        Bus &bus;                                          // for the media controls; get() is null without a session bus
-        std::function<void(std::string_view token)> raise; // bring the window forward
+        std::move_only_function<void(std::string_view section, std::string_view key, std::string_view value)> set_setting;
+        std::move_only_function<void()> desktop_changed;
+        std::move_only_function<void()> redraw;                      // async results arrived
+        std::move_only_function<double()> now;                       // the UI clock
+        bool silent;                                                 // scripted runs: the stream volume stays 0
+        Bus &bus;                                                    // for the media controls; get() is null without a session bus
+        std::move_only_function<void(std::string_view token)> raise; // bring the window forward
     };
 
     // Window content: search and account in the top bar, sidebar, pages, queue, the player bar and the now-playing view.
@@ -50,16 +52,22 @@ namespace lyren {
         void save(std::optional<std::pair<int, int>> window = {});
         void config_changed();
 
-        // Desktop lyrics, which App puts on a layer surface across the bottom of the screen: the surface height for a
-        // font size, its distance from the bottom, and its content. Returns the part that takes the pointer.
-        static float desktop_height(float font_size);
-        int desktop_bottom() const {
-            return int(std::lround(dl_bottom_));
+        // The overlay reserves no workspace and never takes keyboard focus.
+        float desktop_height(float font_size) const;
+        bool desktop_enabled() const {
+            return dl_enabled_;
         }
+        bool desktop_island() const {
+            return dl_island_;
+        }
+        int desktop_bottom() const {
+            return dl_island_ ? 10 : static_cast<int>(std::lround(dl_bottom_));
+        }
+        void set_desktop_enabled(bool enabled);
         ui::Rect desktop_lyrics(ui::Ui &ui, float w, float h);
 
     private:
-        enum class Page {
+        enum class Page : uint8_t {
             recommend,
             daily,
             toplist,
@@ -95,7 +103,7 @@ namespace lyren {
                 return tracks.size() + cards.size();
             }
             bool more() const {
-                return !loaded || int(size()) < total;
+                return !loaded || static_cast<int>(size()) < total;
             }
         };
         struct SearchResults : Results {
@@ -122,7 +130,7 @@ namespace lyren {
             std::string fm_error;
             Categories categories;
             bool categories_loading = false;
-            std::string category = "全部";
+            Category category;
             Results square;
             uint64_t square_gen = 0;
             double square_time = -10;
@@ -154,12 +162,16 @@ namespace lyren {
             std::string cursor, error;
             double since = -10;
         };
-        enum class Mode {
+        enum class Mode : uint8_t {
             list,
             one,
             shuffle
         };
 
+    public:
+        static std::vector<std::string_view> wrap(ui::Painter &p, std::string_view text, float size, float width);
+
+    private:
         // Pages and parts.
         void sidebar(ui::Ui &ui, ui::Rect r);
         void recommend_page(ui::Ui &ui, ui::Rect r);
@@ -266,14 +278,14 @@ namespace lyren {
             return config_.playback.trial == TrialMode::skip;
         }
         const Track *current() const {
-            return current_ >= 0 ? &queue_[size_t(current_)] : nullptr;
+            return current_ >= 0 ? &queue_[static_cast<size_t>(current_)] : nullptr;
         }
         bool is_current(const Track &t) const {
             return current() && same(*current(), t);
         }
         bool playing() const;
         Provider &provider(Source source) const {
-            return *providers_[size_t(source)];
+            return *providers_[static_cast<size_t>(source)];
         }
         Provider &provider() const {
             return provider(active_);
@@ -283,10 +295,10 @@ namespace lyren {
             return provider(t.source);
         }
         Library &library(Source source) {
-            return libraries_[size_t(source)];
+            return libraries_[static_cast<size_t>(source)];
         }
         const Library &library(Source source) const {
-            return libraries_[size_t(source)];
+            return libraries_[static_cast<size_t>(source)];
         }
         Library &library() {
             return library(active_);
@@ -320,7 +332,7 @@ namespace lyren {
         void remove_from_playlist(std::shared_ptr<List> list, Card playlist, Track t);
         void recount(const Card &playlist, int delta); // the sidebar's track count
         void retitle(const Card &playlist, const std::string &title);
-        void set_category(ui::Ui &ui, std::string category);
+        void set_category(ui::Ui &ui, Category category);
         void notify(std::string text, std::string icon = "info", bool error = false);
         void changed(); // persisted state changed
 
@@ -330,9 +342,9 @@ namespace lyren {
         Providers providers_;
         Images &images_;
         const Config &config_;
-        std::function<void(std::string_view, std::string_view, std::string_view)> set_setting_;
-        std::function<void()> redraw_;
-        std::function<double()> now_;
+        std::move_only_function<void(std::string_view, std::string_view, std::string_view)> set_setting_;
+        std::move_only_function<void()> redraw_;
+        std::move_only_function<double()> now_;
         bool silent_;
 
         Route route_{Page::recommend};
@@ -426,6 +438,11 @@ namespace lyren {
         };
         float dl_x_ = 0, dl_bottom_ = 48;
         bool dl_locked_ = false, dl_dragging_ = false;
+        bool dl_enabled_ = false, dl_island_ = false, lyric_translation_ = true;
+        std::move_only_function<void()> desktop_changed_;
+        static float sung_x(ui::Painter &p, const LyricLine &line, std::string_view text, float size, float soft, double position);
+        void toggle_translation();
+        void toggle_desktop_mode();
         float dl_grab_x_ = 0, dl_grab_y_ = 0, dl_last_y_ = 0;
         ShownLine dl_line_, dl_prev_;
         double dl_changed_ = -10;
@@ -460,6 +477,11 @@ namespace lyren {
         bool edit_hidden_ = false, edit_focus_ = false;
         Source edit_source_ = Source::netease;
         std::optional<Track> edit_track_;
+
+        uint8_t settings_tab_ = 0;
+        double settings_since_ = -10;
+        std::map<std::string, std::pair<std::string, std::string>> settings_text_;
+        std::map<std::string, float> settings_sliders_;
     };
 
 } // namespace lyren

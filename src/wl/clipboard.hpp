@@ -19,7 +19,7 @@ namespace lyren::wl {
 
         void set_text(std::string text, uint32_t serial);
         // Reads the selection without blocking; fn receives "" when it holds no text.
-        void get_text(std::function<void(std::string)> fn);
+        void get_text(std::move_only_function<void(std::string)> fn);
 
         // Listener plumbing.
         void offer_mime(wl_data_offer *offer, const char *mime);

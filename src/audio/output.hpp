@@ -22,8 +22,8 @@ namespace lyren::audio {
     public:
         // Both run on PipeWire's (non-realtime) thread.
         struct Events {
-            std::function<void()> drained;     // the last frame after finish() has played
-            std::function<void(float)> volume; // linear volume changed elsewhere (desktop mixer)
+            std::move_only_function<void()> drained;     // the last frame after finish() has played
+            std::move_only_function<void(float)> volume; // linear volume changed elsewhere (desktop mixer)
         };
 
         // wake is bumped and notified when space frees up while set_waiting(true).

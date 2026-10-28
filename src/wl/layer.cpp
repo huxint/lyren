@@ -13,7 +13,7 @@ namespace lyren::wl {
     static const zwlr_layer_surface_v1_listener layer_listener{
         .configure =
             [](void *d, zwlr_layer_surface_v1 *, uint32_t serial, uint32_t w, uint32_t h) {
-                self(d)->configure(serial, int(w), int(h));
+                self(d)->configure(serial, static_cast<int>(w), static_cast<int>(h));
             },
         .closed =
             [](void *d, zwlr_layer_surface_v1 *) {
@@ -34,11 +34,12 @@ namespace lyren::wl {
             },
     };
 
-    LayerSurface::LayerSurface(Display &display, Callbacks cb, bool above_windows, int height, int bottom)
+    LayerSurface::LayerSurface(Display &display, Callbacks cb, bool above_windows, int height, int margin, bool top)
     : display_(display),
       cb_(std::move(cb)),
       height_(height),
-      bottom_(bottom) {
+      margin_(margin),
+      top_(top) {
         surface_ = wl_compositor_create_surface(display_.compositor);
         wl_surface_set_user_data(surface_, static_cast<SurfaceSink *>(this));
         viewport_ = wp_viewporter_get_viewport(display_.viewporter, surface_);
@@ -48,9 +49,10 @@ namespace lyren::wl {
         layer_ = zwlr_layer_shell_v1_get_layer_surface(display_.layer_shell, surface_, nullptr, above_windows ? ZWLR_LAYER_SHELL_V1_LAYER_TOP : ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
                                                        "lyren-lyrics");
         zwlr_layer_surface_v1_add_listener(layer_, &layer_listener, this);
-        zwlr_layer_surface_v1_set_anchor(layer_, ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-        zwlr_layer_surface_v1_set_size(layer_, 0, uint32_t(height_));
-        zwlr_layer_surface_v1_set_margin(layer_, 0, 0, bottom_, 0);
+        zwlr_layer_surface_v1_set_anchor(layer_, (top_ ? ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP : ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM) | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+                                                     ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+        zwlr_layer_surface_v1_set_size(layer_, 0, static_cast<uint32_t>(height_));
+        zwlr_layer_surface_v1_set_margin(layer_, top_ ? margin_ : 0, 0, top_ ? 0 : margin_, 0);
         zwlr_layer_surface_v1_set_keyboard_interactivity(layer_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
         wl_surface_commit(surface_);
         while (!needs_ack_) {
@@ -70,16 +72,19 @@ namespace lyren::wl {
             return;
         }
         height_ = h;
-        zwlr_layer_surface_v1_set_size(layer_, 0, uint32_t(h));
+        zwlr_layer_surface_v1_set_size(layer_, 0, static_cast<uint32_t>(h));
         dirty_ = true;
     }
 
-    void LayerSurface::set_bottom(int px) {
-        if (px == bottom_) {
+    void LayerSurface::set_position(bool top, int margin) {
+        if (margin == margin_ && top == top_) {
             return;
         }
-        bottom_ = px;
-        zwlr_layer_surface_v1_set_margin(layer_, 0, 0, px, 0);
+        margin_ = margin;
+        top_ = top;
+        zwlr_layer_surface_v1_set_anchor(layer_, (top_ ? ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP : ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM) | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+                                                     ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+        zwlr_layer_surface_v1_set_margin(layer_, top_ ? margin_ : 0, 0, top_ ? 0 : margin_, 0);
         dirty_ = true;
     }
 

@@ -29,11 +29,11 @@ namespace lyren::qq {
         EVP_Digest(body.data(), body.size(), d.data(), &n, EVP_sha1(), nullptr);
         std::string h = ncm::hex({reinterpret_cast<const char *>(d.data()), d.size()}, true), mixed(d.size(), '\0');
         for (size_t i = 0; i < d.size(); ++i) {
-            mixed[i] = char(d[i] ^ mask[i]);
+            mixed[i] = static_cast<char>(d[i] ^ mask[i]);
         }
         std::string out = "zzc";
         for (int i : head) {
-            out += h[size_t(i)];
+            out += h[static_cast<size_t>(i)];
         }
         for (char c : ncm::base64(mixed)) {
             if (c != '=' && c != '/' && c != '+') {
@@ -41,10 +41,10 @@ namespace lyren::qq {
             }
         }
         for (int i : tail) {
-            out += h[size_t(i)];
+            out += h[static_cast<size_t>(i)];
         }
         for (char &c : out) {
-            c = char(std::tolower(static_cast<unsigned char>(c)));
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
         return out;
     }
@@ -94,13 +94,13 @@ namespace lyren::qq {
 
         // QQ's DES reads the bytes of each 4-byte half of a block or a key backwards.
         uint64_t flip(uint64_t v) {
-            return uint64_t(std::byteswap(uint32_t(v >> 32))) << 32 | std::byteswap(uint32_t(v));
+            return static_cast<uint64_t>(std::byteswap(static_cast<uint32_t>(v >> 32))) << 32 | std::byteswap(static_cast<uint32_t>(v));
         }
 
         uint64_t load(std::string_view b) {
             uint64_t v = 0;
             for (char c : b) {
-                v = v << 8 | uint8_t(c);
+                v = v << 8 | static_cast<uint8_t>(c);
             }
             return v;
         }
@@ -110,14 +110,14 @@ namespace lyren::qq {
         // Each subkey takes the D half one bit further left than the standard: PC-2 reads (D << 1).
         Keys schedule(std::string_view key) {
             uint64_t cd = permute(flip(load(key)), pc1, 64);
-            uint32_t c = uint32_t(cd >> 28), d = uint32_t(cd & 0xfffffff);
+            uint32_t c = static_cast<uint32_t>(cd >> 28), d = static_cast<uint32_t>(cd & 0xfffffff);
             Keys out;
             for (int i = 0; i < 16; ++i) {
                 auto rotate = [s = shifts[i]](uint32_t x) {
                     return (x << s | x >> (28 - s)) & 0xfffffff;
                 };
                 c = rotate(c), d = rotate(d);
-                out[size_t(i)] = permute(uint64_t(c) << 28 | ((d << 1) & 0xfffffff), pc2, 56);
+                out[static_cast<size_t>(i)] = permute(static_cast<uint64_t>(c) << 28 | ((d << 1) & 0xfffffff), pc2, 56);
             }
             return out;
         }
@@ -126,20 +126,20 @@ namespace lyren::qq {
             uint64_t x = permute(r, expansion, 32) ^ k;
             uint32_t out = 0;
             for (int i = 0; i < 8; ++i) {
-                unsigned six = unsigned(x >> (42 - 6 * i)) & 63;
+                unsigned six = static_cast<unsigned>(x >> (42 - 6 * i)) & 63;
                 out = out << 4 | sbox[i][(six & 0x20) | (six & 1) << 4 | (six >> 1 & 15)];
             }
-            return uint32_t(permute(out, pbox, 32));
+            return static_cast<uint32_t>(permute(out, pbox, 32));
         }
 
         uint64_t des(uint64_t block, const Keys &k, bool decrypt) {
             uint64_t v = permute(flip(block), ip, 64);
-            uint32_t l = uint32_t(v >> 32), r = uint32_t(v);
+            uint32_t l = static_cast<uint32_t>(v >> 32), r = static_cast<uint32_t>(v);
             for (int i = 0; i < 16; ++i) {
-                uint32_t next = l ^ feistel(r, k[size_t(decrypt ? 15 - i : i)]);
+                uint32_t next = l ^ feistel(r, k[static_cast<size_t>(decrypt ? 15 - i : i)]);
                 l = r, r = next;
             }
-            return flip(permute(uint64_t(r) << 32 | l, fp, 64));
+            return flip(permute(static_cast<uint64_t>(r) << 32 | l, fp, 64));
         }
 
         // Inflates to the end of the zlib stream; the cipher's padding after it is ignored.
@@ -149,7 +149,7 @@ namespace lyren::qq {
                 return {};
             }
             z.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data.data()));
-            z.avail_in = uInt(data.size());
+            z.avail_in = static_cast<uInt>(data.size());
             std::string out;
             int rc = Z_OK;
             while (rc == Z_OK) {
@@ -179,12 +179,12 @@ namespace lyren::qq {
             if (r.ptr != hex.data() + 2 * i + 2) {
                 return {};
             }
-            data[i] = char(v);
+            data[i] = static_cast<char>(v);
         }
         for (size_t i = 0; i + 8 <= data.size(); i += 8) {
             uint64_t b = qrc_block(load(std::string_view(data).substr(i, 8)));
             for (size_t j = 8; j-- > 0; b >>= 8) {
-                data[i + j] = char(b);
+                data[i + j] = static_cast<char>(b);
             }
         }
         return unzip(data);

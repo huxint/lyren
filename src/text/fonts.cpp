@@ -14,11 +14,11 @@
 namespace lyren::text {
 
     bool Coverage::has(char32_t cp) const {
-        auto it = std::ranges::lower_bound(pages, uint32_t(cp >> 8));
+        auto it = std::ranges::lower_bound(pages, static_cast<uint32_t>(cp >> 8));
         if (it == pages.end() || *it != cp >> 8) {
             return false;
         }
-        return bits[size_t(it - pages.begin())][(cp & 0xff) >> 5] & (1u << (cp & 31));
+        return bits[static_cast<size_t>(it - pages.begin())][(cp & 0xff) >> 5] & (1u << (cp & 31));
     }
 
     static Coverage copy_coverage(FcCharSet *cs) {
@@ -100,20 +100,20 @@ namespace lyren::text {
             f.data = reinterpret_cast<const uint8_t *>("");
             return;
         }
-        f.size = size_t(st.st_size);
+        f.size = static_cast<size_t>(st.st_size);
         f.data = static_cast<const uint8_t *>(mmap(nullptr, f.size, PROT_READ, MAP_PRIVATE, fd, 0));
         close(fd);
         FT_New_Memory_Face(ft_, f.data, FT_Long(f.size), f.index, &f.ft);
-        hb_blob_t *blob = hb_blob_create(reinterpret_cast<const char *>(f.data), unsigned(f.size), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
-        hb_face_t *face = hb_face_create(blob, unsigned(f.index));
+        hb_blob_t *blob = hb_blob_create(reinterpret_cast<const char *>(f.data), static_cast<unsigned>(f.size), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
+        hb_face_t *face = hb_face_create(blob, static_cast<unsigned>(f.index));
         f.hb = hb_font_create(face);
-        f.upem = float(hb_face_get_upem(face));
-        hb_font_set_scale(f.hb, int(f.upem), int(f.upem));
+        f.upem = static_cast<float>(hb_face_get_upem(face));
+        hb_font_set_scale(f.hb, static_cast<int>(f.upem), static_cast<int>(f.upem));
         hb_face_destroy(face);
         hb_blob_destroy(blob);
         if (f.ft) {
-            f.ascender = float(f.ft->ascender) / f.upem;
-            f.descender = -float(f.ft->descender) / f.upem;
+            f.ascender = static_cast<float>(f.ft->ascender) / f.upem;
+            f.descender = -static_cast<float>(f.ft->descender) / f.upem;
         }
     }
 

@@ -27,7 +27,7 @@ namespace lyren {
                     break;
                 default:
                     if (static_cast<unsigned char>(c) < 0x20) {
-                        out += std::format("\\u{:04x}", int(c));
+                        out += std::format("\\u{:04x}", static_cast<int>(c));
                     } else {
                         out += c;
                     }

@@ -29,8 +29,8 @@ namespace lyren::ncm {
     static std::string uri_encode(std::string_view s) {
         std::string out;
         for (unsigned char c : s) {
-            if (std::isalnum(c) || std::string_view("-_.!~*'()").contains(char(c))) {
-                out += char(c);
+            if (std::isalnum(c) || std::string_view("-_.!~*'()").contains(static_cast<char>(c))) {
+                out += static_cast<char>(c);
             } else {
                 out += std::format("%{:02X}", c);
             }
@@ -70,7 +70,7 @@ namespace lyren::ncm {
         if (!c.contains("WNMCID")) {
             std::string s;
             for (int i = 0; i < 6; ++i) {
-                s += char('a' + rng() % 26);
+                s += static_cast<char>('a' + rng() % 26);
             }
             c["WNMCID"] = std::format("{}.{}.01.0", s, now_ms());
         }
@@ -111,7 +111,7 @@ namespace lyren::ncm {
         std::string key(trim(first.substr(0, eq))), value(trim(first.substr(eq + 1)));
         std::string lower(raw);
         for (auto &ch : lower) {
-            ch = char(std::tolower(static_cast<unsigned char>(ch)));
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
         }
         bool expired = lower.contains("max-age=0") || lower.contains("max-age=-");
         if (expired || value.empty()) {
@@ -195,14 +195,14 @@ namespace lyren::ncm {
         }
         Reply r;
         if (!res.error.empty()) {
-            r.error = "网络连接失败";
+            r.error = "Network connection failed";
             log::warn("ncm {}: {}", uri, res.error);
             co_return r;
         }
         Status st;
         if (auto e = glz::read<glz::opts{.error_on_unknown_keys = false}>(st, res.body)) {
             r.code = res.status;
-            r.error = std::format("服务器返回了无法识别的内容（HTTP {}）", res.status);
+            r.error = std::format("Unrecognized server response (HTTP {})", res.status);
             log::warn("ncm {}: HTTP {}, {} bytes not JSON", uri, res.status, res.body.size());
             co_return r;
         }
@@ -217,9 +217,9 @@ namespace lyren::ncm {
         }
         static constexpr std::array ok = {200, 201, 302, 400, 502, 800, 801, 802, 803};
         if (!std::ranges::contains(ok, r.code)) {
-            r.error = st.message.value_or(st.msg.value_or(std::format("请求失败（{}）", r.code)));
+            r.error = st.message.value_or(st.msg.value_or(std::format("Request failed ({})", r.code)));
             if (r.code == 301) {
-                r.error = "登录已失效，请重新扫码登录";
+                r.error = "Session expired; scan again to sign in";
             }
             log::warn("ncm {}: code {} {}", uri, r.code, r.error);
         }

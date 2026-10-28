@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include <cmath>
 
 #include "sys/config.hpp"
 #include "ui/theme.hpp"
@@ -9,6 +10,7 @@ TEST_CASE("embedded default config parses to the built-in defaults") {
     auto c = parse_config(default_config_text());
     REQUIRE(c.has_value());
     Config d;
+    CHECK(c->interface.language == Language::zh);
     CHECK(c->window.decorations == d.window.decorations);
     CHECK(c->render.max_fps == d.render.max_fps);
     CHECK(c->playback.quality == Quality::lossless);
@@ -50,26 +52,90 @@ TEST_CASE("settings are written into the config text in place") {
     CHECK(set_config_value(text, "playback", "normalize", "true") ==
           "# top\n[playback]\n# quality\nquality = \"lossless\"\ntrial = \"skip\"\nnormalize = true\n\n[theme]\nfont_size = 14\n");
     CHECK(set_config_value(text, "theme", "font", "\"x\"") == text + "font = \"x\"\n");
-    CHECK(set_config_value(text, "desktop_lyrics", "enabled", "true") == text + "\n[desktop_lyrics]\nenabled = true\n");
+    CHECK(set_config_value(text, "desktop_lyrics", "font_size", "36") == text + "\n[desktop_lyrics]\nfont_size = 36\n");
 
     std::string d(default_config_text());
     d = set_config_value(d, "playback", "quality", "\"exhigh\"");
     d = set_config_value(d, "playback", "normalize", "true");
-    d = set_config_value(d, "desktop_lyrics", "enabled", "true");
+    d = set_config_value(d, "desktop_lyrics", "font_size", "36");
     auto c = parse_config(d);
     REQUIRE(c.has_value());
     CHECK(c->playback.quality == Quality::exhigh);
     CHECK(c->playback.normalize);
-    CHECK(c->desktop_lyrics.enabled);
-    CHECK(d.find("# 音量均衡") != std::string::npos);
+    CHECK(c->desktop_lyrics.font_size == 36);
+    CHECK(d.find("# Match track loudness") != std::string::npos);
 }
 
 TEST_CASE("setting updates preserve inline comments and surrounding whitespace") {
-    CHECK(set_config_value("[playback]\r\n  normalize\t= false  # 音量均衡\r\n", "playback", "normalize", "true") == "[playback]\r\n  normalize\t= true  # 音量均衡\r\n");
-    CHECK(set_config_value("[theme]\naccent = \"#abcdef\" # 强调色\n", "theme", "accent", "\"auto\"") == "[theme]\naccent = \"auto\" # 强调色\n");
-    CHECK(set_config_value("[theme]\nfont = 'Font #1'  # 字体\n", "theme", "font", "\"sans-serif\"") == "[theme]\nfont = \"sans-serif\"  # 字体\n");
+    CHECK(set_config_value("[playback]\r\n  normalize\t= false  # Match track loudness\r\n", "playback", "normalize", "true") ==
+          "[playback]\r\n  normalize\t= true  # Match track loudness\r\n");
+    CHECK(set_config_value("[theme]\naccent = \"#abcdef\" # Accent color\n", "theme", "accent", "\"auto\"") == "[theme]\naccent = \"auto\" # Accent color\n");
+    CHECK(set_config_value("[theme]\nfont = 'Font #1'  # Font\n", "theme", "font", "\"sans-serif\"") == "[theme]\nfont = \"sans-serif\"  # Font\n");
     CHECK(set_config_value(R"([theme]
-font = "Font \"#1" # 字体
+font = "Font \"#1" # Font
 )",
-                           "theme", "font", "\"sans-serif\"") == "[theme]\nfont = \"sans-serif\" # 字体\n");
+                           "theme", "font", "\"sans-serif\"") == "[theme]\nfont = \"sans-serif\" # Font\n");
+}
+
+TEST_CASE("language preferences persist and legacy lyric visibility remains readable") {
+    auto config = parse_config("[interface]\nlanguage = \"en\"\n[desktop_lyrics]\nenabled = true\nfont_size = 42\n");
+    REQUIRE(config.has_value());
+    CHECK(config->interface.language == Language::en);
+    CHECK(config->desktop_lyrics.font_size == 42);
+    CHECK_FALSE(parse_config("[interface]\nlanguage = \"fr\"\n").has_value());
+    CHECK_FALSE(parse_config("[desktop_lyrics]\nfont_siz = 42\n").has_value());
+    CHECK(default_config_text().find("enabled =") == std::string_view::npos);
+}
+
+TEST_CASE("resetting a color override restores the selected theme") {
+    std::string text = "[theme]\nmode = \"light\"\n[theme.colors]\n  bg = \"#000000\" # Custom background\ntext = \"#202733\"\n";
+    text = set_config_value(text, "theme.colors", "bg", "");
+    CHECK(text == "[theme]\nmode = \"light\"\n[theme.colors]\ntext = \"#202733\"\n");
+    auto config = parse_config(text);
+    REQUIRE(config.has_value());
+    CHECK_FALSE(config->theme.colors.bg.has_value());
+    CHECK(config->theme.colors.text == "#202733");
+    CHECK(set_config_value(text, "theme.colors", "border", "") == text);
+    CHECK(set_config_value(text, "absent", "missing", "") == text);
+    CHECK(set_config_value("[theme.colors]\nbg = \"#000\"", "theme.colors", "bg", "") == "[theme.colors]\n");
+}
+
+TEST_CASE("light theme separates surfaces and keeps text readable") {
+    Config config;
+    config.theme.mode = ThemeMode::light;
+    std::string errors;
+    const auto theme = ui::Theme::from(config, errors);
+    auto luminance = [](ui::Color color) {
+        auto linear = [](float value) {
+            return value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
+        };
+        return 0.2126f * linear(color.r) + 0.7152f * linear(color.g) + 0.0722f * linear(color.b);
+    };
+    auto contrast = [&](ui::Color background, ui::Color foreground) {
+        return (luminance(background) + 0.05f) / (luminance(foreground) + 0.05f);
+    };
+    CHECK(luminance(theme.bg) < luminance(theme.surface));
+    CHECK(luminance(theme.surface) < luminance(theme.elevated));
+    CHECK(contrast(theme.bg, theme.text) >= 7);
+    CHECK(contrast(theme.surface, theme.text_dim) >= 4.5);
+    CHECK(contrast(theme.surface, theme.accent) >= 4.5);
+    CHECK(errors.empty());
+}
+
+TEST_CASE("Dynamic Island starts minimal and optional components round trip through config") {
+    auto defaults = parse_config(default_config_text());
+    REQUIRE(defaults);
+    const auto &island = defaults->desktop_lyrics.island;
+    CHECK(island.cover);
+    CHECK(island.progress);
+    CHECK_FALSE(island.details);
+    CHECK_FALSE(island.controls);
+    CHECK_FALSE(island.volume);
+    auto text = set_config_value(default_config_text(), "desktop_lyrics.island", "controls", "true");
+    text = set_config_value(text, "desktop_lyrics.island", "volume", "true");
+    auto changed = parse_config(text);
+    REQUIRE(changed);
+    CHECK(changed->desktop_lyrics.island.controls);
+    CHECK(changed->desktop_lyrics.island.volume);
+    CHECK_FALSE(changed->desktop_lyrics.island.details);
 }

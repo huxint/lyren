@@ -4,12 +4,32 @@
 #include <unistd.h>
 
 #include <thread>
+#include <memory>
 #include <vector>
 
 #include "core/loop.hpp"
 #include "core/task.hpp"
 
 using namespace lyren;
+
+TEST_CASE("posted deferred and timed work can transfer exclusive ownership") {
+    Loop loop;
+    int result = 0;
+    auto value = std::make_unique<int>(42);
+    std::thread sender([&loop, &result, value = std::move(value)]() mutable {
+        loop.post([&loop, &result, value = std::move(value)]() mutable {
+            loop.defer([&loop, &result, value = std::move(value)]() mutable {
+                loop.after(1ms, [&loop, &result, value = std::move(value)] {
+                    result = *value;
+                    loop.quit();
+                });
+            });
+        });
+    });
+    loop.run();
+    sender.join();
+    CHECK(result == 42);
+}
 
 TEST_CASE("timers fire in deadline order and can be cancelled") {
     Loop loop;

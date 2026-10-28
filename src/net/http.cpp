@@ -65,7 +65,7 @@ namespace lyren::net {
         CURL *easy = curl_easy_init();
         curl_slist *headers = nullptr;
         Stream cb;
-        std::function<void(Response)> done; // whole-body request
+        std::move_only_function<void(Response)> done; // whole-body request
         Response resp;
         std::string post;
         uint64_t offset = 0, total = 0, at = 0;
@@ -141,7 +141,7 @@ namespace lyren::net {
             if (status != 206) {
                 curl_off_t len = -1;
                 curl_easy_getinfo(t->easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &len);
-                t->offset = 0, t->total = len > 0 ? uint64_t(len) : 0;
+                t->offset = 0, t->total = len > 0 ? static_cast<uint64_t>(len) : 0;
             }
             t->at = t->offset;
             t->cb.head(t->offset, t->total);
@@ -209,7 +209,7 @@ namespace lyren::net {
         return add(std::move(t), get.delay);
     }
 
-    Http::Id Http::request(Request req, std::function<void(Response)> done) {
+    Http::Id Http::request(Request req, std::move_only_function<void(Response)> done) {
         auto t = std::make_unique<Transfer>();
         t->done = std::move(done);
         setup(*t, req.url, req.headers);
@@ -225,7 +225,7 @@ namespace lyren::net {
         curl_easy_setopt(t->easy, CURLOPT_TIMEOUT, 30L);
         if (req.body) {
             t->post = std::move(*req.body);
-            curl_easy_setopt(t->easy, CURLOPT_POSTFIELDSIZE, long(t->post.size()));
+            curl_easy_setopt(t->easy, CURLOPT_POSTFIELDSIZE, static_cast<long>(t->post.size()));
             curl_easy_setopt(t->easy, CURLOPT_POSTFIELDS, t->post.c_str());
         }
         log::debug("http: {} {}", req.body ? "POST" : "GET", req.url.substr(0, req.url.find('?')));
@@ -337,7 +337,7 @@ namespace lyren::net {
                     owned->cb.done(status, std::move(err));
                 }
             }
-            curl_multi_poll(multi_, nullptr, 0, int(wait.count()), nullptr);
+            curl_multi_poll(multi_, nullptr, 0, static_cast<int>(wait.count()), nullptr);
         }
     }
 

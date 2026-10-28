@@ -10,19 +10,19 @@ namespace lyren::wl {
 
     class Display;
 
-    // A wlr-layer-shell surface across the bottom of the output, `bottom` px above it (or above a panel), that never
+    // A wlr-layer-shell surface across an edge of the output that never
     // takes the keyboard. Only its input region receives the pointer; elsewhere clicks fall through.
     class LayerSurface : public SurfaceSink {
     public:
         struct Callbacks {
-            std::function<void()> configure; // size or scale changed
-            std::function<void()> closed;    // the compositor took it away; destroy it
-            std::function<void()> frame;
-            std::function<void(const PointerEvent &)> pointer;
+            std::move_only_function<void()> configure; // size or scale changed
+            std::move_only_function<void()> closed;    // the compositor took it away; destroy it
+            std::move_only_function<void()> frame;
+            std::move_only_function<void(const PointerEvent &)> pointer;
         };
 
         // above_windows: the top layer; otherwise the bottom one, under normal windows.
-        LayerSurface(Display &display, Callbacks cb, bool above_windows, int height, int bottom);
+        LayerSurface(Display &display, Callbacks cb, bool above_windows, int height, int margin, bool top = false);
         ~LayerSurface() override;
 
         wl_surface *surface() const {
@@ -38,10 +38,10 @@ namespace lyren::wl {
             return scale120_ / 120.0;
         }
         uint32_t buffer_width() const {
-            return uint32_t(width_ * scale120_ / 120.0 + 0.5);
+            return static_cast<uint32_t>(width_ * scale120_ / 120.0 + 0.5);
         }
         uint32_t buffer_height() const {
-            return uint32_t(height_ * scale120_ / 120.0 + 0.5);
+            return static_cast<uint32_t>(height_ * scale120_ / 120.0 + 0.5);
         }
         bool frame_pending() const {
             return frame_pending_;
@@ -52,7 +52,7 @@ namespace lyren::wl {
         }
 
         void set_height(int h);
-        void set_bottom(int px);
+        void set_position(bool top, int margin);
         // Logical px, surface-local; an empty rectangle lets every click through.
         void set_input(int x, int y, int w, int h);
 
@@ -78,7 +78,8 @@ namespace lyren::wl {
         zwlr_layer_surface_v1 *layer_ = nullptr;
         wp_viewport *viewport_ = nullptr;
         wp_fractional_scale_v1 *fractional_ = nullptr;
-        int width_ = 0, height_, bottom_;
+        int width_ = 0, height_, margin_;
+        bool top_;
         std::array<int, 4> input_{};
         uint32_t scale120_ = 120, ack_serial_ = 0;
         bool needs_ack_ = false, dirty_ = true, frame_pending_ = false;

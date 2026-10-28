@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -19,7 +20,7 @@ namespace lyren::audio {
     // thread and output on PipeWire's.
     class Player {
     public:
-        enum class State {
+        enum class State : uint8_t {
             idle,
             loading,
             playing,
@@ -33,7 +34,7 @@ namespace lyren::audio {
         Player(const Player &) = delete;
         Player &operator=(const Player &) = delete;
 
-        std::function<void()> on_change; // state, duration, volume or error changed
+        std::move_only_function<void()> on_change; // state, duration, volume or error changed
 
         void open(std::shared_ptr<Spool> spool, bool play = true);
         void open_url(std::string url, bool play = true) {

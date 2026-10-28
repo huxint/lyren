@@ -21,10 +21,10 @@ namespace lyren {
             log::warn("state.json: {}", glz::format_error(e, text));
             return {};
         }
-        if (size_t(s.source) >= platforms.size()) {
+        if (static_cast<size_t>(s.source) >= platforms.size()) {
             s.source = platforms.front().source;
         }
-        if (s.current >= int(s.queue.size())) {
+        if (s.current >= static_cast<int>(s.queue.size())) {
             s.current = -1;
         }
         return s;
@@ -32,7 +32,7 @@ namespace lyren {
 
     void save_state(const SavedState &s) {
         std::string text;
-        (void)glz::write_json(s, text);
+        static_cast<void>(glz::write_json(s, text));
         auto path = paths::state_dir() / "state.json", tmp = path;
         tmp += ".tmp";
         {

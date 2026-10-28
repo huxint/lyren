@@ -31,12 +31,12 @@ namespace lyren {
     class Mpris {
     public:
         struct Handlers {
-            std::function<void(std::string_view token)> raise; // empty token: MPRIS Raise, nothing to hand over
-            std::function<void()> quit, play, pause, toggle, stop, next, previous;
-            std::function<void(double)> seek; // absolute, s
-            std::function<void(double)> volume;
-            std::function<void(bool)> loop_one, shuffle;
-            std::function<double()> position;
+            std::move_only_function<void(std::string_view token)> raise; // empty token: MPRIS Raise, nothing to hand over
+            std::move_only_function<void()> quit, play, pause, toggle, stop, next, previous;
+            std::move_only_function<void(double)> seek; // absolute, s
+            std::move_only_function<void(double)> volume;
+            std::move_only_function<void(bool)> loop_one, shuffle;
+            std::move_only_function<double()> position;
         };
 
         // Registers the object, then takes the well-known name; null when another process holds the name.

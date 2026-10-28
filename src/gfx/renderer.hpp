@@ -77,7 +77,7 @@ namespace lyren::gfx {
         // Takes effect at the next draw.
         void resize(Target &t, uint32_t width, uint32_t height);
         // Renders and presents. before_present runs between submit and present (the present commits the surface).
-        void draw(Target &t, std::span<const Prim> prims, const std::array<float, 4> &clear, const std::function<void()> &before_present);
+        void draw(Target &t, std::span<const Prim> prims, const std::array<float, 4> &clear, std::function_ref<void()> before_present);
 
         // Bindless textures. Uploads are staged now and copied at the start of the next draw.
         TextureId create_texture(uint32_t width, uint32_t height, VkFormat format, bool smooth);
@@ -94,7 +94,7 @@ namespace lyren::gfx {
         }
 
         // The next draw of t also reads the image back and hands fn premultiplied BGRA rows, tightly packed.
-        void capture_next(const Target &t, std::function<void(const uint8_t *bgra, uint32_t width, uint32_t height)> fn) {
+        void capture_next(const Target &t, std::move_only_function<void(const uint8_t *bgra, uint32_t width, uint32_t height)> fn) {
             capture_target_ = &t;
             capture_ = std::move(fn);
         }
@@ -119,7 +119,7 @@ namespace lyren::gfx {
         };
         struct Retired {
             uint64_t serial;
-            std::function<void()> release;
+            std::move_only_function<void()> release;
         };
 
         void recreate(Target &t);
@@ -127,7 +127,7 @@ namespace lyren::gfx {
         void ensure_capacity(Target::Slot &s, size_t count);
         void record_uploads(VkCommandBuffer cmd);
         void poll_completed();
-        void retire(std::function<void()> release);
+        void retire(std::move_only_function<void()> release);
         VkPipeline pipeline_for(VkFormat format);
 
         Context &ctx_;
@@ -147,7 +147,7 @@ namespace lyren::gfx {
         Staging staging_;
         std::vector<Retired> retired_;
         uint64_t submitted_ = 0, completed_ = 0;
-        std::function<void(const uint8_t *, uint32_t, uint32_t)> capture_;
+        std::move_only_function<void(const uint8_t *, uint32_t, uint32_t)> capture_;
         const Target *capture_target_ = nullptr;
     };
 

@@ -93,13 +93,13 @@ namespace lyren::audio {
                 if (f->header.channels != ch) {
                     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
                 }
-                float scale = 1.f / float(1ull << (f->header.bits_per_sample - 1));
+                float scale = 1.f / static_cast<float>(1ull << (f->header.bits_per_sample - 1));
                 size_t base = d->buf_.size();
-                d->buf_.resize(base + size_t(n) * ch);
+                d->buf_.resize(base + static_cast<size_t>(n) * ch);
                 float *o = d->buf_.data() + base;
                 for (unsigned i = 0; i < n; ++i) {
                     for (unsigned c = 0; c < ch; ++c) {
-                        *o++ = float(in[c][i]) * scale;
+                        *o++ = static_cast<float>(in[c][i]) * scale;
                     }
                 }
                 return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;

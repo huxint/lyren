@@ -53,10 +53,10 @@ namespace lyren::net {
     // Called on the network thread; keep them short.
     struct Stream {
         // Before the first byte: where the body starts and the full resource size (0 if unknown).
-        std::function<void(uint64_t offset, uint64_t total)> head;
-        std::function<void(uint64_t offset, std::span<const std::byte> data)> data;
+        std::move_only_function<void(uint64_t offset, uint64_t total)> head;
+        std::move_only_function<void(uint64_t offset, std::span<const std::byte> data)> data;
         // status is the HTTP status, 0 without a response; error is empty on success. Not called after cancel().
-        std::function<void(long status, std::string error)> done;
+        std::move_only_function<void(long status, std::string error)> done;
     };
 
     // curl multi on its own thread.
@@ -72,7 +72,7 @@ namespace lyren::net {
         // Any thread.
         Id stream(Get get, Stream cb);
         // done runs on the network thread.
-        Id request(Request req, std::function<void(Response)> done);
+        Id request(Request req, std::move_only_function<void(Response)> done);
         void cancel(Id id);
 
         struct Transfer;

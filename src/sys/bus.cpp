@@ -48,7 +48,7 @@ namespace lyren {
         if (ev < 0) {
             return;
         }
-        uint32_t events = (ev & POLLIN ? uint32_t(EPOLLIN) : 0) | (ev & POLLOUT ? uint32_t(EPOLLOUT) : 0);
+        uint32_t events = (ev & POLLIN ? static_cast<uint32_t>(EPOLLIN) : 0) | (ev & POLLOUT ? static_cast<uint32_t>(EPOLLOUT) : 0);
         if (events != events_) {
             events_ = events;
             loop_.watch(sd_bus_get_fd(bus_), events, [this](uint32_t) {

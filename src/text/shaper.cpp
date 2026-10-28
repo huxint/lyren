@@ -19,7 +19,7 @@ namespace lyren::text {
     }
 
     const Shaped &Shaper::shape(std::string_view text, uint8_t features) {
-        key_.assign(1, char(features));
+        key_.assign(1, static_cast<char>(features));
         key_.append(text);
         if (auto it = cache_.find(key_); it != cache_.end()) {
             it->second.used = frame_;
@@ -54,7 +54,7 @@ namespace lyren::text {
             }
             Face &fc = fonts_.face(face);
             hb_buffer_clear_contents(buf_);
-            hb_buffer_add_utf8(buf_, text.data(), int(text.size()), unsigned(start), int(j - start));
+            hb_buffer_add_utf8(buf_, text.data(), static_cast<int>(text.size()), static_cast<unsigned>(start), static_cast<int>(j - start));
             hb_buffer_guess_segment_properties(buf_);
             hb_shape(fc.hb, buf_, feats.data(), nfeats);
             unsigned n;

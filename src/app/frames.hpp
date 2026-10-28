@@ -10,7 +10,7 @@ namespace lyren {
     // animation frames are capped at render.max_fps; a frame can also be due at a set time.
     class Frames {
     public:
-        Frames(Loop &loop, std::function<bool()> frame_pending, std::function<void()> render);
+        Frames(Loop &loop, std::move_only_function<bool()> frame_pending, std::move_only_function<void()> render);
         ~Frames();
         Frames(const Frames &) = delete;
         Frames &operator=(const Frames &) = delete;
@@ -26,8 +26,8 @@ namespace lyren {
         void schedule();
 
         Loop &loop_;
-        std::function<bool()> pending_;
-        std::function<void()> render_;
+        std::move_only_function<bool()> pending_;
+        std::move_only_function<void()> render_;
         bool dirty_ = true, scheduled_ = false;
         Loop::TimerId pace_timer_ = 0, wake_timer_ = 0;
     };

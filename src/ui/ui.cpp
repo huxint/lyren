@@ -165,7 +165,7 @@ namespace lyren::ui {
         Anim &a = it->second;
         a.frame = frame_;
         auto value = [&] {
-            float t = a.ms > 0 ? float((now - a.start) * 1000 / a.ms) : 1;
+            float t = a.ms > 0 ? static_cast<float>((now - a.start) * 1000 / a.ms) : 1;
             return t >= 1 ? a.to : a.from + (a.to - a.from) * a.curve(t);
         };
         if (target != a.to) {
@@ -184,7 +184,7 @@ namespace lyren::ui {
         Following &s = it->second;
         float response = response_ms * theme_->motion / 1000;
         if (response > 0) {
-            s.motion.advance(s.target, float(now - s.time), response);
+            s.motion.advance(s.target, static_cast<float>(now - s.time), response);
         }
         s.target = target, s.time = now, s.frame = frame_;
         if (response == 0 || (std::abs(s.motion.value - target) < 0.001f && std::abs(s.motion.velocity) < 0.01f)) {
@@ -197,7 +197,7 @@ namespace lyren::ui {
 
     float Ui::progress(double since, float ms, Bezier curve) {
         ms *= theme_->motion;
-        float t = ms > 0 ? float((now - since) * 1000 / ms) : 1;
+        float t = ms > 0 ? static_cast<float>((now - since) * 1000 / ms) : 1;
         if (t >= 1) {
             return 1;
         }
@@ -232,7 +232,7 @@ namespace lyren::ui {
             } else if (in_->scroll_y != 0) {
                 // Touchpad: follow the fingers and estimate their speed for the coast after they lift.
                 double dt = now - s.last_input;
-                float v = in_->scroll_y / float(std::clamp(dt, 1 / 240.0, 1 / 30.0));
+                float v = in_->scroll_y / static_cast<float>(std::clamp(dt, 1 / 240.0, 1 / 30.0));
                 s.velocity = dt < 0.1 ? 0.4f * s.velocity + 0.6f * v : v;
                 s.offset = s.target = std::clamp(s.offset + in_->scroll_y, 0.f, max);
                 s.smooth = s.coasting = false;
@@ -273,7 +273,7 @@ namespace lyren::ui {
         double dt = now - s.last_frame;
         s.last_frame = now;
         if (s.smooth) {
-            s.offset += (s.target - s.offset) * float(1 - std::exp(-dt / 0.08));
+            s.offset += (s.target - s.offset) * static_cast<float>(1 - std::exp(-dt / 0.08));
             if (std::abs(s.target - s.offset) < 0.5f) {
                 s.offset = s.target, s.smooth = false;
             } else {
@@ -281,7 +281,7 @@ namespace lyren::ui {
             }
             s.last_move = now;
         } else if (s.coasting) {
-            float decay = float(std::exp(-dt / 0.35));
+            float decay = static_cast<float>(std::exp(-dt / 0.35));
             s.offset += s.velocity * 0.35f * (1 - decay);
             s.velocity *= decay;
             s.coasting = s.offset > 0 && s.offset < max && std::abs(s.velocity) > 15;
@@ -466,7 +466,7 @@ namespace lyren::ui {
             if (now < ts.until - fade) {
                 wake(ts.until - fade);
             } else {
-                out = 1 - progress(ts.until - fade, float(fade * 1000), ease::exit);
+                out = 1 - progress(ts.until - fade, static_cast<float>(fade * 1000), ease::exit);
             }
             float tw = std::min(p_->measure(ts.text, st), width - 160);
             Rect r{(width - tw - 56) / 2, y - 40 + (1 - in) * 16, tw + 56, 40};

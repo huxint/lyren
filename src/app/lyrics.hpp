@@ -7,8 +7,15 @@
 namespace lyren {
 
     struct LyricWord {
-        double time, duration; // seconds
-        uint32_t from, to;     // bytes of the line's text
+        uint32_t start_ms, duration_ms; // exact service timestamps; up to 49 days
+        uint32_t from, to;              // UTF-8 byte offsets within the line
+
+        double time() const {
+            return start_ms / 1000.0;
+        }
+        double duration() const {
+            return duration_ms / 1000.0;
+        }
     };
 
     struct LyricLine {
@@ -21,7 +28,7 @@ namespace lyren {
     // Word-timed lyrics (NetEase yrc: "[start,duration](start,duration,0)word…" in ms) replace the LRC lines when present.
     // Lines are sorted by time; empty ones are dropped.
     std::vector<LyricLine> parse_lyrics(std::string_view lrc, std::string_view translation = {}, std::string_view yrc = {});
-    // QQ Music QRC once decoded: an XML wrapper whose LyricContent holds "[start,duration]word(start,duration)word…" lines
+    // QQ Music QRC once decoded: plain text or an XML wrapper whose LyricContent holds "[start,duration]word(start,duration)word…" lines
     // (ms, the word before its timing) among LRC tags. The translation is LRC, matched by timestamp like above.
     std::vector<LyricLine> parse_qrc(std::string_view qrc, std::string_view translation = {});
 

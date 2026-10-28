@@ -12,7 +12,7 @@ namespace lyren::wl {
         return static_cast<Input *>(data);
     }
     static float fx(wl_fixed_t v) {
-        return float(wl_fixed_to_double(v));
+        return static_cast<float>(wl_fixed_to_double(v));
     }
 
     static const wl_pointer_listener pointer_listener{
@@ -218,7 +218,7 @@ namespace lyren::wl {
         }
         cursor_ = c;
         if (cursor_device_ && pointer_focus_) {
-            wp_cursor_shape_device_v1_set_shape(cursor_device_, enter_serial_, uint32_t(c));
+            wp_cursor_shape_device_v1_set_shape(cursor_device_, enter_serial_, static_cast<uint32_t>(c));
         }
     }
 
@@ -227,7 +227,7 @@ namespace lyren::wl {
         enter_serial_ = serial;
         px_ = x, py_ = y;
         if (cursor_device_) {
-            wp_cursor_shape_device_v1_set_shape(cursor_device_, serial, uint32_t(cursor_));
+            wp_cursor_shape_device_v1_set_shape(cursor_device_, serial, static_cast<uint32_t>(cursor_));
         }
         if (pointer_focus_) {
             pointer_focus_->on_pointer({.type = PointerEvent::enter, .x = x, .y = y, .serial = serial});
@@ -340,7 +340,7 @@ namespace lyren::wl {
             std::array<char, 32> buf;
             int n = xkb_state_key_get_utf8(state_, key + 8, buf.data(), buf.size());
             if (n > 0 && !(n == 1 && (static_cast<unsigned char>(buf[0]) < 0x20 || buf[0] == 0x7f))) {
-                e.text.assign(buf.data(), size_t(n));
+                e.text.assign(buf.data(), static_cast<size_t>(n));
             }
         }
         key_focus_->on_key(e);

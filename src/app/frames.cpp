@@ -4,7 +4,7 @@
 
 namespace lyren {
 
-    Frames::Frames(Loop &loop, std::function<bool()> frame_pending, std::function<void()> render)
+    Frames::Frames(Loop &loop, std::move_only_function<bool()> frame_pending, std::move_only_function<void()> render)
     : loop_(loop),
       pending_(std::move(frame_pending)),
       render_(std::move(render)) {}

@@ -14,7 +14,7 @@ TEST_CASE("bezier curves hit their ends and follow the CSS reference values") {
         CHECK(b(1) == 1);
         float prev = 0;
         for (int i = 1; i <= 100; ++i) {
-            float v = b(float(i) / 100);
+            float v = b(static_cast<float>(i) / 100);
             CHECK(v >= prev - 1e-4f);
             prev = v;
         }
@@ -44,7 +44,7 @@ TEST_CASE("spring motion settles without oscillation and is independent of frame
     for (int fps : {30, 60, 144}) {
         Spring stepped;
         for (int i = 0; i < fps; ++i) {
-            stepped.advance(1, 0.28f / float(fps), 0.28f);
+            stepped.advance(1, 0.28f / static_cast<float>(fps), 0.28f);
         }
         CHECK(stepped.value == doctest::Approx(reference.value).epsilon(1e-5));
         CHECK(stepped.velocity == doctest::Approx(reference.velocity).epsilon(1e-4));

@@ -4,6 +4,14 @@
 
 namespace lyren {
 
+    std::string card_subtitle(const Card &card) {
+        if (card.count_kind == Card::Count::none) {
+            return card.subtitle;
+        }
+        std::string count = trf(card.count_kind == Card::Count::songs ? "{} songs" : "{} albums", card.count);
+        return card.subtitle.empty() ? count : std::format("{} · {}", count, card.subtitle);
+    }
+
     std::string cover_url(std::string_view url, int px) {
         if (url.empty()) {
             return {};

@@ -40,7 +40,7 @@ namespace lyren::qq {
     Result<std::vector<std::string>> qr_callback(std::string_view body) {
         auto start = body.find("ptuiCB(");
         if (start == body.npos) {
-            return std::unexpected("QQ 登录返回了无法识别的状态");
+            return std::unexpected("Unrecognized QQ sign-in status");
         }
         body.remove_prefix(start + 7);
         std::vector<std::string> args;
@@ -50,7 +50,7 @@ namespace lyren::qq {
                 break;
             }
             if (body.empty() || (body.front() != '\'' && body.front() != '"')) {
-                return std::unexpected("QQ 登录返回了无法识别的状态");
+                return std::unexpected("Unrecognized QQ sign-in status");
             }
             char quote = body.front();
             body.remove_prefix(1);
@@ -59,14 +59,14 @@ namespace lyren::qq {
                 if (body.front() == '\\') {
                     body.remove_prefix(1);
                     if (body.empty()) {
-                        return std::unexpected("QQ 登录返回了无法识别的状态");
+                        return std::unexpected("Unrecognized QQ sign-in status");
                     }
                 }
                 value += body.front();
                 body.remove_prefix(1);
             }
             if (body.empty()) {
-                return std::unexpected("QQ 登录返回了无法识别的状态");
+                return std::unexpected("Unrecognized QQ sign-in status");
             }
             body.remove_prefix(1);
             args.push_back(std::move(value));
@@ -75,19 +75,19 @@ namespace lyren::qq {
                 break;
             }
             if (!body.starts_with(',')) {
-                return std::unexpected("QQ 登录返回了无法识别的状态");
+                return std::unexpected("Unrecognized QQ sign-in status");
             }
             body.remove_prefix(1);
         }
         if (args.size() < 6) {
-            return std::unexpected("QQ 登录返回了不完整的状态");
+            return std::unexpected("Incomplete QQ sign-in status");
         }
         return args;
     }
 
     std::string form(const std::map<std::string, std::string> &fields) {
         auto encode = [](const std::string &s) {
-            std::unique_ptr<char, decltype(&curl_free)> p(curl_easy_escape(nullptr, s.c_str(), int(s.size())), curl_free);
+            std::unique_ptr<char, decltype(&curl_free)> p(curl_easy_escape(nullptr, s.c_str(), static_cast<int>(s.size())), curl_free);
             return std::string(p.get());
         };
         std::string out;
@@ -115,8 +115,8 @@ namespace lyren::qq {
                 std::string value(part.substr(eq + 1));
                 std::ranges::replace(value, '+', ' ');
                 int n = 0;
-                std::unique_ptr<char, decltype(&curl_free)> p(curl_easy_unescape(nullptr, value.c_str(), int(value.size()), &n), curl_free);
-                return std::string(p.get(), size_t(n));
+                std::unique_ptr<char, decltype(&curl_free)> p(curl_easy_unescape(nullptr, value.c_str(), static_cast<int>(value.size()), &n), curl_free);
+                return std::string(p.get(), static_cast<size_t>(n));
             }
             if (amp == url.npos) {
                 break;
@@ -128,7 +128,7 @@ namespace lyren::qq {
 
     Result<net::Request> qr_confirmation(std::string_view redirect) {
         if (!redirect.starts_with("https://ssl.ptlogin2.graph.qq.com/check_sig?")) {
-            return std::unexpected("QQ 登录返回了无法识别的确认地址");
+            return std::unexpected("Unrecognized QQ sign-in confirmation URL");
         }
         return net::Request{.url = std::string(redirect), .headers = {"Referer: https://xui.ptlogin2.qq.com/"}};
     }

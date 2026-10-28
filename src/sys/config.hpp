@@ -6,37 +6,41 @@
 #include <string>
 #include <string_view>
 
+#include "core/i18n.hpp"
 #include "core/result.hpp"
 
 namespace lyren {
 
     class Loop;
 
-    enum class Decorations {
+    enum class Decorations : uint8_t {
         client,
         server
     };
-    enum class GpuChoice {
+    enum class GpuChoice : uint8_t {
         integrated,
         discrete
     };
-    enum class Quality {
+    enum class Quality : uint8_t {
         standard,
         higher,
         exhigh,
         lossless,
         hires
     };
-    enum class TrialMode {
+    enum class TrialMode : uint8_t {
         skip,
         play
     };
-    enum class ThemeMode {
+    enum class ThemeMode : uint8_t {
         dark,
         light
     };
 
     struct Config {
+        struct Interface {
+            Language language = Language::zh;
+        } interface;
         struct Window {
             Decorations decorations = Decorations::client;
             double opacity = 1.0;
@@ -64,11 +68,14 @@ namespace lyren {
             } colors;
         } theme;
         struct DesktopLyrics {
-            bool enabled = false;
             double font_size = 30;
             std::string highlight = "accent";
             std::string color = "#ffffff";
             std::string outline = "#000000a0";
+            struct Island {
+                bool cover = true, progress = true;
+                bool details = false, controls = false, volume = false;
+            } island;
         } desktop_lyrics;
     };
 
@@ -79,7 +86,7 @@ namespace lyren {
     std::string describe_config_error(const std::string &err);
 
     // Sets key in [section] to value (TOML syntax), keeping the rest of the text and its comments. A missing key goes
-    // after the section's last setting, a missing section at the end.
+    // after the section's last setting, a missing section at the end. An empty value removes the key.
     std::string set_config_value(std::string_view toml, std::string_view section, std::string_view key, std::string_view value);
 
     // Loads ~/.config/lyren/config.toml, writing the commented default on first run.
@@ -97,13 +104,13 @@ namespace lyren {
     // Watches the config file and calls on_change after each save (debounced).
     class ConfigWatcher {
     public:
-        ConfigWatcher(Loop &loop, std::filesystem::path path, std::function<void()> on_change);
+        ConfigWatcher(Loop &loop, std::filesystem::path path, std::move_only_function<void()> on_change);
         ~ConfigWatcher();
 
     private:
         Loop &loop_;
         std::filesystem::path path_;
-        std::function<void()> on_change_;
+        std::move_only_function<void()> on_change_;
         int fd_;
         uint64_t pending_ = 0;
     };

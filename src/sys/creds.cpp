@@ -44,7 +44,7 @@ namespace lyren::creds {
                 int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
                 sockaddr_un addr{.sun_family = AF_UNIX, .sun_path = "/run/systemd/io.systemd.Credentials"};
                 request += '\0';
-                if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) < 0 || write(fd, request.data(), request.size()) != ssize_t(request.size())) {
+                if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) < 0 || write(fd, request.data(), request.size()) != static_cast<ssize_t>(request.size())) {
                     error = std::format("systemd-creds: {}", std::strerror(errno));
                     close(fd);
                     loop.defer([h] {
@@ -57,7 +57,7 @@ namespace lyren::creds {
                     std::array<char, 4096> buf;
                     ssize_t n;
                     while ((n = read(fd, buf.data(), buf.size())) > 0) {
-                        reply.append(buf.data(), size_t(n));
+                        reply.append(buf.data(), static_cast<size_t>(n));
                     }
                     bool complete = !reply.empty() && reply.back() == '\0';
                     if (!complete && n < 0 && errno == EAGAIN) {
@@ -119,19 +119,19 @@ namespace lyren::creds {
         tmp += ".tmp";
         int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
         std::string blob = r->blob.value_or("") + "\n";
-        bool ok = fd >= 0 && write(fd, blob.data(), blob.size()) == ssize_t(blob.size()) && fsync(fd) == 0;
+        bool ok = fd >= 0 && write(fd, blob.data(), blob.size()) == static_cast<ssize_t>(blob.size()) && fsync(fd) == 0;
         if (fd >= 0) {
             close(fd);
         }
         if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
-            co_return std::unexpected(std::format("写入凭据失败：{}", std::strerror(errno)));
+            co_return std::unexpected(std::format("Could not save credentials: {}", std::strerror(errno)));
         }
         co_return Result<void>{};
     }
 
     std::string to_json(const Credentials &c) {
         std::string out;
-        (void)glz::write_json(c, out);
+        static_cast<void>(glz::write_json(c, out));
         return out;
     }
 

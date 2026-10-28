@@ -42,7 +42,7 @@ namespace lyren {
         bool window_button(ui::Id id, ui::Rect r, std::string_view icon, float size, bool close);
         void caption_press(const ui::PointerAction &a);
         void after_frame(Clock::time_point frame_start);
-        // Desktop lyrics: shown while desktop_lyrics.enabled, on a surface of their own with their own frames, so they
+        // Desktop lyrics: a remembered playback control, on a surface with its own frames, so they
         // keep going while the window is minimized.
         void sync_desktop_lyrics();
         void close_desktop_lyrics();

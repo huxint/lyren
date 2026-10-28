@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
@@ -11,7 +12,7 @@
 namespace lyren::ncm {
 
     // clientlog: eapi to the client-log host as the macOS client, which is how listening reports are sent.
-    enum class Api {
+    enum class Api : uint8_t {
         eapi,
         weapi,
         clientlog
@@ -32,7 +33,7 @@ namespace lyren::ncm {
 
         // The whole session including the device fingerprint; persisted with the credentials.
         std::map<std::string, std::string> cookies;
-        std::function<void()> on_cookies; // a response changed the session
+        std::move_only_function<void()> on_cookies; // a response changed the session
 
         bool logged_in() const;
         void ensure_fingerprint();

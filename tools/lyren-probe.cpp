@@ -22,6 +22,7 @@
 #include <qrencode.h>
 
 #include <array>
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -43,7 +44,7 @@ using namespace lyren;
 
 static const char *state_name(audio::Player::State s) {
     static constexpr std::array names = {"idle", "loading", "playing", "paused", "ended", "failed"};
-    return names[int(s)];
+    return names[static_cast<int>(s)];
 }
 
 static int play(std::string src, std::vector<std::string> steps) {
@@ -68,7 +69,7 @@ static int play(std::string src, std::vector<std::string> steps) {
         auto f = player.format();
         std::string line =
             std::format("{:8} {:7.2f} / {:6.2f}  {} {} Hz {} ch  vol {:.2f}  cached {:3.0f}%{}", state_name(player.state()), player.position(), player.duration(), player.codec(),
-                        f.rate, f.channels, player.volume(), size ? 100.0 * double(have) / double(size) : 0.0, player.buffering() ? "  buffering" : "");
+                        f.rate, f.channels, player.volume(), size ? 100.0 * static_cast<double>(have) / static_cast<double>(size) : 0.0, player.buffering() ? "  buffering" : "");
         if (tty) {
             std::print("\r{}\x1b[K", line);
         } else {
@@ -110,13 +111,13 @@ static int play(std::string src, std::vector<std::string> steps) {
     if (interactive) {
         tcgetattr(STDIN_FILENO, &saved);
         termios raw = saved;
-        raw.c_lflag &= ~tcflag_t(ICANON | ECHO);
+        raw.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
         tcsetattr(STDIN_FILENO, TCSANOW, &raw);
         std::println("space pause · ←/→ seek 10 s · ↑/↓ volume · q quit");
         loop.watch(STDIN_FILENO, EPOLLIN, [&](uint32_t) {
             std::array<char, 16> buf;
             ssize_t n = read(STDIN_FILENO, buf.data(), buf.size());
-            std::string_view k(buf.data(), n > 0 ? size_t(n) : 0);
+            std::string_view k(buf.data(), n > 0 ? static_cast<size_t>(n) : 0);
             if (k == " ") {
                 player.toggle();
             } else if (k == "q") {
@@ -142,7 +143,8 @@ static int play(std::string src, std::vector<std::string> steps) {
                 std::println("> {}", s);
             }
             if (s.starts_with("wait:")) {
-                return void(loop.after(std::chrono::milliseconds(std::stoi(std::string(arg))), self));
+                loop.after(std::chrono::milliseconds(std::stoi(std::string(arg))), self);
+                return;
             }
             if (s.starts_with("seek:")) {
                 player.seek(std::stod(std::string(arg)));
@@ -220,7 +222,7 @@ static int ncm_command(const std::vector<std::string> &args) {
                     kind = k;
                 }
             }
-            auto r = co_await ncm.search(args.at(1), SearchKind(kind), 0, 30);
+            auto r = co_await ncm.search(args.at(1), static_cast<SearchKind>(kind), 0, 30);
             if (!r) {
                 co_return fail(r.error());
             }
@@ -239,7 +241,7 @@ static int ncm_command(const std::vector<std::string> &args) {
                     q = k;
                 }
             }
-            auto r = co_await ncm.stream(Track{.id = args.at(1)}, Quality(q));
+            auto r = co_await ncm.stream(Track{.id = args.at(1)}, static_cast<Quality>(q));
             if (!r) {
                 co_return fail(r.error());
             }
@@ -259,7 +261,7 @@ static int ncm_command(const std::vector<std::string> &args) {
                 co_return fail(url.error());
             }
             print_qr(url->text);
-            std::println("用网易云音乐 App 扫码");
+            std::println("Scan with the NetEase Music app");
             for (QrState last = QrState::waiting;;) {
                 co_await lyren::sleep{loop, 2s};
                 auto s = co_await ncm.qr_poll();
@@ -267,11 +269,11 @@ static int ncm_command(const std::vector<std::string> &args) {
                     co_return fail(s.error());
                 }
                 if (s->state != last && s->state == QrState::scanned) {
-                    std::println("已扫码：{}，请在手机上确认", s->nickname);
+                    std::println("Scanned: {}; confirm on your phone", s->nickname);
                 }
                 last = s->state;
                 if (s->state == QrState::expired) {
-                    co_return fail("二维码已过期");
+                    co_return fail("QR code expired");
                 }
                 if (s->state == QrState::confirmed) {
                     break;
@@ -282,7 +284,7 @@ static int ncm_command(const std::vector<std::string> &args) {
             if (!saved) {
                 co_return fail(saved.error());
             }
-            std::println("已登录，凭据已加密保存");
+            std::println("Signed in; credentials saved with encryption");
             auto a = co_await ncm.account();
             if (a) {
                 std::println("{} ({})", a->name, a->id);
@@ -366,7 +368,7 @@ static int qq_command(const std::vector<std::string> &args) {
                     kind = k;
                 }
             }
-            auto r = co_await q.search(args.at(2), SearchKind(kind), 0, 30);
+            auto r = co_await q.search(args.at(2), static_cast<SearchKind>(kind), 0, 30);
             if (!r) {
                 co_return fail(r.error());
             }
@@ -385,7 +387,7 @@ static int qq_command(const std::vector<std::string> &args) {
             if (!d) {
                 co_return fail(d.error());
             }
-            auto r = co_await q.stream(*d, Quality(quality));
+            auto r = co_await q.stream(*d, static_cast<Quality>(quality));
             if (!r) {
                 co_return fail(r.error());
             }
@@ -445,6 +447,38 @@ static int qq_command(const std::vector<std::string> &args) {
                 co_return fail(r.error());
             }
             print_cards(*r);
+        } else if (cmd == "categories") {
+            auto r = co_await q.categories();
+            if (!r) {
+                co_return fail(r.error());
+            }
+            for (const auto &[heading, categories] : r->groups) {
+                std::println("{}", heading);
+                for (const auto &category : categories) {
+                    std::println("  {}  {}", category.id, category.name);
+                }
+            }
+        } else if (cmd == "square") {
+            int offset = 0;
+            if (!arg(3).empty()) {
+                const auto value = arg(3);
+                const auto parsed = std::from_chars(value.data(), value.data() + value.size(), offset);
+                if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || offset < 0) {
+                    co_return fail("Expected a nonnegative playlist offset");
+                }
+            }
+            auto r = co_await q.square(arg(2) == "all" ? "" : arg(2), offset);
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{} total", r->total);
+            print_cards(r->cards);
+        } else if (cmd == "similar") {
+            auto r = co_await q.similar(args.at(2));
+            if (!r) {
+                co_return fail(r.error());
+            }
+            print_tracks(*r);
         } else if (cmd == "comments") {
             std::string cursor;
             for (int page = 1; page <= 2; ++page) {
@@ -466,18 +500,18 @@ static int qq_command(const std::vector<std::string> &args) {
             auto path = arg(2).empty() ? paths::state_dir() / "qq-qr.png" : std::filesystem::path(arg(2));
             {
                 std::ofstream out(path, std::ios::binary);
-                out.write(code->image.data(), std::streamsize(code->image.size()));
+                out.write(code->image.data(), static_cast<std::streamsize>(code->image.size()));
                 if (!out) {
-                    co_return fail("无法保存二维码图片");
+                    co_return fail("Could not save the QR code image");
                 }
             }
-            std::println("二维码：{}\n用 QQ 扫码并确认登录 QQ 音乐", path.string());
+            std::println("QR code: {}\nScan with QQ and confirm QQ Music sign-in", path.string());
             if (cmd == "qr") {
                 auto s = co_await q.qr_poll();
                 if (!s) {
                     co_return fail(s.error());
                 }
-                std::println("state {}", int(s->state));
+                std::println("state {}", static_cast<int>(s->state));
                 co_return;
             }
             for (QrState last = QrState::waiting;;) {
@@ -487,11 +521,11 @@ static int qq_command(const std::vector<std::string> &args) {
                     co_return fail(s.error());
                 }
                 if (s->state != last) {
-                    std::println("state {}", int(s->state));
+                    std::println("state {}", static_cast<int>(s->state));
                 }
                 last = s->state;
                 if (s->state == QrState::expired) {
-                    co_return fail("二维码已过期");
+                    co_return fail("QR code expired");
                 }
                 if (s->state == QrState::confirmed) {
                     break;
@@ -503,10 +537,10 @@ static int qq_command(const std::vector<std::string> &args) {
                 co_return fail(stored.error());
             }
             std::filesystem::remove(path);
-            std::println("QQ 音乐已登录，凭据已加密保存");
+            std::println("Signed in to QQ Music; credentials saved with encryption");
         } else if (cmd == "renew") {
             if (!q.logged_in()) {
-                co_return fail("请先登录 QQ 音乐");
+                co_return fail("Sign in to QQ Music first");
             }
             auto r = co_await q.renew();
             if (!r) {
@@ -517,7 +551,7 @@ static int qq_command(const std::vector<std::string> &args) {
             if (!stored) {
                 co_return fail(stored.error());
             }
-            std::println("QQ 音乐凭据已续期");
+            std::println("QQ Music credentials renewed");
         } else if (cmd == "account") {
             auto r = co_await q.account();
             if (!r) {
@@ -589,6 +623,6 @@ int main(int argc, char **argv) {
     std::println(stderr, "usage: lyren-probe [--debug] play <url|file> [wait:MS seek:S pause play vol:V open:SRC quit ...]\n"
                          "       lyren-probe search <query> [tracks|albums|artists|playlists] | url <id> [quality] | lyrics <id> | login | account\n"
                          "       lyren-probe call <uri> [fields] [weapi|clientlog]\n"
-                         "       lyren-probe qq search|url|lyrics|album|artist|playlist|top|recommend|comments|call ...");
+                         "       lyren-probe qq search|url|lyrics|album|artist|playlist|top|recommend|categories|square|similar|comments|call ...");
     return 2;
 }

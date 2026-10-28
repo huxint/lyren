@@ -52,7 +52,7 @@ namespace lyren {
             }
             Mpris &s = self(u);
             if (s.state_.can_seek) {
-                double to = s.h_.position() + double(offset) / 1e6;
+                double to = s.h_.position() + static_cast<double>(offset) / 1e6;
                 if (to >= s.state_.length) {
                     s.h_.next();
                 } else {
@@ -70,7 +70,7 @@ namespace lyren {
                 return r;
             }
             Mpris &s = self(u);
-            double to = double(pos) / 1e6;
+            double to = static_cast<double>(pos) / 1e6;
             if (s.state_.can_seek && s.state_.track == track && to >= 0 && to <= s.state_.length) {
                 s.h_.seek(to);
             }
@@ -90,7 +90,7 @@ namespace lyren {
             };
             put("mpris:trackid", "o", s.track.empty() ? "/org/mpris/MediaPlayer2/TrackList/NoTrack" : s.track.c_str());
             if (!s.track.empty()) {
-                put("mpris:length", "x", int64_t(s.length * 1e6));
+                put("mpris:length", "x", static_cast<int64_t>(s.length * 1e6));
                 put("xesam:title", "s", s.title.c_str());
                 put("xesam:artist", "as", 1, s.artist.c_str());
                 put("xesam:album", "s", s.album.c_str());
@@ -106,10 +106,10 @@ namespace lyren {
             const MprisState &s = self(u).state_;
             std::string_view p = property;
             auto flag = [&](bool b) {
-                return sd_bus_message_append(m, "b", int(b));
+                return sd_bus_message_append(m, "b", static_cast<int>(b));
             };
             if (p == "PlaybackStatus") {
-                return sd_bus_message_append(m, "s", statuses[int(s.status)]);
+                return sd_bus_message_append(m, "s", statuses[static_cast<int>(s.status)]);
             }
             if (p == "LoopStatus") {
                 return sd_bus_message_append(m, "s", s.loop_one ? "Track" : "Playlist");
@@ -124,7 +124,7 @@ namespace lyren {
                 return sd_bus_message_append(m, "d", s.volume);
             }
             if (p == "Position") {
-                return sd_bus_message_append(m, "x", int64_t(self(u).h_.position() * 1e6));
+                return sd_bus_message_append(m, "x", static_cast<int64_t>(self(u).h_.position() * 1e6));
             }
             if (p == "Rate" || p == "MinimumRate" || p == "MaximumRate") {
                 return sd_bus_message_append(m, "d", 1.0);
@@ -284,7 +284,7 @@ namespace lyren {
     }
 
     void Mpris::seeked(double position) {
-        sd_bus_emit_signal(bus_.get(), path, player_iface, "Seeked", "x", int64_t(position * 1e6));
+        sd_bus_emit_signal(bus_.get(), path, player_iface, "Seeked", "x", static_cast<int64_t>(position * 1e6));
         bus_.arm();
     }
 

@@ -19,6 +19,10 @@ namespace lyren::qq {
     };
 
     Result<FavoritePlaylistsPage> parse_favorite_playlists(const Reply &reply);
+    Result<Categories> parse_categories(const Reply &reply);
+    Result<Batch> parse_square(const Reply &reply, int offset);
+    Result<Batch> parse_category_playlists(const Reply &reply);
+    Result<std::vector<Track>> parse_similar(const Reply &reply);
 
     // QQ Music, after docs/qqmusic-api.md. Albums and artists go by their mids, playlists by their public ids, songs by
     // their numeric ids with the mids alongside (Track::mid, Track::media).
@@ -31,7 +35,7 @@ namespace lyren::qq {
         std::map<std::string, std::string> &session() override {
             return client.session;
         }
-        void on_session_changed(std::function<void()> changed) override {
+        void on_session_changed(std::move_only_function<void()> changed) override {
             client.on_session = std::move(changed);
         }
         Task<Result<void>> initialize() override;
@@ -44,6 +48,9 @@ namespace lyren::qq {
 
         Task<Result<std::vector<Card>>> recommended_playlists() override;
         Task<Result<std::vector<Card>>> toplists() override;
+        Task<Result<Categories>> categories();
+        Task<Result<Batch>> square(std::string category, int offset);
+        Task<Result<std::vector<Track>>> similar(std::string id);
         Task<Result<AlbumInfo>> album(std::string mid) override;
         Task<Result<ArtistInfo>> artist(std::string mid) override;
         Task<Result<Batch>> artist_songs(std::string mid, int offset) override;

@@ -1,43 +1,48 @@
-# lyren 配置文件。保存后立即生效（gpu.device 需要重启），设置对话框里的改动也会写回这里。
-# 删掉这个文件，下次启动会重新生成默认配置。
+# Lyren preferences. Changes apply immediately, except GPU selection requires a restart.
+# All options are also available in Settings. Remove this file to restore the defaults.
+
+[interface]
+# en | zh
+language = "zh"
 
 [window]
-# client：自己画标题栏，搜索框在标题栏里；server：用 KDE 原生标题栏
+# client: integrated title bar; server: native compositor decorations
 decorations = "client"
-# 窗口不透明度，小于 1 时开启 KWin 的背景模糊
+# Values below 1 enable compositor background blur.
 opacity = 1.0
 
 [gpu]
-# integrated：集显，省电，不唤醒独显；discrete：独显。重启后生效
+# integrated: lower power use; discrete: dedicated GPU. Requires a restart.
 device = "integrated"
 
 [render]
-# 持续动画（逐字歌词、桌面歌词、进度条）的帧率上限，0 表示跟随屏幕刷新率
+# Animation frame limit. 0 follows the display refresh rate.
 max_fps = 60
 
 [playback]
-# 音质：standard | higher | exhigh | lossless | hires，账号没有权限时服务端自动降档
+# standard | higher | exhigh | lossless | hires. Availability depends on your account.
 quality = "lossless"
-# 只能试听的歌曲：skip 跳过并提示；play 播放试听片段
+# skip: skip preview-only tracks; play: play the available preview
 trial = "skip"
-# 音量均衡：按服务端给出的每首歌的响度增益调整音量，让不同歌曲一样响
+# Match track loudness using the gain reported by the service.
 normalize = false
 
 [theme]
 # dark | light
 mode = "dark"
-# 强调色："auto" 从封面取色，或者写颜色，例如 "#e5484d"
+# "auto" follows the album cover, or use a color such as "#c33449".
 accent = "auto"
-# fontconfig 字体名，例如 "sans-serif"、"Noto Sans CJK SC"
+# Fontconfig family name, such as "sans-serif" or "Noto Sans CJK SC".
 font = "sans-serif"
-# 基础字号（逻辑像素），其他字号按比例缩放
+# Base text size in logical pixels.
 font_size = 14
-# 中等圆角（逻辑像素），小圆角和大圆角按比例缩放
+# Corner radius in logical pixels.
 radius = 10
-# 动画速度倍数，0 关闭动画
+# Animation duration multiplier. 0 disables transitions.
 motion = 1.0
 
-# 覆盖主题颜色，不写的项用当前 mode 的默认值。格式 "#rrggbb" 或 "#rrggbbaa"
+# Optional overrides. Omitted keys follow the selected theme.
+# Colors accept "#rgb", "#rrggbb", or "#rrggbbaa".
 [theme.colors]
 # bg = "#111113"
 # surface = "#1a1a1e"
@@ -47,11 +52,18 @@ motion = 1.0
 # text_dim = "#9a9aa5"
 # danger = "#e5484d"
 
+# Appearance only. Visibility, placement, locking and translation are player controls.
 [desktop_lyrics]
-# 在其他窗口上方显示当前歌词
-enabled = false
 font_size = 30
-# 已唱部分的颜色："accent" 跟随强调色，或者写颜色
+# "accent" follows the accent color, or use a custom color.
 highlight = "accent"
 color = "#ffffff"
 outline = "#000000a0"
+
+[desktop_lyrics.island]
+cover = true
+progress = true
+# Optional components in the expanded island.
+details = false
+controls = false
+volume = false

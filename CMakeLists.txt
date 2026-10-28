@@ -57,6 +57,7 @@ pkg_check_modules(
 add_library(
     lyren_base STATIC
     src/core/log.cpp
+    src/core/i18n.cpp
     src/core/loop.cpp
     src/core/utf8.cpp
     src/sys/paths.cpp
@@ -115,7 +116,9 @@ add_library(
     src/app/frames.cpp
     src/app/images.cpp
     src/app/state.cpp
-    src/app/shell.cpp)
+    src/app/shell.cpp
+    src/app/settings.cpp
+    src/app/desktop.cpp)
 target_link_libraries(lyren_lib PUBLIC lyren_base PkgConfig::SYSLIBS PkgConfig::UILIBS PkgConfig::SDBUS vulkan_headers nanosvg)
 add_wayland_protocols(
     lyren_lib
@@ -143,6 +146,7 @@ add_executable(
     tests/main.cpp
     tests/test_loop.cpp
     tests/test_config.cpp
+    tests/test_i18n.cpp
     tests/test_utf8.cpp
     tests/test_ui.cpp
     tests/test_audio.cpp

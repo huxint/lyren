@@ -83,7 +83,7 @@ TEST_CASE("scroll motion requests paced animation frames after consuming input")
             frame(1);
             input.scroll_stop = true;
             frame(1.016);
-            int count = int(std::lround(0.4 * fps));
+            int count = static_cast<int>(std::lround(0.4 * fps));
             float offset = 0;
             for (int i = 1; i <= count; ++i) {
                 offset = frame(1.016 + 0.4 * i / count);
@@ -109,7 +109,7 @@ TEST_CASE("cover eviction discards old covers and preserves visible covers") {
         [] {
             return 0.;
         });
-    gfx::Image image{side, side, std::vector<uint8_t>(size_t(side) * side * 4, 255)};
+    gfx::Image image{side, side, std::vector<uint8_t>(static_cast<size_t>(side) * side * 4, 255)};
     images.put("visible", image);
     auto visible = images.get("visible", side).tex;
     for (int i = 0; i < count; ++i) {
@@ -149,11 +149,11 @@ TEST_CASE("texture replacement preserves the uploaded pixels across submissions"
     gfx::Prim prim{};
     prim.rect[0] = prim.rect[1] = 10;
     prim.rect[2] = prim.rect[3] = 8;
-    prim.clip[2] = float(window.buffer_width());
-    prim.clip[3] = float(window.buffer_height());
+    prim.clip[2] = static_cast<float>(window.buffer_width());
+    prim.clip[3] = static_cast<float>(window.buffer_height());
     prim.uv[2] = prim.uv[3] = 1;
     prim.color.fill(1);
-    prim.info[0] = uint32_t(gfx::Kind::image);
+    prim.info[0] = static_cast<uint32_t>(gfx::Kind::image);
     gfx::TextureId tex = 0;
     for (const std::array<uint8_t, 4> rgba : {std::array<uint8_t, 4>{255, 0, 0, 255}, {0, 255, 0, 255}}) {
         tex = g.renderer.create_texture(1, 1, VK_FORMAT_R8G8B8A8_UNORM, false);
