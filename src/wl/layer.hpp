@@ -44,7 +44,7 @@ namespace lyren::wl {
             return static_cast<uint32_t>(height_ * scale120_ / 120.0 + 0.5);
         }
         bool frame_pending() const {
-            return frame_pending_;
+            return frame_callback_ != nullptr;
         }
         // A configure, margin or input region change that only a commit applies.
         bool needs_commit() const {
@@ -78,11 +78,12 @@ namespace lyren::wl {
         zwlr_layer_surface_v1 *layer_ = nullptr;
         wp_viewport *viewport_ = nullptr;
         wp_fractional_scale_v1 *fractional_ = nullptr;
+        wl_callback *frame_callback_ = nullptr;
         int width_ = 0, height_, margin_;
         bool top_;
         std::array<int, 4> input_{};
         uint32_t scale120_ = 120, ack_serial_ = 0;
-        bool needs_ack_ = false, dirty_ = true, frame_pending_ = false;
+        bool needs_ack_ = false, dirty_ = true;
     };
 
 } // namespace lyren::wl

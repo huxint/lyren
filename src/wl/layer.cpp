@@ -61,6 +61,12 @@ namespace lyren::wl {
     }
 
     LayerSurface::~LayerSurface() {
+        if (display_.input->pointer_focus() == this) {
+            display_.input->pointer_leave(surface_);
+        }
+        if (frame_callback_) {
+            wl_callback_destroy(frame_callback_);
+        }
         wp_fractional_scale_v1_destroy(fractional_);
         wp_viewport_destroy(viewport_);
         zwlr_layer_surface_v1_destroy(layer_);
@@ -123,7 +129,7 @@ namespace lyren::wl {
     }
 
     void LayerSurface::frame_done() {
-        frame_pending_ = false;
+        frame_callback_ = nullptr;
         if (cb_.frame) {
             cb_.frame();
         }
@@ -142,8 +148,8 @@ namespace lyren::wl {
             wl_surface_set_input_region(surface_, input);
             wl_region_destroy(input);
         }
-        wl_callback_add_listener(wl_surface_frame(surface_), &frame_listener, this);
-        frame_pending_ = true;
+        frame_callback_ = wl_surface_frame(surface_);
+        wl_callback_add_listener(frame_callback_, &frame_listener, this);
     }
 
 } // namespace lyren::wl
