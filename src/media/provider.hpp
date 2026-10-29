@@ -3,6 +3,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/result.hpp"
@@ -16,11 +17,21 @@ namespace lyren {
     // Optional features expose both availability and the operation. Shared pages only offer installed features.
     struct Features {
         std::move_only_function<Task<Result<std::vector<Track>>>()> daily, fm, cloud, recent_plays;
+        std::string_view fm_title = "Personal FM";
+        std::move_only_function<Task<Result<std::vector<Track>>>()> radar;
+        std::move_only_function<Task<Result<std::vector<Track>>>(std::string)> new_songs;
+        std::move_only_function<Task<Result<Batch>>(std::string, int)> new_albums;
+        std::array<std::vector<Category>, 2> release_categories;
         std::move_only_function<Task<Result<std::vector<Card>>>()> daily_playlists;
+        std::move_only_function<Task<Result<std::vector<Card>>>()> collected_playlists;
+        std::move_only_function<Task<Result<void>>(std::string, bool)> collect_playlist;
         std::move_only_function<Task<Result<std::optional<Track>>>(std::string)> dislike_daily;
         std::move_only_function<Task<Result<std::vector<Track>>>(std::string, std::string)> heartbeat;
         std::move_only_function<Task<Result<std::vector<Track>>>(std::string)> similar;
-        std::move_only_function<Task<Result<void>>(std::string)> fm_trash;
+        std::move_only_function<Task<Result<void>>(Track)> fm_trash;
+        std::move_only_function<Task<Result<std::vector<Dislike>>>(DislikeKind)> dislikes;
+        std::move_only_function<Task<Result<void>>(Dislike, bool)> dislike;
+        std::move_only_function<Task<Result<void>>(std::string, std::vector<Track>)> reorder_playlist;
         std::move_only_function<Task<Result<Categories>>()> categories;
         std::move_only_function<Task<Result<Batch>>(std::string, int)> square;
         std::move_only_function<Task<void>(std::string, std::string)> report_start;

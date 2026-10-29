@@ -27,6 +27,10 @@ namespace lyren::qq {
     Task<Reply> Client::call(std::vector<Rpc> parts, Comm comm, net::Retry retry) {
         // The signature covers these exact bytes, so the body is built once and sent as is.
         std::string body = comm == Comm::app ? R"({"comm":{"ct":20,"cv":1770,"tmeAppID":"qqmusic"})" : R"({"comm":{"ct":19,"cv":1,"tmeAppID":"qqmusic"})";
+        if (comm == Comm::app && logged_in()) {
+            body.pop_back();
+            std::format_to(std::back_inserter(body), R"(,"uin":{},"g_tk":{}}})", get("musicid"), hash33(get("musickey"), 5381));
+        }
         std::string what;
         for (size_t i = 0; i < parts.size(); ++i) {
             std::format_to(std::back_inserter(body), R"(,"req_{}":{{"module":"{}","method":"{}","param":{}}})", i, parts[i].module, parts[i].method, parts[i].param);

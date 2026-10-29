@@ -78,11 +78,14 @@ namespace lyren {
             toplist,
             square,
             fm,
+            radar,
+            releases,
             settings,
             liked,
             recent,
             cloud,
             collection,
+            dislikes,
             playlist,
             album,
             artist,
@@ -96,6 +99,8 @@ namespace lyren {
             std::string error;
             double since = -10; // when the rows arrived, for the entrance
             AlbumInfo album;    // album pages: the details; the tracks are above
+            bool saving_playlist = false;
+            bool ordering = false, saving_order = false;
         };
         // A listing that loads a page at a time.
         struct Results {
@@ -121,6 +126,14 @@ namespace lyren {
                 return std::ranges::find(done, false) != done.end();
             }
         };
+        struct DislikeList {
+            std::vector<Dislike> items;
+            std::unordered_set<std::string> pending;
+            bool loading = false, loaded = false;
+            std::string error;
+            double since = -10;
+            uint64_t gen = 0;
+        };
         // Each platform keeps its own account, cached pages and pagination state.
         struct Library {
             std::optional<Account> account;
@@ -130,6 +143,10 @@ namespace lyren {
             Card liked;
             std::unordered_set<std::string> liked_ids;
             Results recommended, toplists;
+            std::array<Results, 2> releases;
+            std::array<int, 2> release_category{};
+            std::array<uint64_t, 2> release_gen{};
+            int release_tab = 0;
             std::vector<Track> recent, fm;
             int fm_pos = 0, recent_tab = 0;
             bool fm_loading = false;
@@ -143,6 +160,8 @@ namespace lyren {
             std::array<Results, 2> collection;
             int collection_tab = 0;
             uint64_t collection_gen = 0;
+            std::array<std::shared_ptr<DislikeList>, 3> dislikes;
+            int dislike_tab = 0;
         };
         // An artist's page: the head, songs and albums a page at a time, the introduction (intro holds only its status).
         struct ArtistPage {
@@ -188,7 +207,9 @@ namespace lyren {
         void toplist_page(ui::Ui &ui, ui::Rect r);
         void square_page(ui::Ui &ui, ui::Rect r);
         void fm_page(ui::Ui &ui, ui::Rect r);
+        void releases_page(ui::Ui &ui, ui::Rect r);
         void collection_page(ui::Ui &ui, ui::Rect r);
+        void dislikes_page(ui::Ui &ui, ui::Rect r);
         void artist_page(ui::Ui &ui, ui::Rect r);
         void search_page(ui::Ui &ui, ui::Rect r);
         void list_page(ui::Ui &ui, ui::Rect r, std::vector<Track> &tracks, bool loading, const std::string &error, double since);
@@ -201,7 +222,7 @@ namespace lyren {
         // card_grid in its own scrolling view; near_end tells when the last rows are close.
         int grid_view(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Card> &cards, bool round, double since, bool more, bool &near_end);
         bool card(ui::Ui &ui, ui::Id id, ui::Rect r, const Card &c, bool round);
-        bool hero(ui::Ui &ui, ui::Id id, ui::Rect r, std::string_view big, std::string_view title, std::string_view subtitle, float hue);
+        bool hero(ui::Ui &ui, ui::Id id, ui::Rect r, std::string_view big, std::string_view title, std::string_view subtitle, float hue, std::string_view icon = {});
         // Loading, error and signed-out states of a page; true when one was drawn.
         bool page_status(ui::Ui &ui, ui::Rect r, bool loading, const std::string &error, bool needs_login);
         static float panel_width(Panel panel);
@@ -273,6 +294,9 @@ namespace lyren {
         Task<void> load_categories(Source source);
         void load_square();
         Task<void> fetch_square(Source source, uint64_t gen, std::string category, int offset);
+        void load_releases();
+        void set_release_category(ui::Ui &ui, int category);
+        Task<void> fetch_releases(Source source, int tab, uint64_t gen, std::string category, int offset);
         Task<void> load_collection(Source source);
         void load_comments(int tab);
         Task<void> fetch_comments(uint64_t gen, int tab, int page, std::string cursor);
@@ -341,6 +365,8 @@ namespace lyren {
         Task<void> load_daily_lists(Source source);
         Task<void> load_toplists(Source source);
         Task<void> load_fm(Source source);
+        Task<void> load_dislikes(Source source, DislikeKind kind);
+        void set_dislike(Dislike item, bool on);
         void refresh_recent();
         void next_fm();
         Task<void> qr_login();
@@ -354,8 +380,11 @@ namespace lyren {
         Task<void> heartbeat(Track seed);
         void toggle_follow(std::shared_ptr<ArtistPage> page, Card artist);
         void toggle_collect(std::shared_ptr<List> list, Card album);
+        void toggle_collect_playlist(std::shared_ptr<List> list, Card playlist);
         void add_to_playlist(Track t, Card playlist);
         void remove_from_playlist(std::shared_ptr<List> list, Card playlist, Track t);
+        void move_playlist_track(std::shared_ptr<List> list, Card playlist, int from, int to);
+        void link_menu(ui::Ui &ui, float x, float y, const Card &card);
         void recount(const Card &playlist, int delta); // the sidebar's track count
         void retitle(const Card &playlist, const std::string &title);
         void set_category(ui::Ui &ui, Category category);

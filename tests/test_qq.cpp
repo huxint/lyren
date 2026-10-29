@@ -84,7 +84,7 @@ TEST_CASE("QQ playlist pages reject songs without an id instead of returning a p
 }
 
 TEST_CASE("QQ favorite playlists treat the empty collection response as a final page") {
-    auto page = qq::parse_favorite_playlists({.body = R"({"code":0,"req_0":{"code":80050,"data":{
+    auto page = qq::parse_favorite_playlists({.body = R"({"code":0,"req_0":{"code":0,"data":{
         "number":0,"hasmore":0,"v_list":[],"v_failTids":[],"v_delTids":[],"total":0,"hide":false
     }}})"});
     REQUIRE(page);
@@ -100,6 +100,9 @@ TEST_CASE("QQ favorite playlists keep authentication and other errors visible") 
     auto failure = qq::parse_favorite_playlists({.body = R"({"req_0":{"code":1000}})"});
     REQUIRE_FALSE(failure);
     CHECK(failure.error() == "QQ Music request failed (1000)");
+    auto wrong_identity = qq::parse_favorite_playlists({.body = R"({"req_0":{"code":80050,"data":{"v_list":[],"total":0,"hasmore":0}}})"});
+    REQUIRE_FALSE(wrong_identity);
+    CHECK(wrong_identity.error() == "QQ Music request failed (80050)");
     auto other_endpoint = qq::parse_playlist({.body = R"({"req_0":{"code":80050}})"});
     REQUIRE_FALSE(other_endpoint);
     CHECK(other_endpoint.error() == "QQ Music request failed (80050)");
@@ -255,4 +258,176 @@ TEST_CASE("QQ category pages and related songs decode their distinct response en
     CHECK(similar->front().media == "media-mid");
     CHECK(similar->front().duration == 237);
     CHECK_FALSE(qq::parse_similar({.body = R"({"req_0":{"code":0,"data":{"vecSong":[{}]}}})"}));
+}
+
+TEST_CASE("QQ radio and new releases retain song identity and playback metadata") {
+    const std::string song = R"({"id":4835784001,"mid":"song-mid","title":"New song","type":1,"interval":237,
+        "singer":[{"mid":"artist-mid","name":"Artist"}],"album":{"mid":"album-mid","title":"Album"},
+        "file":{"media_mid":"media-mid"},"pay":{"pay_play":1}})";
+    for (const auto &[field, parse] : std::array{std::pair{"tracks", qq::parse_radio}, std::pair{"songlist", qq::parse_new_songs}}) {
+        CAPTURE(field);
+        auto result = parse({.body = "{\"req_0\":{\"code\":0,\"data\":{\"" + std::string(field) + "\":[" + song + "]}}}"});
+        REQUIRE(result);
+        REQUIRE(result->size() == 1);
+        const auto &track = result->front();
+        CHECK(track.source == Source::qq);
+        CHECK(track.id == "4835784001");
+        CHECK(track.mid == "song-mid");
+        CHECK(track.media == "media-mid");
+        CHECK(track.artist_id == "artist-mid");
+        CHECK(track.album_id == "album-mid");
+        CHECK(track.duration == 237);
+        CHECK(track.type == 1);
+        CHECK(track.paid);
+    }
+}
+
+TEST_CASE("QQ radar unwraps capitalized Track records and keeps their order") {
+    auto result = qq::parse_radar({.body = R"({"req_0":{"code":0,"data":{"VecSongs":[
+        {"Track":{"id":10,"mid":"first","title":"First"}},
+        {"Track":{"id":20,"mid":"second","title":"Second"}}
+    ],"HasMore":true}}})"});
+    REQUIRE(result);
+    REQUIRE(result->size() == 2);
+    CHECK(result->at(0).id == "10");
+    CHECK(result->at(0).mid == "first");
+    CHECK(result->at(1).id == "20");
+    CHECK_FALSE(qq::parse_radar({.body = R"({"req_0":{"code":0,"data":{"VecSongs":[{}]}}})"}));
+}
+
+TEST_CASE("QQ discovery keeps service errors distinct from empty results") {
+    for (auto parse : {qq::parse_radio, qq::parse_radar, qq::parse_new_songs}) {
+        auto failed = parse({.body = R"({"req_0":{"code":2001,"data":{}}})"});
+        REQUIRE_FALSE(failed);
+        CHECK(failed.error() == "Sign in to QQ Music and try again");
+        CHECK_FALSE(parse({.error = "Network connection failed"}));
+        CHECK_FALSE(parse({.body = R"({"req_0":{"code":0,"data":{}}})"}));
+    }
+    auto radio = qq::parse_radio({.body = R"({"req_0":{"code":0,"data":{"tracks":[]}}})"});
+    REQUIRE(radio);
+    CHECK(radio->empty());
+    CHECK_FALSE(qq::parse_radio({.body = R"({"req_0":{"code":0,"data":{"tracks":[{"title":"Missing ID"}]}}})"}));
+}
+
+TEST_CASE("QQ new album pages use album mids and retain the service total") {
+    auto result = qq::parse_new_albums({.body = R"({"req_0":{"code":0,"data":{"total":4226,"albums":[
+        {"id":105998828,"mid":"album-mid","name":"New album","release_time":"2026-10-29",
+         "singers":[{"name":"First artist"},{"name":"Second artist"}]}
+    ]}}})"});
+    REQUIRE(result);
+    CHECK(result->total == 4226);
+    REQUIRE(result->cards.size() == 1);
+    const auto &card = result->cards.front();
+    CHECK(card.source == Source::qq);
+    CHECK(card.kind == CardKind::album);
+    CHECK(card.id == "album-mid");
+    CHECK(card.title == "New album");
+    CHECK(card.subtitle == "First artist / Second artist · 2026");
+    CHECK(card.cover.find("album-mid") != std::string::npos);
+    CHECK_FALSE(card.collectable);
+    auto empty = qq::parse_new_albums({.body = R"({"req_0":{"code":0,"data":{"total":0,"albums":[]}}})"});
+    REQUIRE(empty);
+    CHECK(empty->cards.empty());
+    CHECK_FALSE(qq::parse_new_albums({.body = R"({"req_0":{"code":0,"data":{"albums":[{"name":"Missing MID"}]}}})"}));
+    CHECK_FALSE(qq::parse_new_albums({.body = R"({"req_0":{"code":2001}})"}));
+}
+
+TEST_CASE("QQ playlist favorites reject per-item failures even when the RPC succeeded") {
+    CHECK(qq::parse_playlist_write({.body = R"({"req_0":{"code":0,"data":{"result":0,"v_failedPlaylistId":[]}}})"}));
+    CHECK_FALSE(qq::parse_playlist_write({.body = R"({"req_0":{"code":0,"data":{"result":0,"v_failedPlaylistId":[4714021623]}}})"}));
+    CHECK_FALSE(qq::parse_playlist_write({.body = R"({"req_0":{"code":0,"data":{"result":1,"v_failedPlaylistId":[]}}})"}));
+    CHECK_FALSE(qq::parse_playlist_write({.body = R"({"req_0":{"code":0,"data":{}}})"}));
+    CHECK_FALSE(qq::parse_playlist_write({.body = R"({"req_0":{"code":2001}})"}));
+}
+
+TEST_CASE("QQ saved playlists preserve public IDs covers and lower-case song counts") {
+    auto result = qq::parse_favorite_playlists({.body = R"({"req_0":{"code":0,"data":{"total":1,"hasmore":0,"v_list":[
+        {"tid":4714021623,"name":"Daily mix","songnum":30,"logo":"https://example.com/cover.jpg"}
+    ]}}})"});
+    REQUIRE(result);
+    REQUIRE(result->playlists.size() == 1);
+    const auto &card = result->playlists.front();
+    CHECK(card.id == "4714021623");
+    CHECK(card.title == "Daily mix");
+    CHECK(card.cover == "https://example.com/cover.jpg");
+    CHECK(card.count == 30);
+    CHECK(card.count_kind == Card::Count::songs);
+    CHECK(card.collectable);
+    CHECK_FALSE(card.owned);
+}
+
+TEST_CASE("QQ dislike pages keep categories opaque IDs and the ID type for restoration") {
+    const qq::Reply reply{.body = R"({"req_0":{"code":0,"data":{"Retcode":0,"Page":1,"Token":"next",
+        "Songs":[{"ID":"4835784","Name":"晴天","Img":"https://example.com/song.jpg","IdType":1,"Time":1793000000},
+                 {"ID":"18446744073709551615","Name":"第二首","IdType":1}],
+        "Singers":[{"ID":"artist-mid","Name":"歌手","Img":"https://example.com/artist.jpg","IdType":7}],
+        "Styles":[{"ID":"12","Name":"摇滚","IdType":3}]}}})"};
+    auto songs = qq::parse_dislikes(reply, DislikeKind::song);
+    REQUIRE(songs);
+    REQUIRE(songs->items.size() == 2);
+    CHECK(songs->items[0].source == Source::qq);
+    CHECK(songs->items[0].kind == DislikeKind::song);
+    CHECK(songs->items[0].id == "4835784");
+    CHECK(songs->items[0].name == "晴天");
+    CHECK(songs->items[0].cover == "https://example.com/song.jpg");
+    CHECK(songs->items[0].id_type == 1);
+    CHECK(songs->cursor == "18446744073709551615");
+    auto artists = qq::parse_dislikes(reply, DislikeKind::artist);
+    REQUIRE(artists);
+    REQUIRE(artists->items.size() == 1);
+    CHECK(artists->items[0].kind == DislikeKind::artist);
+    CHECK(artists->items[0].id == "artist-mid");
+    CHECK(artists->items[0].id_type == 7);
+    CHECK(artists->cursor == "artist-mid");
+    auto styles = qq::parse_dislikes(reply, DislikeKind::style);
+    REQUIRE(styles);
+    REQUIRE(styles->items.size() == 1);
+    CHECK(styles->items[0].kind == DislikeKind::style);
+    CHECK(styles->items[0].name == "摇滚");
+    CHECK(styles->items[0].id_type == 3);
+}
+
+TEST_CASE("QQ dislike pagination ends on the service's empty page") {
+    const qq::Reply reply{.body = R"({"code":0,"req_0":{"code":0,"data":{
+        "Retcode":0,"Msg":"","Songs":[],"Singers":[],"Styles":[],"Page":0,"Token":""}}})"};
+    for (auto kind : {DislikeKind::song, DislikeKind::artist, DislikeKind::style}) {
+        auto page = qq::parse_dislikes(reply, kind);
+        REQUIRE(page);
+        CHECK(page->items.empty());
+        CHECK(page->cursor.empty());
+    }
+}
+
+TEST_CASE("QQ dislike failures never appear as an empty successful list") {
+    auto auth = qq::parse_dislikes({.body = R"({"req_0":{"code":2001}})"}, DislikeKind::song);
+    REQUIRE_FALSE(auth);
+    CHECK(auth.error() == "Sign in to QQ Music and try again");
+    auto business = qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Retcode":10000,"Songs":[]}}})"}, DislikeKind::song);
+    REQUIRE_FALSE(business);
+    CHECK(business.error() == "QQ Music recommendation feedback failed (10000)");
+    CHECK_FALSE(qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Songs":[]}}})"}, DislikeKind::song));
+    CHECK_FALSE(qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Retcode":0,"Singers":[]}}})"}, DislikeKind::song));
+    CHECK_FALSE(qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Retcode":0,"Songs":[{"ID":"1","IdType":1},{"Name":"no ID","IdType":1}]}}})"}, DislikeKind::song));
+    CHECK_FALSE(qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Retcode":0,"Songs":[{"ID":"1"}]}}})"}, DislikeKind::song));
+}
+
+TEST_CASE("QQ recommendation writes require the case-sensitive business result") {
+    CHECK(qq::parse_dislike_write({.body = R"({"req_0":{"code":0,"data":{"Retcode":0,"Msg":""}}})"}));
+    CHECK_FALSE(qq::parse_dislike_write({.body = R"({"req_0":{"code":0,"data":{"Retcode":10000}}})"}));
+    CHECK_FALSE(qq::parse_dislike_write({.body = R"({"req_0":{"code":2001}})"}));
+    CHECK_FALSE(qq::parse_dislike_write({.body = R"({"req_0":{"code":0,"data":{"retcode":0}}})"}));
+    CHECK_FALSE(qq::parse_dislike_write({.body = R"({"req_0":{"code":0,"data":{}}})"}));
+    CHECK_FALSE(qq::parse_dislike_write({.error = "Network connection failed"}));
+}
+
+TEST_CASE("QQ playlist ordering requires the explicit SeqSonglist result") {
+    CHECK(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"retCode":0}}})"}));
+    auto refused = qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"retCode":1000}}})"});
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error() == "QQ Music did not save the playlist order (1000)");
+    CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":2001}})"}));
+    CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"result":{"retCode":0}}}})"}));
+    CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"retcode":0}}})"}));
+    CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{}}})"}));
+    CHECK_FALSE(qq::parse_playlist_order_write({.error = "Network connection failed"}));
 }

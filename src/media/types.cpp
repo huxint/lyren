@@ -5,6 +5,37 @@
 
 namespace lyren {
 
+    std::string share_url(const Track &track) {
+        return track.source == Source::qq ? "https://i.y.qq.com/v8/playsong.html?songid=" + track.id : "https://music.163.com/song?id=" + track.id;
+    }
+
+    std::string share_url(const Card &card) {
+        if (card.source == Source::netease) {
+            constexpr std::array paths = {"playlist", "album", "artist"};
+            return std::format("https://music.163.com/{}?id={}", paths[static_cast<size_t>(card.kind)], card.id);
+        }
+        std::string_view id = card.id;
+        std::string_view path;
+        switch (card.kind) {
+            case CardKind::playlist:
+                path = "playlist";
+                if (id.starts_with("top:")) {
+                    path = "toplist";
+                    id.remove_prefix(4);
+                } else if (id.starts_with("dir:")) {
+                    id = card.thread;
+                }
+                break;
+            case CardKind::album:
+                path = "albumDetail";
+                break;
+            case CardKind::artist:
+                path = "singer";
+                break;
+        }
+        return id.empty() ? "" : std::format("https://y.qq.com/n/ryqq/{}/{}", path, id);
+    }
+
     std::string card_subtitle(const Card &card) {
         if (card.count_kind == Card::Count::none) {
             return card.subtitle;

@@ -63,6 +63,7 @@ namespace lyren {
 
     // A cover, avatar or playlist picture at the service's size closest to px.
     std::string cover_url(std::string_view url, int px);
+    std::string share_url(const Track &track);
 
     enum class CardKind : uint8_t {
         playlist,
@@ -83,11 +84,13 @@ namespace lyren {
         std::string thread; // an owned QQ directory's public playlist id, for comments
         int count = 0;      // tracks behind it, if known
         Count count_kind = Count::none;
-        bool owned = false;      // a playlist the signed-in user created, so it can be edited
-        bool commentable = true; // private directories may not have a public comment thread
+        bool owned = false;       // a playlist the signed-in user created, so it can be edited
+        bool commentable = true;  // private directories may not have a public comment thread
+        bool collectable = false; // a public playlist that can be saved to the account
     };
 
     std::string card_subtitle(const Card &card);
+    std::string share_url(const Card &card);
 
     inline bool same(const Card &a, const Card &b) {
         return a.source == b.source && a.kind == b.kind && a.id == b.id;
@@ -132,6 +135,19 @@ namespace lyren {
     struct Category {
         std::string id; // empty for all categories; independent of the displayed name
         std::string name = "All";
+    };
+
+    enum class DislikeKind : uint8_t {
+        song,
+        artist,
+        style
+    };
+
+    struct Dislike {
+        Source source = Source::netease;
+        DislikeKind kind = DislikeKind::song;
+        std::string id, name, cover;
+        int id_type = 0; // the service's ID type, retained when restoring an item
     };
 
     // Playlist square categories, under their headings.

@@ -501,8 +501,52 @@ namespace lyren {
         }
     }
 
+    void Shell::toggle_collect_playlist(std::shared_ptr<List> list, Card playlist) {
+        if (!provider(playlist).logged_in()) {
+            return notify(std::string(lyren::tr("Sign in to this playlist's platform to save it")), "star");
+        }
+        auto &lib = library(playlist.source);
+        bool on = !std::ranges::any_of(lib.playlists, [&](const Card &card) {
+            return same(card, playlist);
+        });
+        uint64_t gen = lib.gen;
+        place(lib.playlists, playlist, on);
+        list->saving_playlist = true;
+        notify(std::string(lyren::tr(on ? "Playlist saved" : "Playlist removed")), on ? "star-fill" : "star");
+        spawn([](Shell *self, std::shared_ptr<List> list, Card playlist, bool on, uint64_t gen) -> Task<void> {
+            auto &lib = self->library(playlist.source);
+            auto r = co_await self->provider(playlist).features.collect_playlist(playlist.id, on);
+            if (gen != lib.gen) {
+                list->saving_playlist = false;
+                co_return;
+            }
+            if (!r) {
+                list->saving_playlist = false;
+                place(lib.playlists, playlist, !on);
+                co_return self->notify(lyren::trf("Action failed: {}", r.error()), "triangle-alert", true);
+            }
+            auto favorites = co_await self->provider(playlist).features.collected_playlists();
+            list->saving_playlist = false;
+            if (gen != lib.gen) {
+                co_return;
+            }
+            if (favorites) {
+                std::erase_if(lib.playlists, [](const Card &card) {
+                    return !card.owned;
+                });
+                lib.playlists.insert(lib.playlists.end(), std::make_move_iterator(favorites->begin()), std::make_move_iterator(favorites->end()));
+            } else {
+                self->notify(favorites.error(), "list-music", true);
+            }
+            self->redraw_();
+        }(this, std::move(list), std::move(playlist), on, gen));
+    }
+
     void Shell::add_to_playlist(Track t, Card playlist) {
         auto list = route_.page == Page::playlist && same(route_.card, playlist) ? route_.list : nullptr;
+        if (list && list->saving_order) {
+            return notify(std::string(lyren::tr("The playlist order is still saving")), "list-ordered");
+        }
         if (list && std::ranges::any_of(list->tracks, [&](const Track &x) {
                 return same(x, t);
             })) {
@@ -536,6 +580,9 @@ namespace lyren {
     }
 
     void Shell::remove_from_playlist(std::shared_ptr<List> list, Card playlist, Track t) {
+        if (list->saving_order) {
+            return notify(std::string(lyren::tr("The playlist order is still saving")), "list-ordered");
+        }
         auto it = std::ranges::find_if(list->tracks, [&](const Track &x) {
             return same(x, t);
         });
@@ -559,6 +606,69 @@ namespace lyren {
             self->recount(playlist, 1);
             self->notify(lyren::trf("Could not remove: {}", r.error()), "triangle-alert", true);
         }(this, std::move(list), std::move(playlist), std::move(t), at));
+    }
+
+    void Shell::move_playlist_track(std::shared_ptr<List> list, Card playlist, int from, int to) {
+        if (!provider(playlist).logged_in()) {
+            return notify(lyren::trf("Sign in to {} to reorder this playlist", lyren::tr(platform(playlist.source).name)), "user");
+        }
+        if (list->saving_order) {
+            return;
+        }
+        auto first = list->tracks.begin();
+        if (from < to) {
+            std::rotate(first + from, first + from + 1, first + to + 1);
+        } else {
+            std::rotate(first + to, first + from, first + from + 1);
+        }
+        selected_ = to;
+        list->saving_order = true;
+        uint64_t gen = library(playlist.source).gen;
+        redraw_();
+        spawn([](Shell *self, std::shared_ptr<List> list, Card playlist, std::vector<Track> order, int selected, uint64_t gen) -> Task<void> {
+            auto r = co_await self->provider(playlist).features.reorder_playlist(playlist.id, order);
+            auto &lib = self->library(playlist.source);
+            if (gen != lib.gen) {
+                list->saving_order = false;
+                co_return self->redraw_();
+            }
+            // A lost write response may still have committed; read back before reporting the result.
+            auto fresh = co_await self->provider(playlist).tracks(playlist);
+            list->saving_order = false;
+            if (gen != lib.gen) {
+                co_return self->redraw_();
+            }
+            if (!fresh) {
+                list->error = fresh.error();
+                co_return self->notify(lyren::trf("Could not refresh playlist order: {}", fresh.error()), "triangle-alert", true);
+            }
+            bool confirmed = std::ranges::equal(*fresh, order, [](const Track &a, const Track &b) {
+                return same(a, b) && a.type == b.type;
+            });
+            list->tracks = std::move(*fresh);
+            list->error.clear();
+            if (self->route_.list == list) {
+                auto it = std::ranges::find(list->tracks, order[static_cast<size_t>(selected)].id, &Track::id);
+                self->selected_ = it == list->tracks.end() ? -1 : static_cast<int>(it - list->tracks.begin());
+            }
+            if (confirmed) {
+                self->notify(std::string(lyren::tr("Playlist order saved")), "list-ordered");
+            } else {
+                self->notify(r ? std::string(lyren::tr("Playlist order was not saved")) : lyren::trf("Action failed: {}", r.error()), "triangle-alert", true);
+            }
+            self->redraw_();
+        }(this, list, std::move(playlist), list->tracks, to, gen));
+    }
+
+    void Shell::link_menu(ui::Ui &ui, float x, float y, const Card &card) {
+        auto link = share_url(card);
+        if (link.empty()) {
+            return;
+        }
+        ui.open_menu(x, y, {{"copy", std::string(lyren::tr("Copy link")), [&ui, link = std::move(link)] {
+                                 ui.copy = link;
+                                 ui.toast(std::string(lyren::tr("Link copied")), "copy");
+                             }}});
     }
 
     // The song leaves the daily list at once; the one the server recommends instead takes its place.
@@ -787,6 +897,58 @@ namespace lyren {
         }
     }
 
+    Task<void> Shell::load_dislikes(Source source, DislikeKind kind) {
+        auto &cached = library(source).dislikes[static_cast<size_t>(kind)];
+        if (!cached) {
+            cached = std::make_shared<DislikeList>();
+        }
+        auto list = cached;
+        uint64_t gen = ++list->gen;
+        list->loading = true;
+        list->error.clear();
+        redraw_();
+        auto r = co_await provider(source).features.dislikes(kind);
+        if (gen != list->gen || library(source).dislikes[static_cast<size_t>(kind)] != list) {
+            co_return;
+        }
+        list->loading = false;
+        list->loaded = true;
+        if (r) {
+            list->items = std::move(*r);
+            list->since = now_();
+        } else {
+            list->error = r.error();
+        }
+        redraw_();
+    }
+
+    void Shell::set_dislike(Dislike item, bool on) {
+        if (!provider(item).logged_in()) {
+            return notify(lyren::trf("Sign in to {} to change recommendations", lyren::tr(platform(item.source).name)), "user");
+        }
+        auto &cached = library(item.source).dislikes[static_cast<size_t>(item.kind)];
+        if (!cached) {
+            cached = std::make_shared<DislikeList>();
+        }
+        auto list = cached;
+        if (!list->pending.insert(item.id).second) {
+            return;
+        }
+        redraw_();
+        spawn([](Shell *self, Dislike item, bool on, std::shared_ptr<DislikeList> list) -> Task<void> {
+            auto r = co_await self->provider(item).features.dislike(item, on);
+            list->pending.erase(item.id);
+            if (self->library(item.source).dislikes[static_cast<size_t>(item.kind)] != list) {
+                co_return;
+            }
+            if (!r) {
+                co_return self->notify(lyren::trf("Action failed: {}", r.error()), "triangle-alert", true);
+            }
+            self->notify(std::string(lyren::tr(on ? "Hidden from recommendations" : "Restored to recommendations")), on ? "thumbs-down" : "check");
+            co_await self->load_dislikes(item.source, item.kind);
+        }(this, std::move(item), on, std::move(list)));
+    }
+
     void Shell::next_fm() {
         Source source = fm_playing_ ? fm_source_ : active_;
         auto &lib = library(source);
@@ -895,6 +1057,7 @@ namespace lyren {
         lib.fm.clear();
         lib.fm_pos = 0;
         lib.fm_loading = false;
+        lib.dislikes = {};
         if (fm_source_ == source) {
             fm_playing_ = false;
         }
@@ -1014,10 +1177,16 @@ namespace lyren {
                 return bool(features.square);
             case Page::fm:
                 return bool(features.fm);
+            case Page::radar:
+                return bool(features.radar);
+            case Page::releases:
+                return bool(features.new_songs) && bool(features.new_albums);
             case Page::cloud:
                 return bool(features.cloud);
             case Page::similar:
                 return bool(features.similar);
+            case Page::dislikes:
+                return bool(features.dislikes) && bool(features.dislike);
             default:
                 return true;
         }
@@ -1086,7 +1255,7 @@ namespace lyren {
         if (active_ != route_.card.source) {
             active_ = route_.card.source;
             changed();
-            for (const char *id : {"recommend", "toplists", "square", "sidebar", "collection-albums", "collection-artists"}) {
+            for (const char *id : {"recommend", "toplists", "square", "sidebar", "collection-albums", "collection-artists", "release-songs", "release-albums"}) {
                 ui.scroll_to(ui.id(id), 0);
             }
         }
@@ -1099,6 +1268,9 @@ namespace lyren {
         switch (route_.page) {
             case Page::daily:
                 route_.card = {.source = active_, .title = "Daily mix", .subtitle = lyren::trf("{} · Made for your taste", date_label(today_))};
+                break;
+            case Page::radar:
+                route_.card = {.source = active_, .title = "Radar", .subtitle = "Favorites and new discoveries"};
                 break;
             case Page::cloud:
                 route_.card = {.source = active_, .title = "My cloud", .subtitle = "Songs uploaded to your cloud"};
@@ -1119,14 +1291,14 @@ namespace lyren {
     }
 
     bool Shell::needs_login(Page p) {
-        return p == Page::daily || p == Page::fm || p == Page::liked || p == Page::cloud || p == Page::collection;
+        return p == Page::daily || p == Page::fm || p == Page::liked || p == Page::cloud || p == Page::collection || p == Page::dislikes;
     }
 
     void Shell::ensure_route_data() {
         Page page = route_.page;
         Library &lib = library();
-        bool listed = page == Page::daily || page == Page::cloud || page == Page::liked || page == Page::playlist || page == Page::album || page == Page::similar ||
-                      (page == Page::recent && lib.recent_tab == 1 && signed_in());
+        bool listed = page == Page::daily || page == Page::radar || page == Page::cloud || page == Page::liked || page == Page::playlist || page == Page::album ||
+                      page == Page::similar || (page == Page::recent && lib.recent_tab == 1 && signed_in());
         if (listed && !route_.list && !(needs_login(page) && !signed_in())) {
             if (page == Page::liked && lib.liked.id.empty()) {
                 return;
@@ -1155,6 +1327,15 @@ namespace lyren {
         if (page == Page::fm && lib.fm.empty() && !lib.fm_loading && signed_in()) {
             spawn(load_fm(active_));
         }
+        if (page == Page::releases && !lib.releases[lib.release_tab].loaded) {
+            load_releases();
+        }
+        if (page == Page::dislikes && signed_in()) {
+            const auto &list = lib.dislikes[lib.dislike_tab];
+            if (!list || (!list->loaded && !list->loading)) {
+                spawn(load_dislikes(active_, static_cast<DislikeKind>(lib.dislike_tab)));
+            }
+        }
         // Collections can change elsewhere, so they reload whenever the page is entered.
         if (page == Page::collection && signed_in() && !lib.collection[0].loading) {
             spawn(load_collection(active_));
@@ -1163,6 +1344,7 @@ namespace lyren {
 
     Task<void> Shell::load_list(std::shared_ptr<List> list, Page page, Card card) {
         list->loading = true;
+        list->error.clear();
         // Not a ?: chain: with co_await in its branches GCC 16 also starts the tasks of branches not taken.
         Result<std::vector<Track>> r;
         if (page == Page::album) {
@@ -1177,6 +1359,8 @@ namespace lyren {
             r = co_await provider(card).tracks(library(card.source).liked);
         } else if (page == Page::daily) {
             r = co_await provider(card).features.daily();
+        } else if (page == Page::radar) {
+            r = co_await provider(card).features.radar();
         } else if (page == Page::cloud) {
             r = co_await provider(card).features.cloud();
         } else if (page == Page::recent) {
@@ -1283,6 +1467,49 @@ namespace lyren {
             co_return;
         }
         arrived(lib.square, std::move(r), now_());
+        redraw_();
+    }
+
+    void Shell::load_releases() {
+        auto &lib = library();
+        int tab = lib.release_tab;
+        auto &res = lib.releases[tab];
+        if (res.loading || !res.more() || (res.loaded && !res.error.empty())) {
+            return;
+        }
+        res.loading = true;
+        res.error.clear();
+        const auto &category = provider().features.release_categories[tab][lib.release_category[tab]];
+        spawn(fetch_releases(active_, tab, lib.release_gen[tab], category.id, static_cast<int>(res.size())));
+    }
+
+    void Shell::set_release_category(ui::Ui &ui, int category) {
+        auto &lib = library();
+        int tab = lib.release_tab;
+        lib.release_category[tab] = category;
+        ++lib.release_gen[tab];
+        lib.releases[tab] = {};
+        selected_ = -1;
+        ui.scroll_to(ui.id(tab ? "release-albums" : "release-songs"), 0);
+        load_releases();
+    }
+
+    Task<void> Shell::fetch_releases(Source source, int tab, uint64_t gen, std::string category, int offset) {
+        Result<Batch> r;
+        if (tab == 0) {
+            auto songs = co_await provider(source).features.new_songs(std::move(category));
+            r = std::move(songs).transform([](std::vector<Track> tracks) {
+                int total = static_cast<int>(tracks.size());
+                return Batch{.tracks = std::move(tracks), .total = total};
+            });
+        } else {
+            r = co_await provider(source).features.new_albums(std::move(category), offset);
+        }
+        auto &lib = library(source);
+        if (gen != lib.release_gen[tab]) {
+            co_return;
+        }
+        arrived(lib.releases[tab], std::move(r), now_());
         redraw_();
     }
 
@@ -2020,8 +2247,14 @@ namespace lyren {
                     case Page::fm:
                         fm_page(ui, r);
                         break;
+                    case Page::releases:
+                        releases_page(ui, r);
+                        break;
                     case Page::collection:
                         collection_page(ui, r);
+                        break;
+                    case Page::dislikes:
+                        dislikes_page(ui, r);
                         break;
                     case Page::artist:
                         artist_page(ui, r);
@@ -2146,11 +2379,12 @@ namespace lyren {
         const auto entries = std::to_array<Nav>({{Page::recommend, "compass", lyren::tr("For you")},
                                                  {Page::toplist, "list-ordered", lyren::tr("Charts")},
                                                  {Page::square, "layout-grid", lyren::tr("Browse")},
-                                                 {Page::fm, "radio", lyren::tr("Personal FM")},
+                                                 {Page::fm, "radio", lyren::tr(provider().features.fm_title)},
                                                  {Page::liked, "heart", lyren::tr("Liked songs")},
                                                  {Page::recent, "history", lyren::tr("Recently played")},
                                                  {Page::cloud, "cloud", lyren::tr("My cloud")},
-                                                 {Page::collection, "star", lyren::tr("My collection")}});
+                                                 {Page::collection, "star", lyren::tr("My collection")},
+                                                 {Page::dislikes, "thumbs-down", lyren::tr("Disliked")}});
         std::vector<Nav> nav;
         size_t mine = 0;
         for (size_t k = 0; k < entries.size(); ++k) {
@@ -2172,7 +2406,7 @@ namespace lyren {
 
         int sel = -1;
         for (size_t k = 0; k < nav.size(); ++k) {
-            if (nav[k].page == route_.page || (route_.page == Page::daily && k == 0)) {
+            if (nav[k].page == route_.page || ((route_.page == Page::daily || route_.page == Page::radar || route_.page == Page::releases) && k == 0)) {
                 sel = static_cast<int>(k);
             }
         }
@@ -2291,7 +2525,7 @@ namespace lyren {
         return false;
     }
 
-    bool Shell::hero(ui::Ui &ui, ui::Id id, Rect r, std::string_view big, std::string_view title, std::string_view subtitle, float hue) {
+    bool Shell::hero(ui::Ui &ui, ui::Id id, Rect r, std::string_view big, std::string_view title, std::string_view subtitle, float hue, std::string_view icon) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto it = ui.interact(id, r);
@@ -2301,7 +2535,11 @@ namespace lyren {
         r.y -= 3 * hot;
         p.shadow({r.x, r.y + 10, r.w, r.h}, t.radius_l(), 32, t.shadow.with_alpha(0.35f + 0.65f * hot));
         p.gradient(r, hsl(hue, 0.6f, 0.52f), hsl(hue + 0.07f, 0.55f, 0.27f), t.radius_l());
-        ui.label({r.x + 24, r.y + 16, r.w - 48, 54}, big, {.size = t.fs(42), .color = white});
+        if (icon.empty()) {
+            ui.label({r.x + 24, r.y + 16, r.w - 48, 54}, big, {.size = t.fs(42), .color = white});
+        } else {
+            p.icon(icon, {r.x + 24, r.y + 20, 40, 40}, white);
+        }
         ui.label({r.x + 24, r.y + 74, r.w - 48, 24}, title, {.size = t.fs(18), .color = white});
         ui.label({r.x + 24, r.y + 98, r.w - 100, 20}, subtitle, {.size = t.fs(12), .color = white.with_alpha(0.75f)});
         Rect b = Rect{r.right() - 64, r.bottom() - 64, 44, 44}.inset(-2 * hot);
@@ -2339,6 +2577,9 @@ namespace lyren {
         Align align = round ? Align::center : Align::left;
         ui.label({r.x, r.y + r.w + 10, r.w, 20}, c.title, {.size = t.fs(14), .color = t.text}, align);
         ui.label({r.x, r.y + r.w + 32, r.w, 18}, card_subtitle(c), {.size = t.fs(12), .color = t.text_dim}, align);
+        if (it.right_clicked) {
+            link_menu(ui, it.px, it.py, c);
+        }
         return it.clicked;
     }
 
@@ -2369,13 +2610,34 @@ namespace lyren {
         const auto &t = ui.theme();
         auto &lib = library();
         const auto &features = provider().features;
-        int hero_count = static_cast<int>(bool(features.daily)) + static_cast<int>(bool(features.fm));
+        struct Hero {
+            Page page;
+            std::string_view id, big, title, subtitle, icon;
+            float hue;
+        };
+        std::vector<Hero> heroes;
+        std::string day = today_.substr(3);
+        if (features.daily) {
+            heroes.push_back({Page::daily, "hero-daily", day, "Daily mix", "Fresh picks, every day", {}, 0.98f});
+        }
+        if (features.fm) {
+            heroes.push_back({Page::fm, "hero-fm", "FM", features.fm_title, "A station that learns your taste", {}, 0.62f});
+        }
+        if (features.radar) {
+            heroes.push_back({Page::radar, "hero-radar", {}, "Radar", "Favorites and new discoveries", "sparkles", 0.78f});
+        }
+        if (features.new_songs && features.new_albums) {
+            heroes.push_back({Page::releases, "hero-releases", {}, "New releases", "Latest songs and albums", "disc-3", 0.08f});
+        }
+        int hero_count = static_cast<int>(heroes.size());
         Rect body = r.inset(32, 0);
         Grid daily(ui, ui.id("daily-cards"), body.w);
         Grid g(ui, ui.id("rec-cards"), body.w);
         constexpr float hero_h = 136;
+        int hero_cols = std::min(hero_count, std::max(1, static_cast<int>((body.w + Grid::gap) / 280)));
+        float heroes_h = hero_count ? static_cast<float>((hero_count + hero_cols - 1) / hero_cols) * (hero_h + Grid::gap) + 20 : 0;
         float daily_h = lib.daily_lists.empty() ? 0 : 44 + daily.height(lib.daily_lists.size()) + 40;
-        float content = 28 + 76 + (hero_count ? hero_h + 40 : 0) + daily_h + 44 + std::max(g.height(lib.recommended.cards.size()), 120.f) + 32;
+        float content = 28 + 76 + heroes_h + daily_h + 44 + std::max(g.height(lib.recommended.cards.size()), 120.f) + 32;
         float off = ui.begin_scroll(ui.id("recommend"), r, content);
         float y = r.y + 28 - off;
         const auto &profile = lib.account;
@@ -2383,19 +2645,15 @@ namespace lyren {
                    std::format("{} · {}", date_label(today_), profile ? lyren::trf("Picked for you, {}", profile->name) : lyren::tr("Picked for you")));
         y += 76;
         if (hero_count) {
-            float hw = (body.w - Grid::gap * static_cast<float>(hero_count - 1)) / static_cast<float>(hero_count);
-            float hx = body.x;
-            if (features.daily) {
-                std::string day = today_.substr(3);
-                if (hero(ui, ui.id("hero-daily"), {hx, y, hw, hero_h}, day, lyren::tr("Daily mix"), lyren::tr("Fresh picks, every day"), 0.98f)) {
-                    open(ui, Page::daily);
+            float hw = (body.w - Grid::gap * static_cast<float>(hero_cols - 1)) / static_cast<float>(hero_cols);
+            for (int i = 0; i < hero_count; ++i) {
+                const auto &entry = heroes[i];
+                Rect tile{body.x + static_cast<float>(i % hero_cols) * (hw + Grid::gap), y + static_cast<float>(i / hero_cols) * (hero_h + Grid::gap), hw, hero_h};
+                if (hero(ui, ui.id(entry.id), tile, entry.big, lyren::tr(entry.title), lyren::tr(entry.subtitle), entry.hue, entry.icon)) {
+                    open(ui, entry.page);
                 }
-                hx += hw + Grid::gap;
             }
-            if (features.fm && hero(ui, ui.id("hero-fm"), {hx, y, hw, hero_h}, "FM", lyren::tr("Personal FM"), lyren::tr("A station that learns your taste"), 0.62f)) {
-                open(ui, Page::fm);
-            }
-            y += hero_h + 40;
+            y += heroes_h;
         }
         if (!lib.daily_lists.empty()) {
             ui.label({body.x, y, body.w, 28}, lyren::tr("Daily playlists"), {.size = t.fs(18), .color = t.text});
@@ -2496,7 +2754,7 @@ namespace lyren {
         auto &lib = library();
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        page_title(ui, r.inset(32, 0), r.y + 28, lyren::tr("Personal FM"), lyren::tr("Tuned to what you play"));
+        page_title(ui, r.inset(32, 0), r.y + 28, lyren::tr(provider().features.fm_title), lyren::tr("Tuned to what you play"));
         Rect below{r.x, r.y + 100, r.w, r.h - 100};
         if (page_status(ui, below, lib.fm_loading && lib.fm.empty(), lib.fm.empty() ? lib.fm_error : "", !signed_in())) {
             return;
@@ -2518,24 +2776,31 @@ namespace lyren {
         float by = cov.bottom() + 90, cx = col.x + size / 2;
         // thumbs-down, like, play, next as one centred row
         float x0 = cx - 102;
+        float like_x = provider().features.fm_trash ? x0 + 52 : cx - 76;
         if (provider().features.fm_trash && ui.icon_button(ui.id("fm-trash"), {x0, by + 4, 40, 40}, "thumbs-down", 20)) {
-            spawn([](Shell *self, Track track) -> Task<void> {
-                auto r = co_await self->provider(track).features.fm_trash(track.id);
+            spawn([](Shell *self, Track track, uint64_t gen) -> Task<void> {
+                auto r = co_await self->provider(track).features.fm_trash(track);
+                if (gen != self->library(track.source).gen) {
+                    co_return;
+                }
                 if (r) {
+                    if (self->provider(track).features.dislikes) {
+                        spawn(self->load_dislikes(track.source, DislikeKind::song));
+                    }
                     self->notify(std::string(lyren::tr("You will hear fewer songs like this")), "thumbs-down");
                 } else {
                     self->notify(lyren::trf("Could not dislike this song: {}", r.error()), "triangle-alert", true);
                 }
-            }(this, tr));
+            }(this, tr, library().gen));
             next_fm();
             return;
         }
         bool like = liked(tr);
-        if (ui.icon_button(ui.id("fm-like"), {x0 + 52, by + 4, 40, 40}, like ? "heart-fill" : "heart", heart_size(ui, tr, 20), like)) {
+        if (ui.icon_button(ui.id("fm-like"), {like_x, by + 4, 40, 40}, like ? "heart-fill" : "heart", heart_size(ui, tr, 20), like)) {
             toggle_like(tr);
         }
         ui::Id pid = ui.id("fm-play");
-        Rect play_r{x0 + 104, by, 48, 48};
+        Rect play_r{like_x + 52, by, 48, 48};
         auto it = ui.interact(pid, play_r);
         float hot = ui.anim(pid, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(pid, 0xd0), it.held ? 1 : 0, 90);
         Rect pr = play_r.inset(-2 * hot + 2 * down);
@@ -2548,10 +2813,74 @@ namespace lyren {
                 play(lib.fm, lib.fm_pos);
             }
         }
-        if (ui.icon_button(ui.id("fm-next"), {x0 + 164, by + 4, 40, 40}, "skip-forward", 20)) {
+        if (ui.icon_button(ui.id("fm-next"), {like_x + 112, by + 4, 40, 40}, "skip-forward", 20)) {
             fm_playing_ = fm_playing_ || on_air;
             fm_source_ = active_;
             next_fm();
+        }
+    }
+
+    void Shell::releases_page(ui::Ui &ui, Rect r) {
+        auto &lib = library();
+        Rect body = r.inset(32, 0);
+        page_title(ui, body, r.y + 28, lyren::tr("New releases"), lyren::tr("Latest songs and albums"));
+        const std::array<std::string_view, 2> tabs = {lyren::tr("Songs"), lyren::tr("Albums")};
+        if (ui.tabs(ui.id("release-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, lib.release_tab)) {
+            selected_ = -1;
+            tab_time_ = ui.now;
+            load_releases();
+        }
+        int tab = lib.release_tab;
+        const auto &categories = provider().features.release_categories[tab];
+        std::string_view category = lyren::tr(categories[lib.release_category[tab]].name);
+        float cw = button_width(ui, category, true);
+        if (ui.button(ui.id("release-category"), {body.x, r.y + 148, cw, 36}, category, ui::ButtonKind::secondary, "chevron-down")) {
+            std::vector<ui::MenuItem> items;
+            for (size_t i = 0; i < categories.size(); ++i) {
+                items.push_back({i == static_cast<size_t>(lib.release_category[tab]) ? "check" : "", std::string(lyren::tr(categories[i].name)), [this, &ui, i] {
+                                     set_release_category(ui, static_cast<int>(i));
+                                 }});
+            }
+            ui.open_menu(body.x, r.y + 190, std::move(items));
+        }
+        if (ui.icon_button(ui.id("release-refresh"), {body.right() - 36, r.y + 148, 36, 36}, "refresh-cw", 18)) {
+            set_release_category(ui, lib.release_category[tab]);
+        }
+        Results &res = lib.releases[tab];
+        if (tab == 0) {
+            float play_w = button_width(ui, lyren::tr("Play all"), true);
+            if (ui.button(ui.id("release-play-all"), {body.x, r.y + 200, play_w, 40}, lyren::tr("Play all"), ui::ButtonKind::primary, "play-fill") && !res.tracks.empty()) {
+                if (mode_ == Mode::shuffle) {
+                    set_mode(Mode::list);
+                }
+                play(res.tracks, 0);
+            }
+            float shuffle_w = button_width(ui, lyren::tr("Shuffle"), true);
+            if (ui.button(ui.id("release-shuffle"), {body.x + play_w + 12, r.y + 200, shuffle_w, 40}, lyren::tr("Shuffle"), ui::ButtonKind::secondary, "shuffle") &&
+                !res.tracks.empty()) {
+                set_mode(Mode::shuffle);
+                play(res.tracks, static_cast<int>(next(rng_) % res.tracks.size()));
+            }
+        }
+        float top = r.y + (tab ? 200 : 256);
+        Rect content{r.x + 16, top, r.w - 32, r.bottom() - top - 8};
+        std::string error = res.error;
+        if (res.loaded && res.size() == 0 && error.empty()) {
+            error = tab ? lyren::tr("No albums found") : lyren::tr("No songs here yet");
+        }
+        if (res.size() == 0 && page_status(ui, content, res.loading, error, false)) {
+            return;
+        }
+        if (tab == 0) {
+            track_list(ui, content, ui.id("release-songs"), res.tracks, std::max({page_time_, tab_time_, res.since}));
+        } else {
+            bool near_end;
+            if (int i = grid_view(ui, content, ui.id("release-albums"), res.cards, false, std::max({page_time_, tab_time_, res.since}), res.more(), near_end); i >= 0) {
+                open(ui, res.cards[static_cast<size_t>(i)]);
+            }
+            if (near_end) {
+                load_releases();
+            }
         }
     }
 
@@ -2586,6 +2915,73 @@ namespace lyren {
         }
     }
 
+    void Shell::dislikes_page(ui::Ui &ui, Rect r) {
+        auto &lib = library();
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        Rect body = r.inset(32, 0);
+        page_title(ui, body, r.y + 28, lyren::tr("Disliked"), lyren::tr("Manage what you hear in recommendations"));
+        if (page_status(ui, {r.x, r.y + 100, r.w, r.h - 100}, false, "", !signed_in())) {
+            return;
+        }
+        const std::array<std::string_view, 3> tabs = {lyren::tr("Songs"), lyren::tr("Artists"), lyren::tr("Styles")};
+        const std::array icons = {"music", "mic-vocal", "sparkles"};
+        int before = lib.dislike_tab;
+        if (ui.tabs(ui.id("dislike-tabs"), {body.x, r.y + 100, body.w - 48, 36}, tabs, lib.dislike_tab)) {
+            tab_time_ = ui.now;
+            tab_dir_ = lib.dislike_tab > before ? 1 : -1;
+            if (!lib.dislikes[lib.dislike_tab]) {
+                spawn(load_dislikes(active_, static_cast<DislikeKind>(lib.dislike_tab)));
+            }
+        }
+        static const DislikeList pending{.loading = true};
+        const auto &cached = lib.dislikes[lib.dislike_tab];
+        const DislikeList &list = cached ? *cached : pending;
+        ui.disabled = list.loading;
+        if (ui.icon_button(ui.id("dislike-refresh"), {body.right() - 36, r.y + 100, 36, 36}, "refresh-cw", 18)) {
+            spawn(load_dislikes(active_, static_cast<DislikeKind>(lib.dislike_tab)));
+        }
+        ui.disabled = false;
+        float enter = ui.progress(tab_time_, 380);
+        Fade fade(p, enter);
+        Rect content{body.x + (1 - enter) * 36 * static_cast<float>(tab_dir_), r.y + 152, body.w, r.h - 164};
+        if (!list.error.empty()) {
+            page_status(ui, content, false, list.error, false);
+            return;
+        }
+        if (list.items.empty()) {
+            page_status(ui, content, list.loading, std::string(lyren::tr("Nothing disliked here")), false);
+            return;
+        }
+        constexpr float row_h = 72;
+        float off = ui.begin_scroll(ui.id("dislikes-" + std::to_string(lib.dislike_tab)), content, row_h * static_cast<float>(list.items.size()));
+        const size_t first = static_cast<size_t>(off / row_h);
+        const size_t last = std::min(list.items.size(), static_cast<size_t>((off + content.h) / row_h) + 1);
+        const float restore_w = button_width(ui, lyren::tr("Restore"), true);
+        for (size_t i = first; i < last; ++i) {
+            const Dislike &item = list.items[i];
+            ui.push_id(ui.id(item.id));
+            Rect row{content.x, content.y - off + row_h * static_cast<float>(i), content.w, row_h};
+            const float k = ui.progress(std::max({page_time_, tab_time_, list.since}) + std::min(i - first, size_t(12)) * 0.024, 380);
+            Fade row_fade(p, k);
+            row.y += (1 - k) * 8;
+            if (ui.hovering(row)) {
+                p.rect(row.inset(0, 2), t.text.with_alpha(0.04f), t.radius_s());
+            }
+            cover(ui, {row.x + 10, row.y + 14, 44, 44}, item.cover, lib.dislike_tab == 1 ? 22 : t.radius_s(), icons[lib.dislike_tab]);
+            float text_x = row.x + 70, text_w = row.w - 90 - restore_w;
+            ui.label({text_x, row.y + 14, text_w, 24}, item.name.empty() ? item.id : item.name, {.size = t.fs(15), .color = t.text});
+            ui.label({text_x, row.y + 40, text_w, 18}, lyren::tr("Hidden from recommendations"), {.size = t.fs(12), .color = t.text_dim});
+            ui.disabled = list.loading || list.pending.contains(item.id);
+            if (ui.button(ui.id("restore"), {row.right() - restore_w - 10, row.y + 18, restore_w, 36}, lyren::tr("Restore"), ui::ButtonKind::secondary, "check")) {
+                set_dislike(item, false);
+            }
+            ui.disabled = false;
+            ui.pop_id();
+        }
+        ui.end_scroll();
+    }
+
     void Shell::artist_page(ui::Ui &ui, Rect r) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
@@ -2595,6 +2991,9 @@ namespace lyren {
         Rect cov{head.x, head.y, 148, 148};
         p.shadow({cov.x, cov.y + 10, cov.w, cov.h}, 74, 32, t.shadow.with_alpha(0.8f));
         cover(ui, cov, a.info ? a.info->avatar : c.cover, 74, "user");
+        if (auto it = ui.interact(ui.id("artist-link"), cov); it.right_clicked) {
+            link_menu(ui, it.px, it.py, c);
+        }
         float tx = cov.right() + 28, tw = head.right() - tx;
         ui.label({tx, head.y + 2, tw, 18}, lyren::tr("Artists"), {.size = t.fs(12), .color = t.text_dim});
         ui.label({tx, head.y + 18, tw, 38}, a.info ? a.info->name : c.title, {.size = t.fs(28), .color = t.text});
@@ -2739,6 +3138,9 @@ namespace lyren {
             case Page::cloud:
                 art(p, cov, special_hue(Page::cloud), t.radius_l(), "cloud");
                 break;
+            case Page::radar:
+                art(p, cov, 0.78f, t.radius_l(), "sparkles");
+                break;
             case Page::daily: {
                 art(p, cov, 0.98f, t.radius_l(), "");
                 std::string day = today_.substr(3);
@@ -2750,11 +3152,16 @@ namespace lyren {
         }
         float tx = cov.right() + 28, tw = head.right() - tx;
         TextStyle sub{.size = t.fs(13), .color = t.text_dim};
+        if (route_.page == Page::playlist || route_.page == Page::album) {
+            if (auto it = ui.interact(ui.id("list-link"), cov); it.right_clicked) {
+                link_menu(ui, it.px, it.py, c);
+            }
+        }
         if (route_.page == Page::playlist || route_.page == Page::album || route_.page == Page::similar) {
             std::string_view kind = route_.page == Page::album ? lyren::tr("Albums") : route_.page == Page::similar ? lyren::tr("Similar songs") : lyren::tr("Playlists");
             ui.label({tx, head.y + 2, tw, 18}, kind, {.size = t.fs(12), .color = t.text_dim});
         }
-        const bool built_in = route_.page == Page::daily || route_.page == Page::cloud || route_.page == Page::liked || route_.page == Page::recent;
+        const bool built_in = route_.page == Page::daily || route_.page == Page::radar || route_.page == Page::cloud || route_.page == Page::liked || route_.page == Page::recent;
         ui.label({tx, head.y + 18, tw, 38}, built_in ? lyren::tr(c.title) : std::string_view(c.title), {.size = t.fs(28), .color = t.text});
         const AlbumInfo *album = route_.page == Page::album && route_.list && !route_.list->loading ? &route_.list->album : nullptr;
         if (album && !album->artist.empty()) {
@@ -2837,7 +3244,8 @@ namespace lyren {
         if (c.source.w > 0) {
             ui.label(c.source, lyren::tr("Platform"), hs, Align::center);
         }
-        ui.label(c.duration, lyren::tr("Time"), hs, Align::right);
+        const bool ordering = route_.page == Page::playlist && route_.list && &tracks == &route_.list->tracks && route_.list->ordering;
+        ui.label(c.duration, lyren::tr(ordering ? "Order" : "Time"), hs, Align::right);
         p.rect({head.x + 12, head.bottom() - 1, head.w - 24, 1}, t.border);
         ui::cut_top(r, 4);
 
@@ -2905,14 +3313,35 @@ namespace lyren {
         if (c.source.w > 0) {
             ui.label(c.source, lyren::tr(platform(tr.source).short_name), {.size = t.fs(12), .color = t.text_dim}, Align::center);
         }
-        bool like = liked(tr);
-        if ((hot || like) && ui.icon_button(ui.id("like"), ui::center(c.like, 32, 32), like ? "heart-fill" : "heart", heart_size(ui, tr, 16), like)) {
-            if (route_.page == Page::search) {
-                pending_source_ = tr.source;
+        const bool ordering = route_.page == Page::playlist && route_.list && &tracks == &route_.list->tracks && route_.list->ordering;
+        if (ordering) {
+            auto move = [&](std::string_view id, Rect cell, std::string_view icon, int to) {
+                ui.disabled = route_.list->saving_order || route_.list->loading || to < 0 || to >= static_cast<int>(tracks.size());
+                bool clicked;
+                {
+                    Fade dim(p, ui.disabled ? 0.3f : 1.f);
+                    clicked = ui.icon_button(ui.id(id), ui::center(cell, 32, 32), icon, 18);
+                }
+                ui.disabled = false;
+                if (clicked) {
+                    move_playlist_track(route_.list, route_.card, i, to);
+                }
+                return clicked;
+            };
+            if (move("move-up", c.like, "chevron-up", i - 1) || move("move-down", c.duration, "chevron-down", i + 1)) {
+                ui.pop_id();
+                return;
             }
-            toggle_like(tr);
+        } else {
+            bool like = liked(tr);
+            if ((hot || like) && ui.icon_button(ui.id("like"), ui::center(c.like, 32, 32), like ? "heart-fill" : "heart", heart_size(ui, tr, 16), like)) {
+                if (route_.page == Page::search) {
+                    pending_source_ = tr.source;
+                }
+                toggle_like(tr);
+            }
+            ui.label(c.duration, mmss(tr.duration), num, Align::right);
         }
-        ui.label(c.duration, mmss(tr.duration), num, Align::right);
 
         auto it = ui.interact(row_id, r);
         if (it.pressed) {
@@ -2958,6 +3387,10 @@ namespace lyren {
             if (square("album-comments", "message-square")) {
                 open_comments(ui, c.source, Subject::album, route_.list->album.thread, c.title, c.cover);
             }
+        } else if (route_.page == Page::radar) {
+            if (route_.list && !route_.list->loading && square("radar-refresh", "refresh-cw")) {
+                spawn(load_list(route_.list, Page::radar, c));
+            }
         } else if (route_.page == Page::liked) {
             if (!provider().features.heartbeat || !signed_in() || library().liked.id.empty() || !route_.list || route_.list->tracks.empty()) {
                 return;
@@ -2978,22 +3411,54 @@ namespace lyren {
                 ensure_route_data();
             }
         } else if (route_.page == Page::playlist) {
+            if (c.collectable && !c.owned && provider(c).features.collect_playlist && route_.list) {
+                bool on = std::ranges::any_of(library(c.source).playlists, [&](const Card &card) {
+                    return same(card, c);
+                });
+                float w = std::max(button_width(ui, lyren::tr("Saved"), true), button_width(ui, lyren::tr("Save"), true));
+                if (route_.list->saving_playlist) {
+                    ui.spinner(ui::center({x, y, w, 40}, 18, 18), ui.theme().text_dim, 2);
+                    x += w + 12;
+                } else if (labelled("collect-playlist", on ? lyren::tr("Saved") : lyren::tr("Save"), on ? "star-fill" : "star", w)) {
+                    toggle_collect_playlist(route_.list, c);
+                }
+            }
             if (c.commentable && square("playlist-comments", "message-square")) {
                 open_comments(ui, c.source, Subject::playlist, c.thread.empty() ? c.id : c.thread, c.title, c.cover);
             }
             if (c.owned && square("playlist-more", "ellipsis")) {
-                ui.open_menu(x - 52, y + 46,
-                             {
-                                 {"pencil", std::string(lyren::tr("Rename")),
-                                  [this, &ui, c] {
-                                      open_editor(ui, c);
-                                  }},
-                                 {"trash", std::string(lyren::tr("Delete playlist")),
-                                  [this, &ui, c] {
-                                      confirm_delete(ui, c);
-                                  },
-                                  true},
-                             });
+                std::vector<ui::MenuItem> items;
+                if (provider(c).features.reorder_playlist && route_.list && !route_.list->loading) {
+                    items.push_back({"list-ordered", std::string(lyren::tr(route_.list->ordering ? "Done reordering" : "Reorder songs")), [this, c, list = route_.list] {
+                                         if (!provider(c).logged_in()) {
+                                             return notify(lyren::trf("Sign in to {} to reorder this playlist", lyren::tr(platform(c.source).name)), "user");
+                                         }
+                                         list->ordering = !list->ordering;
+                                         if (list->ordering) {
+                                             notify(std::string(lyren::tr("Use the arrows to move songs")), "list-ordered");
+                                         }
+                                     }});
+                }
+                if (route_.list && !route_.list->loading && !route_.list->saving_order) {
+                    items.push_back({"refresh-cw", std::string(lyren::tr("Refresh")), [this, c, list = route_.list] {
+                                         spawn(load_list(list, Page::playlist, c));
+                                     }});
+                }
+                if (auto link = share_url(c); !link.empty()) {
+                    items.push_back({"copy", std::string(lyren::tr("Copy link")), [&ui, link = std::move(link)] {
+                                         ui.copy = link;
+                                         ui.toast(std::string(lyren::tr("Link copied")), "copy");
+                                     }});
+                }
+                items.push_back({"pencil", std::string(lyren::tr("Rename")), [this, &ui, c] {
+                                     open_editor(ui, c);
+                                 }});
+                items.push_back({"trash", std::string(lyren::tr("Delete playlist")),
+                                 [this, &ui, c] {
+                                     confirm_delete(ui, c);
+                                 },
+                                 true});
+                ui.open_menu(x - 52, y + 46, std::move(items));
             }
         }
     }
@@ -3052,6 +3517,11 @@ namespace lyren {
                  ui.copy = tr.title + " - " + tr.artist;
                  ui.toast(std::string(lyren::tr("Copied to clipboard")), "copy");
              }},
+            {"copy", std::string(lyren::tr("Copy link")),
+             [&ui, link = share_url(tr)] {
+                 ui.copy = link;
+                 ui.toast(std::string(lyren::tr("Link copied")), "copy");
+             }},
         };
         if (provider(tr).features.similar) {
             items.insert(items.begin() + 4, {"sparkles", std::string(lyren::tr("Similar songs")), [this, &ui, tr] {
@@ -3062,6 +3532,11 @@ namespace lyren {
         if (route_.page == Page::daily && listed && provider(tr).features.dislike_daily) {
             items.push_back({"thumbs-down", std::string(lyren::tr("Not interested")), [this, l = route_.list, tr] {
                                  dislike_daily(l, tr);
+                             }});
+        }
+        if (provider(tr).features.dislike) {
+            items.push_back({"thumbs-down", std::string(lyren::tr("Dislike this song")), [this, tr] {
+                                 set_dislike({.source = tr.source, .id = tr.id, .name = tr.title, .cover = tr.cover}, true);
                              }});
         }
         // One's own playlist can take songs out.

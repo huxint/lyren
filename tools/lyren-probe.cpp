@@ -9,6 +9,10 @@
 //   lyren-probe call <uri> [fields] [weapi|clientlog]   raw request, e.g. call /api/song/lyric/v1 '"id":186016'; prints the JSON
 //   lyren-probe qq search <query> [tracks|albums|artists|playlists] | url <song mid> [quality] | lyrics <song id>
 //   lyren-probe qq album <mid> | artist <mid> | playlist <id> | top | recommend | comments <song id> [new]
+//   lyren-probe qq guess | radar | new-songs [type] | new-albums [area] [offset] | saved-playlists
+//   lyren-probe qq collect-playlist <public id> on|off
+//   lyren-probe qq dislikes [songs|artists|styles|all] | dislike <songs|artists|styles> <id> on|off [name]
+//   lyren-probe qq reorder <dir:ID> <song id>...   submit every song once in the desired order, then read back
 //   lyren-probe qq call <module> <method> [param]   one signed RPC part; prints the JSON
 //
 // Steps run in order: wait:MS  seek:SECONDS  pause  play  vol:0..1  open:URL|FILE  quit. Without steps it is interactive:
@@ -29,6 +33,7 @@
 #include <print>
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 #include "media/lyrics.hpp"
 #include "audio/player.hpp"
@@ -436,6 +441,61 @@ static int qq_command(const std::vector<std::string> &args) {
             }
             std::println("{} tracks", r->size());
             print_tracks(*r);
+        } else if (cmd == "reorder") {
+            if (args.size() < 4 || !arg(2).starts_with("dir:")) {
+                co_return fail("Expected reorder <dir:ID> <song id>...");
+            }
+            const std::string id = arg(2);
+            int directory = 0;
+            const auto parsed = std::from_chars(id.data() + 4, id.data() + id.size(), directory);
+            if (parsed.ec != std::errc{} || parsed.ptr != id.data() + id.size() || directory <= 0) {
+                co_return fail("Expected a numeric playlist directory ID");
+            }
+            if (!q.logged_in()) {
+                co_return fail("Sign in to QQ Music first");
+            }
+            auto library = co_await q.user_playlists(q.client.get("musicid"));
+            if (!library) {
+                co_return fail(library.error());
+            }
+            Card playlist;
+            if (id == library->first.id) {
+                playlist = library->first;
+            } else {
+                auto it = std::ranges::find(library->second, id, &Card::id);
+                if (it == library->second.end() || !it->owned) {
+                    co_return fail("Choose a playlist owned by the signed-in QQ account");
+                }
+                playlist = *it;
+            }
+            auto songs = co_await q.tracks(playlist);
+            if (!songs) {
+                co_return fail(songs.error());
+            }
+            if (args.size() - 3 != songs->size()) {
+                co_return fail("Use every song in the playlist exactly once");
+            }
+            std::unordered_set<std::string> used;
+            std::vector<Track> order;
+            for (size_t i = 3; i < args.size(); ++i) {
+                auto song = std::ranges::find(*songs, args[i], &Track::id);
+                if (song == songs->end() || !used.insert(args[i]).second) {
+                    co_return fail("Use every song in the playlist exactly once");
+                }
+                order.push_back(*song);
+            }
+            auto written = co_await q.reorder_playlist(id, order);
+            auto fresh = co_await q.tracks(playlist);
+            if (!fresh) {
+                co_return fail(fresh.error());
+            }
+            if (!std::ranges::equal(*fresh, order, [](const Track &a, const Track &b) {
+                    return same(a, b) && a.type == b.type;
+                })) {
+                co_return fail(written ? "The server did not keep the requested playlist order" : written.error());
+            }
+            std::println("Playlist order saved and confirmed");
+            print_tracks(*fresh);
         } else if (cmd == "top" || cmd == "recommend") {
             Result<std::vector<Card>> r;
             if (cmd == "top") {
@@ -443,6 +503,125 @@ static int qq_command(const std::vector<std::string> &args) {
             } else {
                 r = co_await q.recommended_playlists();
             }
+            if (!r) {
+                co_return fail(r.error());
+            }
+            print_cards(*r);
+        } else if (cmd == "guess" || cmd == "radar") {
+            Result<std::vector<Track>> r;
+            if (cmd == "guess") {
+                r = co_await q.fm();
+            } else {
+                r = co_await q.radar();
+            }
+            if (!r) {
+                co_return fail(r.error());
+            }
+            print_tracks(*r);
+        } else if (cmd == "dislikes" || cmd == "dislike") {
+            static constexpr std::array<std::string_view, 3> kinds = {"songs", "artists", "styles"};
+            if (!q.logged_in()) {
+                co_return fail("Sign in to QQ Music first");
+            }
+            if (cmd == "dislikes") {
+                if (args.size() > 3 || (!arg(2).empty() && arg(2) != "all" && std::ranges::find(kinds, arg(2)) == kinds.end())) {
+                    co_return fail("Expected dislikes [songs|artists|styles|all]");
+                }
+                for (size_t i = 0; i < kinds.size(); ++i) {
+                    if (!arg(2).empty() && arg(2) != "all" && arg(2) != kinds[i]) {
+                        continue;
+                    }
+                    auto r = co_await q.dislikes(static_cast<DislikeKind>(i));
+                    if (!r) {
+                        co_return fail(r.error());
+                    }
+                    std::println("{}: {} items", kinds[i], r->size());
+                    for (const auto &item : *r) {
+                        std::println("  {}  type {}  {}  {}", item.id, item.id_type, item.name, item.cover);
+                    }
+                }
+            } else {
+                auto category = std::ranges::find(kinds, arg(2));
+                if (args.size() < 5 || args.size() > 6 || category == kinds.end() || (arg(4) != "on" && arg(4) != "off") || arg(3).empty()) {
+                    co_return fail("Expected dislike <songs|artists|styles> <id> on|off [name]");
+                }
+                bool on = arg(4) == "on";
+                DislikeKind kind = static_cast<DislikeKind>(category - kinds.begin());
+                Dislike item{.source = Source::qq, .kind = kind, .id = arg(3), .name = arg(5)};
+                if (on) {
+                    uint64_t id = 0;
+                    const auto parsed = std::from_chars(item.id.data(), item.id.data() + item.id.size(), id);
+                    if (parsed.ec != std::errc{} || parsed.ptr != item.id.data() + item.id.size() || !id) {
+                        co_return fail("Expected a numeric resource ID");
+                    }
+                } else {
+                    auto items = co_await q.dislikes(kind);
+                    if (!items) {
+                        co_return fail(items.error());
+                    }
+                    auto found = std::ranges::find(*items, item.id, &Dislike::id);
+                    if (found == items->end()) {
+                        co_return fail("This item is not in the dislike list");
+                    }
+                    item = *found;
+                }
+                auto r = co_await q.dislike(std::move(item), on);
+                if (!r) {
+                    co_return fail(r.error());
+                }
+                std::println("{}", on ? "Hidden from recommendations" : "Restored to recommendations");
+            }
+        } else if (cmd == "new-songs" || cmd == "new-albums") {
+            int tab = cmd == "new-albums";
+            const auto &categories = q.features.release_categories[tab];
+            std::string category = arg(2).empty() ? categories.front().id : arg(2);
+            if (!std::ranges::any_of(categories, [&](const Category &entry) {
+                    return entry.id == category;
+                })) {
+                co_return fail("Expected a supported release category ID");
+            }
+            if (tab == 0) {
+                auto r = co_await q.new_songs(category);
+                if (!r) {
+                    co_return fail(r.error());
+                }
+                print_tracks(*r);
+            } else {
+                int offset = 0;
+                if (!arg(3).empty()) {
+                    const auto value = arg(3);
+                    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), offset);
+                    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || offset < 0) {
+                        co_return fail("Expected a nonnegative album offset");
+                    }
+                }
+                auto r = co_await q.new_albums(category, offset);
+                if (!r) {
+                    co_return fail(r.error());
+                }
+                std::println("{} total", r->total);
+                print_cards(r->cards);
+            }
+        } else if (cmd == "collect-playlist") {
+            if (args.size() != 4 || (arg(3) != "on" && arg(3) != "off")) {
+                co_return fail("Expected collect-playlist <public id> on|off");
+            }
+            const auto id = arg(2);
+            uint64_t numeric = 0;
+            const auto parsed = std::from_chars(id.data(), id.data() + id.size(), numeric);
+            if (parsed.ec != std::errc{} || parsed.ptr != id.data() + id.size() || !numeric) {
+                co_return fail("Expected a numeric public playlist ID");
+            }
+            if (!q.logged_in()) {
+                co_return fail("Sign in to QQ Music first");
+            }
+            auto r = co_await q.collect_playlist(id, arg(3) == "on");
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{}", arg(3) == "on" ? "Playlist saved" : "Playlist removed");
+        } else if (cmd == "saved-playlists") {
+            auto r = co_await q.collected_playlists();
             if (!r) {
                 co_return fail(r.error());
             }
@@ -620,9 +799,11 @@ int main(int argc, char **argv) {
             return ncm_command(args);
         }
     }
-    std::println(stderr, "usage: lyren-probe [--debug] play <url|file> [wait:MS seek:S pause play vol:V open:SRC quit ...]\n"
-                         "       lyren-probe search <query> [tracks|albums|artists|playlists] | url <id> [quality] | lyrics <id> | login | account\n"
-                         "       lyren-probe call <uri> [fields] [weapi|clientlog]\n"
-                         "       lyren-probe qq search|url|lyrics|album|artist|playlist|top|recommend|categories|square|similar|comments|call ...");
+    std::println(
+        stderr,
+        "usage: lyren-probe [--debug] play <url|file> [wait:MS seek:S pause play vol:V open:SRC quit ...]\n"
+        "       lyren-probe search <query> [tracks|albums|artists|playlists] | url <id> [quality] | lyrics <id> | login | account\n"
+        "       lyren-probe call <uri> [fields] [weapi|clientlog]\n"
+        "       lyren-probe qq search|url|lyrics|album|artist|playlist|top|recommend|guess|radar|new-songs|new-albums|saved-playlists|categories|square|similar|comments|call ...");
     return 2;
 }

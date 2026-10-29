@@ -7,6 +7,18 @@
 
 using namespace lyren;
 
+TEST_CASE("QQ sharing uses public resource identity instead of private directory and comment IDs") {
+    Card directory{.source = Source::qq, .id = "dir:123", .thread = "4714021623", .owned = true};
+    CHECK(share_url(directory) == "https://y.qq.com/n/ryqq/playlist/4714021623");
+    directory.thread.clear();
+    CHECK(share_url(directory).empty());
+    CHECK(share_url(Card{.source = Source::qq, .id = "top:4"}) == "https://y.qq.com/n/ryqq/toplist/4");
+    CHECK(share_url(Card{.kind = CardKind::album, .source = Source::qq, .id = "album-mid", .thread = "123"}) == "https://y.qq.com/n/ryqq/albumDetail/album-mid");
+    CHECK(share_url(Card{.kind = CardKind::artist, .source = Source::qq, .id = "artist-mid"}) == "https://y.qq.com/n/ryqq/singer/artist-mid");
+    CHECK(share_url(Track{.source = Source::qq, .id = "18446744073709551615"}) == "https://i.y.qq.com/v8/playsong.html?songid=18446744073709551615");
+    CHECK(share_url(Track{.id = "18446744073709551615"}) == "https://music.163.com/song?id=18446744073709551615");
+}
+
 TEST_CASE("identical songs on different platforms keep independent identities") {
     Track n{.id = "1", .title = "Love Story", .artist = "Taylor Swift", .duration = 235, .paid = true};
     Track q{.source = Source::qq, .id = "1", .mid = "mid", .media = "media", .title = n.title, .artist = n.artist, .duration = 235};

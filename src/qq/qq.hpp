@@ -23,6 +23,20 @@ namespace lyren::qq {
     Result<Batch> parse_square(const Reply &reply, int offset);
     Result<Batch> parse_category_playlists(const Reply &reply);
     Result<std::vector<Track>> parse_similar(const Reply &reply);
+    Result<std::vector<Track>> parse_radio(const Reply &reply);
+    Result<std::vector<Track>> parse_radar(const Reply &reply);
+    Result<std::vector<Track>> parse_new_songs(const Reply &reply);
+    Result<Batch> parse_new_albums(const Reply &reply);
+    Result<void> parse_playlist_write(const Reply &reply);
+    Result<void> parse_playlist_order_write(const Reply &reply);
+
+    struct DislikesPage {
+        std::vector<Dislike> items;
+        std::string cursor;
+    };
+
+    Result<DislikesPage> parse_dislikes(const Reply &reply, DislikeKind kind);
+    Result<void> parse_dislike_write(const Reply &reply);
 
     // QQ Music, after docs/qqmusic-api.md. Albums and artists go by their mids, playlists by their public ids, songs by
     // their numeric ids with the mids alongside (Track::mid, Track::media).
@@ -48,9 +62,15 @@ namespace lyren::qq {
 
         Task<Result<std::vector<Card>>> recommended_playlists() override;
         Task<Result<std::vector<Card>>> toplists() override;
+        Task<Result<std::vector<Track>>> fm();
+        Task<Result<std::vector<Track>>> radar();
+        Task<Result<std::vector<Track>>> new_songs(std::string type);
+        Task<Result<Batch>> new_albums(std::string area, int offset);
         Task<Result<Categories>> categories();
         Task<Result<Batch>> square(std::string category, int offset);
         Task<Result<std::vector<Track>>> similar(std::string id);
+        Task<Result<std::vector<Dislike>>> dislikes(DislikeKind kind);
+        Task<Result<void>> dislike(Dislike item, bool on);
         Task<Result<AlbumInfo>> album(std::string mid) override;
         Task<Result<ArtistInfo>> artist(std::string mid) override;
         Task<Result<Batch>> artist_songs(std::string mid, int offset) override;
@@ -63,12 +83,15 @@ namespace lyren::qq {
         Task<Result<void>> like(Track track, bool on) override;
         Task<Result<void>> follow(std::string artist, bool on) override;
         Task<Result<void>> collect(std::string album, bool on) override;
+        Task<Result<void>> collect_playlist(std::string id, bool on);
+        Task<Result<std::vector<Card>>> collected_playlists();
         Task<Result<std::vector<Card>>> collected_albums() override;
         Task<Result<std::vector<Card>>> followed_artists() override;
         Task<Result<Card>> create_playlist(std::string name, bool hidden) override;
         Task<Result<void>> rename_playlist(std::string id, std::string name) override;
         Task<Result<void>> delete_playlist(std::string id) override;
         Task<Result<void>> edit_playlist(std::string id, Track track, bool add) override;
+        Task<Result<void>> reorder_playlist(std::string id, std::vector<Track> tracks);
 
         bool logged_in() const override {
             return client.logged_in();

@@ -401,8 +401,8 @@ namespace lyren::ncm {
         features.fm = [this] {
             return fm();
         };
-        features.fm_trash = [this](std::string id) {
-            return fm_trash(std::move(id));
+        features.fm_trash = [this](Track track) {
+            return fm_trash(std::move(track.id));
         };
         features.cloud = [this] {
             return cloud();
