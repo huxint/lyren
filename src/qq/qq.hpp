@@ -31,6 +31,8 @@ namespace lyren::qq {
     Result<void> parse_playlist_order_write(const Reply &reply);
     Result<CommentPage> parse_comments(const Reply &reply, bool replies = false);
     Result<void> parse_comment_like(const Reply &reply);
+    Result<std::string> parse_comment_post(const Reply &reply);
+    Result<void> parse_comment_delete(const Reply &reply);
 
     struct DislikesPage {
         std::vector<Dislike> items;
@@ -81,6 +83,8 @@ namespace lyren::qq {
         Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) override;
         Task<Result<CommentPage>> comment_replies(std::string root, int page, std::string cursor);
         Task<Result<void>> like_comment(std::string id, bool on);
+        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {});
+        Task<Result<void>> delete_comment(std::string id);
 
         Task<Result<std::pair<Card, std::vector<Card>>>> user_playlists(std::string uid) override;
         Task<Result<std::vector<std::string>>> liked_ids(std::string uid) override;

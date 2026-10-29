@@ -9,7 +9,7 @@
 namespace lyren::ui {
 
     static int char_class(char32_t c) {
-        if (c == ' ' || c == '\t' || c == 0x3000) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == 0x3000) {
             return 0;
         }
         if (c < 0x80) {
@@ -92,14 +92,19 @@ namespace lyren::ui {
         anchor = a, cursor = b;
     }
 
-    void TextEdit::insert(std::string &text, std::string_view s) {
-        std::string clean(s);
-        std::ranges::replace_if(
-            clean,
-            [](char c) {
-                return c == '\n' || c == '\r' || c == '\t';
-            },
-            ' ');
+    void TextEdit::insert(std::string &text, std::string_view s, bool multiline) {
+        std::string clean;
+        clean.reserve(s.size());
+        for (size_t i = 0; i < s.size(); ++i) {
+            char c = s[i];
+            if (c == '\r') {
+                if (i + 1 < s.size() && s[i + 1] == '\n') {
+                    ++i;
+                }
+                c = '\n';
+            }
+            clean += c == '\t' || (c == '\n' && !multiline) ? ' ' : c;
+        }
         size_t at = lo();
         text.replace(at, hi() - at, clean);
         cursor = anchor = at + clean.size();
@@ -110,7 +115,7 @@ namespace lyren::ui {
         cursor = anchor = from;
     }
 
-    TextEdit::Key TextEdit::apply(std::string &text, const wl::KeyEvent &k, std::string &copied) {
+    TextEdit::Key TextEdit::apply(std::string &text, const wl::KeyEvent &k, std::string &copied, bool multiline) {
         bool ctrl = k.mods & wl::mod_ctrl, shift = k.mods & wl::mod_shift;
         switch (k.keysym) {
             case XKB_KEY_Left:
@@ -154,6 +159,10 @@ namespace lyren::ui {
                 return Key::edited;
             case XKB_KEY_Return:
             case XKB_KEY_KP_Enter:
+                if (multiline) {
+                    insert(text, "\n", true);
+                    return Key::edited;
+                }
                 return Key::submit;
             case XKB_KEY_Escape:
                 return Key::cancel;
@@ -185,7 +194,7 @@ namespace lyren::ui {
         if (k.text.empty() || (k.mods & wl::mod_alt)) {
             return Key::ignored;
         }
-        insert(text, k.text);
+        insert(text, k.text, multiline);
         return Key::edited;
     }
 

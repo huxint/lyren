@@ -240,6 +240,8 @@ namespace lyren::ui {
         bool icon_button(Id id, Rect r, std::string_view icon, float icon_size = 18, bool active = false);
         // Returns true when Enter is pressed.
         bool text_box(Id id, Rect r, std::string &text, std::string_view placeholder, std::string_view icon = {});
+        // Wrapped multiline editor. Enter always adds a line; it never submits.
+        void text_area(Id id, Rect r, std::string &text, std::string_view placeholder);
         // Returns true while the user changes the value (0..1).
         bool slider(Id id, Rect r, float &value, SliderStyle style = {});
         bool tabs(Id id, Rect r, std::span<const std::string_view> labels, int &selected, TabStyle style = TabStyle::underline);
@@ -310,7 +312,8 @@ namespace lyren::ui {
         };
         struct EditBox {
             TextEdit edit;
-            float scroll_x = 0;
+            float scroll_x = 0, scroll_y = 0, preferred_x = -1;
+            bool line_end = false; // at a soft wrap, the caret belongs to the preceding line
             double blink = 0;
             std::string preedit;
             int preedit_cursor = -1;
@@ -326,7 +329,7 @@ namespace lyren::ui {
             return std::max(0.f, s.content - s.view.h);
         }
         void step_scroll(Scroll &s);
-        void edit_input(Id id, EditBox &box, std::string &text, bool &submitted);
+        void edit_input(Id id, EditBox &box, std::string &text, bool &submitted, float multiline_width = 0);
         void draw_menu();
         void draw_modal();
         void draw_toasts();

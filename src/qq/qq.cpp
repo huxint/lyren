@@ -291,7 +291,7 @@ namespace lyren::qq {
         struct QComment {
             Str Nick, Avatar, Content, SeqNo, CmId, RankScore;
             int64_t PubTime = 0;
-            int PraiseNum = 0, ReplyCnt = 0, IsPraised = 0;
+            int PraiseNum = 0, ReplyCnt = 0, IsPraised = 0, IsSelf = 0;
             Vec<QReplied> RepliedComments;
         };
         struct QCommentList {
@@ -301,6 +301,10 @@ namespace lyren::qq {
         struct QComments {
             std::optional<QCommentList> CommentList;
             int SubCode = 0;
+        };
+        struct QCommentPost {
+            int SubCode = 0;
+            Str Msg, AddedCmId, VerifyUrl;
         };
 
         struct QSession {
@@ -971,11 +975,17 @@ namespace lyren::qq {
         features.library.reorder_playlist = [this](std::string id, std::vector<Track> tracks) {
             return reorder_playlist(std::move(id), std::move(tracks));
         };
-        features.comments.replies = [this](std::string root, int page, std::string cursor) {
+        features.comments.replies = [this](Subject, std::string, std::string root, int page, std::string cursor) {
             return comment_replies(std::move(root), page, std::move(cursor));
         };
-        features.comments.like = [this](std::string id, bool on) {
+        features.comments.like = [this](Subject, std::string, std::string id, bool on) {
             return like_comment(std::move(id), on);
+        };
+        features.comments.post = [this](Subject subject, std::string id, std::string content, std::string reply) {
+            return post_comment(subject, std::move(id), std::move(content), std::move(reply));
+        };
+        features.comments.remove = [this](Subject, std::string, std::string id) {
+            return delete_comment(std::move(id));
         };
         features.releases.categories[0] = {{"5", "Latest"}, {"1", "Mainland"}, {"6", "HK/TW"}, {"2", "Western"}, {"4", "Korea"}, {"3", "Japan"}};
         features.releases.categories[1] = {{"1", "Mainland"}, {"2", "HK/TW"}, {"3", "Western"}, {"4", "Korea"}, {"5", "Japan"}};
@@ -1228,6 +1238,10 @@ namespace lyren::qq {
         auto r = parse<One<QLyric>>(co_await client.call({{"music.musichallSong.PlayLyricInfo", "GetPlayLyricInfo", param}}));
         if (!r) {
             co_return std::unexpected(r.error());
+        }
+        // The service reports songs without a lyric resource as 24001.
+        if (r->req_0 && r->req_0->code == 24001) {
+            co_return std::vector<LyricLine>{};
         }
         auto d = take_data(r->req_0);
         if (!d) {
@@ -1573,6 +1587,7 @@ namespace lyren::qq {
                 m.id = *c.CmId;
                 m.replies = c.ReplyCnt;
                 m.liked = c.IsPraised != 0;
+                m.owned = c.IsSelf != 0;
                 if (c.RepliedComments && !c.RepliedComments->empty()) {
                     m.reply_user = c.RepliedComments->front().Nick.value_or("");
                     m.reply = trimmed(c.RepliedComments->front().Content);
@@ -1621,6 +1636,61 @@ namespace lyren::qq {
         std::string param =
             std::format(R"({{"comment_id":{},"type":{},"uin":{}}})", glz::write_json(glz::escape_bytes_t{id}).value(), on ? 3 : 4, glz::write_json(client.get("musicid")).value());
         co_return parse_comment_like(co_await client.call({{"GlobalComment.GlobalCommentWriteServer", "UpdateHotComment", std::move(param)}}, Comm::app, net::Retry::never));
+    }
+
+    static Result<QCommentPost> comment_written(const Reply &reply) {
+        auto r = parse<One<QCommentPost>>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        auto d = take_data(r->req_0);
+        if (!d) {
+            return std::unexpected(d.error());
+        }
+        if (d->VerifyUrl && !d->VerifyUrl->empty()) {
+            return std::unexpected("Complete verification in QQ Music before commenting");
+        }
+        if (d->SubCode != 0) {
+            return std::unexpected(d->Msg && !d->Msg->empty() ? *d->Msg : lyren::trf("QQ Music comment operation failed ({})", d->SubCode));
+        }
+        return d;
+    }
+
+    Result<std::string> parse_comment_post(const Reply &reply) {
+        auto d = comment_written(reply);
+        if (!d) {
+            return std::unexpected(d.error());
+        }
+        if (!d->AddedCmId || d->AddedCmId->empty()) {
+            return std::unexpected("QQ Music returned no posted comment ID");
+        }
+        return *d->AddedCmId;
+    }
+
+    Task<Result<std::string>> Qq::post_comment(Subject subject, std::string id, std::string content, std::string reply) {
+        int biz = subject == Subject::song ? 1 : subject == Subject::album ? 2 : 3;
+        if (id.starts_with(top_prefix)) {
+            biz = 4, id = id.substr(top_prefix.size());
+        }
+        std::string param = std::format(R"({{"BizType":{},"BizId":{},"Content":{})", biz, glz::write_json(id).value(), glz::write_json(glz::escape_bytes_t{content}).value());
+        if (!reply.empty()) {
+            param += std::format(R"(,"RepliedCmId":{})", glz::write_json(glz::escape_bytes_t{reply}).value());
+        }
+        param += '}';
+        co_return parse_comment_post(co_await client.call({{"music.globalComment.CommentWriteServer", "AddComment", std::move(param)}}, Comm::app, net::Retry::never));
+    }
+
+    Result<void> parse_comment_delete(const Reply &reply) {
+        auto r = comment_written(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        return {};
+    }
+
+    Task<Result<void>> Qq::delete_comment(std::string id) {
+        auto param = std::format(R"({{"CommentId":{}}})", glz::write_json(glz::escape_bytes_t{id}).value());
+        co_return parse_comment_delete(co_await client.call({{"music.globalComment.CommentWriteServer", "DelComment", std::move(param)}}, Comm::app, net::Retry::never));
     }
 
     Task<Result<std::pair<Card, std::vector<Card>>>> Qq::user_playlists(std::string uid) {

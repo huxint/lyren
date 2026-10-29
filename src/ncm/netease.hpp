@@ -4,6 +4,10 @@
 
 namespace lyren::ncm {
 
+    Result<CommentPage> parse_comments(const Reply &reply, bool replies = false);
+    Result<void> parse_comment_write(const Reply &reply);
+    Result<std::string> parse_comment_post(const Reply &reply);
+
     // NetEase Cloud Music. Endpoints and their encodings follow api-enhanced's module/*.js.
     class Netease : public Provider {
     public:
@@ -74,6 +78,10 @@ namespace lyren::ncm {
         Task<Result<void>> edit_playlist(std::string id, Track track, bool add) override;
 
         Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) override;
+        Task<Result<CommentPage>> comment_replies(Subject subject, std::string id, std::string root, std::string cursor);
+        Task<Result<void>> like_comment(Subject subject, std::string id, std::string comment, bool on);
+        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {});
+        Task<Result<void>> delete_comment(Subject subject, std::string id, std::string comment);
 
         // Listening reports: start puts the song in the account's recent plays, play counts it in the listening ranking.
         Task<void> report_start(std::string id, std::string source);

@@ -187,9 +187,15 @@ namespace lyren {
             std::string cursor, error;
             double since = -10;
         };
+        struct CommentDraft {
+            std::string text;
+            std::optional<Comment> reply;
+            bool sending = false, focus = false;
+        };
         struct ReplyView {
             Comment root;
             std::shared_ptr<Feed> feed = std::make_shared<Feed>();
+            std::shared_ptr<CommentDraft> draft = std::make_shared<CommentDraft>();
             double opened = -10;
         };
         // The comments panel's current thread: what it comments on, its two feeds and the open replies.
@@ -203,6 +209,8 @@ namespace lyren {
             uint64_t gen = 0;
             std::array<std::shared_ptr<Feed>, 2> feeds{std::make_shared<Feed>(), std::make_shared<Feed>()}; // hot, newest
             std::shared_ptr<ReplyView> replies;
+            std::shared_ptr<CommentDraft> draft = std::make_shared<CommentDraft>();
+            bool reset_scroll = false;
         };
         // A like the user set on a comment, shown until the service's own pages echo it back.
         struct Like {
@@ -254,6 +262,7 @@ namespace lyren {
         void side_panel(ui::Ui &ui, ui::Rect slot, float stage);
         void queue_panel(ui::Ui &ui, ui::Rect r);
         void comments_panel(ui::Ui &ui, ui::Rect r);
+        float comment_composer(ui::Ui &ui, ui::Rect r);
         // stage: how far the stage is up; on it the bar also holds the comments and translation of the song on show.
         void player_bar(ui::Ui &ui, ui::Rect r, float stage);
         // The cover, title, artist and heart of the current track, which move between the player bar (np 0) and the
@@ -324,13 +333,15 @@ namespace lyren {
         void load_comments(int tab);
         Task<void> fetch_comments(uint64_t gen, int tab, int page, std::string cursor);
         void refresh_comments();
-        void open_replies(ui::Ui &ui, Comment root);
+        void open_replies(Comment root);
         void load_replies(std::shared_ptr<ReplyView> view);
         Task<void> fetch_replies(std::shared_ptr<ReplyView> view, int page, std::string cursor);
         void toggle_comment_like(Source source, const Comment &comment);
+        void send_comment();
+        void confirm_comment_delete(ui::Ui &ui, Comment comment);
         // Reconcile cached copies before returning a confirmed like to the service's own numbers.
         void settle_likes(Source source, const std::vector<Comment> &comments);
-        void clear_comment_likes(Source source);
+        void clear_comment_writes(Source source);
 
         // Playback.
         void play(const std::vector<Track> &list, int i);
@@ -575,6 +586,7 @@ namespace lyren {
         Thread thread_;
         // The user's own like per comment, key(source, id): the panel shows it over the service's until a read echoes it.
         std::map<std::string, Like> comment_likes_;
+        std::map<std::string, uint64_t> comment_deletes_;
         uint64_t comment_write_gen_ = 0;
         std::string edit_name_;
         bool edit_hidden_ = false, edit_focus_ = false;

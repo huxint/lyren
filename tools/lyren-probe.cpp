@@ -6,6 +6,8 @@
 //   lyren-probe lyrics <song id>
 //   lyren-probe login     QR login in the terminal; saves the credentials like the app does
 //   lyren-probe account
+//   lyren-probe comments <song|album|playlist> <id> [new] | replies <song|album|playlist> <id> <comment id>
+//   lyren-probe [qq] post-comment <song|album|playlist> <id> <text file> [reply id]
 //   lyren-probe call <uri> [fields] [weapi|clientlog]   raw request, e.g. call /api/song/lyric/v1 '"id":186016'; prints the JSON
 //   lyren-probe qq search <query> [tracks|albums|artists|playlists] | url <song mid> [quality] | lyrics <song id>
 //   lyren-probe qq album <mid> | artist <mid> | playlist <id> | top | recommend | comments <song id> [new]
@@ -32,6 +34,7 @@
 #include <cstring>
 #include <fstream>
 #include <print>
+#include <span>
 #include <string>
 #include <vector>
 #include <unordered_set>
@@ -202,6 +205,41 @@ static void print_qr(const std::string &text) {
     QRcode_free(q);
 }
 
+static Result<Subject> comment_subject(std::string_view name) {
+    if (name == "song") {
+        return Subject::song;
+    }
+    if (name == "album") {
+        return Subject::album;
+    }
+    if (name == "playlist") {
+        return Subject::playlist;
+    }
+    return std::unexpected("Expected song, album or playlist");
+}
+
+static Task<Result<std::string>> post_comment(Provider &provider, std::span<const std::string> args) {
+    if (args.size() < 3 || args.size() > 4) {
+        co_return std::unexpected("Expected post-comment <song|album|playlist> <id> <text file> [reply id]");
+    }
+    auto subject = comment_subject(args[0]);
+    if (!subject) {
+        co_return std::unexpected(subject.error());
+    }
+    if (!provider.logged_in()) {
+        co_return std::unexpected("Sign in before commenting");
+    }
+    std::ifstream file(args[2]);
+    if (!file) {
+        co_return std::unexpected("Could not open comment text file");
+    }
+    std::string content{std::istreambuf_iterator<char>(file), {}};
+    if (content.find_first_not_of(" \t\r\n") == std::string::npos) {
+        co_return std::unexpected("Comment cannot be empty");
+    }
+    co_return co_await provider.features.comments.post(*subject, args[1], std::move(content), args.size() == 4 ? args[3] : "");
+}
+
 static int ncm_command(const std::vector<std::string> &args) {
     Loop loop;
     net::Http http;
@@ -261,6 +299,37 @@ static int ncm_command(const std::vector<std::string> &args) {
                 std::println("{:6.2f}  {}{}{}{}", l.time, l.text, l.translation.empty() ? "" : "  /  ", l.translation,
                              l.words.empty() ? "" : std::format("  ({} words)", l.words.size()));
             }
+        } else if (cmd == "comments" || cmd == "replies") {
+            bool replies = cmd == "replies";
+            if (args.size() < (replies ? 4u : 3u) || args.size() > 4) {
+                co_return fail(replies ? "Expected replies <song|album|playlist> <id> <comment id>" : "Expected comments <song|album|playlist> <id> [new]");
+            }
+            auto subject = comment_subject(args[1]);
+            if (!subject) {
+                co_return fail(subject.error());
+            }
+            std::string cursor;
+            for (int page = 1; page <= 2; ++page) {
+                auto r = replies ? co_await ncm.comment_replies(*subject, args[2], args[3], cursor)
+                                 : co_await ncm.comments(*subject, args[2], args.size() < 4 || args[3] != "new", page, cursor);
+                if (!r) {
+                    co_return fail(r.error());
+                }
+                std::println("page {}: {} of {}, more {}, cursor {}", page, r->comments.size(), r->total, r->more, r->cursor);
+                for (const auto &c : r->comments) {
+                    std::println("  [{}] {} · {} likes{} · {} replies · {}: {}", c.time, c.id, c.likes, c.liked ? " (liked)" : "", c.replies, c.user, c.text);
+                }
+                if (!r->more) {
+                    break;
+                }
+                cursor = std::move(r->cursor);
+            }
+        } else if (cmd == "post-comment") {
+            auto r = co_await post_comment(ncm, std::span(args).subspan(1));
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("Comment sent: {}", *r);
         } else if (cmd == "login") {
             auto url = co_await ncm.qr_start();
             if (!url) {
@@ -659,6 +728,12 @@ static int qq_command(const std::vector<std::string> &args) {
                 co_return fail(r.error());
             }
             print_tracks(*r);
+        } else if (cmd == "post-comment") {
+            auto r = co_await post_comment(q, std::span(args).subspan(2));
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("Comment sent: {}", *r);
         } else if (cmd == "replies") {
             if (args.size() != 3 || arg(2).empty()) {
                 co_return fail("Expected replies <comment id>");
@@ -827,7 +902,7 @@ int main(int argc, char **argv) {
     if (args.size() >= 2 && args[0] == "qq") {
         return qq_command(args);
     }
-    for (const char *cmd : {"search", "url", "lyrics", "login", "account", "call"}) {
+    for (const char *cmd : {"search", "url", "lyrics", "login", "account", "comments", "replies", "post-comment", "call"}) {
         if (!args.empty() && args[0] == cmd) {
             return ncm_command(args);
         }
@@ -836,6 +911,8 @@ int main(int argc, char **argv) {
         stderr,
         "usage: lyren-probe [--debug] play <url|file> [wait:MS seek:S pause play vol:V open:SRC quit ...]\n"
         "       lyren-probe search <query> [tracks|albums|artists|playlists] | url <id> [quality] | lyrics <id> | login | account\n"
+        "       lyren-probe comments <song|album|playlist> <id> [new] | replies <song|album|playlist> <id> <comment id>\n"
+        "       lyren-probe [qq] post-comment <song|album|playlist> <id> <text file> [reply id]\n"
         "       lyren-probe call <uri> [fields] [weapi|clientlog]\n"
         "       lyren-probe qq search|url|lyrics|album|artist|playlist|top|recommend|guess|radar|new-songs|new-albums|saved-playlists|categories|square|similar|comments|call ...");
     return 2;

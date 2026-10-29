@@ -144,9 +144,16 @@ namespace lyren {
 
     void Shell::set_thread(ui::Ui &ui, Source source, Subject subject, std::string id, std::string title, std::string cover_url, bool follows) {
         thread_.follows = follows;
+        bool same = thread_.source == source && thread_.subject == subject && thread_.id == id;
         // The same thread stays unless its first page failed, which this retries.
-        if (thread_.source == source && thread_.subject == subject && thread_.id == id && (thread_.feeds[0]->loading || thread_.feeds[0]->page > 0)) {
+        if (same && (thread_.feeds[0]->loading || thread_.feeds[0]->page > 0)) {
             return;
+        }
+        if (!same) {
+            thread_.draft = std::make_shared<CommentDraft>();
+            if (ui.focus == ui.id("comment-draft") || ui.focus == ui.id("reply-draft")) {
+                ui.focus = 0;
+            }
         }
         thread_.source = source;
         thread_.subject = subject;
@@ -210,10 +217,10 @@ namespace lyren {
         redraw_();
     }
 
-    void Shell::open_replies(ui::Ui &ui, Comment root) {
+    void Shell::open_replies(Comment root) {
         thread_.replies = std::make_shared<ReplyView>(std::move(root));
-        thread_.replies->opened = ui.now;
-        ui.scroll_to(ui.id("comment-replies"), 0);
+        thread_.replies->opened = now_();
+        thread_.reset_scroll = true;
         load_replies(thread_.replies);
     }
 
@@ -229,7 +236,7 @@ namespace lyren {
 
     Task<void> Shell::fetch_replies(std::shared_ptr<ReplyView> view, int page, std::string cursor) {
         auto feed = view->feed;
-        auto r = co_await provider(thread_.source).features.comments.replies(view->root.id, page, std::move(cursor));
+        auto r = co_await provider(thread_.source).features.comments.replies(thread_.subject, thread_.id, view->root.id, page, std::move(cursor));
         if (thread_.replies != view || view->feed != feed) {
             co_return;
         }
@@ -278,9 +285,12 @@ namespace lyren {
         }
     }
 
-    void Shell::clear_comment_likes(Source source) {
+    void Shell::clear_comment_writes(Source source) {
         std::erase_if(comment_likes_, [&](const auto &like) {
             return like.first.starts_with(std::string(platform(source).id) + ':');
+        });
+        std::erase_if(comment_deletes_, [&](const auto &entry) {
+            return entry.first.starts_with(std::string(platform(source).id) + ':');
         });
     }
 
@@ -303,8 +313,8 @@ namespace lyren {
         uint64_t gen = ++comment_write_gen_;
         comment_likes_[k] = {.liked = liked, .likes = likes, .pending = gen};
         redraw_();
-        spawn([](Shell *self, Source source, std::string id, bool like, std::optional<Like> previous, uint64_t gen) -> Task<void> {
-            auto r = co_await self->provider(source).features.comments.like(id, like);
+        spawn([](Shell *self, Source source, Subject subject, std::string resource, std::string id, bool like, std::optional<Like> previous, uint64_t gen) -> Task<void> {
+            auto r = co_await self->provider(source).features.comments.like(subject, std::move(resource), id, like);
             auto mine = self->comment_likes_.find(key(source, id));
             if (mine == self->comment_likes_.end() || mine->second.pending != gen) {
                 co_return;
@@ -320,13 +330,167 @@ namespace lyren {
                 mine->second.pending = 0;
             }
             self->redraw_();
-        }(this, source, comment.id, liked, previous, gen));
+        }(this, source, thread_.subject, thread_.id, comment.id, liked, previous, gen));
+    }
+
+    void Shell::send_comment() {
+        auto view = thread_.replies;
+        auto &draft = view ? *view->draft : *thread_.draft;
+        std::optional<Comment> target = draft.reply ? draft.reply : view ? std::optional(view->root) : std::nullopt;
+        draft.sending = true;
+        spawn([](Shell *self, Source source, Subject subject, std::string resource, std::shared_ptr<CommentDraft> thread_draft, std::shared_ptr<ReplyView> view,
+                 std::optional<Comment> target) -> Task<void> {
+            auto &draft = view ? *view->draft : *thread_draft;
+            auto r = co_await self->provider(source).features.comments.post(subject, std::move(resource), draft.text, target ? target->id : "");
+            draft.sending = false;
+            // The thread draft changes only when the resource or account changes.
+            if (self->thread_.draft != thread_draft) {
+                co_return;
+            }
+            if (!r) {
+                co_return self->notify(lyren::trf("Could not send comment: {}", lyren::tr(r.error())), "triangle-alert", true);
+            }
+            draft.text.clear();
+            draft.reply.reset();
+            self->notify(std::string(lyren::tr("Comment sent")), "circle-check");
+            auto current = self->thread_.replies;
+            if (current && target && current->root.id == (view ? view->root.id : target->id)) {
+                current->feed = std::make_shared<Feed>();
+                self->load_replies(current);
+            }
+            if (current == view) {
+                if (!view && target) {
+                    self->open_replies(std::move(*target));
+                } else if (!view) {
+                    self->thread_.tab = 1;
+                    self->thread_.time = self->now_();
+                }
+                self->thread_.reset_scroll = true;
+            }
+            self->refresh_comments();
+        }(this, thread_.source, thread_.subject, thread_.id, thread_.draft, std::move(view), std::move(target)));
+    }
+
+    void Shell::confirm_comment_delete(ui::Ui &ui, Comment comment) {
+        ui.open_modal(400, 232, [this, source = thread_.source, subject = thread_.subject, resource = thread_.id, comment](ui::Ui &u, Rect r) {
+            const auto &t = u.theme();
+            u.label({r.x, r.y, r.w - 40, 30}, lyren::tr("Delete comment?"), {.size = t.fs(20), .color = t.text});
+            auto lines = wrap_lines(u.painter(), comment.text, t.fs(13), r.w);
+            for (size_t i = 0; i < std::min<size_t>(lines.size(), 3); ++i) {
+                u.label({r.x, r.y + 46 + static_cast<float>(i) * 22, r.w, 22}, lines[i], {.size = t.fs(13), .color = t.text_dim});
+            }
+            float ok_w = std::max(96.f, button_width(u, lyren::tr("Delete"), true)), cancel_w = std::max(84.f, button_width(u, lyren::tr("Cancel"), false));
+            Rect ok{r.right() - ok_w, r.bottom() - 38, ok_w, 38};
+            if (u.button(u.id("comment-delete-cancel"), {ok.x - cancel_w - 8, ok.y, cancel_w, 38}, lyren::tr("Cancel"), ui::ButtonKind::ghost)) {
+                u.close_modal();
+            }
+            if (!u.button(u.id("comment-delete-confirm"), ok, lyren::tr("Delete"), ui::ButtonKind::primary, "trash")) {
+                return;
+            }
+            u.close_modal();
+            uint64_t gen = ++comment_write_gen_;
+            comment_deletes_[key(source, comment.id)] = gen;
+            spawn([](Shell *self, Source source, Subject subject, std::string resource, std::string id, uint64_t gen) -> Task<void> {
+                auto result = co_await self->provider(source).features.comments.remove(subject, resource, id);
+                auto pending = self->comment_deletes_.find(key(source, id));
+                if (pending == self->comment_deletes_.end() || pending->second != gen) {
+                    co_return;
+                }
+                self->comment_deletes_.erase(pending);
+                if (!result) {
+                    co_return self->notify(lyren::trf("Could not delete comment: {}", lyren::tr(result.error())), "triangle-alert", true);
+                }
+                self->comment_likes_.erase(key(source, id));
+                self->notify(std::string(lyren::tr("Comment deleted")), "trash");
+                if (self->thread_.source != source || self->thread_.subject != subject || self->thread_.id != resource) {
+                    co_return;
+                }
+                auto clear_target = [&](CommentDraft &draft) {
+                    if (draft.reply && draft.reply->id == id) {
+                        draft.reply.reset();
+                    }
+                };
+                clear_target(*self->thread_.draft);
+                if (auto view = self->thread_.replies) {
+                    if (view->root.id == id) {
+                        self->thread_.replies.reset();
+                    } else {
+                        clear_target(*view->draft);
+                        view->feed = std::make_shared<Feed>();
+                        self->load_replies(view);
+                    }
+                }
+                self->refresh_comments();
+            }(this, source, subject, resource, comment.id, gen));
+        });
+    }
+
+    float Shell::comment_composer(ui::Ui &ui, Rect r) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        auto &provider = this->provider(thread_.source);
+        if (!provider.features.comments.post) {
+            return 0;
+        }
+        if (!provider.logged_in()) {
+            constexpr float height = 58;
+            p.rect({r.x + 18, r.bottom() - height, r.w - 36, 1}, t.border);
+            auto label = lyren::trf("Sign in to {} to comment", lyren::tr(platform(thread_.source).short_name));
+            if (ui.button(ui.id("comment-login"), {r.x + 18, r.bottom() - 46, r.w - 36, 34}, label, ui::ButtonKind::secondary, "qr-code")) {
+                open_account(ui);
+                login_step_ = static_cast<int>(thread_.source);
+                login_time_ = ui.now;
+                spawn(qr_login());
+            }
+            return height;
+        }
+        auto view = thread_.replies;
+        auto draft = view ? view->draft : thread_.draft;
+        const Comment *target = draft->reply ? &*draft->reply : view ? &view->root : nullptr;
+        float line_h = std::round(t.fs(13) * 1.55f);
+        float input_h = (r.h < 420 ? line_h : line_h * 2) + 20;
+        float height = input_h + 58 + (target ? 26 : 0);
+        float top = r.bottom() - height;
+        p.rect({r.x + 18, top, r.w - 36, 1}, t.border);
+        top += 12;
+        ui.disabled = draft->sending || panel_ != Panel::comments;
+        if (target) {
+            ui.label({r.x + 18, top, r.w - 68, 22}, lyren::trf("Replying to {}", target->user), {.size = t.fs(12), .color = t.text_dim});
+            if (draft->reply && ui.icon_button(ui.id("comment-cancel-reply"), {r.right() - 42, top - 2, 24, 24}, "x", 13)) {
+                draft->reply.reset();
+            }
+            top += 26;
+        }
+        ui::Id field = ui.id(view ? "reply-draft" : "comment-draft");
+        if (std::exchange(draft->focus, false)) {
+            ui.focus = field;
+        }
+        {
+            Fade fade(p, draft->sending ? 0.5f : 1.f);
+            ui.text_area(field, {r.x + 18, top, r.w - 36, input_h}, draft->text, lyren::tr(target ? "Write a reply…" : "Write a comment…"));
+        }
+        float bottom = top + input_h + 8;
+        ui.label({r.x + 18, bottom, r.w - 150, 28}, lyren::tr("Enter for a new line"), {.size = t.fs(11), .color = t.text_dim});
+        std::string_view label = lyren::tr(draft->sending ? "Sending…" : "Send");
+        float send_w = std::max(76.f, button_width(ui, label, false));
+        ui.disabled = draft->sending || panel_ != Panel::comments || draft->text.find_first_not_of(" \t\r\n") == std::string::npos;
+        {
+            Fade dim(p, ui.disabled ? 0.4f : 1.f);
+            if (ui.button(ui.id("comment-send"), {r.right() - 18 - send_w, bottom, send_w, 28}, label, ui::ButtonKind::primary)) {
+                send_comment();
+            }
+        }
+        ui.disabled = false;
+        return height;
     }
 
     void Shell::comments_panel(ui::Ui &ui, Rect r) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto reply = thread_.replies;
+        if (std::exchange(thread_.reset_scroll, false)) {
+            ui.scroll_to(ui.id(reply ? "comment-replies" : thread_.tab ? "comments-new" : "comments-hot"), 0);
+        }
         Feed &f = reply ? *reply->feed : *thread_.feeds[thread_.tab];
         if (reply) {
             if (ui.icon_button(ui.id("replies-back"), {r.x + 14, r.y + 16, 32, 32}, "chevron-left", 18)) {
@@ -337,7 +501,8 @@ namespace lyren {
             Rect quote{r.x + 18, r.y + 64, r.w - 36, 52};
             p.rect(quote, t.text.with_alpha(0.05f), t.radius_s());
             p.text(quote.x + 10, quote.y + 17, reply->root.user, {.size = t.fs(12), .color = t.text_dim}, quote.w - 20);
-            p.text(quote.x + 10, quote.y + 38, reply->root.text, {.size = t.fs(13), .color = t.text}, quote.w - 20);
+            auto first_line = std::string_view(reply->root.text).substr(0, reply->root.text.find('\n'));
+            p.text(quote.x + 10, quote.y + 38, first_line, {.size = t.fs(13), .color = t.text}, quote.w - 20);
         } else {
             Rect art{r.x + 18, r.y + 18, 44, 44};
             cover(ui, art, thread_.cover, t.radius_s(), thread_.subject == Subject::song ? "music" : thread_.subject == Subject::album ? "disc-album" : "list-music");
@@ -370,11 +535,11 @@ namespace lyren {
             show_panel(Panel::none);
         }
         p.rect({r.x + 18, r.y + 124, r.w - 36, 1}, t.border);
+        float composer_h = comment_composer(ui, r);
 
         float enter = ui.progress(reply ? reply->opened : thread_.time, 380);
         Fade fade(p, enter);
-        // Like the queue, the list stops 8 px short of the panel's bottom edge.
-        Rect view{r.x, r.y + 125, r.w, r.h - 125 - 8};
+        Rect view{r.x, r.y + 125, r.w, r.h - 125 - 8 - composer_h};
         const float x = r.x + 18 + (1 - enter) * 20 * (reply || thread_.tab ? 1 : -1), w = r.w - 36;
         if (f.comments.empty()) {
             page_status(ui, view, f.loading, f.error.empty() && !f.loading ? std::string(lyren::tr(reply ? "No replies yet" : "No comments yet")) : f.error, false);
@@ -503,12 +668,38 @@ namespace lyren {
             ly += quote_h;
         }
         float time_w = tw;
+        float actions_right = x + w;
+        if (c.owned && provider(source).logged_in() && provider(source).features.comments.remove) {
+            ui.disabled = comment_deletes_.contains(key(source, c.id));
+            {
+                Fade dim(p, ui.disabled ? 0.4f : 1.f);
+                if (ui.icon_button(ui.id("comment-delete"), {actions_right - 24, ly + 2, 24, 24}, "trash", 13)) {
+                    confirm_comment_delete(ui, c);
+                }
+            }
+            ui.disabled = false;
+            actions_right -= 30;
+            time_w -= 30;
+        }
+        if (provider(source).features.comments.post) {
+            auto draft = thread_.replies ? thread_.replies->draft : thread_.draft;
+            std::string_view label = lyren::tr("Reply");
+            float rw = p.measure(label, small) + 16;
+            ui.disabled = draft->sending;
+            if (ui.button(ui.id("comment-reply"), {actions_right - rw, ly + 2, rw, 24}, label, ui::ButtonKind::ghost)) {
+                draft->reply = c;
+                draft->focus = true;
+            }
+            ui.disabled = false;
+            actions_right -= rw + 8;
+            time_w -= rw + 8;
+        }
         if (c.replies > 0 && provider(source).features.comments.replies) {
             std::string label = lyren::trf("{} replies", c.replies);
             float rw = p.measure(label, small) + 20;
-            Rect button{x + w - rw, ly + 2, rw, 24};
+            Rect button{actions_right - rw, ly + 2, rw, 24};
             if (ui.interact(ui.id("comment-replies"), button).clicked) {
-                open_replies(ui, c);
+                open_replies(c);
             }
             ui.label(button, label, {.size = small.size, .color = t.accent}, Align::right);
             time_w -= rw + 12;

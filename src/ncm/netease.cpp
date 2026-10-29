@@ -233,7 +233,10 @@ namespace lyren::ncm {
         struct NComment {
             std::optional<NCommentUser> user;
             Str content, timeStr;
+            uint64_t commentId = 0;
             int32_t likedCount = 0;
+            std::optional<int32_t> replyCount;
+            std::optional<bool> liked, owner;
             std::optional<std::vector<NReplied>> beReplied;
         };
         struct CommentsData {
@@ -241,9 +244,13 @@ namespace lyren::ncm {
             int32_t totalCount = 0;
             std::optional<bool> hasMore;
             Str cursor;
+            int64_t time = -1; // floor replies continue with this timestamp
         };
         struct CommentsReply {
+            int code = 0;
+            Str message, msg;
             std::optional<CommentsData> data;
+            std::optional<NComment> comment;
         };
         struct NProfile {
             uint64_t userId = 0;
@@ -376,6 +383,23 @@ namespace lyren::ncm {
             return {};
         }
 
+        std::string comment_thread(Subject subject, std::string_view id) {
+            static constexpr std::array prefixes = {"R_SO_4_", "R_AL_3_", "A_PL_0_"};
+            return std::string(prefixes[static_cast<size_t>(subject)]) + std::string(id);
+        }
+
+        Result<CommentsReply> comment_response(const Reply &reply) {
+            auto r = parse<CommentsReply>(reply);
+            if (!r) {
+                return std::unexpected(r.error());
+            }
+            if (r->code != 200) {
+                std::string message = r->message.value_or(r->msg.value_or(""));
+                return std::unexpected(message.empty() ? lyren::trf("NetEase Music comment operation failed ({})", r->code) : std::move(message));
+            }
+            return r;
+        }
+
     } // namespace
 
     Netease::Netease(Loop &loop, net::Http &http)
@@ -400,6 +424,18 @@ namespace lyren::ncm {
         };
         features.square.playlists = [this](std::string category, int offset) {
             return square(std::move(category), offset);
+        };
+        features.comments.replies = [this](Subject subject, std::string id, std::string root, int, std::string cursor) {
+            return comment_replies(subject, std::move(id), std::move(root), std::move(cursor));
+        };
+        features.comments.like = [this](Subject subject, std::string id, std::string comment, bool on) {
+            return like_comment(subject, std::move(id), std::move(comment), on);
+        };
+        features.comments.post = [this](Subject subject, std::string id, std::string content, std::string reply) {
+            return post_comment(subject, std::move(id), std::move(content), std::move(reply));
+        };
+        features.comments.remove = [this](Subject subject, std::string id, std::string comment) {
+            return delete_comment(subject, std::move(id), std::move(comment));
         };
         features.reporting.start = [this](std::string id, std::string source) {
             return report_start(std::move(id), std::move(source));
@@ -1054,34 +1090,44 @@ namespace lyren::ncm {
     }
 
     Task<Result<CommentPage>> Netease::comments(Subject subject, std::string id, bool hot, int page, std::string cursor) {
-        static constexpr std::array threads = {"R_SO_4_", "R_AL_3_", "A_PL_0_"};
         // Hot comments page by an offset, the newest by the time of the last one; the server hands back either.
         if (cursor.empty()) {
             cursor = hot ? "normalHot#0" : "0";
         }
-        auto r = parse<CommentsReply>(co_await client.call(
-            "/api/v2/resource/comments", std::format(R"("threadId":"{}{}","pageNo":{},"showInner":true,"pageSize":20,"cursor":{},"sortType":{})",
-                                                     threads[static_cast<int>(subject)], id, page, glz::write_json(glz::escape_bytes_t{cursor}).value(), hot ? 2 : 3)));
+        co_return parse_comments(
+            co_await client.call("/api/v2/resource/comments", std::format(R"("threadId":"{}","pageNo":{},"showInner":true,"pageSize":20,"cursor":{},"sortType":{})",
+                                                                          comment_thread(subject, id), page, glz::write_json(glz::escape_bytes_t{cursor}).value(), hot ? 2 : 3)));
+    }
+
+    Result<CommentPage> parse_comments(const Reply &reply, bool replies) {
+        auto r = comment_response(reply);
         if (!r) {
-            co_return std::unexpected(r.error());
+            return std::unexpected(r.error());
+        }
+        if (!r->data) {
+            return std::unexpected("NetEase Music returned no comment list");
         }
         CommentPage out;
-        if (!r->data) {
-            co_return out;
-        }
         const CommentsData &d = *r->data;
         out.total = d.totalCount;
         out.more = d.hasMore.value_or(false);
-        out.cursor = d.cursor.value_or("");
+        out.cursor = replies ? std::to_string(d.time) : d.cursor.value_or("");
         if (d.comments) {
             for (const auto &c : *d.comments) {
+                if (c.commentId == 0) {
+                    return std::unexpected("NetEase Music returned a comment without an ID");
+                }
                 Comment &m = out.comments.emplace_back();
+                m.id = std::to_string(c.commentId);
                 if (c.user) {
                     m.user = c.user->nickname.value_or(""), m.avatar = https(c.user->avatarUrl.value_or(""));
                 }
                 m.text = trimmed(c.content);
                 m.time = c.timeStr.value_or("");
                 m.likes = c.likedCount;
+                m.liked = c.liked.value_or(false);
+                m.owned = c.owner.value_or(false);
+                m.replies = c.replyCount.value_or(0);
                 if (c.beReplied && !c.beReplied->empty()) {
                     const NReplied &b = c.beReplied->front();
                     m.reply_user = b.user ? b.user->nickname.value_or("") : "";
@@ -1089,7 +1135,57 @@ namespace lyren::ncm {
                 }
             }
         }
-        co_return out;
+        if (out.more && !out.comments.empty() && (replies ? d.time < 0 : out.cursor.empty())) {
+            return std::unexpected("NetEase Music returned no comment pagination cursor");
+        }
+        return out;
+    }
+
+    Task<Result<CommentPage>> Netease::comment_replies(Subject subject, std::string id, std::string root, std::string cursor) {
+        co_return parse_comments(
+            co_await client.call("/api/resource/comment/floor/get",
+                                 std::format(R"("threadId":"{}","parentCommentId":"{}","time":{},"limit":20)", comment_thread(subject, id), root, cursor.empty() ? "-1" : cursor),
+                                 Api::weapi),
+            true);
+    }
+
+    Result<void> parse_comment_write(const Reply &reply) {
+        auto r = comment_response(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        return {};
+    }
+
+    Task<Result<void>> Netease::like_comment(Subject subject, std::string id, std::string comment, bool on) {
+        co_return parse_comment_write(co_await client.call(on ? "/api/v1/comment/like" : "/api/v1/comment/unlike",
+                                                           std::format(R"("threadId":"{}","commentId":"{}")", comment_thread(subject, id), comment), Api::weapi,
+                                                           net::Retry::never));
+    }
+
+    Result<std::string> parse_comment_post(const Reply &reply) {
+        auto r = comment_response(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        if (!r->comment || r->comment->commentId == 0) {
+            return std::unexpected("NetEase Music returned no posted comment ID");
+        }
+        return std::to_string(r->comment->commentId);
+    }
+
+    Task<Result<std::string>> Netease::post_comment(Subject subject, std::string id, std::string content, std::string reply) {
+        std::string fields = std::format(R"("threadId":"{}","content":{})", comment_thread(subject, id), glz::write_json(glz::escape_bytes_t{content}).value());
+        if (!reply.empty()) {
+            fields += std::format(R"(,"commentId":"{}")", reply);
+        }
+        co_return parse_comment_post(
+            co_await client.call(reply.empty() ? "/api/resource/comments/add" : "/api/resource/comments/reply", std::move(fields), Api::eapi, net::Retry::never));
+    }
+
+    Task<Result<void>> Netease::delete_comment(Subject subject, std::string id, std::string comment) {
+        co_return parse_comment_write(co_await client.call("/api/resource/comments/delete",
+                                                           std::format(R"("threadId":"{}","commentId":"{}")", comment_thread(subject, id), comment), Api::eapi, net::Retry::never));
     }
 
     // As api-enhanced's scrobble: every value is a string, and the play record always ends with "playend" (the server

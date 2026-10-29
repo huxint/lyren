@@ -800,10 +800,11 @@ namespace lyren {
         }
         bool account_changed = !lib.account || lib.account->id != a->id;
         if (account_changed && lib.account) {
-            clear_comment_likes(source);
+            clear_comment_writes(source);
         }
         lib.account = *a;
         if (account_changed && thread_.source == source && !thread_.id.empty()) {
+            thread_.draft = std::make_shared<CommentDraft>();
             thread_.replies.reset();
             refresh_comments();
         }
@@ -1058,18 +1059,12 @@ namespace lyren {
         ++lib.collection_gen;
         co_await provider(source).logout();
         lib.account.reset();
-        clear_comment_likes(source);
+        clear_comment_writes(source);
         if (thread_.source == source) {
-            for (auto &feed : thread_.feeds) {
-                for (auto &comment : feed->comments) {
-                    comment.liked = false;
-                }
-            }
-            if (thread_.replies) {
-                thread_.replies->root.liked = false;
-                for (auto &comment : thread_.replies->feed->comments) {
-                    comment.liked = false;
-                }
+            thread_.draft = std::make_shared<CommentDraft>();
+            thread_.replies.reset();
+            if (!thread_.id.empty()) {
+                refresh_comments();
             }
         }
         lib.playlists.clear();

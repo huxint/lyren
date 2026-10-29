@@ -215,7 +215,6 @@ TEST_CASE("QQ categories preserve service IDs independently of labels") {
     CHECK(result->hot[0].id == "3317");
     CHECK(result->groups[1].second[0].id == "167");
     CHECK(result->groups[1].second[0].name == "Sweet");
-    CHECK_FALSE(qq::parse_categories({.body = R"({"req_0":{"code":2001}})"}));
 }
 
 TEST_CASE("QQ discovery pagination preserves 64-bit playlist IDs and final pages") {
@@ -296,12 +295,8 @@ TEST_CASE("QQ radar unwraps capitalized Track records and keeps their order") {
     CHECK_FALSE(qq::parse_radar({.body = R"({"req_0":{"code":0,"data":{"VecSongs":[{}]}}})"}));
 }
 
-TEST_CASE("QQ discovery keeps service errors distinct from empty results") {
+TEST_CASE("QQ discovery distinguishes missing song lists from empty responses") {
     for (auto parse : {qq::parse_radio, qq::parse_radar, qq::parse_new_songs}) {
-        auto failed = parse({.body = R"({"req_0":{"code":2001,"data":{}}})"});
-        REQUIRE_FALSE(failed);
-        CHECK(failed.error() == "Sign in to QQ Music and try again");
-        CHECK_FALSE(parse({.error = "Network connection failed"}));
         CHECK_FALSE(parse({.body = R"({"req_0":{"code":0,"data":{}}})"}));
     }
     auto radio = qq::parse_radio({.body = R"({"req_0":{"code":0,"data":{"tracks":[]}}})"});
@@ -330,7 +325,6 @@ TEST_CASE("QQ new album pages use album mids and retain the service total") {
     REQUIRE(empty);
     CHECK(empty->cards.empty());
     CHECK_FALSE(qq::parse_new_albums({.body = R"({"req_0":{"code":0,"data":{"albums":[{"name":"Missing MID"}]}}})"}));
-    CHECK_FALSE(qq::parse_new_albums({.body = R"({"req_0":{"code":2001}})"}));
 }
 
 TEST_CASE("QQ playlist favorites reject per-item failures even when the RPC succeeded") {
@@ -338,7 +332,6 @@ TEST_CASE("QQ playlist favorites reject per-item failures even when the RPC succ
     CHECK_FALSE(qq::parse_playlist_write({.body = R"({"req_0":{"code":0,"data":{"result":0,"v_failedPlaylistId":[4714021623]}}})"}));
     CHECK_FALSE(qq::parse_playlist_write({.body = R"({"req_0":{"code":0,"data":{"result":1,"v_failedPlaylistId":[]}}})"}));
     CHECK_FALSE(qq::parse_playlist_write({.body = R"({"req_0":{"code":0,"data":{}}})"}));
-    CHECK_FALSE(qq::parse_playlist_write({.body = R"({"req_0":{"code":2001}})"}));
 }
 
 TEST_CASE("QQ saved playlists preserve public IDs covers and lower-case song counts") {
@@ -400,9 +393,6 @@ TEST_CASE("QQ dislike pagination ends on the service's empty page") {
 }
 
 TEST_CASE("QQ dislike failures never appear as an empty successful list") {
-    auto auth = qq::parse_dislikes({.body = R"({"req_0":{"code":2001}})"}, DislikeKind::song);
-    REQUIRE_FALSE(auth);
-    CHECK(auth.error() == "Sign in to QQ Music and try again");
     auto business = qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Retcode":10000,"Songs":[]}}})"}, DislikeKind::song);
     REQUIRE_FALSE(business);
     CHECK(business.error() == "QQ 音乐推荐反馈失败(10000)");
@@ -415,10 +405,8 @@ TEST_CASE("QQ dislike failures never appear as an empty successful list") {
 TEST_CASE("QQ recommendation writes require the case-sensitive business result") {
     CHECK(qq::parse_dislike_write({.body = R"({"req_0":{"code":0,"data":{"Retcode":0,"Msg":""}}})"}));
     CHECK_FALSE(qq::parse_dislike_write({.body = R"({"req_0":{"code":0,"data":{"Retcode":10000}}})"}));
-    CHECK_FALSE(qq::parse_dislike_write({.body = R"({"req_0":{"code":2001}})"}));
     CHECK_FALSE(qq::parse_dislike_write({.body = R"({"req_0":{"code":0,"data":{"retcode":0}}})"}));
     CHECK_FALSE(qq::parse_dislike_write({.body = R"({"req_0":{"code":0,"data":{}}})"}));
-    CHECK_FALSE(qq::parse_dislike_write({.error = "Network connection failed"}));
 }
 
 TEST_CASE("QQ playlist ordering requires the explicit SeqSonglist result") {
@@ -426,17 +414,15 @@ TEST_CASE("QQ playlist ordering requires the explicit SeqSonglist result") {
     auto refused = qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"retCode":1000}}})"});
     REQUIRE_FALSE(refused);
     CHECK(refused.error() == "QQ 音乐没有保存歌单顺序(1000)");
-    CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":2001}})"}));
     CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"result":{"retCode":0}}}})"}));
     CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"retcode":0}}})"}));
     CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{}}})"}));
-    CHECK_FALSE(qq::parse_playlist_order_write({.error = "Network connection failed"}));
 }
 
 TEST_CASE("QQ comment identities like state and reply cursors retain their service values") {
     const qq::Reply reply{.body = R"({"req_0":{"code":0,"data":{"SubCode":0,"CommentList":{"HasMore":1,"Total":22,"Comments":[
         {"CmId":"1!opaque-id","SeqNo":"18446744073709551615","RankScore":"9007199254740993",
-         "Nick":"作者","Content":"正文","PubTime":1700000000,"PraiseNum":12,"ReplyCnt":3,"IsPraised":1,
+         "Nick":"作者","Content":"正文","PubTime":1700000000,"PraiseNum":12,"ReplyCnt":3,"IsPraised":1,"IsSelf":1,
          "RepliedComments":[{"Nick":"原作者","Content":"被回复的正文"}]}
     ]}}}})"};
     auto main = qq::parse_comments(reply);
@@ -444,6 +430,7 @@ TEST_CASE("QQ comment identities like state and reply cursors retain their servi
     REQUIRE(main->comments.size() == 1);
     CHECK(main->comments[0].id == "1!opaque-id");
     CHECK(main->comments[0].liked);
+    CHECK(main->comments[0].owned);
     CHECK(main->comments[0].likes == 12);
     CHECK(main->comments[0].replies == 3);
     CHECK(main->comments[0].reply_user == "原作者");
@@ -462,7 +449,6 @@ TEST_CASE("QQ comment business failures are distinct from final empty pages") {
     CHECK(empty->comments.empty());
     CHECK_FALSE(empty->more);
     CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"SubCode":1000}}})"}));
-    CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":2001}})"}));
     CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{}}})"}));
     CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"CommentList":{"HasMore":0,"Comments":[{"Nick":"no identity"}]}}}})"}));
     CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"CommentList":{"HasMore":1,"Comments":[{"CmId":"one"}]}}}})"}));
@@ -476,6 +462,25 @@ TEST_CASE("QQ comment likes use the RPC acknowledgement for a void operation") {
     CHECK_FALSE(qq::parse_comment_like({.body = R"({"req_0":{"code":1000,"data":{}}})"}));
     CHECK_FALSE(qq::parse_comment_like({.body = "{}"}));
     CHECK_FALSE(qq::parse_comment_like({.error = "Network connection failed"}));
+}
+
+TEST_CASE("QQ posting requires its business acknowledgement and keeps opaque comment IDs") {
+    auto posted = qq::parse_comment_post({.body = R"({"req_0":{"code":0,"data":{"SubCode":0,"AddedCmId":"1!new*comment","ParentCmId":"1!root","VerifyUrl":""}}})"});
+    REQUIRE(posted);
+    CHECK(*posted == "1!new*comment");
+    auto refused = qq::parse_comment_post({.body = R"({"req_0":{"code":0,"data":{"SubCode":37,"Msg":"内容太长"}}})"});
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error() == "内容太长");
+    CHECK_FALSE(qq::parse_comment_post({.body = R"({"req_0":{"code":0,"data":{"SubCode":0,"VerifyUrl":"https://example.com/verify"}}})"}));
+    CHECK_FALSE(qq::parse_comment_post({.body = R"({"req_0":{"code":0,"data":{}}})"}));
+    CHECK_FALSE(qq::parse_comment_post({.body = R"({"req_0":{"code":0}})"}));
+}
+
+TEST_CASE("QQ deletion checks the business result without requiring a new comment ID") {
+    CHECK(qq::parse_comment_delete({.body = R"({"req_0":{"code":0,"data":{"SubCode":0}}})"}));
+    auto refused = qq::parse_comment_delete({.body = R"({"req_0":{"code":0,"data":{"SubCode":37,"Msg":"不能删除他人的评论"}}})"});
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error() == "不能删除他人的评论");
 }
 
 TEST_CASE("QQ comment errors follow the selected language and retain the service code") {

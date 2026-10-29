@@ -51,10 +51,13 @@ namespace lyren {
             std::move_only_function<Task<Result<void>>(std::string, bool)> collect_playlist;
             std::move_only_function<Task<Result<void>>(std::string, std::vector<Track>)> reorder_playlist;
         };
-        // Comment interactions: the reply list and the like write.
+        // Comment interactions, with the resource identity retained for services that require it.
         struct Comments {
-            std::move_only_function<Task<Result<CommentPage>>(std::string, int, std::string)> replies;
-            std::move_only_function<Task<Result<void>>(std::string, bool)> like;
+            std::move_only_function<Task<Result<CommentPage>>(Subject, std::string, std::string, int, std::string)> replies;
+            std::move_only_function<Task<Result<void>>(Subject, std::string, std::string, bool)> like;
+            // Empty reply ID posts a new comment; returns the service-assigned comment ID.
+            std::move_only_function<Task<Result<std::string>>(Subject, std::string, std::string, std::string)> post;
+            std::move_only_function<Task<Result<void>>(Subject, std::string, std::string)> remove;
         };
         // Listening reports: start (recent plays) and play (listening time).
         struct Reporting {

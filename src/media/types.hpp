@@ -184,6 +184,7 @@ namespace lyren {
         std::string id;
         int replies = 0;
         bool liked = false;
+        bool owned = false; // the signed-in account can delete it
     };
 
     struct CommentPage {

@@ -128,3 +128,15 @@ TEST_CASE("text edit keys") {
     CHECK(e.anchor == 4);
     CHECK(e.cursor == 10);
 }
+
+TEST_CASE("multiline comments preserve pasted lines and Enter variants never submit") {
+    std::string text, copied;
+    TextEdit e;
+    e.insert(text, "第一行\r\n第二行🎵\r第三行", true);
+    CHECK(text == "第一行\n第二行🎵\n第三行");
+    for (uint32_t mods : {0u, uint32_t(wl::mod_ctrl), uint32_t(wl::mod_shift), uint32_t(wl::mod_ctrl | wl::mod_shift)}) {
+        CHECK(e.apply(text, key(XKB_KEY_Return, mods), copied, true) == TextEdit::Key::edited);
+    }
+    CHECK(text.ends_with("第三行\n\n\n\n"));
+    CHECK(e.apply(text, key(XKB_KEY_KP_Enter, wl::mod_ctrl), copied, true) == TextEdit::Key::edited);
+}

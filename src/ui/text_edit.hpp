@@ -15,7 +15,7 @@ namespace lyren::ui {
     // i clamped to s and moved back to the start of its code point.
     size_t char_boundary(std::string_view s, size_t i);
 
-    // Cursor and selection of a single-line field, as byte offsets on code point boundaries.
+    // Cursor and selection, as byte offsets on code point boundaries.
     struct TextEdit {
         size_t cursor = 0, anchor = 0;
 
@@ -44,8 +44,8 @@ namespace lyren::ui {
             anchor = 0, cursor = text.size();
         }
         void select_word(std::string_view text, size_t at);
-        // Replaces the selection with s (newlines become spaces).
-        void insert(std::string &text, std::string_view s);
+        // Replaces the selection with s; single-line fields turn newlines into spaces.
+        void insert(std::string &text, std::string_view s, bool multiline = false);
         void erase(std::string &text, size_t from, size_t to);
 
         enum class Key : uint8_t {
@@ -58,7 +58,7 @@ namespace lyren::ui {
             paste
         };
         // Applies one key press. Copy and cut put the selection into copied and return copy.
-        Key apply(std::string &text, const wl::KeyEvent &k, std::string &copied);
+        Key apply(std::string &text, const wl::KeyEvent &k, std::string &copied, bool multiline = false);
     };
 
 } // namespace lyren::ui
