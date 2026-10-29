@@ -1,6 +1,6 @@
 #include <doctest/doctest.h>
 
-#include "app/lyrics.hpp"
+#include "media/lyrics.hpp"
 
 using namespace lyren;
 

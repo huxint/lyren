@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "core/task.hpp"
-#include "net/http.hpp"
+#include "net/fetch.hpp"
 
 namespace lyren::qq {
 
@@ -42,7 +42,7 @@ namespace lyren::qq {
         }
         const std::string &get(const std::string &key) const;
 
-        Task<Reply> call(std::vector<Rpc> parts, Comm comm = Comm::app, bool retry = true);
+        Task<Reply> call(std::vector<Rpc> parts, Comm comm = Comm::app, net::Retry retry = net::Retry::network);
 
     private:
         Loop &loop_;

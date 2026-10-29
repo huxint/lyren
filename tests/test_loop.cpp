@@ -15,9 +15,11 @@ using namespace lyren;
 TEST_CASE("posted deferred and timed work can transfer exclusive ownership") {
     Loop loop;
     int result = 0;
+    std::thread::id ran_on;
     auto value = std::make_unique<int>(42);
-    std::thread sender([&loop, &result, value = std::move(value)]() mutable {
-        loop.post([&loop, &result, value = std::move(value)]() mutable {
+    std::thread sender([&loop, &result, &ran_on, value = std::move(value)]() mutable {
+        loop.post([&loop, &result, &ran_on, value = std::move(value)]() mutable {
+            ran_on = std::this_thread::get_id();
             loop.defer([&loop, &result, value = std::move(value)]() mutable {
                 loop.after(1ms, [&loop, &result, value = std::move(value)] {
                     result = *value;
@@ -26,9 +28,10 @@ TEST_CASE("posted deferred and timed work can transfer exclusive ownership") {
             });
         });
     });
-    loop.run();
     sender.join();
+    loop.run();
     CHECK(result == 42);
+    CHECK(ran_on == std::this_thread::get_id());
 }
 
 TEST_CASE("timers fire in deadline order and can be cancelled") {
@@ -91,20 +94,6 @@ TEST_CASE("quitting in the before-poll hook cancels the prepared read without wa
     close(fd);
     CHECK_FALSE(prepared);
     CHECK_FALSE(waited);
-}
-
-TEST_CASE("post runs on the loop thread") {
-    Loop loop;
-    std::thread::id ran_on;
-    std::thread t([&] {
-        loop.post([&] {
-            ran_on = std::this_thread::get_id();
-            loop.quit();
-        });
-    });
-    loop.run();
-    t.join();
-    CHECK(ran_on == std::this_thread::get_id());
 }
 
 static Task<int> add_later(Loop &loop, int a, int b) {

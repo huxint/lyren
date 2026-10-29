@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <charconv>
+#include <atomic>
 #include <format>
 #include <future>
 #include <memory>
@@ -40,12 +41,23 @@ namespace {
                     }
                     std::string request;
                     char buffer[2048];
-                    while (request.find("\r\n\r\n") == std::string::npos) {
+                    for (;;) {
                         ssize_t n = recv(client, buffer, sizeof buffer, 0);
                         if (n <= 0) {
                             break;
                         }
                         request.append(buffer, static_cast<size_t>(n));
+                        const auto header_end = request.find("\r\n\r\n");
+                        if (header_end != std::string::npos) {
+                            size_t body_size = 0;
+                            if (auto at = request.find("Content-Length: "); at != std::string::npos) {
+                                at += 16;
+                                std::from_chars(request.data() + at, request.data() + request.find("\r\n", at), body_size);
+                            }
+                            if (request.size() >= header_end + 4 + body_size) {
+                                break;
+                            }
+                        }
                     }
                     std::string response = respond_(request);
                     for (size_t sent = 0; sent < response.size();) {
@@ -81,7 +93,74 @@ namespace {
         return std::format("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.size(), body);
     }
 
+    net::Response request_with_retry(net::Request req, net::Retry retry) {
+        Loop loop;
+        net::Http http;
+        std::optional<net::Response> result;
+        loop.after(5s, [&] {
+            loop.quit();
+        });
+        spawn([](Loop *loop, net::Http *http, net::Request req, net::Retry retry, std::optional<net::Response> *result) -> Task<void> {
+            *result = co_await net::fetch_retry(*loop, *http, std::move(req), retry);
+            loop->quit();
+        }(&loop, &http, std::move(req), retry, &result));
+        loop.run();
+        REQUIRE(result);
+        return std::move(*result);
+    }
+
 } // namespace
+
+TEST_CASE("network reads retry a dropped response with the original request body") {
+    std::atomic<size_t> requests{0};
+    const std::string body = R"({"query":"周杰伦"})";
+    Server server([&](std::string_view request) {
+        if (++requests == 1) {
+            return std::string{};
+        }
+        return ok(request.substr(request.find("\r\n\r\n") + 4));
+    });
+    const auto response = request_with_retry({.url = server.url(), .body = body}, net::Retry::network);
+    CHECK(requests == 2);
+    CHECK(response.status == 200);
+    CHECK(response.body == body);
+    CHECK(response.error.empty());
+}
+
+TEST_CASE("writes with an uncertain result are never replayed") {
+    std::atomic<size_t> requests{0};
+    Server server([&](std::string_view) {
+        ++requests;
+        return std::string{};
+    });
+    const auto response = request_with_retry({.url = server.url(), .body = "{}"}, net::Retry::never);
+    CHECK(requests == 1);
+    CHECK_FALSE(response.error.empty());
+}
+
+TEST_CASE("HTTP failures remain visible without retrying a completed request") {
+    std::atomic<size_t> requests{0};
+    Server server([&](std::string_view) {
+        ++requests;
+        return std::string("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 6\r\nConnection: close\r\n\r\nfailed");
+    });
+    const auto response = request_with_retry({.url = server.url()}, net::Retry::network);
+    CHECK(requests == 1);
+    CHECK(response.status == 500);
+    CHECK(response.body == "failed");
+    CHECK(response.error.empty());
+}
+
+TEST_CASE("network reads stop after two retries") {
+    std::atomic<size_t> requests{0};
+    Server server([&](std::string_view) {
+        ++requests;
+        return std::string{};
+    });
+    const auto response = request_with_retry({.url = server.url()}, net::Retry::network);
+    CHECK(requests == 3);
+    CHECK_FALSE(response.error.empty());
+}
 
 TEST_CASE("fetch resumes on the loop thread and preserves cookies across redirects") {
     const std::string body = "歌词已就绪";

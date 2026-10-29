@@ -1,4 +1,4 @@
-#include "app/lyrics.hpp"
+#include "media/lyrics.hpp"
 
 #include <glaze/glaze.hpp>
 

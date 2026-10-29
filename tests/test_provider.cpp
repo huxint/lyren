@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 #include <glaze/glaze.hpp>
 
-#include "app/provider.hpp"
+#include "media/types.hpp"
 #include "app/state.hpp"
 #include "sys/creds.hpp"
 
@@ -25,9 +25,8 @@ TEST_CASE("identical songs on different platforms keep independent identities") 
 }
 
 TEST_CASE("search rankings retain every listing across uneven and empty batches") {
-    std::array<Batch, 3> sources{
+    std::array<Batch, platforms.size()> sources{
         Batch{.tracks = {{.id = "a1"}, {.id = "a2"}, {.id = "a3"}}, .cards = {{.id = "album-a"}}},
-        Batch{},
         Batch{.tracks = {{.source = Source::qq, .id = "b1"}, {.source = Source::qq, .id = "b2"}},
               .cards = {{.source = Source::qq, .id = "album-b"}, {.source = Source::qq, .id = "album-c"}}},
     };
@@ -43,24 +42,60 @@ TEST_CASE("search rankings retain every listing across uneven and empty batches"
     CHECK(cards[0].id == "album-a");
     CHECK(cards[1].id == "album-b");
     CHECK(cards[2].id == "album-c");
-    CHECK(interleave(std::array<Batch, 3>{}, &Batch::tracks).empty());
+    CHECK(interleave(std::array<Batch, platforms.size()>{}, &Batch::tracks).empty());
+}
+
+TEST_CASE("search rankings retain songs when either service returns an empty batch") {
+    for (Source source : {Source::netease, Source::qq}) {
+        CAPTURE(source);
+        std::array<Batch, platforms.size()> sources;
+        sources[static_cast<size_t>(source)].tracks = {{.source = source, .id = "song"}};
+        const auto songs = interleave(sources, &Batch::tracks);
+        REQUIRE(songs.size() == 1);
+        CHECK(songs[0].source == source);
+        CHECK(songs[0].id == "song");
+    }
 }
 
 TEST_CASE("saved platform survives a round trip and old queues remain readable") {
-    SavedState saved;
-    constexpr glz::opts options{.error_on_unknown_keys = false};
-    auto error = glz::read<options>(saved, R"({"queue":[{"source":1,"id":"1","alts":[{"source":0,"id":"2"}]}],"current":0})");
-    REQUIRE_FALSE(error);
+    auto parsed = parse_state(R"({"queue":[{"source":1,"id":"1","alts":[{"source":0,"id":"2"}]}],"current":0})");
+    REQUIRE(parsed);
+    SavedState saved = std::move(*parsed);
     CHECK(saved.source == Source::netease);
     REQUIRE(saved.queue.size() == 1);
     CHECK(saved.queue[0].source == Source::qq);
     saved.source = Source::qq;
     std::string json;
     REQUIRE_FALSE(glz::write_json(saved, json));
-    SavedState restored;
-    REQUIRE_FALSE(glz::read<options>(restored, json));
-    CHECK(restored.source == Source::qq);
-    CHECK(same(saved.queue[0], restored.queue[0]));
+    auto restored = parse_state(json);
+    REQUIRE(restored);
+    CHECK(restored->source == Source::qq);
+    CHECK(restored->queue[0].source == Source::qq);
+    CHECK(restored->queue[0].id == "1");
+}
+
+TEST_CASE("saved state rejects unregistered platforms before indexing providers") {
+    for (std::string_view text : {R"({"source":2})", R"({"queue":[{"source":2,"id":"1"}]})", R"({"recent":[{"source":2,"id":"1"}]})"}) {
+        CAPTURE(text);
+        const auto state = parse_state(text);
+        REQUIRE_FALSE(state);
+        CHECK(state.error() == "Unknown platform in saved state");
+    }
+}
+
+TEST_CASE("saved state rejects playback modes outside the registered values") {
+    const auto state = parse_state(R"({"mode":3})");
+    REQUIRE_FALSE(state);
+    CHECK(state.error() == "Unknown playback mode in saved state");
+}
+
+TEST_CASE("saved slider positions and selections are normalized at the file boundary") {
+    const auto state = parse_state(R"({"volume":2,"position":-5,"current":4,"queue":[{"id":"1"}],"lyrics_bottom":-2})");
+    REQUIRE(state);
+    CHECK(state->volume == 1);
+    CHECK(state->position == 0);
+    CHECK(state->current == -1);
+    CHECK(state->lyrics_bottom == 0);
 }
 
 TEST_CASE("credentials preserve registered and future platforms and read the old format") {

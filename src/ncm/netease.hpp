@@ -1,5 +1,5 @@
 #pragma once
-#include "app/provider.hpp"
+#include "media/provider.hpp"
 #include "ncm/client.hpp"
 
 namespace lyren::ncm {

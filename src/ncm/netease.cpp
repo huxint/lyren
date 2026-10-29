@@ -634,7 +634,7 @@ namespace lyren::ncm {
     }
 
     Task<void> Netease::logout() {
-        co_await client.call("/api/logout", "");
+        co_await client.call("/api/logout", "", Api::eapi, net::Retry::never);
         client.clear_login();
     }
 
@@ -689,7 +689,8 @@ namespace lyren::ncm {
     }
 
     Task<Result<std::optional<Track>>> Netease::dislike_daily(std::string id) {
-        auto r = parse<DislikeReply>(co_await client.call("/api/v2/discovery/recommend/dislike", std::format(R"("resId":{},"resType":4,"sceneType":1)", id), Api::weapi));
+        auto r = parse<DislikeReply>(
+            co_await client.call("/api/v2/discovery/recommend/dislike", std::format(R"("resId":{},"resType":4,"sceneType":1)", id), Api::weapi, net::Retry::never));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -749,7 +750,7 @@ namespace lyren::ncm {
     }
 
     Task<Result<void>> Netease::fm_trash(std::string id) {
-        co_return done(co_await client.call("/api/radio/trash/add", std::format(R"("songId":{},"alg":"RT","time":25)", id), Api::weapi));
+        co_return done(co_await client.call("/api/radio/trash/add", std::format(R"("songId":{},"alg":"RT","time":25)", id), Api::weapi, net::Retry::never));
     }
 
     Task<Result<std::vector<Track>>> Netease::cloud() {
@@ -809,7 +810,7 @@ namespace lyren::ncm {
     }
 
     Task<Result<void>> Netease::like(Track track, bool on) {
-        co_return done(co_await client.call("/api/radio/like", std::format(R"("alg":"itembased","trackId":{},"like":{},"time":"3")", track.id, on), Api::weapi));
+        co_return done(co_await client.call("/api/radio/like", std::format(R"("alg":"itembased","trackId":{},"like":{},"time":"3")", track.id, on), Api::weapi, net::Retry::never));
     }
 
     Task<Result<Categories>> Netease::categories() {
@@ -960,11 +961,12 @@ namespace lyren::ncm {
     }
 
     Task<Result<void>> Netease::follow(std::string artist, bool on) {
-        co_return done(co_await client.call(on ? "/api/artist/sub" : "/api/artist/unsub", std::format(R"("artistId":"{}","artistIds":"[{}]")", artist, artist), Api::weapi));
+        co_return done(co_await client.call(on ? "/api/artist/sub" : "/api/artist/unsub", std::format(R"("artistId":"{}","artistIds":"[{}]")", artist, artist), Api::weapi,
+                                            net::Retry::never));
     }
 
     Task<Result<void>> Netease::collect(std::string album, bool on) {
-        co_return done(co_await client.call(on ? "/api/album/sub" : "/api/album/unsub", std::format(R"("id":"{}")", album), Api::weapi));
+        co_return done(co_await client.call(on ? "/api/album/sub" : "/api/album/unsub", std::format(R"("id":"{}")", album), Api::weapi, net::Retry::never));
     }
 
     Task<Result<std::vector<Card>>> Netease::collected_albums() {
@@ -1013,7 +1015,8 @@ namespace lyren::ncm {
 
     Task<Result<Card>> Netease::create_playlist(std::string name, bool hidden) {
         auto r = parse<CreateReply>(co_await client.call(
-            "/api/playlist/create", std::format(R"("name":{},"privacy":"{}","type":"NORMAL")", glz::write_json(glz::escape_bytes_t{name}).value(), hidden ? 10 : 0), Api::weapi));
+            "/api/playlist/create", std::format(R"("name":{},"privacy":"{}","type":"NORMAL")", glz::write_json(glz::escape_bytes_t{name}).value(), hidden ? 10 : 0), Api::weapi,
+            net::Retry::never));
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -1026,11 +1029,12 @@ namespace lyren::ncm {
     }
 
     Task<Result<void>> Netease::rename_playlist(std::string id, std::string name) {
-        co_return done(co_await client.call("/api/playlist/update/name", std::format(R"("id":"{}","name":{})", id, glz::write_json(glz::escape_bytes_t{name}).value())));
+        co_return done(co_await client.call("/api/playlist/update/name", std::format(R"("id":"{}","name":{})", id, glz::write_json(glz::escape_bytes_t{name}).value()), Api::eapi,
+                                            net::Retry::never));
     }
 
     Task<Result<void>> Netease::delete_playlist(std::string id) {
-        co_return done(co_await client.call("/api/playlist/remove", std::format(R"("ids":"[{}]")", id), Api::weapi));
+        co_return done(co_await client.call("/api/playlist/remove", std::format(R"("ids":"[{}]")", id), Api::weapi, net::Retry::never));
     }
 
     Task<Result<void>> Netease::edit_playlist(std::string id, Track t, bool add) {
@@ -1038,10 +1042,10 @@ namespace lyren::ncm {
         auto fields = [&](std::string_view ids) {
             return std::format(R"("op":"{}","pid":"{}","trackIds":{},"imme":"true")", add ? "add" : "del", id, glz::write_json(ids).value());
         };
-        Reply r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}"])", track)));
+        Reply r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}"])", track)), Api::eapi, net::Retry::never);
         // The server sometimes answers 512 for a single id; listing it twice goes through.
         if (r.code == 512) {
-            r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}","{}"])", track, track)));
+            r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}","{}"])", track, track)), Api::eapi, net::Retry::never);
         }
         if (r.code == 502 && add) {
             co_return std::unexpected("This song is already in the playlist");
@@ -1092,14 +1096,14 @@ namespace lyren::ncm {
     // does not count others).
     Task<void> Netease::report_start(std::string id, std::string source) {
         std::string logs = std::format(R"([{{"action":"startplay","json":{{"id":"{}","type":"song","mainsite":"1","mainsiteWeb":"1","content":"id={}"}}}}])", id, source);
-        co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", glz::write_json(logs).value()), Api::clientlog);
+        co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", glz::write_json(logs).value()), Api::clientlog, net::Retry::never);
     }
 
     Task<void> Netease::report_play(std::string id, std::string source, int seconds) {
         std::string logs = std::format(R"([{{"action":"play","json":{{"download":0,"end":"playend","id":"{}","sourceId":"{}","time":"{}","type":"song","wifi":0,)"
                                        R"("source":"list","mainsite":"1","mainsiteWeb":"1","content":"id={}"}}}}])",
                                        id, source, seconds, source);
-        co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", glz::write_json(logs).value()), Api::clientlog);
+        co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", glz::write_json(logs).value()), Api::clientlog, net::Retry::never);
     }
 
 } // namespace lyren::ncm

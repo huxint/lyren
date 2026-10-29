@@ -8,6 +8,7 @@
 
 #include "core/i18n.hpp"
 #include "core/result.hpp"
+#include "media/quality.hpp"
 
 namespace lyren {
 
@@ -20,13 +21,6 @@ namespace lyren {
     enum class GpuChoice : uint8_t {
         integrated,
         discrete
-    };
-    enum class Quality : uint8_t {
-        standard,
-        higher,
-        exhigh,
-        lossless,
-        hires
     };
     enum class TrialMode : uint8_t {
         skip,

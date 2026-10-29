@@ -4,30 +4,56 @@
 
 #include <cstdio>
 #include <fstream>
+#include <algorithm>
+#include <utility>
 
 #include "core/log.hpp"
 #include "sys/paths.hpp"
 
 namespace lyren {
 
-    SavedState load_state() {
+    Result<SavedState> parse_state(std::string_view text) {
         SavedState s;
-        std::ifstream in(paths::state_dir() / "state.json");
-        if (!in) {
-            return s;
-        }
-        std::string text{std::istreambuf_iterator<char>(in), {}};
         if (auto e = glz::read<glz::opts{.error_on_unknown_keys = false}>(s, text)) {
-            log::warn("state.json: {}", glz::format_error(e, text));
-            return {};
+            return std::unexpected(glz::format_error(e, text));
         }
-        if (static_cast<size_t>(s.source) >= platforms.size()) {
-            s.source = platforms.front().source;
+        auto registered = [](Source source) {
+            return std::to_underlying(source) < platforms.size();
+        };
+        auto valid_track = [&](const Track &track) {
+            return registered(track.source);
+        };
+        if (!registered(s.source) || !std::ranges::all_of(s.queue, valid_track) || !std::ranges::all_of(s.recent, valid_track)) {
+            return std::unexpected("Unknown platform in saved state");
         }
-        if (s.current >= static_cast<int>(s.queue.size())) {
+        if (std::to_underlying(s.mode) > std::to_underlying(PlayMode::shuffle)) {
+            return std::unexpected("Unknown playback mode in saved state");
+        }
+        if (s.current < -1 || s.current >= static_cast<int>(s.queue.size())) {
             s.current = -1;
         }
+        s.width = std::max(0, s.width), s.height = std::max(0, s.height);
+        s.volume = std::clamp(s.volume, 0.f, 1.f);
+        s.position = std::max(0.0, s.position);
+        s.lyrics_bottom = std::max(0.f, s.lyrics_bottom);
+        if (s.recent.size() > 200) {
+            s.recent.resize(200);
+        }
         return s;
+    }
+
+    SavedState load_state() {
+        std::ifstream in(paths::state_dir() / "state.json");
+        if (!in) {
+            return {};
+        }
+        std::string text{std::istreambuf_iterator<char>(in), {}};
+        auto state = parse_state(text);
+        if (!state) {
+            log::warn("state.json: {}", state.error());
+            return {};
+        }
+        return std::move(*state);
     }
 
     void save_state(const SavedState &s) {

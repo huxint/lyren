@@ -6,7 +6,7 @@
 #include <string_view>
 
 #include "core/task.hpp"
-#include "net/http.hpp"
+#include "net/fetch.hpp"
 
 namespace lyren::ncm {
 
@@ -40,7 +40,7 @@ namespace lyren::ncm {
         const std::string &get(const std::string &key) const;
 
         // fields: JSON object members without the braces, e.g. R"("id":1)". uri is the /api/... path.
-        Task<Reply> call(std::string uri, std::string fields, Api api = Api::eapi);
+        Task<Reply> call(std::string uri, std::string fields, Api api = Api::eapi, net::Retry retry = net::Retry::network);
 
     private:
         void apply_set_cookie(std::string_view raw);

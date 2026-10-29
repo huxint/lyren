@@ -78,7 +78,7 @@ namespace lyren {
         if (timed) {
             ui.keep_animating();
         } else if (const auto next = static_cast<size_t>(line + 1); next < lyrics_.size()) {
-            ui.wake(ui.now + lyrics_[next].time - lead - (clip_start_ + position()));
+            ui.wake(ui.now + lyrics_[next].time - lead - timeline().to_song(position()));
         }
     }
 
@@ -92,14 +92,15 @@ namespace lyren {
         const auto &options = config_.desktop_lyrics.island;
         const bool art = options.cover, ring = art && options.progress;
         const Track *track = current();
-        const double elapsed = position(), now = clip_start_ + elapsed;
+        const auto clock = timeline();
+        const double elapsed = position(), now = clock.to_song(elapsed);
         const int at = lyric_at(lyrics_, now + lead);
         const LyricLine *line = at >= 0 ? &lyrics_[static_cast<size_t>(at)] : nullptr;
         const std::string_view text = line ? std::string_view(line->text) : track ? std::string_view(track->title) : lyren::tr("Nothing playing");
         const bool timed = line && !line->words.empty();
         const float change = show_line(ui, island_line_, text, {}, timed);
-        const double duration = std::max(player_.duration(), track ? static_cast<double>(track->duration) : 0.0);
-        const float done = duration > 0 ? static_cast<float>(std::clamp((clip_start_ + elapsed) / duration, 0.0, 1.0)) : 0;
+        const double duration = clock.duration();
+        const float done = clock.progress(elapsed);
 
         // Closed it is a pill: the cover in its progress ring, the line being sung and a level meter. While the pointer
         // rests on it, it opens into a card with the track, the whole line, progress and controls.
@@ -283,14 +284,10 @@ namespace lyren {
             }
             if (island_dragging_ && !ui.is_active(ui.id("island-seek"))) {
                 island_dragging_ = false;
-                seek(island_drag_v_ * duration);
+                seek_song(island_drag_v_ * duration);
             }
-            auto clock = [](double s) {
-                const int v = static_cast<int>(std::max(0.0, s));
-                return std::format("{}:{:02}", v / 60, v % 60);
-            };
-            detail({card.x + pad, py + 11, 38, 0}, clock(island_dragging_ ? island_drag_v_ * duration : elapsed), times);
-            const std::string total = clock(duration);
+            detail({card.x + pad, py + 11, 38, 0}, mmss(island_dragging_ ? island_drag_v_ * duration : now), times);
+            const std::string total = mmss(duration);
             detail({card.right() - pad - p.measure(total, times), py + 11, 38, 0}, total, times);
 
             // Controls: the floating mode and hiding on the sides, the transport in the middle.
@@ -346,7 +343,7 @@ namespace lyren {
         }
         if (live && !live->words.empty()) {
             const float soft = font * 0.7f;
-            p.set_wipe(x + sung_x(p, *live, text, font, soft, clip_start_ + position()), soft, rest);
+            p.set_wipe(x + sung_x(p, *live, text, font, soft, timeline().to_song(position())), soft, rest);
         }
         p.text(x, baseline, text, {.size = font, .color = color}, max_width);
         p.clear_wipe();
@@ -356,7 +353,7 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Track *track = current();
-        const double now = clip_start_ + position();
+        const double now = timeline().to_song(position());
         const int at = lyric_at(lyrics_, now + lead);
         const LyricLine *line = at >= 0 ? &lyrics_[static_cast<size_t>(at)] : nullptr;
         const std::string_view text = line ? std::string_view(line->text) : track ? std::string_view(track->title) : lyren::tr("Nothing playing");

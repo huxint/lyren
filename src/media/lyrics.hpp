@@ -8,7 +8,7 @@ namespace lyren {
 
     struct LyricWord {
         uint32_t start_ms, duration_ms; // exact service timestamps; up to 49 days
-        uint32_t from, to;              // UTF-8 byte offsets within the line
+        uint32_t from, to;              // UTF-8 boundaries: 0 <= from <= to <= line.text.size()
 
         double time() const {
             return start_ms / 1000.0;
@@ -17,9 +17,10 @@ namespace lyren {
             return duration_ms / 1000.0;
         }
     };
+    static_assert(sizeof(LyricWord) == 16);
 
     struct LyricLine {
-        double time; // seconds
+        double time; // finite, nonnegative seconds; lines are sorted in increasing time
         std::string text, translation;
         std::vector<LyricWord> words; // empty without word timing
     };

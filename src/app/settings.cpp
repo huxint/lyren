@@ -416,7 +416,7 @@ namespace lyren {
             ui.push_clip(wall);
             {
                 UseTheme on_desktop(ui, *stage_);
-                const double now = clip_start_ + position();
+                const double now = timeline().to_song(position());
                 const int at_line = lyric_at(lyrics_, now + 0.2);
                 const LyricLine *line = at_line >= 0 ? &lyrics_[static_cast<size_t>(at_line)] : nullptr;
                 const std::string_view text = line ? std::string_view(line->text) : current() ? std::string_view(current()->title) : lyren::tr("Lyrics appear here");

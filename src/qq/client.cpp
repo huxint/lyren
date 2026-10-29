@@ -24,7 +24,7 @@ namespace lyren::qq {
         };
     } // namespace
 
-    Task<Reply> Client::call(std::vector<Rpc> parts, Comm comm, bool retry) {
+    Task<Reply> Client::call(std::vector<Rpc> parts, Comm comm, net::Retry retry) {
         // The signature covers these exact bytes, so the body is built once and sent as is.
         std::string body = comm == Comm::app ? R"({"comm":{"ct":20,"cv":1770,"tmeAppID":"qqmusic"})" : R"({"comm":{"ct":19,"cv":1,"tmeAppID":"qqmusic"})";
         std::string what;
@@ -40,15 +40,7 @@ namespace lyren::qq {
                                               "psrf_qqopenid={2}; psrf_qqaccess_token={3}",
                                               get("musicid"), get("musickey"), get("openid"), get("access_token")));
         }
-        net::Response res;
-        for (int attempt = 0;; ++attempt) {
-            res = co_await net::fetch{loop_, http_, req};
-            if (res.error.empty() || !retry || attempt == 2) {
-                break;
-            }
-            log::warn("qq {}: {}, retrying", what, res.error);
-            co_await sleep{loop_, std::chrono::milliseconds(300 * (attempt ? 3 : 1))};
-        }
+        auto res = co_await net::fetch_retry(loop_, http_, std::move(req), retry);
         Reply r;
         if (!res.error.empty()) {
             r.error = "Network connection failed";

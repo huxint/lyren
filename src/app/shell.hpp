@@ -9,8 +9,9 @@
 #include <vector>
 
 #include "app/images.hpp"
-#include "app/lyrics.hpp"
-#include "app/provider.hpp"
+#include "media/lyrics.hpp"
+#include "media/provider.hpp"
+#include "media/timeline.hpp"
 #include "app/state.hpp"
 #include "audio/player.hpp"
 #include "sys/mpris.hpp"
@@ -167,11 +168,7 @@ namespace lyren {
             std::string cursor, error;
             double since = -10;
         };
-        enum class Mode : uint8_t {
-            list,
-            one,
-            shuffle
-        };
+        using Mode = PlayMode;
         // What the panel beside the page shows.
         enum class Panel : uint8_t {
             none,
@@ -289,10 +286,11 @@ namespace lyren {
         void report_listen(bool ended);
         void skip(int delta, bool automatic = false);
         void seek(double at);
+        void seek_song(double at); // song time; resolves the file offset once the stream is known
         void set_mode(Mode m);
         int next_index();
         void start(double at = 0, bool play = true);
-        Task<void> load_track(uint64_t gen, Track t, double at);
+        Task<void> load_track(uint64_t gen, Track t);
         Task<void> load_lyrics(Track t);
         Task<void> prefetch(Track t);
         void schedule_prefetch();
@@ -300,6 +298,7 @@ namespace lyren {
         void apply_volume();
         void apply_gain();
         double position();
+        Timeline timeline() const;
         void publish(); // the player state for the media controls
         bool skip_trials() const {
             return config_.playback.trial == TrialMode::skip;
@@ -415,10 +414,11 @@ namespace lyren {
         Mode mode_ = Mode::list;
         std::vector<int> shuffle_history_;
         int shuffle_next_ = -1;
-        double resume_at_ = 0, last_pos_ = 0;
+        double resume_at_ = 0, last_pos_ = 0;     // nonnegative seconds within the current file
+        std::optional<double> pending_song_seek_; // nonnegative song seconds, only while fetching the stream
         float volume_ = 0.7f, progress_w_ = 400;
         bool dragging_ = false;
-        float drag_v_ = 0;
+        float drag_v_ = 0; // normalized song position, [0, 1]
         struct Prefetched {
             std::string key;
             std::shared_ptr<audio::Spool> spool;
@@ -483,7 +483,7 @@ namespace lyren {
         };
         LineChange island_line_, floating_line_;
         bool island_dragging_ = false;
-        float island_drag_v_ = 0;
+        float island_drag_v_ = 0; // normalized song position, [0, 1]
         // Notes the line on show; returns how far the change to it has gone, 0..1.
         float show_line(ui::Ui &ui, LineChange &change, std::string_view text, std::string_view sub, bool timed);
         // Frames for desktop lyrics: continuous while a word-timed line is sung, otherwise one when the next line starts.

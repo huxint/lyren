@@ -129,7 +129,7 @@ namespace lyren::ncm {
         };
     } // namespace
 
-    Task<Reply> Client::call(std::string uri, std::string fields, Api api) {
+    Task<Reply> Client::call(std::string uri, std::string fields, Api api, net::Retry retry) {
         std::string sep = fields.empty() ? "" : ",";
         net::Request req;
         if (api != Api::weapi) {
@@ -171,16 +171,7 @@ namespace lyren::ncm {
             req.headers = {ua_weapi, "Referer: https://music.163.com", cookie_header(all), form};
         }
 
-        net::Response res;
-        // Connection hiccups get two retries.
-        for (int attempt = 0;; ++attempt) {
-            res = co_await net::fetch{loop_, http_, req};
-            if (res.error.empty() || attempt == 2) {
-                break;
-            }
-            log::warn("ncm {}: {}, retrying", uri, res.error);
-            co_await sleep{loop_, std::chrono::milliseconds(300 * (attempt ? 3 : 1))};
-        }
+        auto res = co_await net::fetch_retry(loop_, http_, std::move(req), retry);
         if (!res.cookies.empty()) {
             auto before = cookies;
             for (auto &c : res.cookies) {

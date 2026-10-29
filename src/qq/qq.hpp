@@ -1,5 +1,5 @@
 #pragma once
-#include "app/provider.hpp"
+#include "media/provider.hpp"
 #include "qq/client.hpp"
 
 namespace lyren::qq {

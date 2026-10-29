@@ -16,7 +16,7 @@
 #include <fstream>
 
 #include "core/log.hpp"
-#include "ncm/crypto.hpp"
+#include "core/encoding.hpp"
 #include "sys/paths.hpp"
 
 namespace lyren::creds {
@@ -107,11 +107,11 @@ namespace lyren::creds {
         if (!r) {
             co_return std::unexpected(r.error());
         }
-        co_return ncm::unbase64(r->data.value_or(""));
+        co_return encoding::unbase64(r->data.value_or(""));
     }
 
     Task<Result<void>> save(Loop &loop, std::string plaintext) {
-        auto r = co_await call(loop, "Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", ncm::base64(plaintext)));
+        auto r = co_await call(loop, "Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext)));
         if (!r) {
             co_return std::unexpected(r.error());
         }

@@ -4,11 +4,8 @@
 
 namespace lyren::ncm {
 
-    std::string hex(std::string_view bytes, bool upper = false);
     std::string md5_hex(std::string_view s);
     std::string random_hex(size_t digits, bool upper = false);
-    std::string base64(std::string_view bytes);
-    std::string unbase64(std::string_view text);
 
     // eapi: url is the /api/... path, text the JSON body. Returns the params form field.
     std::string eapi(std::string_view url, std::string_view text);

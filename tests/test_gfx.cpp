@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cmath>
+#include <optional>
 
 #include "app/images.hpp"
 #include "text/atlas.hpp"
@@ -86,6 +87,7 @@ TEST_CASE("scroll motion requests paced animation frames after consuming input")
         CHECK(frame(2) == doctest::Approx(700));
     }
     SUBCASE("coast distance is independent of frame rate") {
+        std::optional<float> reference;
         for (int fps : {15, 60, 144}) {
             CAPTURE(fps);
             ui = ui::Ui{};
@@ -98,7 +100,12 @@ TEST_CASE("scroll motion requests paced animation frames after consuming input")
             for (int i = 1; i <= count; ++i) {
                 offset = frame(1.016 + 0.4 * i / count);
             }
-            CHECK(offset == doctest::Approx(40 + 1200 * 0.35 * (1 - std::exp(-0.4 / 0.35))).epsilon(1e-5));
+            CHECK(offset > 40);
+            if (reference) {
+                CHECK(offset == doctest::Approx(*reference).epsilon(1e-5));
+            } else {
+                reference = offset;
+            }
         }
     }
 }

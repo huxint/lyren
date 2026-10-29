@@ -85,12 +85,15 @@ namespace lyren::audio {
         pw_deinit();
     }
 
-    bool Output::start(Format f) {
+    Result<void> Output::start(Format f) {
+        if (f.channels > SPA_AUDIO_MAX_CHANNELS) {
+            return std::unexpected("This audio file has more channels than PipeWire supports");
+        }
         pw_thread_loop_lock(loop_);
         if (stream_ && f == fmt_) {
             pw_thread_loop_unlock(loop_);
             flush(0);
-            return true;
+            return {};
         }
         if (stream_) {
             // No process callback runs after this returns, so the ring can be rebuilt directly.
@@ -104,7 +107,7 @@ namespace lyren::audio {
             if (!core_) {
                 log::error("cannot connect to PipeWire");
                 pw_thread_loop_unlock(loop_);
-                return false;
+                return std::unexpected("PipeWire is not running");
             }
         }
         fmt_ = f;
@@ -139,7 +142,7 @@ namespace lyren::audio {
         pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, pw_stream_flags(flags), params.data(), static_cast<uint32_t>(params.size()));
         pw_thread_loop_unlock(loop_);
         log::debug("pipewire stream: {} Hz, {} ch", f.rate, f.channels);
-        return true;
+        return {};
     }
 
     void Output::flush(uint64_t first_frame) {

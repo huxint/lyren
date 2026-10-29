@@ -2,23 +2,23 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <functional>
-#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "app/lyrics.hpp"
-#include "core/result.hpp"
-#include "core/task.hpp"
-#include "sys/config.hpp"
-
 namespace lyren {
 
-    // Stable identities for persisted tracks and the platform registry below.
+    // Stable persisted identifiers: [netease, qq], also the indices into platforms.
     enum class Source : uint8_t {
         netease,
         qq
+    };
+
+    // Stable state-file values: list = 0, one = 1, shuffle = 2.
+    enum class PlayMode : uint8_t {
+        list,
+        one,
+        shuffle
     };
 
     struct Platform {
@@ -44,7 +44,7 @@ namespace lyren {
         std::string album;
         std::string artist_id, album_id; // the first artist; QQ Music: mids
         std::string cover;               // cover_url() sizes it
-        int duration = 0;                // seconds
+        uint32_t duration = 0;           // whole seconds; zero when the service supplies no duration
         int type = 0;                    // QQ Music's song type, also used when editing a playlist
         bool cloud = false;              // uploaded to the user's NetEase cloud drive
         bool paid = false;               // the listing says more than a preview takes a membership or a purchase
@@ -107,12 +107,12 @@ namespace lyren {
     struct Batch {
         std::vector<Track> tracks;
         std::vector<Card> cards;
-        int total = 0;
+        int total = 0; // nonnegative service count; may be an estimate while more pages remain
     };
 
     // Round-robin rankings from every registered platform, retaining each listing and its identity.
-    template <class T, size_t N>
-    std::vector<T> interleave(const std::array<Batch, N> &sources, std::vector<T> Batch::*rows) {
+    template <class T>
+    std::vector<T> interleave(const std::array<Batch, platforms.size()> &sources, std::vector<T> Batch::*rows) {
         size_t count = 0;
         for (const auto &source : sources) {
             count += (source.*rows).size();
@@ -177,11 +177,11 @@ namespace lyren {
     struct Stream {
         std::string url;
         bool trial = false;                          // only a preview clip is playable
-        double trial_start = 0;                      // where the preview file starts in the song, s (QQ's RS02 file: always 0)
+        double trial_start = 0;                      // nonnegative finite song seconds (QQ's RS02 file: always 0)
         double highlight_from = 0, highlight_to = 0; // the service's chorus window in the song, s; empty when the end is not after the start
         std::string level;                           // the quality the server granted
-        float gain = 0;                              // loudness correction, dB
-        float peak = 0;                              // sample peak, 0 when unknown
+        float gain = 0;                              // finite loudness correction, dB
+        float peak = 0;                              // nonnegative finite sample peak, 0 when unknown
     };
 
     struct Account {
@@ -204,70 +204,5 @@ namespace lyren {
         std::string text;  // NetEase: encode this URL
         std::string image; // QQ: the PNG returned by the login service
     };
-
-    // Optional features expose both availability and the operation. Shared pages only offer installed features.
-    struct Features {
-        std::move_only_function<Task<Result<std::vector<Track>>>()> daily, fm, cloud, recent_plays;
-        std::move_only_function<Task<Result<std::vector<Card>>>()> daily_playlists;
-        std::move_only_function<Task<Result<std::optional<Track>>>(std::string)> dislike_daily;
-        std::move_only_function<Task<Result<std::vector<Track>>>(std::string, std::string)> heartbeat;
-        std::move_only_function<Task<Result<std::vector<Track>>>(std::string)> similar;
-        std::move_only_function<Task<Result<void>>(std::string)> fm_trash;
-        std::move_only_function<Task<Result<Categories>>()> categories;
-        std::move_only_function<Task<Result<Batch>>(std::string, int)> square;
-        std::move_only_function<Task<void>(std::string, std::string)> report_start;
-        std::move_only_function<Task<void>(std::string, std::string, int)> report_play;
-    };
-
-    // The shared platform contract; adapters supply their optional features without changing the shell.
-    class Provider {
-    public:
-        virtual ~Provider() = default;
-
-        Features features;
-        bool reload_after_edit = false; // server-assigned playlist metadata and order need a readback
-        virtual std::map<std::string, std::string> &session() = 0;
-        virtual void on_session_changed(std::move_only_function<void()> changed) = 0;
-        virtual Task<Result<void>> initialize() = 0;
-        virtual void cancel_qr() = 0;
-
-        virtual Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) = 0;
-        virtual Task<Result<Stream>> stream(Track track, Quality quality) = 0;
-        virtual Task<Result<std::vector<LyricLine>>> lyrics(Track track) = 0;
-        // The tracks of a playlist, an album, or an artist's top songs.
-        virtual Task<Result<std::vector<Track>>> tracks(Card card) = 0;
-
-        virtual Task<Result<std::vector<Card>>> recommended_playlists() = 0;
-        virtual Task<Result<std::vector<Card>>> toplists() = 0;
-        virtual Task<Result<AlbumInfo>> album(std::string id) = 0;
-        virtual Task<Result<ArtistInfo>> artist(std::string id) = 0;
-        virtual Task<Result<Batch>> artist_songs(std::string id, int offset) = 0;
-        virtual Task<Result<Batch>> artist_albums(std::string id, int offset) = 0;
-        // Headings and their text; the summary comes first, without a heading.
-        virtual Task<Result<std::vector<std::pair<std::string, std::string>>>> artist_intro(std::string id) = 0;
-        // page counts from 1; cursor is what the page before returned, empty for the first.
-        virtual Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) = 0;
-
-        virtual Task<Result<std::pair<Card, std::vector<Card>>>> user_playlists(std::string uid) = 0;
-        virtual Task<Result<std::vector<std::string>>> liked_ids(std::string uid) = 0;
-        virtual Task<Result<void>> like(Track track, bool on) = 0;
-        virtual Task<Result<void>> follow(std::string artist, bool on) = 0;
-        virtual Task<Result<void>> collect(std::string album, bool on) = 0;
-        virtual Task<Result<std::vector<Card>>> collected_albums() = 0;
-        virtual Task<Result<std::vector<Card>>> followed_artists() = 0;
-        virtual Task<Result<Card>> create_playlist(std::string name, bool hidden) = 0;
-        virtual Task<Result<void>> rename_playlist(std::string id, std::string name) = 0;
-        virtual Task<Result<void>> delete_playlist(std::string id) = 0;
-        virtual Task<Result<void>> edit_playlist(std::string id, Track track, bool add) = 0;
-
-        virtual bool logged_in() const = 0;
-        // A URL to encode or the login service's PNG.
-        virtual Task<Result<QrCode>> qr_start() = 0;
-        virtual Task<Result<QrStatus>> qr_poll() = 0;
-        virtual Task<Result<Account>> account() = 0;
-        virtual Task<void> logout() = 0;
-    };
-
-    using Providers = std::array<Provider *, platforms.size()>;
 
 } // namespace lyren

@@ -291,7 +291,7 @@ namespace lyren {
         const auto &blocks = lyric_layout_;
         float total = blocks.back().y + blocks.back().h;
         // The line a little ahead, so its highlight lands with the voice rather than after it.
-        const double now = clip_start_ + last_pos_, lead = 0.2;
+        const double now = timeline().to_song(last_pos_), lead = 0.2;
         int cur = lyric_at(lyrics_, now + lead);
         // A long pause before a line, at the start or after a word-timed line (the others do not say where they end):
         // three dots take the stage and fill up until the line comes.
@@ -464,9 +464,9 @@ namespace lyren {
             p.set_zoom(1);
             if (it.clicked) {
                 // A preview clip ends long before the song does; a line beyond it must not end the track.
-                const double target = lyrics_[i].time - clip_start_;
-                if (player_.duration() <= 0 || target < player_.duration()) {
-                    seek(std::max(0.0, target));
+                const auto clock = timeline();
+                if (clock.file_duration() <= 0 || lyrics_[i].time < clock.to_song(clock.file_duration())) {
+                    seek_song(lyrics_[i].time);
                 }
                 lyric_manual_until_ = 0;
             }

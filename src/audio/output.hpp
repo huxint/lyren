@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "audio/decoder.hpp"
+#include "core/result.hpp"
 
 struct pw_thread_loop;
 struct pw_context;
@@ -33,7 +34,7 @@ namespace lyren::audio {
         Output &operator=(const Output &) = delete;
 
         // Decoder thread.
-        bool start(Format f);             // new track: drops queued audio; a different format recreates the stream
+        Result<void> start(Format f);     // checks PipeWire's channel limit, then starts or recreates the stream
         void flush(uint64_t first_frame); // seek: drops queued audio, the next written frame is first_frame
         size_t space() const;
         size_t capacity() const {
@@ -75,9 +76,12 @@ namespace lyren::audio {
         std::chrono::steady_clock::time_point volume_set_;
 
         std::vector<float> ring_;
-        size_t cap_ = 0; // frames
-        alignas(64) std::atomic<uint64_t> w_{0};
-        alignas(64) std::atomic<uint64_t> r_{0};
+        size_t cap_ = 0; // frames; equals fmt_.rate once a stream exists
+        // Monotonic frame counters: r_ <= w_ <= r_ + cap_. Separate producer and consumer cache lines.
+        // Fixed across translation units and compiler tuning; the supported x86-64 targets use 64-byte lines.
+        static constexpr size_t cache_line_bytes = 64;
+        alignas(cache_line_bytes) std::atomic<uint64_t> w_{0};
+        alignas(cache_line_bytes) std::atomic<uint64_t> r_{0};
         // A flush is published as (drop_to, base) then a new flush_seq_; the reader applies it before its next read.
         std::atomic<uint64_t> drop_to_{0}, base_{0}, eos_{UINT64_MAX}, played_{0};
         std::atomic<uint32_t> flush_seq_{0}, flush_applied_{0};

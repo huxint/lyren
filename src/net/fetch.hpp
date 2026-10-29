@@ -1,10 +1,16 @@
 #pragma once
-#include <coroutine>
+#include <cstdint>
 
-#include "core/loop.hpp"
+#include "core/task.hpp"
 #include "net/http.hpp"
 
 namespace lyren::net {
+
+    // Reads may retry transport failures; writes must not be replayed after an uncertain result.
+    enum class Retry : uint8_t {
+        never,
+        network
+    };
 
     // co_await fetch{loop, http, req}: runs the request and resumes on the loop thread.
     struct fetch {
@@ -28,5 +34,8 @@ namespace lyren::net {
             return std::move(res);
         }
     };
+
+    // At most three attempts, with 300 ms and 900 ms waits. HTTP responses are never retried.
+    Task<Response> fetch_retry(Loop &loop, Http &http, Request req, Retry retry = Retry::network);
 
 } // namespace lyren::net

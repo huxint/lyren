@@ -39,11 +39,6 @@ namespace lyren {
         return z ^ (z >> 31);
     }
 
-    static std::string mmss(double seconds) {
-        int v = static_cast<int>(std::max(0.0, seconds));
-        return std::format("{}:{:02}", v / 60, v % 60);
-    }
-
     // Artwork for lists that have no cover of their own (liked, recent, cloud, daily): a gradient with two soft discs.
     static void art(ui::Painter &p, Rect r, float hue, float radius, std::string_view icon) {
         p.gradient(r, hsl(hue, 0.42f, 0.54f), hsl(hue + 0.08f, 0.4f, 0.22f), radius);
@@ -197,15 +192,15 @@ namespace lyren {
         }
         active_ = saved.source;
         route_.card.source = active_;
-        volume_ = std::clamp(saved.volume, 0.f, 1.f);
+        volume_ = saved.volume;
         muted_ = saved.muted;
-        mode_ = static_cast<Mode>(std::clamp(saved.mode, 0, 2));
+        mode_ = saved.mode;
         queue_ = std::move(saved.queue);
         current_ = saved.current;
         resume_at_ = last_pos_ = saved.position;
         recent_ = std::move(saved.recent);
         refresh_recent();
-        dl_x_ = saved.lyrics_x, dl_bottom_ = std::max(0.f, saved.lyrics_bottom), dl_locked_ = saved.lyrics_locked;
+        dl_x_ = saved.lyrics_x, dl_bottom_ = saved.lyrics_bottom, dl_locked_ = saved.lyrics_locked;
         dl_enabled_ = saved.lyrics_enabled;
         dl_island_ = saved.lyrics_island;
         lyric_translation_ = saved.lyrics_translation;
@@ -265,12 +260,7 @@ namespace lyren {
                 },
             .seek =
                 [this](double at) {
-                    // Media controls speak song time; the player seeks within the file.
-                    double file_at = std::max(0.0, at - clip_start_);
-                    if (player_.duration() > 0) {
-                        file_at = std::min(file_at, player_.duration());
-                    }
-                    seek(file_at);
+                    seek_song(at);
                 },
             .volume =
                 [this](double v) {
@@ -296,7 +286,7 @@ namespace lyren {
                 },
             .position =
                 [this] {
-                    return clip_start_ + position();
+                    return timeline().to_song(position());
                 },
         };
         mpris_ = Mpris::create(d.bus, std::move(h));
@@ -323,7 +313,7 @@ namespace lyren {
         SavedState s{.source = active_,
                      .volume = volume_,
                      .muted = muted_,
-                     .mode = static_cast<int>(mode_),
+                     .mode = mode_,
                      .queue = queue_,
                      .current = current_,
                      .recent = recent_,
@@ -1396,6 +1386,7 @@ namespace lyren {
             return;
         }
         want_play_ = fetching_ = false;
+        pending_song_seek_.reset();
         resume_at_ = last_pos_ = 0;
         trial_ = false, clip_start_ = 0, highlight_from_ = highlight_to_ = 0;
         ++play_gen_;
@@ -1422,11 +1413,29 @@ namespace lyren {
     }
 
     void Shell::seek(double at) {
-        player_.seek(at);
         last_pos_ = at;
+        auto state = player_.state();
+        if (state == State::idle || state == State::failed) {
+            resume_at_ = at;
+        } else {
+            player_.seek(at);
+        }
         schedule_prefetch();
         if (mpris_) {
-            mpris_->seeked(clip_start_ + at);
+            mpris_->seeked(timeline().to_song(at));
+        }
+        changed();
+        redraw_();
+    }
+
+    void Shell::seek_song(double at) {
+        if (fetching_) {
+            pending_song_seek_ = std::clamp(at, 0.0, timeline().duration());
+            last_pos_ = timeline().to_file(*pending_song_seek_);
+            changed();
+            redraw_();
+        } else {
+            seek(timeline().to_file(at));
         }
     }
 
@@ -1446,6 +1455,10 @@ namespace lyren {
         return st == State::idle && !fetching_ ? resume_at_ : last_pos_;
     }
 
+    Timeline Shell::timeline() const {
+        return {current() ? static_cast<double>(current()->duration) : 0, player_.duration(), clip_start_};
+    }
+
     void Shell::publish() {
         if (!mpris_) {
             return;
@@ -1458,7 +1471,7 @@ namespace lyren {
             s.track = std::format("/lyren/track/{}_{}", platform(t->source).id, t->id);
             s.title = t->title, s.artist = t->artist, s.album = t->album;
             s.art = cover_url(t->cover, 512);
-            s.length = std::max(player_.duration(), static_cast<double>(t->duration));
+            s.length = timeline().duration();
             s.can_play = true;
             s.can_next = queue_.size() > 1 || fm_playing_;
             s.can_prev = queue_.size() > 1;
@@ -1518,6 +1531,7 @@ namespace lyren {
         // The old stream's window no longer applies until the new one arrives.
         trial_ = false, clip_start_ = 0, highlight_from_ = highlight_to_ = 0;
         last_pos_ = at;
+        pending_song_seek_.reset();
         resume_at_ = 0;
         if (prefetch_.key != key(*current())) {
             prefetch_ = {};
@@ -1529,11 +1543,11 @@ namespace lyren {
             lyric_layout_.clear();
             lyrics_loading_ = true;
         }
-        spawn(load_track(gen, *current(), at));
+        spawn(load_track(gen, *current()));
         changed();
     }
 
-    Task<void> Shell::load_track(uint64_t gen, Track t, double at) {
+    Task<void> Shell::load_track(uint64_t gen, Track t) {
         std::shared_ptr<audio::Spool> spool;
         Stream s;
         if (prefetch_.spool && prefetch_.key == key(t)) {
@@ -1567,6 +1581,9 @@ namespace lyren {
         trial_ = s.trial;
         highlight_from_ = s.highlight_from, highlight_to_ = s.highlight_to;
         track_gain_ = s.gain, track_peak_ = s.peak;
+        const double at = pending_song_seek_ ? timeline().to_file(*pending_song_seek_) : last_pos_;
+        pending_song_seek_.reset();
+        last_pos_ = at;
         apply_gain();
         player_.open(std::move(spool), want_play_);
         if (at > 0) {
@@ -3121,13 +3138,10 @@ namespace lyren {
         // Dragging previews the position and seeks on release.
         TextStyle ts{.size = t.fs(11), .color = t.text_dim, .features = text::tabular_nums};
         float py = mid.y + 66;
-        double file_dur = player_.duration();
-        double song_dur = std::max(file_dur, tr ? static_cast<double>(tr->duration) : 0.0);
+        const auto clock = timeline();
+        const double file_dur = clock.file_duration(), song_dur = clock.duration();
         double pos = st == State::idle && !fetching_ ? resume_at_ : last_pos_;
-        double shown_pos = std::clamp(clip_start_ + pos, 0.0, song_dur);
-        // Where the file sits in the song; unknown until the stream loads, then the whole song.
-        double clip0 = file_dur > 0 ? std::clamp(clip_start_, 0.0, song_dur) : 0;
-        double clip1 = file_dur > 0 ? std::clamp(clip_start_ + file_dur, clip0, song_dur) : song_dur;
+        const double shown_pos = clock.to_song(pos);
         Rect bar{mid.x + 52, py - 9, mid.w - 104, 18};
         progress_w_ = bar.w;
         std::vector<std::pair<float, float>> buffered;
@@ -3136,7 +3150,7 @@ namespace lyren {
             if (size && have < size) {
                 for (auto [b, e] : sp->ranges()) {
                     auto frac = [&](uint64_t at) {
-                        return static_cast<float>((clip0 + (clip1 - clip0) * (static_cast<double>(at) / static_cast<double>(size))) / song_dur);
+                        return clock.progress(file_dur * static_cast<double>(at) / static_cast<double>(size));
                     };
                     buffered.emplace_back(frac(b), frac(e));
                 }
@@ -3144,13 +3158,14 @@ namespace lyren {
         }
         ui::Id prog = ui.id("progress");
         // A jump of the position (a seek, another track) glides; a drag follows the pointer.
-        float v = ui.spring(ui.id("progress-v"), dragging_ ? drag_v_ : song_dur > 0 ? static_cast<float>(shown_pos / song_dur) : 0, dragging_ ? 0 : 260);
+        float v = ui.spring(ui.id("progress-v"), dragging_ ? drag_v_ : clock.progress(pos), dragging_ ? 0 : 260);
         float wave = ui.anim(ui.id("wave"), st == State::playing && config_.interface.progress == ProgressStyle::wave ? 3.f : 0.f, 600, ease::standard);
         ui::SliderStyle slide{.wave = wave, .marked = buffered};
         if (song_dur > 0) {
-            slide.span_from = static_cast<float>(clip0 / song_dur), slide.span_to = static_cast<float>(clip1 / song_dur);
+            const auto [from, to] = clock.playable_span();
+            slide.span_from = from, slide.span_to = to;
             if (highlight_to_ > highlight_from_) {
-                slide.band_from = static_cast<float>(highlight_from_ / song_dur), slide.band_to = static_cast<float>(highlight_to_ / song_dur);
+                slide.band_from = clock.fraction(highlight_from_), slide.band_to = clock.fraction(highlight_to_);
             }
         }
         bool moved = ui.slider(prog, bar, v, slide);
@@ -3160,17 +3175,7 @@ namespace lyren {
         }
         if (dragging_ && !ui.is_active(prog)) {
             dragging_ = false;
-            double at = std::clamp(drag_v_ * song_dur - clip_start_, 0.0, file_dur > 0 ? file_dur : song_dur);
-            if (st == State::idle || st == State::failed) {
-                if (fetching_) {
-                    last_pos_ = at;
-                } else {
-                    resume_at_ = last_pos_ = at;
-                }
-            } else {
-                seek(at);
-            }
-            changed();
+            seek_song(drag_v_ * song_dur);
         }
         ui.label({mid.x, py - 8, 44, 16}, mmss(dragging_ ? drag_v_ * song_dur : tr ? shown_pos : 0), ts, Align::right);
         ui.label({bar.right() + 8, py - 8, 44, 16}, mmss(song_dur), ts);

@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 
-#include "app/lyrics.hpp"
-#include "app/provider.hpp"
+#include "media/lyrics.hpp"
+#include "media/provider.hpp"
 #include "qq/crypto.hpp"
 #include "qq/auth.hpp"
 #include "qq/qq.hpp"

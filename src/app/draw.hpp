@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <format>
 #include <string>
 
@@ -9,6 +10,11 @@
 
 // Drawing helpers shared by the parts of the shell.
 namespace lyren {
+
+    inline std::string mmss(double seconds) {
+        const auto whole = static_cast<uint32_t>(std::max(0.0, seconds));
+        return std::format("{}:{:02}", whole / 60, whole % 60);
+    }
 
     // Multiplies the painter's alpha for one scope.
     struct Fade {

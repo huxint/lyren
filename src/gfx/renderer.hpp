@@ -24,7 +24,7 @@ namespace lyren::gfx {
     };
 
     // One instanced quad; layout matches shaders/prim.glsl. Coordinates are buffer pixels, colours premultiplied.
-    struct Prim {
+    struct alignas(16) Prim {
         std::array<float, 4> rect;
         std::array<float, 4> clip;
         std::array<float, 4> uv; // texture coordinates; wave: x played width
@@ -37,6 +37,7 @@ namespace lyren::gfx {
         std::array<uint32_t, 4> info; // kind, texture, flags
     };
     static_assert(sizeof(Prim) == 128);
+    static_assert(alignof(Prim) == 16);
 
     using TextureId = uint32_t;
 

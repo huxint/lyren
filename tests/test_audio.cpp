@@ -5,9 +5,19 @@
 #include <vector>
 
 #include "audio/decoder.hpp"
+#include "audio/output.hpp"
 #include "audio/spool.hpp"
 
 using namespace lyren::audio;
+
+TEST_CASE("audio output rejects more channels than the PipeWire format can store") {
+    // Vorbis permits up to 255 channels; PipeWire's raw format and control arrays hold at most 64.
+    std::atomic<uint32_t> wake{0};
+    Output output(wake, {});
+    const auto result = output.start({22050, 65});
+    REQUIRE_FALSE(result);
+    CHECK(result.error() == "This audio file has more channels than PipeWire supports");
+}
 
 TEST_CASE("byte ranges merge and report gaps") {
     Ranges r;

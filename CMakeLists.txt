@@ -60,10 +60,12 @@ add_library(
     src/core/i18n.cpp
     src/core/loop.cpp
     src/core/utf8.cpp
+    src/core/encoding.cpp
     src/sys/paths.cpp
     src/sys/config.cpp
     src/sys/creds.cpp
     src/net/http.cpp
+    src/net/fetch.cpp
     src/audio/spool.cpp
     src/audio/decoder.cpp
     src/audio/dec_mp3.cpp
@@ -79,8 +81,8 @@ add_library(
     src/qq/auth.cpp
     src/qq/client.cpp
     src/qq/qq.cpp
-    src/app/provider.cpp
-    src/app/lyrics.cpp)
+    src/media/types.cpp
+    src/media/lyrics.cpp)
 target_include_directories(lyren_base PUBLIC src)
 target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA glaze)
 target_compile_options(lyren_base PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
@@ -150,12 +152,14 @@ add_executable(
     tests/test_config.cpp
     tests/test_i18n.cpp
     tests/test_utf8.cpp
+    tests/test_encoding.cpp
     tests/test_ui.cpp
     tests/test_audio.cpp
     tests/test_http.cpp
     tests/test_ncm.cpp
     tests/test_qq.cpp
     tests/test_provider.cpp
+    tests/test_timeline.cpp
     tests/test_lyrics.cpp
     tests/test_image.cpp)
 target_link_libraries(lyren_tests PRIVATE lyren_lib doctest)

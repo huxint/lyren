@@ -30,7 +30,7 @@
 #include <string>
 #include <vector>
 
-#include "app/lyrics.hpp"
+#include "media/lyrics.hpp"
 #include "audio/player.hpp"
 #include "core/log.hpp"
 #include "core/utf8.hpp"

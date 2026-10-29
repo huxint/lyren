@@ -9,7 +9,7 @@
 #include <charconv>
 #include <span>
 
-#include "ncm/crypto.hpp"
+#include "core/encoding.hpp"
 
 namespace lyren::qq {
 
@@ -27,7 +27,7 @@ namespace lyren::qq {
         std::array<unsigned char, 20> d;
         unsigned n = 0;
         EVP_Digest(body.data(), body.size(), d.data(), &n, EVP_sha1(), nullptr);
-        std::string h = ncm::hex({reinterpret_cast<const char *>(d.data()), d.size()}, true), mixed(d.size(), '\0');
+        std::string h = encoding::hex({reinterpret_cast<const char *>(d.data()), d.size()}, true), mixed(d.size(), '\0');
         for (size_t i = 0; i < d.size(); ++i) {
             mixed[i] = static_cast<char>(d[i] ^ mask[i]);
         }
@@ -35,7 +35,7 @@ namespace lyren::qq {
         for (int i : head) {
             out += h[static_cast<size_t>(i)];
         }
-        for (char c : ncm::base64(mixed)) {
+        for (char c : encoding::base64(mixed)) {
             if (c != '=' && c != '/' && c != '+') {
                 out += c;
             }

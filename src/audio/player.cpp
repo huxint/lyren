@@ -194,9 +194,9 @@ namespace lyren::audio {
                         fail(gen, std::move(error));
                         continue;
                     }
-                    if (!out_.start(dec->format)) {
+                    if (auto started = out_.start(dec->format); !started) {
                         dec.reset();
-                        fail(gen, "PipeWire is not running");
+                        fail(gen, std::move(started.error()));
                         continue;
                     }
                     writing_gen_ = gen, done = false;
