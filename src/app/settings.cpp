@@ -413,7 +413,9 @@ namespace lyren {
                 const int at_line = lyric_at(lyrics_, now + 0.2);
                 const LyricLine *line = at_line >= 0 ? &lyrics_[static_cast<size_t>(at_line)] : nullptr;
                 const std::string_view text = line ? std::string_view(line->text) : current() ? std::string_view(current()->title) : lyren::tr("Lyrics appear here");
-                const std::string_view below = line ? (lyric_translation_ ? std::string_view(line->translation) : std::string_view{}) : current() ? current()->artist : "";
+                const std::string_view below = line        ? (lyric_translation_ ? std::string_view(line->translation) : std::string_view{})
+                                               : current() ? std::string_view(current()->artist)
+                                                           : std::string_view{};
                 const float lh = std::round(size * 1.35f), line_top = wall.y + (wall.h - lh - (below.empty() ? 0 : sub * 1.35f)) / 2;
                 const ui::Color sung = t.lyric_sung.value_or(stage_->accent);
                 const bool timed = line && !line->words.empty();
