@@ -181,6 +181,9 @@ namespace lyren {
         std::string user, avatar, text, time; // time as the service words it
         int likes = 0;
         std::string reply_user, reply; // the comment this one answers
+        std::string id;
+        int replies = 0;
+        bool liked = false;
     };
 
     struct CommentPage {

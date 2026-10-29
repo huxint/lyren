@@ -798,7 +798,12 @@ namespace lyren {
             }
             co_return;
         }
+        bool account_changed = !lib.account || lib.account->id != a->id;
         lib.account = *a;
+        if (account_changed && thread_source_ == source && !thread_id_.empty()) {
+            replies_.reset();
+            refresh_comments();
+        }
         redraw_();
         if (p.features.daily_playlists) {
             spawn(load_daily_lists(source));
@@ -1050,6 +1055,22 @@ namespace lyren {
         ++lib.collection_gen;
         co_await provider(source).logout();
         lib.account.reset();
+        std::erase_if(comment_writes_, [&](const auto &write) {
+            return write.first.starts_with(std::string(platform(source).id) + ':');
+        });
+        if (thread_source_ == source) {
+            for (auto &feed : feeds_) {
+                for (auto &comment : feed->comments) {
+                    comment.liked = false;
+                }
+            }
+        }
+        if (replies_ && replies_->source == source) {
+            replies_->root.liked = false;
+            for (auto &comment : replies_->feed->comments) {
+                comment.liked = false;
+            }
+        }
         lib.playlists.clear();
         lib.liked_ids.clear();
         lib.liked = {};

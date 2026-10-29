@@ -13,6 +13,7 @@
 //   lyren-probe qq collect-playlist <public id> on|off
 //   lyren-probe qq dislikes [songs|artists|styles|all] | dislike <songs|artists|styles> <id> on|off [name]
 //   lyren-probe qq reorder <dir:ID> <song id>...   submit every song once in the desired order, then read back
+//   lyren-probe qq replies <comment id> | like-comment <comment id> on|off
 //   lyren-probe qq call <module> <method> [param]   one signed RPC part; prints the JSON
 //
 // Steps run in order: wait:MS  seek:SECONDS  pause  play  vol:0..1  open:URL|FILE  quit. Without steps it is interactive:
@@ -658,6 +659,37 @@ static int qq_command(const std::vector<std::string> &args) {
                 co_return fail(r.error());
             }
             print_tracks(*r);
+        } else if (cmd == "replies") {
+            if (args.size() != 3 || arg(2).empty()) {
+                co_return fail("Expected replies <comment id>");
+            }
+            std::string cursor;
+            for (int page = 1; page <= 2; ++page) {
+                auto r = co_await q.comment_replies(arg(2), page, cursor);
+                if (!r) {
+                    co_return fail(r.error());
+                }
+                std::println("page {}: {} of {}, more {}", page, r->comments.size(), r->total, r->more);
+                for (const auto &comment : r->comments) {
+                    std::println("  {}  {} likes{}  {}: {}", comment.id, comment.likes, comment.liked ? " (liked)" : "", comment.user, prefix(comment.text, 80));
+                }
+                if (!r->more) {
+                    break;
+                }
+                cursor = std::move(r->cursor);
+            }
+        } else if (cmd == "like-comment") {
+            if (args.size() != 4 || arg(2).empty() || (arg(3) != "on" && arg(3) != "off")) {
+                co_return fail("Expected like-comment <comment id> on|off");
+            }
+            if (!q.logged_in()) {
+                co_return fail("Sign in to QQ Music first");
+            }
+            auto r = co_await q.like_comment(arg(2), arg(3) == "on");
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{}", arg(3) == "on" ? "Comment liked" : "Comment like removed");
         } else if (cmd == "comments") {
             std::string cursor;
             for (int page = 1; page <= 2; ++page) {
@@ -667,7 +699,8 @@ static int qq_command(const std::vector<std::string> &args) {
                 }
                 std::println("page {}: {} of {}, more {}, cursor {}", page, r->comments.size(), r->total, r->more, r->cursor);
                 for (auto &c : r->comments) {
-                    std::println("  [{}] {} ({}): {}{}", c.time, c.user, c.likes, prefix(c.text, 60), c.reply.empty() ? "" : " ← " + c.reply_user);
+                    std::println("  [{}] {} · {} likes · {} replies · {}: {}{}", c.time, c.id, c.likes, c.replies, c.user, prefix(c.text, 60),
+                                 c.reply.empty() ? "" : " ← " + c.reply_user);
                 }
                 cursor = r->cursor;
             }

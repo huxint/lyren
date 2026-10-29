@@ -32,6 +32,8 @@ namespace lyren {
         std::move_only_function<Task<Result<std::vector<Dislike>>>(DislikeKind)> dislikes;
         std::move_only_function<Task<Result<void>>(Dislike, bool)> dislike;
         std::move_only_function<Task<Result<void>>(std::string, std::vector<Track>)> reorder_playlist;
+        std::move_only_function<Task<Result<CommentPage>>(std::string, int, std::string)> comment_replies;
+        std::move_only_function<Task<Result<void>>(std::string, bool)> like_comment;
         std::move_only_function<Task<Result<Categories>>()> categories;
         std::move_only_function<Task<Result<Batch>>(std::string, int)> square;
         std::move_only_function<Task<void>(std::string, std::string)> report_start;

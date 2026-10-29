@@ -431,3 +431,48 @@ TEST_CASE("QQ playlist ordering requires the explicit SeqSonglist result") {
     CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{}}})"}));
     CHECK_FALSE(qq::parse_playlist_order_write({.error = "Network connection failed"}));
 }
+
+TEST_CASE("QQ comment identities like state and reply cursors retain their service values") {
+    const qq::Reply reply{.body = R"({"req_0":{"code":0,"data":{"SubCode":0,"CommentList":{"HasMore":1,"Total":22,"Comments":[
+        {"CmId":"1!opaque-id","SeqNo":"18446744073709551615","RankScore":"9007199254740993",
+         "Nick":"作者","Content":"正文","PubTime":1700000000,"PraiseNum":12,"ReplyCnt":3,"IsPraised":1,
+         "RepliedComments":[{"Nick":"原作者","Content":"被回复的正文"}]}
+    ]}}}})"};
+    auto main = qq::parse_comments(reply);
+    REQUIRE(main);
+    REQUIRE(main->comments.size() == 1);
+    CHECK(main->comments[0].id == "1!opaque-id");
+    CHECK(main->comments[0].liked);
+    CHECK(main->comments[0].likes == 12);
+    CHECK(main->comments[0].replies == 3);
+    CHECK(main->comments[0].reply_user == "原作者");
+    CHECK(main->comments[0].reply == "被回复的正文");
+    CHECK(main->cursor == "18446744073709551615");
+    auto replies = qq::parse_comments(reply, true);
+    REQUIRE(replies);
+    CHECK(replies->cursor == R"(["18446744073709551615","9007199254740993"])");
+    CHECK(replies->more);
+    CHECK(replies->total == 22);
+}
+
+TEST_CASE("QQ comment business failures are distinct from final empty pages") {
+    auto empty = qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"CommentList":{"HasMore":0,"Total":0,"Comments":[]}}}})"}, true);
+    REQUIRE(empty);
+    CHECK(empty->comments.empty());
+    CHECK_FALSE(empty->more);
+    CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"SubCode":1000}}})"}));
+    CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":2001}})"}));
+    CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{}}})"}));
+    CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"CommentList":{"HasMore":0,"Comments":[{"Nick":"no identity"}]}}}})"}));
+    CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"CommentList":{"HasMore":1,"Comments":[{"CmId":"one"}]}}}})"}));
+    CHECK_FALSE(qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"CommentList":{"HasMore":1,"Comments":[{"CmId":"one","SeqNo":"123"}]}}}})"}, true));
+}
+
+TEST_CASE("QQ comment likes use the RPC acknowledgement for a void operation") {
+    CHECK(qq::parse_comment_like({.body = R"({"req_0":{"code":0,"data":{}}})"}));
+    CHECK(qq::parse_comment_like({.body = R"({"req_0":{"code":0}})"}));
+    CHECK_FALSE(qq::parse_comment_like({.body = R"({"req_0":{"code":2001}})"}));
+    CHECK_FALSE(qq::parse_comment_like({.body = R"({"req_0":{"code":1000,"data":{}}})"}));
+    CHECK_FALSE(qq::parse_comment_like({.body = "{}"}));
+    CHECK_FALSE(qq::parse_comment_like({.error = "Network connection failed"}));
+}

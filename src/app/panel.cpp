@@ -137,6 +137,7 @@ namespace lyren {
     }
 
     void Shell::open_comments(ui::Ui &ui, Source source, Subject subject, std::string id, std::string title, std::string cover_url, bool follows) {
+        replies_.reset();
         set_thread(ui, source, subject, std::move(id), std::move(title), std::move(cover_url), follows);
         show_panel(Panel::comments);
     }
@@ -144,7 +145,7 @@ namespace lyren {
     void Shell::set_thread(ui::Ui &ui, Source source, Subject subject, std::string id, std::string title, std::string cover_url, bool follows) {
         thread_follows_ = follows;
         // The same thread stays unless its first page failed, which this retries.
-        if (thread_source_ == source && thread_subject_ == subject && thread_id_ == id && (feeds_[0].loading || feeds_[0].page > 0)) {
+        if (thread_source_ == source && thread_subject_ == subject && thread_id_ == id && (feeds_[0]->loading || feeds_[0]->page > 0)) {
             return;
         }
         thread_source_ = source;
@@ -155,8 +156,9 @@ namespace lyren {
         thread_tab_ = 0;
         thread_time_ = ui.now;
         ++thread_gen_;
+        replies_.reset();
         for (auto &f : feeds_) {
-            f = {};
+            f = std::make_shared<Feed>();
         }
         for (const char *sid : {"comments-hot", "comments-new"}) {
             ui.scroll_to(ui.id(sid), 0);
@@ -165,7 +167,7 @@ namespace lyren {
     }
 
     void Shell::load_comments(int tab) {
-        Feed &f = feeds_[tab];
+        Feed &f = *feeds_[tab];
         if (f.loading || !f.more || (f.page && !f.error.empty())) {
             return;
         }
@@ -179,7 +181,7 @@ namespace lyren {
         if (gen != thread_gen_) {
             co_return;
         }
-        Feed &f = feeds_[tab];
+        Feed &f = *feeds_[tab];
         f.loading = false;
         if (!r) {
             f.error = r.error();
@@ -189,45 +191,179 @@ namespace lyren {
             f.since = now_();
         }
         f.page = page;
-        f.total = r->total;
+        if (page == 1 || r->total > 0) {
+            f.total = r->total;
+        }
         f.more = r->more && !r->comments.empty();
         f.cursor = std::move(r->cursor);
         f.comments.insert(f.comments.end(), std::make_move_iterator(r->comments.begin()), std::make_move_iterator(r->comments.end()));
         redraw_();
     }
 
+    void Shell::refresh_comments() {
+        ++thread_gen_;
+        for (auto &feed : feeds_) {
+            feed = std::make_shared<Feed>();
+        }
+        load_comments(thread_tab_);
+        redraw_();
+    }
+
+    void Shell::open_replies(ui::Ui &ui, Source source, Comment root) {
+        replies_ = std::make_shared<ReplyView>(source, std::move(root));
+        replies_->opened = ui.now;
+        ui.scroll_to(ui.id("comment-replies"), 0);
+        load_replies(replies_);
+    }
+
+    void Shell::load_replies(std::shared_ptr<ReplyView> view) {
+        auto &feed = *view->feed;
+        if (feed.loading || !feed.more || (feed.page && !feed.error.empty())) {
+            return;
+        }
+        feed.loading = true;
+        feed.error.clear();
+        spawn(fetch_replies(std::move(view), feed.page + 1, feed.cursor));
+    }
+
+    Task<void> Shell::fetch_replies(std::shared_ptr<ReplyView> view, int page, std::string cursor) {
+        auto feed = view->feed;
+        auto r = co_await provider(view->source).features.comment_replies(view->root.id, page, std::move(cursor));
+        if (replies_ != view || view->feed != feed) {
+            co_return;
+        }
+        feed->loading = false;
+        if (!r) {
+            feed->error = r.error();
+            co_return redraw_();
+        }
+        if (!feed->page) {
+            feed->since = now_();
+        }
+        feed->page = page;
+        if (page == 1 || r->total > 0) {
+            feed->total = r->total;
+        }
+        feed->more = r->more && !r->comments.empty();
+        feed->cursor = std::move(r->cursor);
+        feed->comments.insert(feed->comments.end(), std::make_move_iterator(r->comments.begin()), std::make_move_iterator(r->comments.end()));
+        redraw_();
+    }
+
+    void Shell::set_comment_like(Source source, const std::shared_ptr<Feed> &owner, const std::string &id, bool liked, int likes) {
+        auto update = [&](Comment &comment) {
+            if (comment.id == id) {
+                comment.liked = liked;
+                comment.likes = likes;
+            }
+        };
+        for (auto &comment : owner->comments) {
+            update(comment);
+        }
+        if (thread_source_ == source) {
+            for (auto &feed : feeds_) {
+                for (auto &comment : feed->comments) {
+                    update(comment);
+                }
+            }
+        }
+        if (replies_ && replies_->source == source) {
+            update(replies_->root);
+            for (auto &comment : replies_->feed->comments) {
+                update(comment);
+            }
+        }
+    }
+
+    void Shell::toggle_comment_like(Source source, std::shared_ptr<Feed> feed, const Comment &comment) {
+        if (!provider(source).logged_in()) {
+            return notify(lyren::trf("Sign in to {} to like comments", lyren::tr(platform(source).name)), "thumbs-up");
+        }
+        std::string id = comment.id, write = key(source, id);
+        if (!comment_writes_.emplace(write, feed).second) {
+            return;
+        }
+        bool previous = comment.liked;
+        int likes = comment.likes;
+        set_comment_like(source, feed, id, !previous, std::max(0, likes + (previous ? -1 : 1)));
+        redraw_();
+        spawn([](Shell *self, Source source, std::shared_ptr<Feed> feed, std::string id, bool previous, int likes, uint64_t gen) -> Task<void> {
+            auto r = co_await self->provider(source).features.like_comment(id, !previous);
+            auto pending = self->comment_writes_.find(key(source, id));
+            if (pending == self->comment_writes_.end() || pending->second != feed) {
+                co_return;
+            }
+            self->comment_writes_.erase(pending);
+            if (gen != self->library(source).gen) {
+                co_return self->redraw_();
+            }
+            if (!r) {
+                self->set_comment_like(source, feed, id, previous, likes);
+                self->notify(lyren::trf("Could not update comment like: {}", r.error()), "triangle-alert", true);
+            } else {
+                self->set_comment_like(source, feed, id, !previous, std::max(0, likes + (previous ? -1 : 1)));
+            }
+            self->redraw_();
+        }(this, source, std::move(feed), std::move(id), previous, likes, library(source).gen));
+    }
+
     void Shell::comments_panel(ui::Ui &ui, Rect r) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        // What the comments are about: its cover and name, and how many there are.
-        Rect art{r.x + 18, r.y + 18, 44, 44};
-        cover(ui, art, thread_cover_, t.radius_s(), thread_subject_ == Subject::song ? "music" : thread_subject_ == Subject::album ? "disc-album" : "list-music");
-        float tx = art.right() + 12, tw = r.right() - tx - 52;
-        Feed &f = feeds_[thread_tab_];
-        float head = p.text(tx, art.y + 18, lyren::tr("Comments"), {.size = t.fs(15), .color = t.text}, tw);
-        if (f.total > 0) {
-            p.text(tx + head + 8, art.y + 18, grouped(f.total), {.size = t.fs(12), .color = t.text_dim, .features = text::tabular_nums}, tw - head - 8);
+        auto reply = replies_;
+        auto owner = reply ? reply->feed : feeds_[thread_tab_];
+        Feed &f = *owner;
+        Source source = reply ? reply->source : thread_source_;
+        if (reply) {
+            if (ui.icon_button(ui.id("replies-back"), {r.x + 14, r.y + 16, 32, 32}, "chevron-left", 18)) {
+                replies_.reset();
+                return ui.redraw();
+            }
+            ui.label({r.x + 56, r.y + 18, r.w - 154, 28}, lyren::trf("Replies · {}", f.page ? f.total : reply->root.replies), {.size = t.fs(15), .color = t.text});
+            Rect quote{r.x + 18, r.y + 64, r.w - 36, 52};
+            p.rect(quote, t.text.with_alpha(0.05f), t.radius_s());
+            p.text(quote.x + 10, quote.y + 17, reply->root.user, {.size = t.fs(12), .color = t.text_dim}, quote.w - 20);
+            p.text(quote.x + 10, quote.y + 38, reply->root.text, {.size = t.fs(13), .color = t.text}, quote.w - 20);
+        } else {
+            Rect art{r.x + 18, r.y + 18, 44, 44};
+            cover(ui, art, thread_cover_, t.radius_s(), thread_subject_ == Subject::song ? "music" : thread_subject_ == Subject::album ? "disc-album" : "list-music");
+            float tx = art.right() + 12, tw = r.right() - tx - 88;
+            float head = p.text(tx, art.y + 18, lyren::tr("Comments"), {.size = t.fs(15), .color = t.text}, tw);
+            if (f.total > 0) {
+                p.text(tx + head + 8, art.y + 18, grouped(f.total), {.size = t.fs(12), .color = t.text_dim, .features = text::tabular_nums}, tw - head - 8);
+            }
+            p.text(tx, art.y + 38, thread_title_, {.size = t.fs(12), .color = t.text_dim}, tw);
+            const std::array<std::string_view, 2> tabs = {lyren::tr("Popular"), lyren::tr("Newest")};
+            float tabs_w = button_width(ui, tabs[0], false) + button_width(ui, tabs[1], false) - 16;
+            if (ui.tabs(ui.id("comment-tabs"), {r.x + 18, r.y + 78, tabs_w, 32}, tabs, thread_tab_, ui::TabStyle::pill)) {
+                thread_time_ = ui.now;
+                load_comments(thread_tab_);
+            }
         }
-        p.text(tx, art.y + 38, thread_title_, {.size = t.fs(12), .color = t.text_dim}, tw);
+        ui.disabled = f.loading;
+        if (ui.icon_button(ui.id("comments-refresh"), {r.right() - 82, r.y + 16, 32, 32}, "refresh-cw", 16)) {
+            if (reply) {
+                reply->feed = std::make_shared<Feed>();
+                load_replies(reply);
+            } else {
+                refresh_comments();
+            }
+            ui.disabled = false;
+            return ui.redraw();
+        }
+        ui.disabled = false;
         if (ui.icon_button(ui.id("comments-close"), {r.right() - 46, r.y + 16, 32, 32}, "x", 16)) {
             show_panel(Panel::none);
         }
-
-        const std::array<std::string_view, 2> tabs = {lyren::tr("Popular"), lyren::tr("Newest")};
-        float tabs_w = button_width(ui, tabs[0], false) + button_width(ui, tabs[1], false) - 16;
-        if (ui.tabs(ui.id("comment-tabs"), {r.x + 18, r.y + 78, tabs_w, 32}, tabs, thread_tab_, ui::TabStyle::pill)) {
-            thread_time_ = ui.now;
-            load_comments(thread_tab_);
-        }
         p.rect({r.x + 18, r.y + 124, r.w - 36, 1}, t.border);
 
-        float enter = ui.progress(thread_time_, 380);
+        float enter = ui.progress(reply ? reply->opened : thread_time_, 380);
         Fade fade(p, enter);
         // Like the queue, the list stops 8 px short of the panel's bottom edge.
         Rect view{r.x, r.y + 125, r.w, r.h - 125 - 8};
-        const float x = r.x + 18 + (1 - enter) * 20 * (thread_tab_ ? 1 : -1), w = r.w - 36;
+        const float x = r.x + 18 + (1 - enter) * 20 * (reply || thread_tab_ ? 1 : -1), w = r.w - 36;
         if (f.comments.empty()) {
-            page_status(ui, view, f.loading, f.error.empty() && !f.loading ? std::string(lyren::tr("No comments yet")) : f.error, false);
+            page_status(ui, view, f.loading, f.error.empty() && !f.loading ? std::string(lyren::tr(reply ? "No replies yet" : "No comments yet")) : f.error, false);
             return;
         }
         // Heights are kept, the wrapped lines are not: they would point into comments that move as more arrive.
@@ -236,14 +372,14 @@ namespace lyren {
             f.heights.clear(), f.heights_w = w, f.heights_size = size;
         }
         while (f.heights.size() < f.comments.size()) {
-            f.heights.push_back(comment(ui, f.comments[f.heights.size()], 0, 0, w, false));
+            f.heights.push_back(comment(ui, f.comments[f.heights.size()], 0, 0, w, false, source, owner));
         }
         // Below the last comment: the spinner while more load, or a mark that there are no more.
-        float content = f.loading || !f.more ? 72 : 24;
+        float content = f.loading || !f.more || !f.error.empty() ? 72 : 24;
         for (float h : f.heights) {
             content += h;
         }
-        float off = ui.begin_scroll(ui.id(thread_tab_ ? "comments-new" : "comments-hot"), view, content);
+        float off = ui.begin_scroll(ui.id(reply ? "comment-replies" : thread_tab_ ? "comments-new" : "comments-hot"), view, content);
         Rect clip = ui.clip();
         float y = view.y - off;
         for (size_t i = 0; i < f.comments.size(); ++i) {
@@ -252,14 +388,28 @@ namespace lyren {
                 // The first page arrives one comment after another.
                 float a = ui.progress(f.since + 0.03 * static_cast<double>(std::min<size_t>(i, 10)), 380);
                 Fade arrive(p, a);
-                comment(ui, f.comments[i], x, y + (1 - a) * 12, w, true);
+                comment(ui, f.comments[i], x, y + (1 - a) * 12, w, true, source, owner);
             }
             y += h;
         }
         if (f.loading) {
             ui.spinner(ui::center({view.x, y, view.w, 64}, 20, 20), t.text_dim, 2);
+        } else if (!f.error.empty()) {
+            ui.label({view.x + 18, y + 4, view.w - 36, 24}, f.error, {.size = t.fs(12), .color = t.text_dim});
+            if (ui.button(ui.id("comments-retry"), {view.x + (view.w - 100) / 2, y + 32, 100, 28}, lyren::tr("Retry"), ui::ButtonKind::secondary, "refresh-cw")) {
+                f.error.clear();
+                if (reply) {
+                    load_replies(reply);
+                } else {
+                    load_comments(thread_tab_);
+                }
+            }
         } else if (f.more && y < view.bottom() + 400) {
-            load_comments(thread_tab_);
+            if (reply) {
+                load_replies(reply);
+            } else {
+                load_comments(thread_tab_);
+            }
         } else if (!f.more) {
             const TextStyle end{.size = t.fs(12), .color = t.text_dim.with_alpha(0.7f)};
             const std::string_view words = lyren::tr("No more comments");
@@ -272,7 +422,7 @@ namespace lyren {
         ui.end_scroll();
     }
 
-    float Shell::comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw) {
+    float Shell::comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw, Source source, const std::shared_ptr<Feed> &feed) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         TextStyle body{.size = t.fs(14), .color = t.text}, quote{.size = t.fs(13), .color = t.text_dim}, small{.size = t.fs(12), .color = t.text_dim};
@@ -289,10 +439,29 @@ namespace lyren {
         if (!draw) {
             return h;
         }
+        ui.push_id(ui.id(key(source, c.id)));
         float top = y + 16;
         cover(ui, {x, top, 32, 32}, c.avatar, 16, "user");
         float likes_w = 0;
-        if (c.likes > 0) {
+        if (provider(source).features.like_comment) {
+            std::string n = short_count(c.likes);
+            likes_w = p.measure(n, small) + 34;
+            ui.disabled = comment_writes_.contains(key(source, c.id));
+            Rect button{x + w - likes_w, top - 5, likes_w, 28};
+            {
+                Fade dim(p, ui.disabled ? 0.4f : 1.f);
+                auto it = ui.interact(ui.id("comment-like"), button);
+                if (it.hovered) {
+                    p.rect(button, t.text.with_alpha(0.06f), t.radius_s());
+                }
+                if (it.clicked) {
+                    toggle_comment_like(source, feed, c);
+                }
+                p.icon("thumbs-up", {button.x + 4, top + 2, 14, 14}, c.liked ? t.accent : t.text_dim);
+                ui.label({button.x + 24, top, likes_w - 24, 18}, n, {.size = small.size, .color = c.liked ? t.accent : t.text_dim});
+            }
+            ui.disabled = false;
+        } else if (c.likes > 0) {
             std::string n = short_count(c.likes);
             float nw = p.measure(n, small);
             likes_w = nw + 22;
@@ -316,8 +485,20 @@ namespace lyren {
             }
             ly += quote_h;
         }
-        p.text(tx, ly + 18, c.time, {.size = small.size, .color = t.text_dim.with_alpha(0.75f)}, tw);
+        float time_w = tw;
+        if (c.replies > 0 && provider(source).features.comment_replies) {
+            std::string label = lyren::trf("{} replies", c.replies);
+            float rw = p.measure(label, small) + 20;
+            Rect button{x + w - rw, ly + 2, rw, 24};
+            if (ui.interact(ui.id("comment-replies"), button).clicked) {
+                open_replies(ui, source, c);
+            }
+            ui.label(button, label, {.size = small.size, .color = t.accent}, Align::right);
+            time_w -= rw + 12;
+        }
+        p.text(tx, ly + 18, c.time, {.size = small.size, .color = t.text_dim.with_alpha(0.75f)}, time_w);
         p.rect({tx, y + h - 1, tw, 1}, t.border.with_alpha(0.7f));
+        ui.pop_id();
         return h;
     }
 

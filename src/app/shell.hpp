@@ -187,6 +187,12 @@ namespace lyren {
             std::string cursor, error;
             double since = -10;
         };
+        struct ReplyView {
+            Source source;
+            Comment root;
+            std::shared_ptr<Feed> feed = std::make_shared<Feed>();
+            double opened = -10;
+        };
         using Mode = PlayMode;
         // What the panel beside the page shows.
         enum class Panel : uint8_t {
@@ -251,7 +257,7 @@ namespace lyren {
         void wallpaper(ui::Ui &ui, ui::Rect r, float radius);
         void categories_modal(ui::Ui &ui, ui::Rect r);
         // Lays out a comment at y, or only measures it; returns its height.
-        float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw);
+        float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw, Source source, const std::shared_ptr<Feed> &feed);
         void editor_modal(ui::Ui &ui, ui::Rect r, Card card);
         void picker_modal(ui::Ui &ui, ui::Rect r, Track t);
         void open_account(ui::Ui &ui);
@@ -300,6 +306,12 @@ namespace lyren {
         Task<void> load_collection(Source source);
         void load_comments(int tab);
         Task<void> fetch_comments(uint64_t gen, int tab, int page, std::string cursor);
+        void refresh_comments();
+        void open_replies(ui::Ui &ui, Source source, Comment root);
+        void load_replies(std::shared_ptr<ReplyView> view);
+        Task<void> fetch_replies(std::shared_ptr<ReplyView> view, int page, std::string cursor);
+        void toggle_comment_like(Source source, std::shared_ptr<Feed> feed, const Comment &comment);
+        void set_comment_like(Source source, const std::shared_ptr<Feed> &feed, const std::string &id, bool liked, int likes);
 
         // Playback.
         void play(const std::vector<Track> &list, int i);
@@ -547,7 +559,9 @@ namespace lyren {
         bool thread_follows_ = false;
         int thread_tab_ = 0;
         double thread_time_ = -10;
-        std::array<Feed, 2> feeds_; // hot, newest
+        std::array<std::shared_ptr<Feed>, 2> feeds_{std::make_shared<Feed>(), std::make_shared<Feed>()}; // hot, newest
+        std::shared_ptr<ReplyView> replies_;
+        std::map<std::string, std::shared_ptr<Feed>> comment_writes_;
         uint64_t thread_gen_ = 0;
         std::string edit_name_;
         bool edit_hidden_ = false, edit_focus_ = false;

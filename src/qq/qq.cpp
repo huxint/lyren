@@ -289,9 +289,9 @@ namespace lyren::qq {
             Str Nick, Content;
         };
         struct QComment {
-            Str Nick, Avatar, Content, SeqNo;
+            Str Nick, Avatar, Content, SeqNo, CmId, RankScore;
             int64_t PubTime = 0;
-            int PraiseNum = 0;
+            int PraiseNum = 0, ReplyCnt = 0, IsPraised = 0;
             Vec<QReplied> RepliedComments;
         };
         struct QCommentList {
@@ -300,6 +300,7 @@ namespace lyren::qq {
         };
         struct QComments {
             std::optional<QCommentList> CommentList;
+            int SubCode = 0;
         };
 
         struct QSession {
@@ -964,6 +965,12 @@ namespace lyren::qq {
         features.reorder_playlist = [this](std::string id, std::vector<Track> tracks) {
             return reorder_playlist(std::move(id), std::move(tracks));
         };
+        features.comment_replies = [this](std::string root, int page, std::string cursor) {
+            return comment_replies(std::move(root), page, std::move(cursor));
+        };
+        features.like_comment = [this](std::string id, bool on) {
+            return like_comment(std::move(id), on);
+        };
         features.radar = [this] {
             return radar();
         };
@@ -1530,39 +1537,90 @@ namespace lyren::qq {
             std::format(R"("BizType":{},"BizId":"{}","LastCommentSeqNo":{},"PageSize":20,"PageNum":{})", biz, id, glz::write_json(glz::escape_bytes_t{cursor}).value(), page - 1);
         Rpc rpc{"music.globalComment.CommentReadServer", hot ? "GetHotCommentList" : "GetNewCommentList",
                 hot ? std::format(R"({{{},"HotType":1,"WithAirborne":0}})", common) : std::format(R"({{{},"FromCommentId":"","WithHot":0}})", common)};
-        auto r = parse<One<QComments>>(co_await client.call({rpc}));
+        co_return parse_comments(co_await client.call({rpc}));
+    }
+
+    Result<CommentPage> parse_comments(const Reply &reply, bool replies) {
+        auto r = parse<One<QComments>>(reply);
         if (!r) {
-            co_return std::unexpected(r.error());
+            return std::unexpected(r.error());
         }
         auto d = take_data(r->req_0);
         if (!d) {
-            co_return std::unexpected(d.error());
+            return std::unexpected(d.error());
+        }
+        if (d->SubCode != 0) {
+            return std::unexpected("QQ Music comments failed (" + std::to_string(d->SubCode) + ')');
         }
         CommentPage out;
         if (!d->CommentList) {
-            co_return out;
+            return std::unexpected("QQ Music returned no comment list");
         }
         const QCommentList &l = *d->CommentList;
         out.total = l.Total;
         out.more = l.HasMore != 0;
         if (l.Comments) {
             for (const auto &c : *l.Comments) {
+                if (!c.CmId || c.CmId->empty()) {
+                    return std::unexpected("QQ Music returned a comment without an ID");
+                }
                 Comment &m = out.comments.emplace_back();
                 m.user = c.Nick.value_or("");
                 m.avatar = c.Avatar.value_or("");
                 m.text = trimmed(c.Content);
                 m.time = when(c.PubTime);
                 m.likes = c.PraiseNum;
+                m.id = *c.CmId;
+                m.replies = c.ReplyCnt;
+                m.liked = c.IsPraised != 0;
                 if (c.RepliedComments && !c.RepliedComments->empty()) {
                     m.reply_user = c.RepliedComments->front().Nick.value_or("");
                     m.reply = trimmed(c.RepliedComments->front().Content);
                 }
             }
             if (!l.Comments->empty()) {
-                out.cursor = l.Comments->back().SeqNo.value_or("");
+                const auto &last = l.Comments->back();
+                if (out.more && (!last.SeqNo || last.SeqNo->empty() || (replies && !last.RankScore))) {
+                    return std::unexpected("QQ Music returned no comment pagination cursor");
+                }
+                out.cursor = replies ? glz::write_json(std::array{last.SeqNo.value_or(""), last.RankScore.value_or("")}).value() : last.SeqNo.value_or("");
             }
         }
-        co_return out;
+        return out;
+    }
+
+    Task<Result<CommentPage>> Qq::comment_replies(std::string root, int page, std::string cursor) {
+        std::array<std::string, 2> continuation;
+        if (!cursor.empty()) {
+            static_cast<void>(glz::read_json(continuation, cursor));
+        }
+        std::string param =
+            std::format(R"({{"RootCmId":{},"LastCommentSeqNo":{},"LastRankScore":{},"PageSize":10,"RankType":0,"PageNum":{}}})", glz::write_json(glz::escape_bytes_t{root}).value(),
+                        glz::write_json(glz::escape_bytes_t{continuation[0]}).value(), glz::write_json(glz::escape_bytes_t{continuation[1]}).value(), page - 1);
+        co_return parse_comments(co_await client.call({{"music.globalComment.CommentReadServer", "GetReplyCommentList", std::move(param)}}), true);
+    }
+
+    Result<void> parse_comment_like(const Reply &reply) {
+        auto r = parse<One<glz::raw_json>>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        if (!r->req_0) {
+            return std::unexpected("QQ Music returned no comment operation result");
+        }
+        if (r->req_0->code == 2001) {
+            return std::unexpected("Sign in to QQ Music and try again");
+        }
+        if (r->req_0->code != 0) {
+            return std::unexpected("QQ Music comment operation failed (" + std::to_string(r->req_0->code) + ')');
+        }
+        return {};
+    }
+
+    Task<Result<void>> Qq::like_comment(std::string id, bool on) {
+        std::string param =
+            std::format(R"({{"comment_id":{},"type":{},"uin":{}}})", glz::write_json(glz::escape_bytes_t{id}).value(), on ? 3 : 4, glz::write_json(client.get("musicid")).value());
+        co_return parse_comment_like(co_await client.call({{"GlobalComment.GlobalCommentWriteServer", "UpdateHotComment", std::move(param)}}, Comm::app, net::Retry::never));
     }
 
     Task<Result<std::pair<Card, std::vector<Card>>>> Qq::user_playlists(std::string uid) {
