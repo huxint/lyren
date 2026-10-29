@@ -42,6 +42,11 @@ struct glz::meta<lyren::ThemeMode> {
 };
 
 template <>
+struct glz::meta<lyren::ProgressStyle> {
+    using enum lyren::ProgressStyle;
+    static constexpr auto value = enumerate(wave, line);
+};
+template <>
 struct glz::meta<lyren::Language> {
     using enum lyren::Language;
     static constexpr auto value = enumerate(en, zh);

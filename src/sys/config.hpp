@@ -37,9 +37,15 @@ namespace lyren {
         light
     };
 
+    enum class ProgressStyle : uint8_t {
+        wave,
+        line
+    };
+
     struct Config {
         struct Interface {
             Language language = Language::zh;
+            ProgressStyle progress = ProgressStyle::wave;
         } interface;
         struct Window {
             Decorations decorations = Decorations::client;

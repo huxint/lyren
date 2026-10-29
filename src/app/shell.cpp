@@ -3145,7 +3145,7 @@ namespace lyren {
         ui::Id prog = ui.id("progress");
         // A jump of the position (a seek, another track) glides; a drag follows the pointer.
         float v = ui.spring(ui.id("progress-v"), dragging_ ? drag_v_ : song_dur > 0 ? static_cast<float>(shown_pos / song_dur) : 0, dragging_ ? 0 : 260);
-        float wave = ui.anim(ui.id("wave"), st == State::playing ? 3.f : 0.f, 600, ease::standard);
+        float wave = ui.anim(ui.id("wave"), st == State::playing && config_.interface.progress == ProgressStyle::wave ? 3.f : 0.f, 600, ease::standard);
         ui::SliderStyle slide{.wave = wave, .marked = buffered};
         if (song_dur > 0) {
             slide.span_from = static_cast<float>(clip0 / song_dur), slide.span_to = static_cast<float>(clip1 / song_dur);

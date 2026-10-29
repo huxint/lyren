@@ -319,6 +319,13 @@ namespace lyren {
                 set_setting_("theme", "motion", std::format("{:.1f}", motions[static_cast<size_t>(motion)]));
             }
         }
+        {
+            const std::array fills{lyren::tr("Wave"), lyren::tr("Line")};
+            int fill = config_.interface.progress == ProgressStyle::wave ? 0 : 1;
+            if (segmented_row("progress-fill", lyren::tr("Progress bar"), {}, fills, fill, false, false)) {
+                set_setting_("interface", "progress", fill == 0 ? "\"wave\"" : "\"line\"");
+            }
+        }
         slider_row(
             "opacity", lyren::tr("Window opacity"), lyren::tr("Below 100% the desktop shows through, blurred"), config_.window.opacity, 0.3, 1, 0.05,
             [](double v) {

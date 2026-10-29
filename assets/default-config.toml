@@ -4,6 +4,8 @@
 [interface]
 # en | zh
 language = "zh"
+# wave | line: wave ripples through the played part, line keeps it flat
+progress = "wave"
 
 [window]
 # client: integrated title bar; server: native compositor decorations
