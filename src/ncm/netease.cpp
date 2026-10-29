@@ -380,44 +380,44 @@ namespace lyren::ncm {
 
     Netease::Netease(Loop &loop, net::Http &http)
     : client(loop, http) {
-        features.daily = [this] {
+        features.daily.songs = [this] {
             return daily();
         };
-        features.daily_playlists = [this] {
+        features.daily.playlists = [this] {
             return daily_playlists();
         };
-        features.dislike_daily = [this](std::string id) {
+        features.daily.dislike = [this](std::string id) {
             return dislike_daily(std::move(id));
         };
-        features.heartbeat = [this](std::string seed, std::string playlist) {
-            return heartbeat(std::move(seed), std::move(playlist));
-        };
-        features.similar = [this](std::string id) {
-            return similar(std::move(id));
-        };
-        features.recent_plays = [this] {
-            return recent_plays();
-        };
-        features.fm = [this] {
+        features.radio.tracks = [this] {
             return fm();
         };
-        features.fm_trash = [this](Track track) {
+        features.radio.trash = [this](Track track) {
             return fm_trash(std::move(track.id));
+        };
+        features.square.categories = [this] {
+            return categories();
+        };
+        features.square.playlists = [this](std::string category, int offset) {
+            return square(std::move(category), offset);
+        };
+        features.reporting.start = [this](std::string id, std::string source) {
+            return report_start(std::move(id), std::move(source));
+        };
+        features.reporting.play = [this](std::string id, std::string source, int seconds) {
+            return report_play(std::move(id), std::move(source), seconds);
         };
         features.cloud = [this] {
             return cloud();
         };
-        features.categories = [this] {
-            return categories();
+        features.recent_plays = [this] {
+            return recent_plays();
         };
-        features.square = [this](std::string category, int offset) {
-            return square(std::move(category), offset);
+        features.similar = [this](std::string id) {
+            return similar(std::move(id));
         };
-        features.report_start = [this](std::string id, std::string source) {
-            return report_start(std::move(id), std::move(source));
-        };
-        features.report_play = [this](std::string id, std::string source, int seconds) {
-            return report_play(std::move(id), std::move(source), seconds);
+        features.heartbeat = [this](std::string seed, std::string playlist) {
+            return heartbeat(std::move(seed), std::move(playlist));
         };
     }
 

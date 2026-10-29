@@ -188,10 +188,27 @@ namespace lyren {
             double since = -10;
         };
         struct ReplyView {
-            Source source;
             Comment root;
             std::shared_ptr<Feed> feed = std::make_shared<Feed>();
             double opened = -10;
+        };
+        // The comments panel's current thread: what it comments on, its two feeds and the open replies.
+        struct Thread {
+            Source source = Source::netease;
+            Subject subject = Subject::song;
+            std::string id, title, cover;
+            bool follows = false;
+            int tab = 0;
+            double time = -10;
+            uint64_t gen = 0;
+            std::array<std::shared_ptr<Feed>, 2> feeds{std::make_shared<Feed>(), std::make_shared<Feed>()}; // hot, newest
+            std::shared_ptr<ReplyView> replies;
+        };
+        // A like the user set on a comment, shown until the service's own pages echo it back.
+        struct Like {
+            bool liked = false;
+            int likes = 0;
+            uint64_t pending = 0; // write ID, or zero when settled
         };
         using Mode = PlayMode;
         // What the panel beside the page shows.
@@ -257,7 +274,7 @@ namespace lyren {
         void wallpaper(ui::Ui &ui, ui::Rect r, float radius);
         void categories_modal(ui::Ui &ui, ui::Rect r);
         // Lays out a comment at y, or only measures it; returns its height.
-        float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw, Source source, const std::shared_ptr<Feed> &feed);
+        float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw);
         void editor_modal(ui::Ui &ui, ui::Rect r, Card card);
         void picker_modal(ui::Ui &ui, ui::Rect r, Track t);
         void open_account(ui::Ui &ui);
@@ -307,11 +324,13 @@ namespace lyren {
         void load_comments(int tab);
         Task<void> fetch_comments(uint64_t gen, int tab, int page, std::string cursor);
         void refresh_comments();
-        void open_replies(ui::Ui &ui, Source source, Comment root);
+        void open_replies(ui::Ui &ui, Comment root);
         void load_replies(std::shared_ptr<ReplyView> view);
         Task<void> fetch_replies(std::shared_ptr<ReplyView> view, int page, std::string cursor);
-        void toggle_comment_like(Source source, std::shared_ptr<Feed> feed, const Comment &comment);
-        void set_comment_like(Source source, const std::shared_ptr<Feed> &feed, const std::string &id, bool liked, int likes);
+        void toggle_comment_like(Source source, const Comment &comment);
+        // Reconcile cached copies before returning a confirmed like to the service's own numbers.
+        void settle_likes(Source source, const std::vector<Comment> &comments);
+        void clear_comment_likes(Source source);
 
         // Playback.
         void play(const std::vector<Track> &list, int i);
@@ -553,16 +572,10 @@ namespace lyren {
         std::string qr_error_;
 
         // Comments panel and the playlist editor.
-        Subject thread_subject_ = Subject::song;
-        Source thread_source_ = Source::netease;
-        std::string thread_id_, thread_title_, thread_cover_;
-        bool thread_follows_ = false;
-        int thread_tab_ = 0;
-        double thread_time_ = -10;
-        std::array<std::shared_ptr<Feed>, 2> feeds_{std::make_shared<Feed>(), std::make_shared<Feed>()}; // hot, newest
-        std::shared_ptr<ReplyView> replies_;
-        std::map<std::string, std::shared_ptr<Feed>> comment_writes_;
-        uint64_t thread_gen_ = 0;
+        Thread thread_;
+        // The user's own like per comment, key(source, id): the panel shows it over the service's until a read echoes it.
+        std::map<std::string, Like> comment_likes_;
+        uint64_t comment_write_gen_ = 0;
         std::string edit_name_;
         bool edit_hidden_ = false, edit_focus_ = false;
         Source edit_source_ = Source::netease;

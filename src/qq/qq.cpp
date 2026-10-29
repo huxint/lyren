@@ -407,7 +407,7 @@ namespace lyren::qq {
                 return std::unexpected("Sign in to QQ Music and try again");
             }
             if (p->code != 0) {
-                return std::unexpected("QQ Music request failed (" + std::to_string(p->code) + ')');
+                return std::unexpected(lyren::trf("QQ Music request failed ({})", p->code));
             }
             if (!p->data) {
                 return std::unexpected("QQ Music returned no data");
@@ -536,7 +536,7 @@ namespace lyren::qq {
             }
             int code = d->retCode != 0 ? d->retCode : d->result ? d->result->retCode : 0;
             if (code != 0) {
-                return std::unexpected("QQ Music did not complete the operation (" + std::to_string(code) + ')');
+                return std::unexpected(lyren::trf("QQ Music did not complete the operation ({})", code));
             }
             return *d;
         }
@@ -554,7 +554,7 @@ namespace lyren::qq {
                 return std::unexpected("QQ Music returned no recommendation feedback result");
             }
             if (*d->Retcode != 0) {
-                return std::unexpected("QQ Music recommendation feedback failed (" + std::to_string(*d->Retcode) + ')');
+                return std::unexpected(lyren::trf("QQ Music recommendation feedback failed ({})", *d->Retcode));
             }
             return d;
         }
@@ -931,7 +931,7 @@ namespace lyren::qq {
             return std::unexpected("QQ Music returned no playlist order result");
         }
         if (*d->retCode != 0) {
-            return std::unexpected("QQ Music did not save the playlist order (" + std::to_string(*d->retCode) + ')');
+            return std::unexpected(lyren::trf("QQ Music did not save the playlist order ({})", *d->retCode));
         }
         return {};
     }
@@ -949,50 +949,50 @@ namespace lyren::qq {
       loop_(loop),
       http_(http) {
         reload_after_edit = true;
-        features.fm_title = "Your radio";
-        features.fm = [this] {
+        features.radio.title = "Your radio";
+        features.radio.tracks = [this] {
             return fm();
         };
-        features.fm_trash = [this](Track track) {
+        features.radio.trash = [this](Track track) {
             return dislike({.source = Source::qq, .id = std::move(track.id), .name = std::move(track.title)}, true);
         };
-        features.dislikes = [this](DislikeKind kind) {
+        features.exclusions.list = [this](DislikeKind kind) {
             return dislikes(kind);
         };
-        features.dislike = [this](Dislike item, bool on) {
+        features.exclusions.set = [this](Dislike item, bool on) {
             return dislike(std::move(item), on);
         };
-        features.reorder_playlist = [this](std::string id, std::vector<Track> tracks) {
+        features.library.collected_playlists = [this] {
+            return collected_playlists();
+        };
+        features.library.collect_playlist = [this](std::string id, bool on) {
+            return collect_playlist(std::move(id), on);
+        };
+        features.library.reorder_playlist = [this](std::string id, std::vector<Track> tracks) {
             return reorder_playlist(std::move(id), std::move(tracks));
         };
-        features.comment_replies = [this](std::string root, int page, std::string cursor) {
+        features.comments.replies = [this](std::string root, int page, std::string cursor) {
             return comment_replies(std::move(root), page, std::move(cursor));
         };
-        features.like_comment = [this](std::string id, bool on) {
+        features.comments.like = [this](std::string id, bool on) {
             return like_comment(std::move(id), on);
+        };
+        features.releases.categories[0] = {{"5", "Latest"}, {"1", "Mainland"}, {"6", "HK/TW"}, {"2", "Western"}, {"4", "Korea"}, {"3", "Japan"}};
+        features.releases.categories[1] = {{"1", "Mainland"}, {"2", "HK/TW"}, {"3", "Western"}, {"4", "Korea"}, {"5", "Japan"}};
+        features.releases.songs = [this](std::string type) {
+            return new_songs(std::move(type));
+        };
+        features.releases.albums = [this](std::string area, int offset) {
+            return new_albums(std::move(area), offset);
+        };
+        features.square.categories = [this] {
+            return categories();
+        };
+        features.square.playlists = [this](std::string category, int offset) {
+            return square(std::move(category), offset);
         };
         features.radar = [this] {
             return radar();
-        };
-        features.new_songs = [this](std::string type) {
-            return new_songs(std::move(type));
-        };
-        features.new_albums = [this](std::string area, int offset) {
-            return new_albums(std::move(area), offset);
-        };
-        features.release_categories[0] = {{"5", "Latest"}, {"1", "Mainland"}, {"6", "HK/TW"}, {"2", "Western"}, {"4", "Korea"}, {"3", "Japan"}};
-        features.release_categories[1] = {{"1", "Mainland"}, {"2", "HK/TW"}, {"3", "Western"}, {"4", "Korea"}, {"5", "Japan"}};
-        features.collected_playlists = [this] {
-            return collected_playlists();
-        };
-        features.collect_playlist = [this](std::string id, bool on) {
-            return collect_playlist(std::move(id), on);
-        };
-        features.categories = [this] {
-            return categories();
-        };
-        features.square = [this](std::string category, int offset) {
-            return square(std::move(category), offset);
         };
         features.similar = [this](std::string id) {
             return similar(std::move(id));
@@ -1550,7 +1550,7 @@ namespace lyren::qq {
             return std::unexpected(d.error());
         }
         if (d->SubCode != 0) {
-            return std::unexpected("QQ Music comments failed (" + std::to_string(d->SubCode) + ')');
+            return std::unexpected(lyren::trf("QQ Music comments failed ({})", d->SubCode));
         }
         CommentPage out;
         if (!d->CommentList) {
@@ -1612,7 +1612,7 @@ namespace lyren::qq {
             return std::unexpected("Sign in to QQ Music and try again");
         }
         if (r->req_0->code != 0) {
-            return std::unexpected("QQ Music comment operation failed (" + std::to_string(r->req_0->code) + ')');
+            return std::unexpected(lyren::trf("QQ Music comment operation failed ({})", r->req_0->code));
         }
         return {};
     }
@@ -1954,7 +1954,7 @@ namespace lyren::qq {
             co_return QrStatus{.state = QrState::expired};
         }
         if ((*args)[0] != "0") {
-            co_return std::unexpected("QQ QR sign-in failed (" + (*args)[0] + ')');
+            co_return std::unexpected(lyren::trf("QQ QR sign-in failed ({})", (*args)[0]));
         }
         auto confirm = qr_confirmation((*args)[2]);
         if (!confirm) {

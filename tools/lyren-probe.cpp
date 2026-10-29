@@ -574,7 +574,7 @@ static int qq_command(const std::vector<std::string> &args) {
             }
         } else if (cmd == "new-songs" || cmd == "new-albums") {
             int tab = cmd == "new-albums";
-            const auto &categories = q.features.release_categories[tab];
+            const auto &categories = q.features.releases.categories[tab];
             std::string category = arg(2).empty() ? categories.front().id : arg(2);
             if (!std::ranges::any_of(categories, [&](const Category &entry) {
                     return entry.id == category;

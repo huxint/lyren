@@ -14,30 +14,65 @@
 
 namespace lyren {
 
-    // Optional features expose both availability and the operation. Shared pages only offer installed features.
+    // Optional features, installed as whole groups: a group is either complete or absent, and the shared pages only
+    // offer what is installed. Presence of a member is the availability check for the pages that read it.
     struct Features {
-        std::move_only_function<Task<Result<std::vector<Track>>>()> daily, fm, cloud, recent_plays;
-        std::string_view fm_title = "Personal FM";
-        std::move_only_function<Task<Result<std::vector<Track>>>()> radar;
-        std::move_only_function<Task<Result<std::vector<Track>>>(std::string)> new_songs;
-        std::move_only_function<Task<Result<Batch>>(std::string, int)> new_albums;
-        std::array<std::vector<Category>, 2> release_categories;
-        std::move_only_function<Task<Result<std::vector<Card>>>()> daily_playlists;
-        std::move_only_function<Task<Result<std::vector<Card>>>()> collected_playlists;
-        std::move_only_function<Task<Result<void>>(std::string, bool)> collect_playlist;
-        std::move_only_function<Task<Result<std::optional<Track>>>(std::string)> dislike_daily;
-        std::move_only_function<Task<Result<std::vector<Track>>>(std::string, std::string)> heartbeat;
+        // Daily recommendations: songs, playlists and "not interested".
+        struct Daily {
+            std::move_only_function<Task<Result<std::vector<Track>>>()> songs;
+            std::move_only_function<Task<Result<std::vector<Card>>>()> playlists;
+            std::move_only_function<Task<Result<std::optional<Track>>>(std::string)> dislike;
+        };
+        // The FM / guess-you-like station: its name, next tracks and the dislike action.
+        struct Radio {
+            std::string_view title = "Personal FM";
+            std::move_only_function<Task<Result<std::vector<Track>>>()> tracks;
+            std::move_only_function<Task<Result<void>>(Track)> trash;
+        };
+        // New songs and albums: the area directories and the data sources of both tabs.
+        struct Releases {
+            std::array<std::vector<Category>, 2> categories;
+            std::move_only_function<Task<Result<std::vector<Track>>>(std::string)> songs;
+            std::move_only_function<Task<Result<Batch>>(std::string, int)> albums;
+        };
+        // The playlist square: its category directory and its paged playlists.
+        struct Square {
+            std::move_only_function<Task<Result<Categories>>()> categories;
+            std::move_only_function<Task<Result<Batch>>(std::string, int)> playlists;
+        };
+        // Recommendation exclusions: the stored list and its add / restore write.
+        struct Exclusions {
+            std::move_only_function<Task<Result<std::vector<Dislike>>>(DislikeKind)> list;
+            std::move_only_function<Task<Result<void>>(Dislike, bool)> set;
+        };
+        // Library writes: collected playlists, saving one, and reordering an owned playlist.
+        struct Library {
+            std::move_only_function<Task<Result<std::vector<Card>>>()> collected_playlists;
+            std::move_only_function<Task<Result<void>>(std::string, bool)> collect_playlist;
+            std::move_only_function<Task<Result<void>>(std::string, std::vector<Track>)> reorder_playlist;
+        };
+        // Comment interactions: the reply list and the like write.
+        struct Comments {
+            std::move_only_function<Task<Result<CommentPage>>(std::string, int, std::string)> replies;
+            std::move_only_function<Task<Result<void>>(std::string, bool)> like;
+        };
+        // Listening reports: start (recent plays) and play (listening time).
+        struct Reporting {
+            std::move_only_function<Task<void>(std::string, std::string)> start;
+            std::move_only_function<Task<void>(std::string, std::string, int)> play;
+        };
+        Daily daily;
+        Radio radio;
+        Releases releases;
+        Square square;
+        Exclusions exclusions;
+        Library library;
+        Comments comments;
+        Reporting reporting;
+        // Single sources.
+        std::move_only_function<Task<Result<std::vector<Track>>>()> cloud, recent_plays, radar;
         std::move_only_function<Task<Result<std::vector<Track>>>(std::string)> similar;
-        std::move_only_function<Task<Result<void>>(Track)> fm_trash;
-        std::move_only_function<Task<Result<std::vector<Dislike>>>(DislikeKind)> dislikes;
-        std::move_only_function<Task<Result<void>>(Dislike, bool)> dislike;
-        std::move_only_function<Task<Result<void>>(std::string, std::vector<Track>)> reorder_playlist;
-        std::move_only_function<Task<Result<CommentPage>>(std::string, int, std::string)> comment_replies;
-        std::move_only_function<Task<Result<void>>(std::string, bool)> like_comment;
-        std::move_only_function<Task<Result<Categories>>()> categories;
-        std::move_only_function<Task<Result<Batch>>(std::string, int)> square;
-        std::move_only_function<Task<void>(std::string, std::string)> report_start;
-        std::move_only_function<Task<void>(std::string, std::string, int)> report_play;
+        std::move_only_function<Task<Result<std::vector<Track>>>(std::string, std::string)> heartbeat;
     };
 
     // The shared platform contract; adapters supply their optional features without changing the shell.

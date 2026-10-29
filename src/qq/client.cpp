@@ -5,6 +5,7 @@
 #include <format>
 #include <iterator>
 
+#include "core/i18n.hpp"
 #include "core/log.hpp"
 #include "net/fetch.hpp"
 #include "qq/crypto.hpp"
@@ -52,18 +53,18 @@ namespace lyren::qq {
             co_return r;
         }
         if (res.status < 200 || res.status >= 300) {
-            r.error = "QQ Music request failed (HTTP " + std::to_string(res.status) + ')';
+            r.error = lyren::trf("QQ Music request failed (HTTP {})", res.status);
             log::warn("qq {}: HTTP {}", what, res.status);
             co_return r;
         }
         Top top;
         if (glz::read<glz::opts{.error_on_unknown_keys = false}>(top, res.body)) {
-            r.error = "Unrecognized QQ Music response (HTTP " + std::to_string(res.status) + ')';
+            r.error = lyren::trf("Unrecognized QQ Music response (HTTP {})", res.status);
             log::warn("qq {}: HTTP {}, {} bytes not JSON", what, res.status, res.body.size());
             co_return r;
         }
         if (top.code != 0) {
-            r.error = "QQ Music request failed (" + std::to_string(top.code) + ')';
+            r.error = lyren::trf("QQ Music request failed ({})", top.code);
             log::warn("qq {}: code {}, trace {}", what, top.code, top.traceid.value_or(""));
             co_return r;
         }

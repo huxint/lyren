@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include "core/i18n.hpp"
 #include "media/lyrics.hpp"
 #include "media/provider.hpp"
 #include "qq/crypto.hpp"
@@ -99,13 +100,13 @@ TEST_CASE("QQ favorite playlists keep authentication and other errors visible") 
     CHECK(login.error() == "Sign in to QQ Music and try again");
     auto failure = qq::parse_favorite_playlists({.body = R"({"req_0":{"code":1000}})"});
     REQUIRE_FALSE(failure);
-    CHECK(failure.error() == "QQ Music request failed (1000)");
+    CHECK(failure.error() == "QQ 音乐请求失败(1000)");
     auto wrong_identity = qq::parse_favorite_playlists({.body = R"({"req_0":{"code":80050,"data":{"v_list":[],"total":0,"hasmore":0}}})"});
     REQUIRE_FALSE(wrong_identity);
-    CHECK(wrong_identity.error() == "QQ Music request failed (80050)");
+    CHECK(wrong_identity.error() == "QQ 音乐请求失败(80050)");
     auto other_endpoint = qq::parse_playlist({.body = R"({"req_0":{"code":80050}})"});
     REQUIRE_FALSE(other_endpoint);
-    CHECK(other_endpoint.error() == "QQ Music request failed (80050)");
+    CHECK(other_endpoint.error() == "QQ 音乐请求失败(80050)");
 }
 
 TEST_CASE("qq request signature vectors") {
@@ -404,7 +405,7 @@ TEST_CASE("QQ dislike failures never appear as an empty successful list") {
     CHECK(auth.error() == "Sign in to QQ Music and try again");
     auto business = qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Retcode":10000,"Songs":[]}}})"}, DislikeKind::song);
     REQUIRE_FALSE(business);
-    CHECK(business.error() == "QQ Music recommendation feedback failed (10000)");
+    CHECK(business.error() == "QQ 音乐推荐反馈失败(10000)");
     CHECK_FALSE(qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Songs":[]}}})"}, DislikeKind::song));
     CHECK_FALSE(qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Retcode":0,"Singers":[]}}})"}, DislikeKind::song));
     CHECK_FALSE(qq::parse_dislikes({.body = R"({"req_0":{"code":0,"data":{"Retcode":0,"Songs":[{"ID":"1","IdType":1},{"Name":"no ID","IdType":1}]}}})"}, DislikeKind::song));
@@ -424,7 +425,7 @@ TEST_CASE("QQ playlist ordering requires the explicit SeqSonglist result") {
     CHECK(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"retCode":0}}})"}));
     auto refused = qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"retCode":1000}}})"});
     REQUIRE_FALSE(refused);
-    CHECK(refused.error() == "QQ Music did not save the playlist order (1000)");
+    CHECK(refused.error() == "QQ 音乐没有保存歌单顺序(1000)");
     CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":2001}})"}));
     CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"result":{"retCode":0}}}})"}));
     CHECK_FALSE(qq::parse_playlist_order_write({.body = R"({"req_0":{"code":0,"data":{"retcode":0}}})"}));
@@ -475,4 +476,19 @@ TEST_CASE("QQ comment likes use the RPC acknowledgement for a void operation") {
     CHECK_FALSE(qq::parse_comment_like({.body = R"({"req_0":{"code":1000,"data":{}}})"}));
     CHECK_FALSE(qq::parse_comment_like({.body = "{}"}));
     CHECK_FALSE(qq::parse_comment_like({.error = "Network connection failed"}));
+}
+
+TEST_CASE("QQ comment errors follow the selected language and retain the service code") {
+    const Language before = language();
+    const qq::Reply reply{.body = R"({"req_0":{"code":37}})"};
+    set_language(Language::en);
+    auto english = qq::parse_comment_like(reply);
+    set_language(Language::zh);
+    auto chinese = qq::parse_comment_like(reply);
+    set_language(before);
+
+    REQUIRE_FALSE(english);
+    REQUIRE_FALSE(chinese);
+    CHECK(english.error() == "QQ Music comment operation failed (37)");
+    CHECK(chinese.error() == "QQ 音乐评论操作失败(37)");
 }
