@@ -98,9 +98,9 @@ namespace lyren::qq {
             co_return r;
         }
         Top top;
-        if (glz::read<glz::opts{.error_on_unknown_keys = false}>(top, res.body)) {
+        if (auto e = glz::read<glz::opts{.error_on_unknown_keys = false}>(top, res.body)) {
             r.error = lyren::trf("Unrecognized QQ Music response (HTTP {})", res.status);
-            log::warn("qq {}: HTTP {}, {} bytes not JSON", what, res.status, res.body.size());
+            log::warn("qq {}: HTTP {}, {} at byte {} ({} bytes)", what, res.status, glz::format_error(e.ec), e.count, res.body.size());
             co_return r;
         }
         r.needs_login = top.code == 2001;

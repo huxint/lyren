@@ -1744,8 +1744,9 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::edit_playlist(std::string id, Track t, bool add) {
+        // These write endpoints otherwise return Chinese messages in GBK, which is not valid UTF-8 JSON.
         auto r = written(co_await client.call({{"music.musicasset.PlaylistDetailWrite", add ? "AddSonglist" : "DelSonglist",
-                                                std::format(R"({{"dirId":{},"v_songInfo":[{{"songId":{},"songType":{}}}]}})", id.substr(4), t.id, t.type)}},
+                                                std::format(R"({{"dirId":{},"bFmtUtf8":true,"v_songInfo":[{{"songId":{},"songType":{}}}]}})", id.substr(4), t.id, t.type)}},
                                               Comm::app, net::Retry::never));
         if (!r) {
             co_return std::unexpected(r.error());
