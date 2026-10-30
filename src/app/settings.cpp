@@ -337,9 +337,9 @@ namespace lyren {
         place(2);
         {
             const Rect head = row(60, true, false);
-            caption(head, lyren::tr("Audio quality"), lyren::tr("What you get depends on your accounts"), 0);
+            caption(head, lyren::tr("Audio quality"), lyren::tr("Actual quality is shown during playback"), 0);
             const std::array<std::string_view, 5> names{lyren::tr("Standard"), lyren::tr("High"), lyren::tr("Very high"), lyren::tr("Lossless"), "Hi-Res"};
-            const std::array<std::string_view, 5> details{"128 kbps", "192 kbps", "320 kbps", "FLAC", "FLAC 24 bit"};
+            const std::array<std::string_view, 5> details{"128 kbps", "192 kbps · QQ: 128 kbps", "320 kbps", "FLAC", "24-bit FLAC · QQ: FLAC"};
             const std::array<std::string_view, 5> values{"standard", "higher", "exhigh", "lossless", "hires"};
             for (size_t i = 0; i < names.size(); ++i) {
                 const Rect rr = row(46, false, i + 1 == names.size());

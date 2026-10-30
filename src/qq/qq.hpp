@@ -109,12 +109,19 @@ namespace lyren::qq {
         Task<Result<QrStatus>> qr_poll() override;
         Task<Result<Account>> account() override;
         Task<void> logout() override;
-        Task<Result<void>> renew();
+        Task<Result<void>> renew(bool force = true);
         void cancel_qr() override {
             ++qr_gen_;
         }
 
     private:
+        Task<Result<void>> renew_once();
+        struct Renewal {
+            Result<void> result;
+            std::vector<std::coroutine_handle<>> waiters;
+        };
+        std::shared_ptr<Renewal> renewal_;
+        Clock::time_point renew_after_{};
         Loop &loop_;
         net::Http &http_;
         std::string guid_; // names this client in stream requests

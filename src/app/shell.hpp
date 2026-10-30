@@ -98,7 +98,7 @@ namespace lyren {
             std::string error;
             double since = -10; // when the rows arrived, for the entrance
             AlbumInfo album;    // album pages: the details; the tracks are above
-            bool saving_playlist = false;
+            uint64_t gen = 0;
             bool ordering = false, saving_order = false;
         };
         // A listing that loads a page at a time.
@@ -130,10 +130,24 @@ namespace lyren {
             double since = -10;
             uint64_t gen = 0;
         };
+        enum class Preference : uint8_t {
+            song,
+            artist,
+            album,
+            playlist
+        };
+        // One writer per resource. Further clicks change the desired value while the current request finishes.
+        struct PreferenceEdit {
+            bool value = false, confirmed = false, pending = false;
+            uint64_t revision = 0;
+            Track track;
+            Card card;
+        };
         // Each platform keeps its own account, cached pages and pagination state.
         struct Library {
             std::optional<Account> account;
-            uint64_t gen = 0;
+            uint64_t gen = 0, account_gen = 0, preference_gen = 0;
+            std::array<StringMap<PreferenceEdit>, 4> preferences;
             std::vector<Card> playlists, daily_lists;
             double daily_since = -10;
             Card liked;
@@ -162,6 +176,7 @@ namespace lyren {
         // An artist's page: the head, songs and albums a page at a time, the introduction (intro holds only its status).
         struct ArtistPage {
             std::optional<ArtistInfo> info;
+            bool loading = false;
             std::string error;
             int tab = 0;
             Results songs, albums, intro;
@@ -318,7 +333,7 @@ namespace lyren {
         Task<void> load_list(std::shared_ptr<List> list, Page page, Card card);
         Task<void> fetch_results(uint64_t gen, int tab, Source source, std::string query, int offset);
         Task<void> load_artist(std::shared_ptr<ArtistPage> page, Card card);
-        void load_artist_tab(int tab);
+        void load_artist_tab(int tab, bool retry = false);
         Task<void> fetch_artist(std::shared_ptr<ArtistPage> page, Card card, int tab, int offset);
         Task<void> load_categories(Source source);
         void load_square();
@@ -345,7 +360,7 @@ namespace lyren {
         void set_current(int i, bool replacing_queue = false);
         void toggle_play();
         void stop();
-        void stop_player(); // reports how far the track got, then stops
+        void stop_player(); // stops output and reports the actual listening time
         void report_listen(bool ended);
         void skip(int delta, bool automatic = false);
         void seek(double at);
@@ -412,14 +427,21 @@ namespace lyren {
         void cancel_login();
         Task<void> logout(Source source);
         void save_credentials();
+        void reset_account(Source source);
         bool liked(const Track &t) const;
+        bool preference_value(Source source, Preference kind, std::string_view id, bool value) const;
+        void set_preference(Source source, Preference kind, Track track, Card card, bool on);
+        Task<void> write_preference(Source source, Preference kind, std::string id, uint64_t account_gen);
+        void apply_preference(Source source, Preference kind, const PreferenceEdit &edit);
+        bool reconcile_preference(Source source, Preference kind, std::string_view id, bool value, uint64_t revision);
+        void reconcile_preferences(Source source, Preference kind, uint64_t revision);
         void toggle_like(Track t);
         void dislike_daily(std::shared_ptr<List> list, Track t);
         // Plays the heartbeat list that follows seed.
         Task<void> heartbeat(Track seed);
         void toggle_follow(std::shared_ptr<ArtistPage> page, Card artist);
         void toggle_collect(std::shared_ptr<List> list, Card album);
-        void toggle_collect_playlist(std::shared_ptr<List> list, Card playlist);
+        void toggle_collect_playlist(Card playlist);
         void add_to_playlist(Track t, Card playlist);
         void remove_from_playlist(std::shared_ptr<List> list, Card playlist, Track t);
         void move_playlist_track(std::shared_ptr<List> list, Card playlist, int from, int to);
@@ -495,7 +517,9 @@ namespace lyren {
         Loop::TimerId prefetch_timer_ = 0;
         float track_gain_ = 0, track_peak_ = 0; // loudness of the current stream
         bool trial_ = false;                    // the current stream is a preview clip
+        std::string stream_level_;              // the quality actually granted by the service
         std::optional<Track> listen_;           // the track whose listen is reported to the account
+        double listen_started_ = 0;             // cumulative output time at the start of this listen
         uint64_t rng_ = 0x2545f4914f6cdd1dull;
         Loop::TimerId save_timer_ = 0;
         std::optional<std::pair<int, int>> window_;

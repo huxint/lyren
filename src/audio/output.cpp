@@ -222,6 +222,7 @@ namespace lyren::audio {
         std::fill_n(dst + k * ch, static_cast<size_t>(n - k) * ch, 0.f);
         r_.store(r + k, std::memory_order_release);
         played_.store(played_.load(std::memory_order_relaxed) + k, std::memory_order_release);
+        played_ns_.fetch_add(k * 1000000000 / fmt_.rate, std::memory_order_relaxed);
 
         d.chunk->offset = 0;
         d.chunk->stride = static_cast<int32_t>(stride);

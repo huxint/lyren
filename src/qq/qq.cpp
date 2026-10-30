@@ -952,6 +952,9 @@ namespace lyren::qq {
     : client(loop, http),
       loop_(loop),
       http_(http) {
+        client.refresh_session = [this](bool force) {
+            return renew(force);
+        };
         reload_after_edit = true;
         features.radio.title = "Your radio";
         features.radio.tracks = [this] {
@@ -1167,7 +1170,8 @@ namespace lyren::qq {
             const char *prefix, *ext, *level;
         };
         static constexpr auto files =
-            std::to_array<File>({{"F000", "flac", "lossless"}, {"M800", "mp3", "exhigh"}, {"M500", "mp3", "standard"}, {"C400", "m4a", "standard"}, {"RS02", "mp3", "standard"}});
+            std::to_array<File>({{"F000", "flac", "lossless"}, {"M800", "mp3", "exhigh"}, {"M500", "mp3", "standard"}, {"C400", "m4a", "aac96"}, {"RS02", "mp3", "standard"}});
+        // QQ's confirmed formats have no 192 kbps or Hi-Res tier; use the next supported tier below the request.
         size_t first = quality >= Quality::lossless ? 0 : quality == Quality::exhigh ? 1 : 2;
         std::string mids, types, names;
         for (size_t i = first; i < files.size(); ++i) {
@@ -2094,6 +2098,9 @@ namespace lyren::qq {
             co_return std::unexpected(session.error());
         }
         client.session = std::move(*session);
+        ++client.session_gen;
+        renewal_.reset();
+        renew_after_ = Clock::now() + 30min;
         qr_cookies_ = {};
         if (client.on_session) {
             client.on_session();
@@ -2101,27 +2108,58 @@ namespace lyren::qq {
         co_return QrStatus{.state = QrState::confirmed, .nickname = (*args)[5]};
     }
 
-    Task<Result<void>> Qq::renew() {
-        uint64_t gen = qr_gen_;
+    Task<Result<void>> Qq::renew(bool force) {
+        if (!renewal_ && !force && Clock::now() < renew_after_) {
+            co_return Result<void>{};
+        }
+        if (renewal_) {
+            auto renewal = renewal_;
+            struct Wait {
+                Renewal &state;
+                bool await_ready() const {
+                    return false;
+                }
+                void await_suspend(std::coroutine_handle<> h) {
+                    state.waiters.push_back(h);
+                }
+                void await_resume() const {}
+            };
+            co_await Wait{*renewal};
+            co_return renewal->result;
+        }
+        auto renewal = renewal_ = std::make_shared<Renewal>();
+        uint64_t gen = client.session_gen;
+        auto result = co_await renew_once();
+        if (gen == client.session_gen) {
+            renew_after_ = Clock::now() + (result ? 30min : 30s);
+        }
+        renewal->result = result;
+        if (renewal_ == renewal) {
+            renewal_.reset();
+        }
+        for (auto waiter : renewal->waiters) {
+            waiter.resume();
+        }
+        co_return result;
+    }
+
+    Task<Result<void>> Qq::renew_once() {
+        if (!logged_in()) {
+            co_return std::unexpected("QQ Music session expired; scan again");
+        }
         auto reply =
             co_await client.call({{"QQConnectLogin.LoginServer", "QQLogin",
                                    std::format(R"({{"openid":{},"access_token":{},"refresh_token":{},"musicid":{},"musickey":{},"onlyNeedAccessToken":0,"forceRefreshToken":0}})",
                                                glz::write_json(client.get("openid")).value(), glz::write_json(client.get("access_token")).value(),
                                                glz::write_json(client.get("refresh_token")).value(), client.get("musicid"), glz::write_json(client.get("musickey")).value())}},
                                  Comm::linux, net::Retry::never);
-        if (gen != qr_gen_) {
-            co_return Result<void>{};
-        }
-        if (!reply.error.empty()) {
-            co_return std::unexpected(reply.error);
+        if (reply.needs_login) {
+            co_await logout();
+            co_return std::unexpected("QQ Music session expired; scan again");
         }
         auto session = login_session(reply);
         if (!session) {
-            client.session.clear();
-            if (client.on_session) {
-                client.on_session();
-            }
-            co_return std::unexpected("QQ Music session expired; scan again");
+            co_return std::unexpected(session.error());
         }
         client.session = std::move(*session);
         if (client.on_session) {
@@ -2149,6 +2187,9 @@ namespace lyren::qq {
 
     Task<void> Qq::logout() {
         cancel_qr();
+        ++client.session_gen;
+        renewal_.reset();
+        renew_after_ = {};
         client.session.clear();
         if (client.on_session) {
             client.on_session();

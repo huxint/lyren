@@ -26,6 +26,46 @@ namespace lyren::qq {
     } // namespace
 
     Task<Reply> Client::call(std::vector<Rpc> parts, Comm comm, net::Retry retry) {
+        const uint64_t gen = session_gen;
+        const bool authenticated = comm == Comm::app && logged_in() && refresh_session;
+        if (authenticated) {
+            auto ready = co_await refresh_session(false);
+            if (!ready) {
+                co_return Reply{.error = ready.error()};
+            }
+            if (gen != session_gen) {
+                co_return Reply{.error = "QQ Music session changed; retry the action"};
+            }
+        }
+        const std::string key = get("musickey");
+        auto reply = co_await request(parts, comm, retry);
+        if (gen != session_gen) {
+            co_return Reply{.error = "QQ Music session changed; retry the action"};
+        }
+        if (!authenticated || !reply.needs_login) {
+            co_return reply;
+        }
+        // Another request may have renewed this same session while our response was in flight.
+        if (key == get("musickey")) {
+            auto renewed = co_await refresh_session(true);
+            if (!renewed) {
+                co_return Reply{.error = renewed.error()};
+            }
+        }
+        if (gen != session_gen) {
+            co_return Reply{.error = "QQ Music session changed; retry the action"};
+        }
+        if (retry == net::Retry::never) {
+            co_return reply;
+        }
+        reply = co_await request(parts, comm, retry);
+        if (gen != session_gen) {
+            co_return Reply{.error = "QQ Music session changed; retry the action"};
+        }
+        co_return reply;
+    }
+
+    Task<Reply> Client::request(const std::vector<Rpc> &parts, Comm comm, net::Retry retry) {
         // The signature covers these exact bytes, so the body is built once and sent as is.
         std::string body = comm == Comm::app ? R"({"comm":{"ct":20,"cv":1770,"tmeAppID":"qqmusic"})" : R"({"comm":{"ct":19,"cv":1,"tmeAppID":"qqmusic"})";
         if (comm == Comm::app && logged_in()) {
@@ -63,13 +103,22 @@ namespace lyren::qq {
             log::warn("qq {}: HTTP {}, {} bytes not JSON", what, res.status, res.body.size());
             co_return r;
         }
+        r.needs_login = top.code == 2001;
+        for (size_t i = 0; i < parts.size(); ++i) {
+            if (auto code = glz::get_view_json(std::format("/req_{}/code", i), res.body)) {
+                int value = 0;
+                if (!glz::read_json(value, std::string_view(code->data(), code->size())) && value == 2001) {
+                    r.needs_login = true;
+                }
+            }
+        }
+        r.body = std::move(res.body);
         if (top.code != 0) {
             r.error = lyren::trf("QQ Music request failed ({})", top.code);
             log::warn("qq {}: code {}, trace {}", what, top.code, top.traceid.value_or(""));
             co_return r;
         }
         log::debug("qq {}: HTTP {}, code {}, trace {}", what, res.status, top.code, top.traceid.value_or(""));
-        r.body = std::move(res.body);
         co_return r;
     }
 

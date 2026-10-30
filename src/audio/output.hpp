@@ -55,6 +55,10 @@ namespace lyren::audio {
         void set_name(std::string name); // media.name, what mixers show for the stream
         uint64_t position();             // frames played out of the speaker
         size_t queued() const;           // frames in the ring
+        // Cumulative audio sent to PipeWire; seeks and silence inserted during underruns do not count.
+        double played_seconds() const {
+            return static_cast<double>(played_ns_.load(std::memory_order_relaxed)) * 1e-9;
+        }
 
     private:
         friend struct StreamEvents;
@@ -87,6 +91,7 @@ namespace lyren::audio {
 
         alignas(cache_line_bytes) std::atomic<uint64_t> r_{0};
         std::atomic<uint64_t> played_{0};
+        std::atomic<uint64_t> played_ns_{0};
         std::atomic<uint32_t> flush_applied_{0};
         uint32_t flush_seen_ = 0; // realtime thread
         bool draining_ = false;   // realtime thread

@@ -62,6 +62,9 @@ namespace lyren::audio {
             return state_;
         }
         double position(); // seconds
+        double played_seconds() const {
+            return out_.played_seconds();
+        }
         double duration() const {
             return duration_;
         }

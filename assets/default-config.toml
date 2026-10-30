@@ -23,6 +23,7 @@ max_fps = 60
 
 [playback]
 # standard | higher | exhigh | lossless | hires. Availability depends on your account.
+# QQ uses 128 kbps for higher and FLAC for hires; the player shows the granted quality.
 quality = "lossless"
 # skip: skip preview-only tracks; play: play the available preview
 trial = "skip"

@@ -89,8 +89,12 @@ namespace lyren::ncm {
     }
 
     void Client::clear_login() {
+        bool was_logged_in = logged_in();
         for (const char *k : {"MUSIC_U", "__csrf", "MUSIC_R_U", "MUSIC_SNS", "MUSIC_A_T", "MUSIC_R_T"}) {
             cookies.erase(k);
+        }
+        if (was_logged_in && on_cookies) {
+            on_cookies();
         }
     }
 
@@ -171,8 +175,9 @@ namespace lyren::ncm {
             req.headers = {ua_weapi, "Referer: https://music.163.com", cookie_header(all), form};
         }
 
+        const std::string login = get("MUSIC_U");
         auto res = co_await net::fetch_retry(loop_, http_, std::move(req), retry);
-        if (!res.cookies.empty()) {
+        if (!res.cookies.empty() && login == get("MUSIC_U")) {
             auto before = cookies;
             for (auto &c : res.cookies) {
                 apply_set_cookie(c);

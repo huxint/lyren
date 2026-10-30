@@ -346,8 +346,10 @@
   "The album cover at the start of the island": "在灵动岛开头显示专辑封面",
   "Theme colors, text size, accent and motion": "颜色、文字大小、强调色和动画",
   "Title bar": "标题栏",
-  "What you get depends on your accounts": "实际音质取决于账号权益",
   "Heartbeat": "心动模式",
   "Time": "时长",
-  "Album": "专辑"
+  "Album": "专辑",
+  "Actual quality is shown during playback": "播放时显示实际取得的音质",
+  "Session expired; scan again to sign in": "登录已失效，请重新扫码",
+  "QQ Music session changed; retry the action": "QQ 音乐账号已切换，请重新操作"
 }

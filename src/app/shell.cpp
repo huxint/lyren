@@ -143,13 +143,16 @@ namespace lyren {
         res.total = empty ? static_cast<int>(res.size()) : std::max(r->total, static_cast<int>(res.size()));
     }
 
-    // Puts a card first in a list or takes it out.
-    static void place(std::vector<Card> &cards, const Card &c, bool on) {
-        std::erase_if(cards, [&](const Card &x) {
-            return same(x, c);
+    // Adds a missing item or takes it out; server metadata and ordering win for existing items.
+    template <class T>
+    static void place(std::vector<T> &items, const T &item, bool on) {
+        auto it = std::ranges::find_if(items, [&](const T &x) {
+            return same(x, item);
         });
-        if (on) {
-            cards.insert(cards.begin(), c);
+        if (on && it == items.end()) {
+            items.insert(items.begin(), item);
+        } else if (!on && it != items.end()) {
+            items.erase(it);
         }
     }
 
@@ -223,8 +226,18 @@ namespace lyren {
             on_player();
         };
         apply_volume();
-        for (auto *p : providers_) {
-            p->on_session_changed([this] {
+        for (const auto &entry : platforms) {
+            provider(entry.source).on_session_changed([this, source = entry.source] {
+                const auto &lib = library(source);
+                if (!provider(source).logged_in() && (lib.account || lib.preference_gen != 0)) {
+                    if (lib.account) {
+                        notify(std::format("{}: {}", lyren::tr(platform(source).name), lyren::tr("Session expired; scan again to sign in")), "user", true);
+                    }
+                    reset_account(source);
+                    if (source == active_) {
+                        ensure_route_data();
+                    }
+                }
                 save_credentials();
             });
         }
@@ -402,106 +415,180 @@ namespace lyren {
         return library(t.source).liked_ids.contains(t.id);
     }
 
+    bool Shell::preference_value(Source source, Preference kind, std::string_view id, bool value) const {
+        const auto &edits = library(source).preferences[static_cast<size_t>(kind)];
+        auto it = edits.find(id);
+        return it == edits.end() ? value : it->second.value;
+    }
+
+    void Shell::apply_preference(Source source, Preference kind, const PreferenceEdit &edit) {
+        auto &lib = library(source);
+        const bool on = edit.value;
+        if (kind == Preference::song) {
+            if (on) {
+                lib.liked_ids.insert(edit.track.id);
+            } else {
+                lib.liked_ids.erase(edit.track.id);
+            }
+            auto update = [&](Route &route) {
+                if (route.card.source == source && route.page == Page::liked && route.list) {
+                    place(route.list->tracks, edit.track, on);
+                }
+            };
+            update(route_);
+            for (auto &route : history_) {
+                update(route);
+            }
+        } else if (kind == Preference::playlist) {
+            place(lib.playlists, edit.card, on);
+        } else {
+            auto &collection = lib.collection[kind == Preference::artist ? 1 : 0];
+            if (collection.loaded) {
+                place(collection.cards, edit.card, on);
+                collection.total = static_cast<int>(collection.cards.size());
+            }
+        }
+    }
+
+    void Shell::set_preference(Source source, Preference kind, Track track, Card card, bool on) {
+        auto &lib = library(source);
+        auto &[id, edit] = *lib.preferences[static_cast<size_t>(kind)].try_emplace(kind == Preference::song ? track.id : card.id, PreferenceEdit{.confirmed = !on}).first;
+        edit.track = std::move(track);
+        edit.card = std::move(card);
+        edit.value = on;
+        edit.revision = ++lib.preference_gen;
+        apply_preference(source, kind, edit);
+        if (!edit.pending) {
+            edit.pending = true;
+            spawn(write_preference(source, kind, id, lib.account_gen));
+        }
+        redraw_();
+    }
+
+    Task<void> Shell::write_preference(Source source, Preference kind, std::string id, uint64_t account_gen) {
+        auto &lib = library(source);
+        auto &edit = lib.preferences[static_cast<size_t>(kind)].at(id);
+        for (;;) {
+            bool on = edit.value;
+            uint64_t revision = edit.revision;
+            Result<void> result;
+            switch (kind) {
+                case Preference::song:
+                    result = co_await provider(source).like(edit.track, on);
+                    break;
+                case Preference::artist:
+                    result = co_await provider(source).follow(edit.card.id, on);
+                    break;
+                case Preference::album:
+                    result = co_await provider(source).collect(edit.card.id, on);
+                    break;
+                case Preference::playlist:
+                    result = co_await provider(source).features.library.collect_playlist(edit.card.id, on);
+                    break;
+            }
+            if (account_gen != lib.account_gen) {
+                co_return;
+            }
+            bool changed = edit.value != on || (!result && edit.revision != revision);
+            edit.revision = ++lib.preference_gen;
+            if (result) {
+                edit.confirmed = on;
+            } else if (!changed) {
+                edit.value = edit.confirmed;
+                apply_preference(source, kind, edit);
+                notify(lyren::trf("Action failed: {}", result.error()), "triangle-alert", true);
+            }
+            if (!changed) {
+                break;
+            }
+            // A newer click still needs its own write, even if the previous response was lost.
+        }
+        edit.pending = false;
+        redraw_();
+        if (kind == Preference::playlist) {
+            uint64_t revision = lib.preference_gen;
+            auto favorites = co_await provider(source).features.library.collected_playlists();
+            if (account_gen != lib.account_gen) {
+                co_return;
+            }
+            if (favorites) {
+                std::erase_if(lib.playlists, [](const Card &card) {
+                    return !card.owned;
+                });
+                lib.playlists.insert(lib.playlists.end(), std::make_move_iterator(favorites->begin()), std::make_move_iterator(favorites->end()));
+                reconcile_preferences(source, kind, revision);
+            } else {
+                notify(favorites.error(), "list-music", true);
+            }
+            redraw_();
+        } else if (kind == Preference::song && provider(source).reload_after_edit && route_.page == Page::liked && route_.card.source == source && route_.list) {
+            co_await load_list(route_.list, Page::liked, {.source = source});
+        }
+    }
+
+    bool Shell::reconcile_preference(Source source, Preference kind, std::string_view id, bool value, uint64_t revision) {
+        auto &edits = library(source).preferences[static_cast<size_t>(kind)];
+        auto it = edits.find(id);
+        if (it == edits.end()) {
+            return value;
+        }
+        auto &edit = it->second;
+        if (!edit.pending && edit.revision <= revision) {
+            edit.value = edit.confirmed = value;
+        }
+        // Keep the revision so a read begun before the write cannot overwrite a later readback.
+        apply_preference(source, kind, edit);
+        return edit.value;
+    }
+
+    void Shell::reconcile_preferences(Source source, Preference kind, uint64_t revision) {
+        auto &lib = library(source);
+        auto &edits = lib.preferences[static_cast<size_t>(kind)];
+        for (const auto &[id, edit] : edits) {
+            bool value;
+            if (kind == Preference::song) {
+                value = lib.liked_ids.contains(id);
+            } else {
+                const auto &cards = kind == Preference::playlist ? lib.playlists : lib.collection[kind == Preference::artist ? 1 : 0].cards;
+                value = std::ranges::any_of(cards, [&](const Card &card) {
+                    return card.id == id;
+                });
+            }
+            reconcile_preference(source, kind, id, value, revision);
+        }
+    }
+
     void Shell::toggle_like(Track t) {
         if (!provider(t).logged_in()) {
             return notify(lyren::trf("Sign in to {} to like this song", lyren::tr(platform(t.source).name)), "heart");
         }
         bool on = !liked(t);
-        auto &ids = library(t.source).liked_ids;
-        if (on) {
-            ids.insert(t.id);
-        } else {
-            ids.erase(t.id);
-        }
         if (on) {
             pop_key_ = key(t), pop_time_ = now_();
         }
-        auto list = route_.page == Page::liked && active_ == t.source ? route_.list : nullptr;
-        if (list) {
-            auto &v = list->tracks;
-            if (on) {
-                v.insert(v.begin(), t);
-            } else {
-                std::erase_if(v, [&](const Track &x) {
-                    return same(x, t);
-                });
-            }
-        }
         notify(std::string(lyren::tr(on ? "Added to liked songs" : "Removed from liked songs")), on ? "heart-fill" : "heart-off");
-        spawn([](Shell *self, Track t, bool on, std::shared_ptr<List> list) -> Task<void> {
-            auto r = co_await self->provider(t).like(t, on);
-            if (!r) {
-                auto &ids = self->library(t.source).liked_ids;
-                if (on) {
-                    ids.erase(t.id);
-                } else {
-                    ids.insert(t.id);
-                }
-                if (list) {
-                    std::erase_if(list->tracks, [&](const Track &x) {
-                        return same(x, t);
-                    });
-                    if (!on) {
-                        list->tracks.insert(list->tracks.begin(), t);
-                    }
-                }
-                self->notify(lyren::trf("Action failed: {}", r.error()), "triangle-alert", true);
-            } else if (self->provider(t).reload_after_edit && list) {
-                co_await self->load_list(list, Page::liked, {.source = t.source});
-            }
-        }(this, std::move(t), on, std::move(list)));
+        Source source = t.source;
+        set_preference(source, Preference::song, std::move(t), {}, on);
     }
-
-    // Following, collecting and editing playlists show at once; a failed request puts things back.
 
     void Shell::toggle_follow(std::shared_ptr<ArtistPage> page, Card artist) {
         if (!provider(artist).logged_in()) {
             return notify(std::string(lyren::tr("Sign in to this artist's platform to follow them")), "user-plus");
         }
-        bool on = !page->info->followed;
-        page->info->followed = on;
-        auto &collection = library(artist.source).collection[1];
-        if (collection.loaded) {
-            place(collection.cards, artist, on);
-        }
+        bool on = !preference_value(artist.source, Preference::artist, artist.id, page->info->followed);
         notify(on ? lyren::trf("Following {}", artist.title) : std::string(lyren::tr("Unfollowed artist")), on ? "user-check" : "user");
-        spawn([](Shell *self, std::shared_ptr<ArtistPage> page, Card artist, bool on) -> Task<void> {
-            auto r = co_await self->provider(artist).follow(artist.id, on);
-            if (r) {
-                co_return;
-            }
-            page->info->followed = !on;
-            auto &collection = self->library(artist.source).collection[1];
-            if (collection.loaded) {
-                place(collection.cards, artist, !on);
-            }
-            self->notify(lyren::trf("Action failed: {}", r.error()), "triangle-alert", true);
-        }(this, std::move(page), std::move(artist), on));
+        Source source = artist.source;
+        set_preference(source, Preference::artist, {}, std::move(artist), on);
     }
 
     void Shell::toggle_collect(std::shared_ptr<List> list, Card album) {
         if (!provider(album).logged_in()) {
             return notify(std::string(lyren::tr("Sign in to this album's platform to save it")), "star");
         }
-        bool on = !list->album.collected;
-        list->album.collected = on;
-        auto &collection = library(album.source).collection[0];
-        if (collection.loaded) {
-            place(collection.cards, album, on);
-        }
+        bool on = !preference_value(album.source, Preference::album, album.id, list->album.collected);
         notify(std::string(lyren::tr(on ? "Album saved" : "Album removed")), on ? "star-fill" : "star");
-        spawn([](Shell *self, std::shared_ptr<List> list, Card album, bool on) -> Task<void> {
-            auto r = co_await self->provider(album).collect(album.id, on);
-            if (r) {
-                co_return;
-            }
-            list->album.collected = !on;
-            auto &collection = self->library(album.source).collection[0];
-            if (collection.loaded) {
-                place(collection.cards, album, !on);
-            }
-            self->notify(lyren::trf("Action failed: {}", r.error()), "triangle-alert", true);
-        }(this, std::move(list), std::move(album), on));
+        Source source = album.source;
+        set_preference(source, Preference::album, {}, std::move(album), on);
     }
 
     void Shell::recount(const Card &playlist, int delta) {
@@ -513,45 +600,17 @@ namespace lyren {
         }
     }
 
-    void Shell::toggle_collect_playlist(std::shared_ptr<List> list, Card playlist) {
+    void Shell::toggle_collect_playlist(Card playlist) {
         if (!provider(playlist).logged_in()) {
             return notify(std::string(lyren::tr("Sign in to this playlist's platform to save it")), "star");
         }
-        auto &lib = library(playlist.source);
-        bool on = !std::ranges::any_of(lib.playlists, [&](const Card &card) {
+        const auto &playlists = library(playlist.source).playlists;
+        bool on = !std::ranges::any_of(playlists, [&](const Card &card) {
             return same(card, playlist);
         });
-        uint64_t gen = lib.gen;
-        place(lib.playlists, playlist, on);
-        list->saving_playlist = true;
-        spawn([](Shell *self, std::shared_ptr<List> list, Card playlist, bool on, uint64_t gen) -> Task<void> {
-            auto &lib = self->library(playlist.source);
-            auto r = co_await self->provider(playlist).features.library.collect_playlist(playlist.id, on);
-            if (gen != lib.gen) {
-                list->saving_playlist = false;
-                co_return;
-            }
-            if (!r) {
-                list->saving_playlist = false;
-                place(lib.playlists, playlist, !on);
-                co_return self->notify(lyren::trf("Action failed: {}", r.error()), "triangle-alert", true);
-            }
-            self->notify(std::string(lyren::tr(on ? "Playlist saved" : "Playlist removed")), on ? "star-fill" : "star");
-            auto favorites = co_await self->provider(playlist).features.library.collected_playlists();
-            list->saving_playlist = false;
-            if (gen != lib.gen) {
-                co_return;
-            }
-            if (favorites) {
-                std::erase_if(lib.playlists, [](const Card &card) {
-                    return !card.owned;
-                });
-                lib.playlists.insert(lib.playlists.end(), std::make_move_iterator(favorites->begin()), std::make_move_iterator(favorites->end()));
-            } else {
-                self->notify(favorites.error(), "list-music", true);
-            }
-            self->redraw_();
-        }(this, std::move(list), std::move(playlist), on, gen));
+        notify(std::string(lyren::tr(on ? "Playlist saved" : "Playlist removed")), on ? "star-fill" : "star");
+        Source source = playlist.source;
+        set_preference(source, Preference::playlist, {}, std::move(playlist), on);
     }
 
     void Shell::add_to_playlist(Track t, Card playlist) {
@@ -813,7 +872,8 @@ namespace lyren {
         }
         bool account_changed = !lib.account || lib.account->id != a->id;
         if (account_changed && lib.account) {
-            clear_comment_writes(source);
+            reset_account(source);
+            gen = lib.gen;
         }
         lib.account = *a;
         images_.prefetch(a->avatar, 64);
@@ -826,6 +886,7 @@ namespace lyren {
         if (p.features.daily.playlists) {
             spawn(load_daily_lists(source));
         }
+        uint64_t revision = lib.preference_gen;
         auto pl = co_await p.user_playlists(a->id);
         if (gen != lib.gen) {
             co_return;
@@ -833,16 +894,19 @@ namespace lyren {
         if (pl) {
             lib.liked = std::move(pl->first);
             lib.playlists = std::move(pl->second);
+            reconcile_preferences(source, Preference::playlist, revision);
             prefetch_covers(images_, lib.playlists);
         } else {
             notify(pl.error(), "list-music", true);
         }
+        revision = lib.preference_gen;
         auto ids = co_await p.liked_ids(a->id);
         if (gen != lib.gen) {
             co_return;
         }
         if (ids) {
             lib.liked_ids = {ids->begin(), ids->end()};
+            reconcile_preferences(source, Preference::song, revision);
         } else {
             notify(ids.error(), "heart", true);
         }
@@ -1053,6 +1117,7 @@ namespace lyren {
         }
         qr_active_ = false;
         can_save_creds_ = true;
+        reset_account(source);
         save_credentials();
         co_await load_library(source);
         if (gen != qr_gen_) {
@@ -1073,19 +1138,18 @@ namespace lyren {
         qr_image_ = false;
     }
 
-    Task<void> Shell::logout(Source source) {
+    void Shell::reset_account(Source source) {
         auto &lib = library(source);
         ++lib.gen;
         ++lib.collection_gen;
-        co_await provider(source).logout();
+        ++lib.account_gen;
+        lib.preference_gen = 0;
+        lib.preferences = {};
         lib.account.reset();
         clear_comment_writes(source);
         if (thread_.source == source) {
             thread_.draft = std::make_shared<CommentDraft>();
             thread_.replies.reset();
-            if (!thread_.id.empty()) {
-                refresh_comments();
-            }
         }
         lib.playlists.clear();
         lib.liked_ids.clear();
@@ -1104,10 +1168,29 @@ namespace lyren {
         for (auto &c : lib.collection) {
             c = {};
         }
-        if (source == active_) {
-            if (needs_login(route_.page)) {
-                route_.list.reset();
+        auto reset_route = [source](Route &route) {
+            if (route.card.source == source) {
+                route.list.reset();
+                route.artist.reset();
+                if (route.card.owned) {
+                    route = {Page::recommend, {.source = source}};
+                }
             }
+        };
+        reset_route(route_);
+        for (auto &route : history_) {
+            reset_route(route);
+        }
+        redraw_();
+    }
+
+    Task<void> Shell::logout(Source source) {
+        reset_account(source);
+        co_await provider(source).logout();
+        if (thread_.source == source && !thread_.id.empty()) {
+            refresh_comments();
+        }
+        if (source == active_) {
             ensure_route_data();
         }
         save_credentials();
@@ -1387,15 +1470,21 @@ namespace lyren {
     }
 
     Task<void> Shell::load_list(std::shared_ptr<List> list, Page page, Card card) {
+        auto &lib = library(card.source);
+        uint64_t gen = ++list->gen, account_gen = lib.account_gen, revision = lib.preference_gen;
         list->loading = true;
         list->error.clear();
         // Not a ?: chain: with co_await in its branches GCC 16 also starts the tasks of branches not taken.
         Result<std::vector<Track>> r;
         if (page == Page::album) {
             auto a = co_await provider(card).album(card.id);
+            if (gen != list->gen || account_gen != lib.account_gen) {
+                co_return;
+            }
             if (a) {
                 r = std::move(a->tracks);
                 list->album = std::move(*a);
+                list->album.collected = reconcile_preference(card.source, Preference::album, card.id, list->album.collected, revision);
             } else {
                 r = std::unexpected(a.error());
             }
@@ -1414,9 +1503,19 @@ namespace lyren {
         } else {
             r = co_await provider(card).tracks(card);
         }
+        if (gen != list->gen || account_gen != lib.account_gen) {
+            co_return;
+        }
         list->loading = false;
         if (r) {
             list->tracks = std::move(*r);
+            if (page == Page::liked) {
+                lib.liked_ids.clear();
+                for (const auto &track : list->tracks) {
+                    lib.liked_ids.insert(track.id);
+                }
+                reconcile_preferences(card.source, Preference::song, revision);
+            }
             prefetch_covers(images_, list->tracks);
             list->since = now_();
         } else {
@@ -1426,21 +1525,33 @@ namespace lyren {
     }
 
     Task<void> Shell::load_artist(std::shared_ptr<ArtistPage> page, Card card) {
-        page->songs.loading = true;
-        spawn(fetch_artist(page, card, 0, 0));
+        auto &lib = library(card.source);
+        uint64_t account_gen = lib.account_gen, revision = lib.preference_gen;
+        page->loading = true;
+        page->error.clear();
+        if (!page->songs.loaded && !page->songs.loading) {
+            page->songs.loading = true;
+            page->songs.error.clear();
+            spawn(fetch_artist(page, card, 0, 0));
+        }
         auto r = co_await provider(card).artist(card.id);
+        if (account_gen != lib.account_gen) {
+            co_return;
+        }
+        page->loading = false;
         if (r) {
             page->info = std::move(*r);
+            page->info->followed = reconcile_preference(card.source, Preference::artist, card.id, page->info->followed, revision);
         } else {
             page->error = r.error();
         }
         redraw_();
     }
 
-    void Shell::load_artist_tab(int tab) {
+    void Shell::load_artist_tab(int tab, bool retry) {
         ArtistPage &a = *route_.artist;
         Results &res = tab == 0 ? a.songs : tab == 1 ? a.albums : a.intro;
-        if (res.loading || !res.more() || (res.loaded && !res.error.empty())) {
+        if (res.loading || (!retry && (!res.more() || !res.error.empty()))) {
             return;
         }
         res.loading = true;
@@ -1560,7 +1671,7 @@ namespace lyren {
 
     Task<void> Shell::load_collection(Source source) {
         auto &lib = library(source);
-        uint64_t gen = ++lib.collection_gen;
+        uint64_t gen = ++lib.collection_gen, revision = lib.preference_gen;
         for (auto &c : lib.collection) {
             c.loading = true;
         }
@@ -1581,6 +1692,9 @@ namespace lyren {
                 fresh[i].since = lib.collection[i].since;
             }
             lib.collection[i] = std::move(fresh[i]);
+            if (lib.collection[i].loaded) {
+                reconcile_preferences(source, i == 0 ? Preference::album : Preference::artist, revision);
+            }
         }
         redraw_();
     }
@@ -1661,24 +1775,24 @@ namespace lyren {
         pending_song_seek_.reset();
         resume_at_ = last_pos_ = 0;
         trial_ = false, clip_start_ = 0, highlight_from_ = highlight_to_ = 0;
+        stream_level_.clear();
         ++play_gen_;
         stop_player();
         changed();
     }
 
     void Shell::stop_player() {
-        report_listen(false);
         player_.stop();
+        report_listen(false);
     }
 
     // A listen counts once it played 30 s, or to the end; the server adds up every report, so each listen is sent once.
     void Shell::report_listen(bool ended) {
-        auto st = player_.state();
-        if (!listen_ || !(ended || st == State::playing || st == State::paused)) {
+        if (!listen_) {
             return;
         }
-        int seconds = static_cast<int>(ended ? player_.duration() : player_.position());
-        if (ended || seconds >= 30) {
+        int seconds = static_cast<int>(player_.played_seconds() - listen_started_);
+        if (provider(*listen_).logged_in() && (seconds >= 30 || (ended && seconds > 0))) {
             spawn(provider(*listen_).features.reporting.play(listen_->id, listen_->album_id, seconds));
         }
         listen_.reset();
@@ -1801,6 +1915,7 @@ namespace lyren {
         fetching_ = true;
         // The old stream's window no longer applies until the new one arrives.
         trial_ = false, clip_start_ = 0, highlight_from_ = highlight_to_ = 0;
+        stream_level_.clear();
         last_pos_ = at;
         pending_song_seek_.reset();
         resume_at_ = 0;
@@ -1850,12 +1965,14 @@ namespace lyren {
         fetching_ = false;
         clip_start_ = s.trial_start;
         trial_ = s.trial;
+        stream_level_ = std::move(s.level);
         highlight_from_ = s.highlight_from, highlight_to_ = s.highlight_to;
         track_gain_ = s.gain, track_peak_ = s.peak;
         const double at = pending_song_seek_ ? timeline().to_file(*pending_song_seek_) : last_pos_;
         pending_song_seek_.reset();
         last_pos_ = at;
         apply_gain();
+        listen_started_ = player_.played_seconds();
         player_.open(std::move(spool), want_play_);
         if (at > 0) {
             seek(at);
@@ -1950,6 +2067,7 @@ namespace lyren {
                 report_listen(true);
                 if (mode_ == Mode::one && !fm_playing_) {
                     listen_ = listened; // each time round is another listen
+                    listen_started_ = player_.played_seconds();
                     seek(0);
                     player_.play();
                 } else {
@@ -2298,7 +2416,11 @@ namespace lyren {
                         dislikes_page(ui, r);
                         break;
                     case Page::artist:
-                        artist_page(ui, r);
+                        if (route_.artist) {
+                            artist_page(ui, r);
+                        } else {
+                            page_status(ui, r, true, "", false);
+                        }
                         break;
                     case Page::search:
                         search_page(ui, r);
@@ -3047,7 +3169,7 @@ namespace lyren {
             play(songs, 0);
         }
         if (a.info) {
-            bool on = a.info->followed;
+            bool on = preference_value(c.source, Preference::artist, c.id, a.info->followed);
             float follow_w = std::max(button_width(ui, lyren::tr("Following"), true), button_width(ui, lyren::tr("Follow"), true));
             if (ui.button(ui.id("follow"), {tx + play_w + 12, head.bottom() - 40, follow_w, 40}, on ? lyren::tr("Following") : lyren::tr("Follow"), ui::ButtonKind::secondary,
                           on ? "user-check" : "user-plus")) {
@@ -3058,6 +3180,9 @@ namespace lyren {
         // Songs and albums load a page at a time as they scroll; each tab loads the first time it is picked.
         const std::array<std::string_view, 3> tabs = {lyren::tr("Songs"), lyren::tr("Albums"), lyren::tr("About")};
         Rect bar{head.x, head.bottom() + 24, head.w, 36};
+        float retry_w = button_width(ui, lyren::tr("Retry"), true);
+        Rect retry{bar.right() - retry_w, bar.y, retry_w, bar.h};
+        bar.w -= retry_w + 16;
         int before = a.tab;
         if (ui.tabs(ui.id("artist-tabs"), bar, tabs, a.tab)) {
             tab_time_ = ui.now;
@@ -3068,6 +3193,16 @@ namespace lyren {
         Fade fade(p, enter);
         Rect content{r.x + 16 + (1 - enter) * 36 * static_cast<float>(tab_dir_), bar.bottom() + 12, r.w - 32, r.bottom() - bar.bottom() - 20};
         Results &res = a.tab == 0 ? a.songs : a.tab == 1 ? a.albums : a.intro;
+        if (res.loading || a.loading) {
+            ui.spinner(ui::center(retry, 18, 18), t.text_dim, 2);
+        } else if ((!res.error.empty() || !a.error.empty()) && ui.button(ui.id("artist-retry"), retry, lyren::tr("Retry"), ui::ButtonKind::secondary, "refresh-cw")) {
+            if (!a.error.empty()) {
+                spawn(load_artist(route_.artist, c));
+            }
+            if (!res.error.empty()) {
+                load_artist_tab(a.tab, true);
+            }
+        }
         bool empty = a.tab == 2 ? a.sections.empty() : res.size() == 0;
         std::string error = empty ? res.error : "";
         if (empty && res.loaded && error.empty()) {
@@ -3075,6 +3210,9 @@ namespace lyren {
         }
         if (empty && page_status(ui, content, res.loading || (!res.loaded && error.empty()), error, false)) {
             return;
+        }
+        if (!res.error.empty()) {
+            ui.label(ui::cut_bottom(content, 32).inset(12, 0), res.error, {.size = t.fs(12), .color = t.danger});
         }
         double since = std::max({page_time_ + 0.06, tab_time_, res.since});
         bool near_end = false;
@@ -3425,7 +3563,7 @@ namespace lyren {
             if (!route_.list || route_.list->loading) {
                 return;
             }
-            bool on = route_.list->album.collected;
+            bool on = preference_value(c.source, Preference::album, c.id, route_.list->album.collected);
             float w = std::max(button_width(ui, lyren::tr("Saved"), true), button_width(ui, lyren::tr("Save"), true));
             if (labelled("collect", on ? lyren::tr("Saved") : lyren::tr("Save"), on ? "star-fill" : "star", w)) {
                 toggle_collect(route_.list, {.kind = CardKind::album, .source = c.source, .id = c.id, .title = c.title, .subtitle = route_.list->album.artist, .cover = c.cover});
@@ -3462,11 +3600,8 @@ namespace lyren {
                     return same(card, c);
                 });
                 float w = std::max(button_width(ui, lyren::tr("Saved"), true), button_width(ui, lyren::tr("Save"), true));
-                if (route_.list->saving_playlist) {
-                    ui.spinner(ui::center({x, y, w, 40}, 18, 18), ui.theme().text_dim, 2);
-                    x += w + 12;
-                } else if (labelled("collect-playlist", on ? lyren::tr("Saved") : lyren::tr("Save"), on ? "star-fill" : "star", w)) {
-                    toggle_collect_playlist(route_.list, c);
+                if (labelled("collect-playlist", on ? lyren::tr("Saved") : lyren::tr("Save"), on ? "star-fill" : "star", w)) {
+                    toggle_collect_playlist(c);
                 }
             }
             if (c.commentable && square("playlist-comments", "message-square")) {

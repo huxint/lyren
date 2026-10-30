@@ -166,6 +166,16 @@ namespace lyren {
             if (detail > 0 && live && !player_.codec().empty()) {
                 Fade more(p, detail);
                 std::string text = std::format("{} · {:.1f} kHz", player_.codec(), player_.format().rate / 1000.0);
+                if (!stream_level_.empty()) {
+                    std::string_view level = stream_level_ == "standard"   ? "128 kbps"
+                                             : stream_level_ == "higher"   ? "192 kbps"
+                                             : stream_level_ == "exhigh"   ? "320 kbps"
+                                             : stream_level_ == "lossless" ? lyren::tr("Lossless")
+                                             : stream_level_ == "hires"    ? "Hi-Res"
+                                             : stream_level_ == "aac96"    ? "AAC 96 kbps"
+                                                                           : stream_level_;
+                    text = std::string(level) + " · " + text;
+                }
                 if (trial_) {
                     text += " · ";
                     text += lyren::tr("Preview");

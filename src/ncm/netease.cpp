@@ -696,11 +696,14 @@ namespace lyren::ncm {
     }
 
     Task<Result<Account>> Netease::account() {
+        const std::string login = client.get("MUSIC_U");
         Reply reply = co_await client.call("/api/w/nuser/account/get", "", Api::weapi);
         auto r = parse<AccountReply>(reply);
         // QR logins cannot be refreshed; once the session is gone the user has to scan again.
         if (reply.code == 301 || (r && !r->profile)) {
-            client.clear_login();
+            if (login == client.get("MUSIC_U")) {
+                client.clear_login();
+            }
             co_return std::unexpected("NetEase Music session expired; scan again to sign in");
         }
         if (!r) {
@@ -710,8 +713,11 @@ namespace lyren::ncm {
     }
 
     Task<void> Netease::logout() {
+        const std::string login = client.get("MUSIC_U");
         co_await client.call("/api/logout", "", Api::eapi, net::Retry::never);
-        client.clear_login();
+        if (login == client.get("MUSIC_U")) {
+            client.clear_login();
+        }
     }
 
     Task<Result<std::vector<Card>>> Netease::recommended_playlists() {
