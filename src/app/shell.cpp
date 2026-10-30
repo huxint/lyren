@@ -1188,7 +1188,6 @@ namespace lyren {
     }
 
     void Shell::switch_platform(ui::Ui &ui, Source source) {
-        pending_source_.reset();
         if (source == active_) {
             return;
         }
@@ -1796,7 +1795,6 @@ namespace lyren {
         if (!current()) {
             return;
         }
-        pending_source_ = current()->source;
         uint64_t gen = ++play_gen_;
         retried_ = counted_ = false;
         want_play_ = play;
@@ -2216,9 +2214,6 @@ namespace lyren {
 
     void Shell::draw(ui::Ui &ui, Rect area, const ui::Theme &stage_theme) {
         stage_ = &stage_theme;
-        if (pending_source_) {
-            switch_platform(ui, *pending_source_);
-        }
         auto &p = ui.painter();
         const auto &t = ui.theme();
         for (auto &m : toasts_) {
@@ -2393,10 +2388,6 @@ namespace lyren {
                 show_stage(false);
             } else if (ctrl && (k->keysym == XKB_KEY_f || k->keysym == XKB_KEY_F)) {
                 ui.focus = ui.id("search");
-            } else if (ctrl && k->keysym == XKB_KEY_Tab) {
-                int count = static_cast<int>(platforms.size()), delta = k->mods & wl::mod_shift ? -1 : 1;
-                show_stage(false);
-                switch_platform(ui, platforms[static_cast<size_t>((static_cast<int>(active_) + delta + count) % count)].source);
             } else if (ctrl && k->keysym == XKB_KEY_Right) {
                 skip(1);
             } else if (ctrl && k->keysym == XKB_KEY_Left) {
@@ -3109,19 +3100,10 @@ namespace lyren {
 
     void Shell::search_page(ui::Ui &ui, Rect r) {
         Rect body = r.inset(32, 0);
-        std::array<std::string_view, platforms.size()> sources;
-        float source_w = 0;
-        for (size_t i = 0; i < platforms.size(); ++i) {
-            sources[i] = lyren::tr(platforms[i].short_name);
-            source_w += button_width(ui, sources[i], false);
-        }
-        int source = static_cast<int>(active_);
-        if (ui.tabs(ui.id("search-platforms"), {body.x, r.y + 100, source_w, 36}, sources, source, ui::TabStyle::pill)) {
-            switch_platform(ui, static_cast<Source>(source));
-        }
         const std::array<std::string_view, 4> tabs = {lyren::tr("Tracks"), lyren::tr("Albums"), lyren::tr("Artists"), lyren::tr("Playlists")};
+        float tabs_w = body.w - button_width(ui, lyren::tr("Refresh"), true) - 16;
         int before = search_tab_;
-        if (ui.tabs(ui.id("search-tabs"), {body.x, r.y + 148, body.w, 36}, tabs, search_tab_)) {
+        if (ui.tabs(ui.id("search-tabs"), {body.x, r.y + 100, tabs_w, 36}, tabs, search_tab_)) {
             selected_ = -1;
             tab_time_ = ui.now;
             tab_dir_ = search_tab_ > before ? 1 : -1;
@@ -3150,7 +3132,7 @@ namespace lyren {
         // Tab content slides toward the tab that was picked.
         float enter = ui.progress(tab_time_, 380);
         Fade fade(ui.painter(), enter);
-        Rect content{r.x + 16 + (1 - enter) * 36 * static_cast<float>(tab_dir_), r.y + 196, r.w - 32, r.h - 204};
+        Rect content{r.x + 16 + (1 - enter) * 36 * static_cast<float>(tab_dir_), r.y + 148, r.w - 32, r.h - 156};
         double since = std::max({page_time_, tab_time_, shown.since});
         bool empty = shown.size() == 0;
         std::string error = empty ? shown.error : "";
@@ -3359,9 +3341,6 @@ namespace lyren {
         TextStyle num{.size = t.fs(13), .color = t.text_dim, .features = text::tabular_nums};
         if (hot) {
             if (ui.icon_button(ui.id("play"), ui::center(c.index, 30, 30), now_playing && playing() ? "pause-fill" : "play-fill", 14)) {
-                if (route_.page == Page::search) {
-                    pending_source_ = tr.source;
-                }
                 if (now_playing) {
                     toggle_play();
                 } else {
@@ -3406,9 +3385,6 @@ namespace lyren {
         } else {
             bool like = liked(tr);
             if ((hot || like) && ui.icon_button(ui.id("like"), ui::center(c.like, 32, 32), like ? "heart-fill" : "heart", heart_size(ui, tr, 16), like)) {
-                if (route_.page == Page::search) {
-                    pending_source_ = tr.source;
-                }
                 toggle_like(tr);
             }
             ui.label(c.duration, mmss(tr.duration), num, Align::right);
@@ -3423,17 +3399,11 @@ namespace lyren {
         if (it.pressed) {
             selected_ = i;
         }
-        if (it.clicked && route_.page == Page::search) {
-            pending_source_ = tr.source;
-        }
         if (it.double_clicked) {
             play(tracks, i);
         }
         if (it.right_clicked) {
             selected_ = i;
-            if (route_.page == Page::search) {
-                pending_source_ = tr.source;
-            }
             track_menu(ui, it.px, it.py, tracks, i);
         }
         ui.pop_id();

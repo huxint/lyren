@@ -443,7 +443,6 @@ namespace lyren {
 
         Route route_{Page::recommend};
         Source active_ = Source::netease, fm_source_ = Source::netease;
-        std::optional<Source> pending_source_;
         std::vector<Route> history_;
         double page_time_ = -10, tab_time_ = -10;
         int page_dir_ = 1, tab_dir_ = 1;
