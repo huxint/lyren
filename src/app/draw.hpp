@@ -52,6 +52,25 @@ namespace lyren {
         return {std::lerp(a.x, b.x, k), std::lerp(a.y, b.y, k), std::lerp(a.w, b.w, k), std::lerp(a.h, b.h, k)};
     }
 
+    // The wave a word-timed line rides as it is sung: one entry per cluster of s, tallest where the sung front has just
+    // passed, so the glyphs rise and swell under the voice instead of jumping a word at a time. `front` is px from the
+    // start of s. The entries borrow s' byte offsets, so the span handed to set_lifts must not outlive it.
+    inline void fill_lyric_wave(ui::Painter &p, std::vector<ui::Painter::Lift> &out, std::string_view s, float size, float front, float amount) {
+        out.clear();
+        if (amount <= 0) {
+            return;
+        }
+        const auto &shaped = p.shape(s, {.size = size});
+        const float reach = size * 1.5f, rise = size * 0.13f * amount, swell = 0.07f * amount;
+        for (const text::Glyph &g : shaped.glyphs) {
+            if (!out.empty() && out.back().from == g.cluster) {
+                continue; // one entry per cluster: the glyphs of a cluster move together
+            }
+            const float u = (g.x * size - front) / reach, k = std::exp(-u * u);
+            out.push_back({g.cluster, rise * k, 1 + swell * k});
+        }
+    }
+
     // Counts as "1.2k", or "1.2万" in Chinese.
     inline std::string short_count(int n) {
         if (language() == Language::zh) {

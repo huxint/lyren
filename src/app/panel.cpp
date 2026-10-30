@@ -97,8 +97,9 @@ namespace lyren {
             const Track &tr = queue_[static_cast<size_t>(i)];
             Rect row{view.x, view.y + static_cast<float>(i) * row_h - off, view.w, row_h};
             ui.push_id(ui.id(static_cast<uint64_t>(i)));
-            ui::Id row_id = ui.id("row");
-            bool hot = ui.hovering(row) || ui.is_active(row_id), cur = i == current_;
+            ui::Id row_id = ui.id("row"), remove_id = ui.id("remove");
+            // Held, the row stops counting as hovered, so the button has to keep itself alive until its release lands.
+            bool hot = ui.hovering(row) || ui.is_active(row_id) || ui.is_active(remove_id), cur = i == current_;
             float h = ui.anim(row_id, hot ? 1 : 0, 140);
             if (!cur && h > 0) {
                 p.rect(row.inset(2), t.hover.with_alpha(h), t.radius_s());
@@ -107,7 +108,7 @@ namespace lyren {
             float tw = row.w - 58 - (hot ? 40 : 12);
             p.text(row.x + 58, row.y + 23, tr.title, {.size = t.fs(13), .color = cur ? t.accent : t.text}, tw);
             p.text(row.x + 58, row.y + 41, tr.artist, {.size = t.fs(12), .color = t.text_dim}, tw);
-            if (hot && ui.icon_button(ui.id("remove"), {row.right() - 38, row.y + 13, 28, 28}, "x", 14)) {
+            if (hot && ui.icon_button(remove_id, {row.right() - 38, row.y + 13, 28, 28}, "x", 14)) {
                 remove = i;
             }
             if (ui.interact(row_id, row).double_clicked) {

@@ -466,7 +466,6 @@ namespace lyren {
             shell_.set_desktop_enabled(false);
             return toast(std::string(tr("Desktop lyrics require a compositor with layer-shell support")));
         }
-        int height = static_cast<int>(shell_.desktop_height(theme_.lyric_size));
         if (want && !lyrics_) {
             wl::LayerSurface::Callbacks cb{
                 .configure =
@@ -490,15 +489,11 @@ namespace lyren {
                     },
             };
             // A scripted run keeps them under the windows, out of the way of whoever uses the desktop.
-            lyrics_ = std::make_unique<wl::LayerSurface>(display_, std::move(cb), script_.empty(), height, shell_.desktop_bottom(), shell_.desktop_island());
+            lyrics_ = std::make_unique<wl::LayerSurface>(display_, std::move(cb), script_.empty());
             lyrics_target_ = renderer_.create_target(display_.display, lyrics_->surface());
             lyrics_hash_ = 0;
         } else if (!want && lyrics_) {
             close_desktop_lyrics();
-        }
-        if (lyrics_) {
-            lyrics_->set_height(height);
-            lyrics_->set_position(shell_.desktop_island(), shell_.desktop_bottom());
         }
         lyric_frames_.request();
     }
@@ -541,7 +536,6 @@ namespace lyren {
             }
         }
         shaper_->end_frame();
-        lyrics_->set_position(shell_.desktop_island(), shell_.desktop_bottom());
         lyrics_->set_input(static_cast<int>(std::floor(input.x)), static_cast<int>(std::floor(input.y)), static_cast<int>(std::ceil(input.w)),
                            static_cast<int>(std::ceil(input.h)));
         auto prims = painter_->prims();

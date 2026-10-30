@@ -445,19 +445,13 @@ namespace lyren {
             float y = top;
             auto line = [&](std::string_view s, const TextStyle &st, float lh, ui::Color c, bool wiped) {
                 float x = r.x + (r.w - std::min(p.measure(s, st), r.w)) / 2 * centered;
-                if (wiped) {
-                    p.set_wipe(x + sung_x(p, l, s, st.size, soft, now), soft, unsung);
-                }
                 lifts.clear();
-                if (on > 0 && &st == &main) {
-                    auto from = static_cast<uint32_t>(s.data() - l.text.data());
-                    for (const LyricWord &w : l.words) {
-                        if (w.to <= from || w.from >= from + s.size()) {
-                            continue;
-                        }
-                        double sung = w.duration() > 0 ? std::clamp((now - w.time()) / w.duration(), 0.0, 1.0) : now >= w.time();
-                        lifts.push_back({w.from > from ? w.from - from : 0, main.size * 0.1f * on * static_cast<float>(1 - (1 - sung) * (1 - sung))});
-                    }
+                if (wiped) {
+                    // The voice sweeps the line and the glyphs ride its wave: they rise and swell where it just passed,
+                    // a smooth deformation travelling with the wipe rather than a jump per word.
+                    const float front = sung_x(p, l, s, st.size, soft, now);
+                    p.set_wipe(x + front, soft, unsung);
+                    fill_lyric_wave(p, lifts, s, st.size, front, on);
                 }
                 p.set_lifts(lifts);
                 p.text(x, y + lh * 0.72f, s, {.size = st.size, .color = c}, r.w);

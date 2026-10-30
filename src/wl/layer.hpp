@@ -10,7 +10,7 @@ namespace lyren::wl {
 
     class Display;
 
-    // A wlr-layer-shell surface across an edge of the output that never
+    // A wlr-layer-shell surface covering the available output that never
     // takes the keyboard. Only its input region receives the pointer; elsewhere clicks fall through.
     class LayerSurface : public SurfaceSink {
     public:
@@ -22,7 +22,7 @@ namespace lyren::wl {
         };
 
         // above_windows: the top layer; otherwise the bottom one, under normal windows.
-        LayerSurface(Display &display, Callbacks cb, bool above_windows, int height, int margin, bool top = false);
+        LayerSurface(Display &display, Callbacks cb, bool above_windows);
         ~LayerSurface() override;
 
         wl_surface *surface() const {
@@ -46,13 +46,11 @@ namespace lyren::wl {
         bool frame_pending() const {
             return frame_callback_ != nullptr;
         }
-        // A configure, margin or input region change that only a commit applies.
+        // A configure or input region change that only a commit applies.
         bool needs_commit() const {
             return needs_ack_ || dirty_;
         }
 
-        void set_height(int h);
-        void set_position(bool top, int margin);
         // Logical px, surface-local; an empty rectangle lets every click through.
         void set_input(int x, int y, int w, int h);
 
@@ -79,8 +77,7 @@ namespace lyren::wl {
         wp_viewport *viewport_ = nullptr;
         wp_fractional_scale_v1 *fractional_ = nullptr;
         wl_callback *frame_callback_ = nullptr;
-        int width_ = 0, height_, margin_;
-        bool top_;
+        int width_ = 0, height_ = 0;
         std::array<int, 4> input_{};
         uint32_t scale120_ = 120, ack_serial_ = 0;
         bool needs_ack_ = false, dirty_ = true;

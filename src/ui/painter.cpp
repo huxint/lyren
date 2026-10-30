@@ -162,23 +162,28 @@ namespace lyren::ui {
             if (!e.w) {
                 continue;
             }
-            float x0 = whole + e.left, y0 = by - std::round(g.y * px) - e.top;
+            float x0 = whole + e.left, y0 = by - std::round(g.y * px) - e.top, gw = e.w, gh = e.h;
             if (!lifts_.empty()) {
                 auto l = std::ranges::upper_bound(lifts_, g.cluster, {}, &Lift::from);
                 if (l != lifts_.begin()) {
                     y0 -= l[-1].dy * scale_;
+                    if (float swell = l[-1].scale; swell != 1) {
+                        // The glyph keeps its raster and swells about its centre and the baseline.
+                        gw *= swell, gh *= swell;
+                        x0 += (e.w - gw) * 0.5f, y0 = by + (y0 - by) * swell;
+                    }
                 }
             }
             if (e.color) {
                 // Emoji keep their own colours and take only the text's alpha, unless they are a silhouette.
-                auto &p = emit_zoomed(gfx::Kind::image, x0, y0, e.w, e.h);
+                auto &p = emit_zoomed(gfx::Kind::image, x0, y0, gw, gh);
                 premul(p.color, style.silhouette ? color : Color{1, 1, 1, color.a});
                 float cinv = 1.f / static_cast<float>(atlas_.color_size());
                 p.uv[0] = e.x * cinv, p.uv[1] = e.y * cinv, p.uv[2] = (e.x + e.w) * cinv, p.uv[3] = (e.y + e.h) * cinv;
                 p.info[1] = atlas_.color_texture();
                 continue;
             }
-            auto &p = emit_zoomed(gfx::Kind::glyph, x0, y0, e.w, e.h);
+            auto &p = emit_zoomed(gfx::Kind::glyph, x0, y0, gw, gh);
             premul(p.color, color);
             p.uv[0] = e.x * inv, p.uv[1] = e.y * inv, p.uv[2] = (e.x + e.w) * inv, p.uv[3] = (e.y + e.h) * inv;
             p.info[1] = atlas_.texture();

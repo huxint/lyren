@@ -9,8 +9,7 @@
 #include "app/draw.hpp"
 #include "core/i18n.hpp"
 
-// Desktop lyrics on their own layer surface: a floating line near the bottom of the screen, or the Dynamic Island at the
-// top. The settings page draws both as live previews.
+// Desktop lyrics share a fixed surface covering the available screen. The settings page draws both as live previews.
 namespace lyren {
 
     using ui::Rect;
@@ -18,9 +17,14 @@ namespace lyren {
 
     namespace {
         constexpr ui::Color white{1, 1, 1, 1}, ink{0.03f, 0.03f, 0.035f, 1};
-        constexpr float toolbar_height = 44, tau = 2 * std::numbers::pi_v<float>;
-        constexpr float island_surface = 264; // the open card and its shadow
-        constexpr double lead = 0.2;          // a line lights up a little early, with the voice rather than after it
+        constexpr float toolbar_height = 40, desktop_edge = 8, tau = 2 * std::numbers::pi_v<float>;
+        constexpr double lead = 0.2; // a line lights up a little early, with the voice rather than after it
+
+        Rect desktop_bounds(Rect panel, float width, float height) {
+            panel.x = std::clamp(panel.x, desktop_edge, std::max(desktop_edge, width - desktop_edge - panel.w));
+            panel.y = std::clamp(panel.y, desktop_edge, std::max(desktop_edge, height - desktop_edge - panel.h));
+            return panel;
+        }
 
         float reveal(float value, float from, float to) {
             return smooth01((value - from) / (to - from));
@@ -34,13 +38,6 @@ namespace lyren {
         }
     } // namespace
 
-    float Shell::desktop_height(float size) const {
-        if (dl_island_) {
-            return island_surface;
-        }
-        return toolbar_height + std::round(size * 1.35f) + std::round(size * 0.58f * 1.35f) + 12;
-    }
-
     void Shell::set_desktop_enabled(bool enabled) {
         dl_enabled_ = enabled;
         changed();
@@ -50,7 +47,7 @@ namespace lyren {
     void Shell::set_desktop_island(bool island) {
         if (dl_island_ != island) {
             dl_island_ = island;
-            dl_locked_ = dl_dragging_ = false;
+            dl_locked_ = dl_dragging_ = island_moving_ = false;
             changed();
             desktop_changed_();
         }
@@ -83,10 +80,22 @@ namespace lyren {
     }
 
     Rect Shell::desktop_lyrics(ui::Ui &ui, float width, float height) {
-        return dl_island_ ? island(ui, width / 2, 8) : floating(ui, width, height);
+        if (!dl_island_) {
+            return floating(ui, width, height);
+        }
+        // Move inside a fixed surface so dragging never changes the pointer's coordinate origin.
+        if (island_moving_) {
+            const float dx = ui.input().x - island_grab_x_, dy = ui.input().y - island_grab_y_;
+            island_dragged_ = island_dragged_ || std::abs(dx) > 3 || std::abs(dy) > 3;
+            island_x_ = island_from_x_ + dx;
+            island_y_ = island_from_y_ + dy;
+        }
+        const Rect input = island(ui, width / 2 + island_x_, desktop_edge + island_y_, true);
+        // Being dragged, the whole surface takes the pointer, so the island cannot slip out from under it.
+        return island_moving_ ? Rect{0, 0, width, height} : input;
     }
 
-    Rect Shell::island(ui::Ui &ui, float center, float top) {
+    Rect Shell::island(ui::Ui &ui, float center, float top, bool movable) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const auto &options = config_.desktop_lyrics.island;
@@ -113,12 +122,20 @@ namespace lyren {
         const size_t shown_lines = lyric_text ? std::min(lines.size(), size_t{2}) : 0;
         const float head_h = art ? 52.f : 40.f, lines_h = static_cast<float>(shown_lines) * 23;
         const float open_h = pad + head_h + 14 + lines_h + 16 + 14 + 12 + 40 + 16;
+        if (movable) {
+            // Reserve the open card's bounds so expanding it never pushes the controls off screen.
+            const float span = std::max(pill_w, open_w);
+            const Rect bounds = desktop_bounds({center - span / 2, top, span, open_h}, ui.width, ui.height);
+            center = bounds.x + span / 2, top = bounds.y;
+            island_x_ = center - ui.width / 2, island_y_ = top - desktop_edge;
+        }
         const Rect pill{center - pill_w / 2, top, pill_w, pill_h};
         const Rect card{center - open_w / 2, top, open_w, open_h};
 
         const float was = std::clamp(ui.spring_value(ui.id("island-open"), 0), 0.f, 1.f);
-        // Pressing one of its buttons still counts as pointing at it, so it stays open for the click.
-        const bool pointed = ui.pointing(mix(pill, card, was).inset(-2)) || island_dragging_;
+        // Pressing one of its buttons still counts as pointing at it, so it stays open for the click; a drag does not
+        // open the island, it leaves it as it was when the drag started.
+        const bool pointed = island_moving_ ? was > 0.5f : (ui.pointing(mix(pill, card, was).inset(-2)) || island_dragging_);
         // It opens once the pointer rests on it, so passing over it on the way to something else leaves it be, and
         // closes a moment after the pointer leaves, so slipping past its edge does not.
         const float rest = ui.anim(ui.id("island-rest"), pointed ? 1 : 0, pointed ? 220 : 180, ease::linear);
@@ -130,6 +147,30 @@ namespace lyren {
         p.shadow({panel.x, panel.y + 6, panel.w, panel.h}, radius, 22, {0, 0, 0, 0.28f + 0.1f * open});
         p.rect(panel, ink.with_alpha(0.97f), radius);
         p.rect(panel.inset(0.5f), {}, radius, white.with_alpha(0.05f), 1);
+
+        // A press on the cover drags too; it stays a click only while the pointer holds still.
+        auto drag_island = [&](const ui::Interaction &it) {
+            if (!movable) {
+                return;
+            }
+            const float x = ui.input().x, y = ui.input().y;
+            if (it.pressed) {
+                island_moving_ = true, island_dragged_ = false;
+                island_grab_x_ = x, island_grab_y_ = y;
+                island_from_x_ = island_x_, island_from_y_ = island_y_;
+            }
+            if (!island_moving_) {
+                return;
+            }
+            if (it.held) {
+                ui.cursor = wl::Cursor::grabbing;
+            } else if (!ui.input().left_down) {
+                island_moving_ = false;
+                if (island_dragged_) {
+                    changed();
+                }
+            }
+        };
 
         const float closed_a = 1 - reveal(open, 0.08f, 0.68f), open_a = reveal(open, 0.3f, 0.9f);
         const float head_x = art ? card.x + pad + 52 + 14 : card.x + pad, head_w = card.right() - pad - 30 - head_x;
@@ -174,7 +215,8 @@ namespace lyren {
                 p.rect(a, {0, 0, 0, 0.35f}, r);
                 p.icon(playing() ? "pause-fill" : "play-fill", ui::center(a, 12, 12), white);
             }
-            if (press.clicked && track && open < 0.5f) {
+            drag_island(press);
+            if (press.clicked && track && open < 0.5f && !island_dragged_) {
                 toggle_play();
             }
         }
@@ -323,6 +365,7 @@ namespace lyren {
             }
             ui.disabled = false;
         }
+        drag_island(ui.interact(ui.id("island-move"), panel));
         ui.pop_clip();
         lyric_frames(ui, at, timed);
         return panel;
@@ -336,16 +379,22 @@ namespace lyren {
         const float font = std::max(size * 0.7f, std::min(size, size * max_width / std::max(p.measure(text, {.size = size}), 1.f)));
         const float x = center - std::min(p.measure(text, {.size = font}), max_width) / 2;
         // The outline is eight offset copies under the text, so it reads over any wallpaper.
-        const float outline = std::max(1.f, font / 22);
+        const float outline = std::max(1.f, font / 22), soft = font * 0.7f;
+        // A word-timed line rides the wave of the voice; the outline copies carry it too, so the outline stays round the
+        // deformed glyphs.
+        const bool sung = live && !live->words.empty();
+        const float front = sung ? sung_x(p, *live, text, font, soft, timeline().to_song(position())) : 0;
+        fill_lyric_wave(p, lyric_lifts_, text, font, front, sung ? 1.f : 0.f);
+        p.set_lifts(lyric_lifts_);
         for (int i = 0; i < 8; ++i) {
             const float angle = static_cast<float>(i) * tau / 8;
             p.text(x + outline * std::cos(angle), baseline + outline * std::sin(angle), text, {.size = font, .color = t.lyric_outline, .silhouette = true}, max_width);
         }
-        if (live && !live->words.empty()) {
-            const float soft = font * 0.7f;
-            p.set_wipe(x + sung_x(p, *live, text, font, soft, timeline().to_song(position())), soft, rest);
+        if (sung) {
+            p.set_wipe(x + front, soft, rest);
         }
         p.text(x, baseline, text, {.size = font, .color = color}, max_width);
+        p.set_lifts({});
         p.clear_wipe();
     }
 
@@ -367,9 +416,15 @@ namespace lyren {
         const float size = t.lyric_size, sub = std::round(size * 0.58f), line_height = std::round(size * 1.35f);
         const float max_width = width - 64;
         const float text_width = std::max(p.measure(text, {.size = size}), p.measure(below, {.size = sub}));
-        const float panel_width = ui.spring(ui.id("floating-width"), std::clamp(std::min(text_width, max_width) + 64, 360.f, width - 16), 320);
-        const float center = std::clamp(width / 2 + dl_x_, panel_width / 2 + 8, width - panel_width / 2 - 8);
-        const Rect panel{center - panel_width / 2, 4, panel_width, height - 8};
+        const float panel_width = ui.spring(ui.id("floating-width"), std::clamp(std::min(text_width, max_width) + 64, 360.f, width - 2 * desktop_edge), 320);
+        const float panel_height = toolbar_height + line_height + std::round(size * 0.58f * 1.35f) + 8;
+        if (dl_dragging_) {
+            dl_x_ = ui.input().x - dl_grab_x_ - width / 2;
+            dl_bottom_ = height - (ui.input().y - dl_grab_y_) - panel_height;
+        }
+        const Rect panel = desktop_bounds({width / 2 + dl_x_ - panel_width / 2, height - dl_bottom_ - panel_height, panel_width, panel_height}, width, height);
+        const float center = panel.x + panel.w / 2;
+        dl_x_ = center - width / 2, dl_bottom_ = height - panel.bottom();
         auto button = [&](std::string_view name, Rect rect, std::string_view icon, bool on = false) {
             const auto id = ui.id(name);
             const auto it = ui.interact(id, rect);
@@ -384,7 +439,7 @@ namespace lyren {
         };
 
         Rect input = panel;
-        const Rect lock{center - 16, 6, 32, 32};
+        const Rect lock{center - 16, panel.y + 2, 32, 32};
         if (dl_locked_) {
             // Locked, clicks fall through everywhere but the unlock button, which shows when pointed at.
             input = lock;
@@ -400,11 +455,11 @@ namespace lyren {
                 // The toolbar: the transport, then translation, the island, locking and hiding.
                 Fade tools(p, visible);
                 const float n = translated ? 7 : 6, bar_w = n * 34 + 26;
-                const Rect bar{center - bar_w / 2, 4, bar_w, 36};
+                const Rect bar{center - bar_w / 2, panel.y, bar_w, 36};
                 p.rect(bar, ink.with_alpha(0.82f), 18);
                 float x = bar.x + 8;
                 auto next_slot = [&](float gap = 0) {
-                    const Rect r{x + gap, 6, 32, 32};
+                    const Rect r{x + gap, panel.y + 2, 32, 32};
                     x += 34 + gap;
                     return r;
                 };
@@ -419,7 +474,7 @@ namespace lyren {
                     skip(1);
                 }
                 ui.disabled = false;
-                p.rect({x + 4, 14, 1, 16}, white.with_alpha(0.16f));
+                p.rect({x + 4, panel.y + 10, 1, 16}, white.with_alpha(0.16f));
                 x += 10;
                 if (translated && button("floating-translation", next_slot(), "languages", lyric_translation_)) {
                     toggle_translation();
@@ -440,18 +495,12 @@ namespace lyren {
             if (drag.pressed) {
                 dl_dragging_ = true;
                 dl_grab_x_ = x - center;
-                dl_grab_y_ = dl_last_y_ = y;
+                dl_grab_y_ = y - panel.y;
             }
             if (dl_dragging_ && drag.held) {
-                dl_x_ = x - dl_grab_x_ - width / 2;
-                if (y != dl_last_y_) {
-                    dl_bottom_ = std::max(0.f, dl_bottom_ + dl_grab_y_ - y);
-                    dl_last_y_ = y;
-                }
                 ui.cursor = wl::Cursor::grabbing;
             } else if (dl_dragging_) {
                 dl_dragging_ = false;
-                dl_x_ = center - width / 2;
                 changed();
             }
         }
@@ -459,21 +508,21 @@ namespace lyren {
         const ui::Color sung = t.lyric_sung.value_or(t.accent);
         auto draw = [&](const ShownLine &shown, const LyricLine *live, float dy, float alpha) {
             Fade fade(p, alpha);
-            const float top = toolbar_height + dy;
+            const float top = panel.y + toolbar_height + dy;
             floating_text(ui, center, top + line_height * 0.76f, live && shown.timed ? std::string_view(live->text) : std::string_view(shown.text),
                           live && shown.timed ? live : nullptr, size, max_width, shown.timed ? sung : t.lyric_text, t.lyric_text);
             if (!shown.sub.empty()) {
                 floating_text(ui, center, top + line_height + sub * 1.1f, shown.sub, nullptr, sub, max_width, t.lyric_text.with_alpha(0.85f), t.lyric_text);
             }
         };
-        ui.push_clip({0, toolbar_height - 2, width, height - toolbar_height + 2});
+        ui.push_clip({0, panel.y + toolbar_height - 2, width, panel.h - toolbar_height + 2});
         if (change < 1) {
             draw(floating_line_.prev, nullptr, -10 * change, 1 - change);
         }
         draw(floating_line_.shown, line, 10 * (1 - change), change);
         ui.pop_clip();
         lyric_frames(ui, at, timed);
-        return input;
+        return dl_dragging_ ? Rect{0, 0, width, height} : input;
     }
 
 } // namespace lyren

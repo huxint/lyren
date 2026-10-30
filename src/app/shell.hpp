@@ -57,15 +57,8 @@ namespace lyren {
         void config_changed();
 
         // The overlay reserves no workspace and never takes keyboard focus.
-        float desktop_height(float font_size) const;
         bool desktop_enabled() const {
             return dl_enabled_;
-        }
-        bool desktop_island() const {
-            return dl_island_;
-        }
-        int desktop_bottom() const {
-            return dl_island_ ? 10 : static_cast<int>(std::lround(dl_bottom_));
         }
         void set_desktop_enabled(bool enabled);
         ui::Rect desktop_lyrics(ui::Ui &ui, float w, float h);
@@ -553,13 +546,17 @@ namespace lyren {
 
         // Desktop lyrics: offset from the screen's centre, height above the bottom, click-through.
         float dl_x_ = 0, dl_bottom_ = 48;
+        // The island: its offset from the centre and from the top edge, and where a drag on it started.
+        float island_x_ = 0, island_y_ = 10;
+        bool island_moving_ = false, island_dragged_ = false;
+        float island_grab_x_ = 0, island_grab_y_ = 0, island_from_x_ = 0, island_from_y_ = 0;
         bool dl_locked_ = false, dl_dragging_ = false;
         bool dl_enabled_ = false, dl_island_ = false, lyric_translation_ = true;
         std::move_only_function<void()> desktop_changed_;
         static float sung_x(ui::Painter &p, const LyricLine &line, std::string_view text, float size, float soft, double position);
         void toggle_translation();
         void set_desktop_island(bool island);
-        float dl_grab_x_ = 0, dl_grab_y_ = 0, dl_last_y_ = 0;
+        float dl_grab_x_ = 0, dl_grab_y_ = 0;
         // The line on show and the one it replaced, for the change between them.
         struct ShownLine {
             std::string text, sub;
@@ -570,6 +567,7 @@ namespace lyren {
             double since = -10, prev_since = -10;
         };
         LineChange island_line_, floating_line_;
+        std::vector<ui::Painter::Lift> lyric_lifts_; // the wave under a word-timed line, reused by the desktop lyrics
         bool island_dragging_ = false;
         float island_drag_v_ = 0; // normalized song position, [0, 1]
         // Notes the line on show; returns how far the change to it has gone, 0..1.
@@ -577,7 +575,8 @@ namespace lyren {
         // Frames for desktop lyrics: continuous while a word-timed line is sung, otherwise one when the next line starts.
         void lyric_frames(ui::Ui &ui, int line, bool timed);
         // The island hanging from top at center; floating lyrics across a surface. Both return where they take input.
-        ui::Rect island(ui::Ui &ui, float center, float top);
+        // movable: the island on the desktop, which a drag repositions, as opposed to the settings page's preview.
+        ui::Rect island(ui::Ui &ui, float center, float top, bool movable);
         ui::Rect floating(ui::Ui &ui, float width, float height);
         // A line of floating lyrics, outlined; a word-timed live line lights up from color to rest as it is sung.
         void floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color, ui::Color rest);

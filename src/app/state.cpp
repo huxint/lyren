@@ -36,6 +36,7 @@ namespace lyren {
         s.volume = std::clamp(s.volume, 0.f, 1.f);
         s.position = std::max(0.0, s.position);
         s.lyrics_bottom = std::max(0.f, s.lyrics_bottom);
+        s.island_y = std::max(0.f, s.island_y); // screen bounds are applied when drawing
         if (s.recent.size() > 200) {
             s.recent.resize(200);
         }

@@ -127,6 +127,7 @@ namespace lyren::ui {
         struct Lift {
             uint32_t from;
             float dy;
+            float scale = 1; // and the glyph swells by this much about its own centre and the baseline
         };
         void set_lifts(std::span<const Lift> lifts) {
             lifts_ = lifts;

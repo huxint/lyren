@@ -290,9 +290,11 @@ namespace lyren {
                     p.rect(s, *ui::parse_color(accents[i - 1]), s.w / 2);
                     return;
                 }
+                // The cover stands for "follow the cover" on its own; the accent disc only shows through while the
+                // cover is still on its way, instead of drawing a ring around it.
                 p.rect(s, accent(ui.now, t.dark, moving), s.w / 2);
                 if (const Track *track = current()) {
-                    cover(ui, s.inset(3), track->cover, s.w / 2 - 3, "");
+                    cover(ui, s, track->cover, s.w / 2, "");
                 }
             });
             if (picked == 0 && !automatic) {
@@ -463,7 +465,7 @@ namespace lyren {
             ui.push_clip(wall);
             {
                 UseTheme on_desktop(ui, *stage_);
-                island(ui, wall.x + wall.w / 2, wall.y + 16);
+                island(ui, wall.x + wall.w / 2, wall.y + 16, false);
             }
             ui.pop_clip();
             ui.pop_id();

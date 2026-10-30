@@ -62,12 +62,15 @@ TEST_CASE("saved state rejects playback modes outside the registered values") {
 }
 
 TEST_CASE("saved slider positions and selections are normalized at the file boundary") {
-    const auto state = parse_state(R"({"volume":2,"position":-5,"current":4,"queue":[{"id":"1"}],"lyrics_bottom":-2})");
+    const auto state = parse_state(R"({"volume":2,"position":-5,"current":4,"queue":[{"id":"1"}],"lyrics_bottom":-2,"island_x":-300,"island_y":9000})");
     REQUIRE(state);
     CHECK(state->volume == 1);
     CHECK(state->position == 0);
     CHECK(state->current == -1);
     CHECK(state->lyrics_bottom == 0);
+    CHECK(state->island_x == -300); // signed: left of the centre
+    CHECK(state->island_y == 9000); // screen bounds are applied after the output is configured
+    CHECK(parse_state(R"({"island_y":-4})")->island_y == 0);
 }
 
 TEST_CASE("credentials preserve registered and future platforms and read the old format") {

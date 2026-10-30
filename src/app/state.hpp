@@ -20,6 +20,8 @@ namespace lyren {
         std::vector<Track> recent; // newest first, at most 200 across all platforms
         // Desktop lyrics: offset of the text from the screen's centre, height above the bottom, click-through.
         float lyrics_x = 0, lyrics_bottom = 48; // signed horizontal offset, nonnegative bottom margin; logical pixels
+        // The island's offset from the centre of the screen and from its top edge; logical pixels.
+        float island_x = 0, island_y = 10;
         bool lyrics_locked = false;
         bool lyrics_enabled = false, lyrics_island = false, lyrics_translation = true;
     };
