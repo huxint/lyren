@@ -380,11 +380,17 @@ namespace lyren {
         const float x = center - std::min(p.measure(text, {.size = font}), max_width) / 2;
         // The outline is eight offset copies under the text, so it reads over any wallpaper.
         const float outline = std::max(1.f, font / 22), soft = font * 0.7f;
-        // A word-timed line rides the wave of the voice; the outline copies carry it too, so the outline stays round the
-        // deformed glyphs.
+        // The outline follows the same lift as the text.
         const bool sung = live && !live->words.empty();
-        const float front = sung ? sung_x(p, *live, text, font, soft, timeline().to_song(position())) : 0;
-        fill_lyric_wave(p, lyric_lifts_, text, font, front, sung ? 1.f : 0.f);
+        float front = 0;
+        lyric_lifts_.clear();
+        if (sung) {
+            const double now = timeline().to_song(position());
+            front = sung_x(p, *live, text, font, soft, now);
+            if (t.motion > 0) {
+                fill_lyric_wave(lyric_lifts_, p.shape(live->text, {.size = font}), *live, text, font, now, 1);
+            }
+        }
         p.set_lifts(lyric_lifts_);
         for (int i = 0; i < 8; ++i) {
             const float angle = static_cast<float>(i) * tau / 8;

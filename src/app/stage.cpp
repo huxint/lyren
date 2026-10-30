@@ -447,11 +447,11 @@ namespace lyren {
                 float x = r.x + (r.w - std::min(p.measure(s, st), r.w)) / 2 * centered;
                 lifts.clear();
                 if (wiped) {
-                    // The voice sweeps the line and the glyphs ride its wave: they rise and swell where it just passed,
-                    // a smooth deformation travelling with the wipe rather than a jump per word.
                     const float front = sung_x(p, l, s, st.size, soft, now);
                     p.set_wipe(x + front, soft, unsung);
-                    fill_lyric_wave(p, lifts, s, st.size, front, on);
+                }
+                if (&st == &main && on > 0 && !l.words.empty() && t.motion > 0) {
+                    fill_lyric_wave(lifts, p.shape(l.text, st), l, s, st.size, now, on);
                 }
                 p.set_lifts(lifts);
                 p.text(x, y + lh * 0.72f, s, {.size = st.size, .color = c}, r.w);

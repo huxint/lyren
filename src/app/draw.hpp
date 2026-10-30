@@ -6,6 +6,7 @@
 #include <string>
 
 #include "core/i18n.hpp"
+#include "media/lyrics.hpp"
 #include "ui/ui.hpp"
 
 // Drawing helpers shared by the parts of the shell.
@@ -52,22 +53,41 @@ namespace lyren {
         return {std::lerp(a.x, b.x, k), std::lerp(a.y, b.y, k), std::lerp(a.w, b.w, k), std::lerp(a.h, b.h, k)};
     }
 
-    // The wave a word-timed line rides as it is sung: one entry per cluster of s, tallest where the sung front has just
-    // passed, so the glyphs rise and swell under the voice instead of jumping a word at a time. `front` is px from the
-    // start of s. The entries borrow s' byte offsets, so the span handed to set_lifts must not outlive it.
-    inline void fill_lyric_wave(ui::Painter &p, std::vector<ui::Painter::Lift> &out, std::string_view s, float size, float front, float amount) {
+    // Each cluster rises and settles in time, independently of the highlight stopping between words. Shape the whole
+    // line so a word split across wrapped rows keeps the same timing. The returned offsets are relative to s.
+    inline void fill_lyric_wave(std::vector<ui::Painter::Lift> &out, const text::Shaped &shaped, const LyricLine &line, std::string_view s, float size, double now, float amount) {
         out.clear();
         if (amount <= 0) {
             return;
         }
-        const auto &shaped = p.shape(s, {.size = size});
-        const float reach = size * 1.5f, rise = size * 0.13f * amount, swell = 0.07f * amount;
-        for (const text::Glyph &g : shaped.glyphs) {
-            if (!out.empty() && out.back().from == g.cluster) {
-                continue; // one entry per cluster: the glyphs of a cluster move together
+        const auto from = static_cast<uint32_t>(s.data() - line.text.data()), to = from + static_cast<uint32_t>(s.size());
+        const float rise = size * 0.13f * amount, swell = 0.07f * amount;
+        auto x = [&](uint32_t offset) {
+            auto glyph = std::ranges::lower_bound(shaped.glyphs, offset, {}, &text::Glyph::cluster);
+            return glyph == shaped.glyphs.end() ? shaped.width : glyph->x;
+        };
+        for (size_t i = 0; i < shaped.glyphs.size();) {
+            const text::Glyph &g = shaped.glyphs[i++];
+            while (i < shaped.glyphs.size() && shaped.glyphs[i].cluster == g.cluster) {
+                ++i;
             }
-            const float u = (g.x * size - front) / reach, k = std::exp(-u * u);
-            out.push_back({g.cluster, rise * k, 1 + swell * k});
+            if (g.cluster < from || g.cluster >= to) {
+                continue;
+            }
+            float k = 0;
+            auto word = std::ranges::upper_bound(line.words, g.cluster, {}, &LyricWord::from);
+            if (word != line.words.begin() && g.cluster < word[-1].to) {
+                const LyricWord &w = word[-1];
+                const float left = x(w.from), right = x(w.to), next = i < shaped.glyphs.size() ? shaped.glyphs[i].x : shaped.width;
+                const double start = w.time() + w.duration() * (right > left ? (g.x - left) / (right - left) : 0);
+                const double duration = w.duration() * (right > left ? (std::min(next, right) - g.x) / (right - left) : 1);
+                constexpr double attack = 0.28;
+                const double peak = start + std::min(0.12, duration * 0.35), release = std::max(0.32, start + duration - peak + 0.18);
+                // Even a zero-duration syllable has a soft attack and release; a long note keeps settling instead of
+                // holding a raised glyph still until the next word arrives.
+                k = now < peak ? smooth01(static_cast<float>((now - peak + attack) / attack)) : 1 - smooth01(static_cast<float>((now - peak) / release));
+            }
+            out.push_back({g.cluster - from, rise * k, 1 + swell * k});
         }
     }
 

@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
+#include "app/draw.hpp"
 #include "ui/motion.hpp"
 #include "ui/text_edit.hpp"
 #include "ui/ui.hpp"
@@ -67,6 +68,66 @@ TEST_CASE("spring retargeting preserves velocity and handles long frame gaps") {
     s.advance(0, 10, 0.28f);
     CHECK(s.value == doctest::Approx(0));
     CHECK(s.velocity == doctest::Approx(0));
+}
+
+TEST_CASE("lyric wave settles through word gaps and sustained notes") {
+    LyricLine line{.time = 1, .text = "春风", .words = {{1000, 150, 0, 3}, {3000, 500, 3, 6}}};
+    text::Shaped shaped{.glyphs = {{.x = 0, .cluster = 0}, {.x = 1, .cluster = 3}}, .width = 2};
+    auto lift = [&](double now) {
+        std::vector<Painter::Lift> out;
+        fill_lyric_wave(out, shaped, line, line.text, 22, now, 1);
+        return out[0];
+    };
+
+    SUBCASE("a gap lets the sung glyph return to rest") {
+        CHECK(word_at(line, 1.2) == word_at(line, 1.3));
+        CHECK(lift(1.2).dy > lift(1.3).dy);
+        CHECK(lift(1.3).dy > 0);
+        CHECK(lift(1.5).dy == 0);
+        CHECK(lift(1.5).scale == 1);
+    }
+    SUBCASE("a long note keeps moving after its attack") {
+        line.words[0].duration_ms = 1600;
+        CHECK(lift(1.4).dy > lift(1.8).dy);
+        CHECK(lift(1.8).dy > lift(2.2).dy);
+        CHECK(lift(2.2).dy > 0);
+        CHECK(lift(2.9).dy == 0);
+    }
+    SUBCASE("short and zero-duration syllables do not jump between frames") {
+        for (uint32_t duration : {0u, 20u, 60u}) {
+            CAPTURE(duration);
+            line.words[0].duration_ms = duration;
+            auto previous = lift(0.75);
+            float peak = 0;
+            for (int frame = 1; frame <= 60; ++frame) {
+                const auto current = lift(0.75 + frame / 60.0);
+                CHECK(std::abs(current.dy - previous.dy) < 0.35f);
+                CHECK(std::abs(current.scale - previous.scale) < 0.009f);
+                peak = std::max(peak, current.dy);
+                previous = current;
+            }
+            CHECK(peak > 2.7f);
+            CHECK(previous.dy == 0);
+        }
+    }
+}
+
+TEST_CASE("lyric wave preserves cluster timing across wrapped rows") {
+    LyricLine line{.time = 1, .text = "春风来", .words = {{1000, 1200, 0, 9}}};
+    // More than one glyph may belong to one text cluster.
+    text::Shaped shaped{.glyphs = {{.x = 0, .cluster = 0}, {.x = 0.2f, .cluster = 0}, {.x = 1, .cluster = 3}, {.x = 2, .cluster = 6}}, .width = 3};
+    std::vector<Painter::Lift> whole, wrapped;
+    fill_lyric_wave(whole, shaped, line, line.text, 22, 1.85, 1);
+    fill_lyric_wave(wrapped, shaped, line, std::string_view(line.text).substr(6), 22, 1.85, 1);
+    REQUIRE(whole.size() == 3);
+    REQUIRE(wrapped.size() == 1);
+    CHECK(wrapped[0].from == 0);
+    CHECK(wrapped[0].dy == whole[2].dy);
+    CHECK(wrapped[0].scale == whole[2].scale);
+    CHECK(whole[2].dy > whole[0].dy);
+
+    fill_lyric_wave(wrapped, shaped, line, line.text, 22, 1.85, 0);
+    CHECK(wrapped.empty());
 }
 
 TEST_CASE("rect cuts take strips off the remaining rect") {
