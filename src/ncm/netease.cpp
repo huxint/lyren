@@ -46,12 +46,14 @@ namespace lyren::ncm {
             int32_t trackCount = 0;
             std::optional<NCreator> creator;
             int specialType = 0;
+            int privacy = 0;
             std::optional<bool> subscribed;
         };
         struct NAlbumInfo {
             uint64_t id = 0;
             Str name, picUrl;
             std::optional<NArtist> artist;
+            std::optional<std::vector<NArtist>> artists;
             int64_t publishTime = 0;
             int32_t size = 0;
         };
@@ -118,6 +120,15 @@ namespace lyren::ncm {
         };
         struct PlaylistsReply {
             std::optional<std::vector<NPlaylist>> playlist, result, list, recommend;
+            bool more = false;
+        };
+        struct NewAlbumsReply {
+            std::optional<std::vector<NAlbumInfo>> albums;
+            int total = 0;
+        };
+        struct WriteReply {
+            int code = 0;
+            Str message, msg;
         };
         struct DailyData {
             std::optional<std::vector<NSong>> dailySongs;
@@ -330,6 +341,7 @@ namespace lyren::ncm {
             c.count = static_cast<int>(p.trackCount);
             c.subtitle = p.updateFrequency.value_or("");
             c.count_kind = p.updateFrequency ? Card::Count::none : Card::Count::songs;
+            c.collectable = p.specialType != 5 && p.privacy != 10;
             return c;
         }
 
@@ -362,6 +374,20 @@ namespace lyren::ncm {
                 }
             }
             return out;
+        }
+
+        Card album_card(const NAlbumInfo &a) {
+            std::string artist = a.artists ? names(a.artists) : a.artist ? a.artist->name.value_or("") : "";
+            std::string year = year_of(a.publishTime);
+            return {.kind = CardKind::album,
+                    .id = std::to_string(a.id),
+                    .title = a.name.value_or(""),
+                    .subtitle = artist.empty() ? year
+                                : year.empty() ? artist
+                                               : artist + " · " + year,
+                    .cover = https(a.picUrl.value_or("")),
+                    .count = static_cast<int>(a.size),
+                    .count_kind = Card::Count::songs};
         }
 
         // Descriptions and comments often start or end with blank lines.
@@ -425,6 +451,23 @@ namespace lyren::ncm {
         features.square.playlists = [this](std::string category, int offset) {
             return square(std::move(category), offset);
         };
+        features.releases.categories[0] = {{"0", "All"}, {"7", "Chinese"}, {"96", "Western"}, {"8", "Japan"}, {"16", "Korea"}};
+        features.releases.categories[1] = {{"ALL", "All"}, {"ZH", "Chinese"}, {"EA", "Western"}, {"JP", "Japan"}, {"KR", "Korea"}};
+        features.releases.songs = [this](std::string area) {
+            return new_songs(std::move(area));
+        };
+        features.releases.albums = [this](std::string area, int offset) {
+            return new_albums(std::move(area), offset);
+        };
+        features.library.collected_playlists = [this] {
+            return collected_playlists();
+        };
+        features.library.collect_playlist = [this](std::string id, bool on) {
+            return collect_playlist(std::move(id), on);
+        };
+        features.library.reorder_playlist = [this](std::string id, std::vector<Track> tracks) {
+            return reorder_playlist(std::move(id), std::move(tracks));
+        };
         features.comments.replies = [this](Subject subject, std::string id, std::string root, int, std::string cursor) {
             return comment_replies(subject, std::move(id), std::move(root), std::move(cursor));
         };
@@ -483,13 +526,7 @@ namespace lyren::ncm {
             case SearchKind::albums:
                 if (res.albums) {
                     for (const auto &a : *res.albums) {
-                        std::string artist = a.artist ? a.artist->name.value_or("") : "", year = year_of(a.publishTime);
-                        page.cards.push_back({.kind = CardKind::album,
-                                              .id = std::to_string(a.id),
-                                              .title = a.name.value_or(""),
-                                              .subtitle = year.empty() ? artist : artist + " · " + year,
-                                              .cover = https(a.picUrl.value_or("")),
-                                              .count = static_cast<int>(a.size)});
+                        page.cards.push_back(album_card(a));
                     }
                 }
                 page.total = static_cast<int>(res.albumCount);
@@ -515,6 +552,9 @@ namespace lyren::ncm {
                 }
                 page.total = static_cast<int>(res.playlistCount);
                 break;
+        }
+        if (offset + limit < page.total) {
+            page.next_offset = offset + limit;
         }
         co_return page;
     }
@@ -702,6 +742,41 @@ namespace lyren::ncm {
         co_return out;
     }
 
+    Result<std::vector<Track>> parse_new_songs(const Reply &reply) {
+        auto r = parse<FmReply>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        if (!r->data) {
+            return std::unexpected("NetEase Music returned no new songs");
+        }
+        return tracks_of(r->data);
+    }
+
+    Result<Batch> parse_new_albums(const Reply &reply) {
+        auto r = parse<NewAlbumsReply>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        if (!r->albums) {
+            return std::unexpected("NetEase Music returned no new albums");
+        }
+        Batch out{.total = r->total};
+        for (const auto &a : *r->albums) {
+            out.cards.push_back(album_card(a));
+        }
+        return out;
+    }
+
+    Task<Result<std::vector<Track>>> Netease::new_songs(std::string area) {
+        co_return parse_new_songs(co_await client.call("/api/v1/discovery/new/songs", std::format(R"("areaId":{},"total":true)", area), Api::weapi));
+    }
+
+    Task<Result<Batch>> Netease::new_albums(std::string area, int offset) {
+        co_return parse_new_albums(
+            co_await client.call("/api/album/new", std::format(R"("area":{},"limit":20,"offset":{},"total":true)", glz::write_json(area).value(), offset), Api::weapi));
+    }
+
     Task<Result<std::vector<Track>>> Netease::daily() {
         auto r = parse<DailyReply>(co_await client.call("/api/v3/discovery/recommend/songs", "", Api::weapi));
         if (!r) {
@@ -811,21 +886,42 @@ namespace lyren::ncm {
         co_return out;
     }
 
-    Task<Result<std::pair<Card, std::vector<Card>>>> Netease::user_playlists(std::string uid) {
-        auto r = parse<PlaylistsReply>(co_await client.call("/api/user/playlist", std::format(R"("uid":{},"limit":1000,"offset":0,"includeVideo":true)", uid), Api::weapi));
+    Result<PlaylistPage> parse_user_playlists(const Reply &reply, std::string_view uid) {
+        auto r = parse<PlaylistsReply>(reply);
         if (!r) {
-            co_return std::unexpected(r.error());
+            return std::unexpected(r.error());
         }
+        if (!r->playlist) {
+            return std::unexpected("NetEase Music returned no playlists");
+        }
+        PlaylistPage out{.more = r->more && !r->playlist->empty()};
+        for (const auto &p : *r->playlist) {
+            Card c = playlist_card(p);
+            c.owned = p.creator && std::to_string(p.creator->userId) == uid;
+            c.collectable = c.collectable && !c.owned;
+            if (p.specialType == 5 && c.owned) {
+                out.liked = std::move(c);
+            } else {
+                out.playlists.push_back(std::move(c));
+            }
+        }
+        return out;
+    }
+
+    Task<Result<std::pair<Card, std::vector<Card>>>> Netease::user_playlists(std::string uid) {
         std::pair<Card, std::vector<Card>> out;
-        if (r->playlist) {
-            for (const auto &p : *r->playlist) {
-                Card c = playlist_card(p);
-                c.owned = p.creator && std::to_string(p.creator->userId) == uid;
-                if (p.specialType == 5) {
-                    out.first = std::move(c);
-                } else {
-                    out.second.push_back(std::move(c));
-                }
+        for (int offset = 0;; offset += 100) {
+            auto r = parse_user_playlists(
+                co_await client.call("/api/user/playlist", std::format(R"("uid":{},"limit":100,"offset":{},"includeVideo":true)", uid, offset), Api::weapi), uid);
+            if (!r) {
+                co_return std::unexpected(r.error());
+            }
+            if (!r->liked.id.empty()) {
+                out.first = std::move(r->liked);
+            }
+            out.second.insert(out.second.end(), std::make_move_iterator(r->playlists.begin()), std::make_move_iterator(r->playlists.end()));
+            if (!r->more) {
+                break;
             }
         }
         co_return out;
@@ -934,14 +1030,7 @@ namespace lyren::ncm {
         Batch out{.total = r->artist ? static_cast<int>(r->artist->albumSize) : 0};
         if (r->hotAlbums) {
             for (const auto &a : *r->hotAlbums) {
-                std::string year = year_of(a.publishTime);
-                out.cards.push_back({.kind = CardKind::album,
-                                     .id = std::to_string(a.id),
-                                     .title = a.name.value_or(""),
-                                     .subtitle = std::move(year),
-                                     .cover = https(a.picUrl.value_or("")),
-                                     .count = static_cast<int>(a.size),
-                                     .count_kind = Card::Count::songs});
+                out.cards.push_back(album_card(a));
             }
         }
         co_return out;
@@ -1087,6 +1176,50 @@ namespace lyren::ncm {
             co_return std::unexpected("This song is already in the playlist");
         }
         co_return done(r);
+    }
+
+    Result<void> parse_playlist_write(const Reply &reply) {
+        auto r = parse<WriteReply>(reply);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        if (r->code != 200) {
+            std::string message = r->message.value_or(r->msg.value_or(""));
+            return std::unexpected(message.empty() ? lyren::trf("NetEase Music playlist operation failed ({})", r->code) : std::move(message));
+        }
+        return {};
+    }
+
+    Task<Result<std::vector<Card>>> Netease::collected_playlists() {
+        auto user = co_await account();
+        if (!user) {
+            co_return std::unexpected(user.error());
+        }
+        auto playlists = co_await user_playlists(user->id);
+        if (!playlists) {
+            co_return std::unexpected(playlists.error());
+        }
+        std::erase_if(playlists->second, [](const Card &card) {
+            return card.owned;
+        });
+        co_return std::move(playlists->second);
+    }
+
+    Task<Result<void>> Netease::collect_playlist(std::string id, bool on) {
+        co_return parse_playlist_write(
+            co_await client.call(on ? "/api/playlist/subscribe" : "/api/playlist/unsubscribe", std::format(R"("id":{})", id), Api::weapi, net::Retry::never));
+    }
+
+    Task<Result<void>> Netease::reorder_playlist(std::string id, std::vector<Track> tracks) {
+        std::vector<std::string> ids;
+        ids.reserve(tracks.size());
+        for (const auto &track : tracks) {
+            ids.push_back(track.id);
+        }
+        co_return parse_playlist_write(
+            co_await client.call("/api/playlist/manipulate/tracks",
+                                 std::format(R"("pid":{},"trackIds":{},"op":"update")", glz::write_json(id).value(), glz::write_json(glz::write_json(ids).value()).value()),
+                                 Api::eapi, net::Retry::never));
     }
 
     Task<Result<CommentPage>> Netease::comments(Subject subject, std::string id, bool hot, int page, std::string cursor) {

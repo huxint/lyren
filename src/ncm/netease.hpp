@@ -4,6 +4,16 @@
 
 namespace lyren::ncm {
 
+    struct PlaylistPage {
+        Card liked;
+        std::vector<Card> playlists;
+        bool more = false;
+    };
+
+    Result<PlaylistPage> parse_user_playlists(const Reply &reply, std::string_view uid);
+    Result<std::vector<Track>> parse_new_songs(const Reply &reply);
+    Result<Batch> parse_new_albums(const Reply &reply);
+    Result<void> parse_playlist_write(const Reply &reply);
     Result<CommentPage> parse_comments(const Reply &reply, bool replies = false);
     Result<void> parse_comment_write(const Reply &reply);
     Result<std::string> parse_comment_post(const Reply &reply);
@@ -41,6 +51,8 @@ namespace lyren::ncm {
 
         Task<Result<std::vector<Card>>> recommended_playlists() override;
         Task<Result<std::vector<Card>>> toplists() override;
+        Task<Result<std::vector<Track>>> new_songs(std::string area);
+        Task<Result<Batch>> new_albums(std::string area, int offset);
         Task<Result<std::vector<Track>>> daily();
         Task<Result<std::vector<Card>>> daily_playlists();
         // Takes a song out of the daily recommendations; the server may name one to take its place.
@@ -76,6 +88,9 @@ namespace lyren::ncm {
         Task<Result<void>> rename_playlist(std::string id, std::string name) override;
         Task<Result<void>> delete_playlist(std::string id) override;
         Task<Result<void>> edit_playlist(std::string id, Track track, bool add) override;
+        Task<Result<std::vector<Card>>> collected_playlists();
+        Task<Result<void>> collect_playlist(std::string id, bool on);
+        Task<Result<void>> reorder_playlist(std::string id, std::vector<Track> tracks);
 
         Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) override;
         Task<Result<CommentPage>> comment_replies(Subject subject, std::string id, std::string root, std::string cursor);

@@ -9,6 +9,30 @@
 
 using namespace lyren;
 
+TEST_CASE("QQ search follows the server page when filtering returns fewer visible rows") {
+    auto page = qq::parse_search({.body = R"({"req_0":{"code":0,"data":{
+        "meta":{"sum":300,"nextpage":2,"perpage":40},
+        "body":{"songlist":{"list":[{"dissid":"9007199254740993","dissname":"晚风","song_count":12}]}}
+    }}})"},
+                                 SearchKind::playlists, 40);
+    REQUIRE(page);
+    REQUIRE(page->cards.size() == 1);
+    CHECK(page->cards[0].source == Source::qq);
+    CHECK(page->cards[0].id == "9007199254740993");
+    CHECK(page->cards[0].collectable);
+    CHECK(page->total == 300);
+    CHECK(page->next_offset == 40);
+    auto end = qq::parse_search({.body = R"({"req_0":{"code":0,"data":{
+        "meta":{"sum":300,"nextpage":-1},
+        "body":{"songlist":{"list":[{"dissid":"last","dissname":"最后一个"}]}}
+    }}})"},
+                                SearchKind::playlists, 40);
+    REQUIRE(end);
+    CHECK(end->cards.size() == 1);
+    CHECK(end->next_offset == -1);
+    CHECK_FALSE(qq::parse_search({.body = R"({"req_0":{"code":2001}})"}, SearchKind::playlists, 40));
+}
+
 TEST_CASE("QQ playlist pages preserve direct and wrapped songs in server order") {
     auto page = qq::parse_playlist({.body = R"({"req_0":{"code":0,"data":{"hasmore":true,"total":4,"list":[
         {"id":1,"mid":"one","title":"第一首","interval":42,"file":{"media_mid":"audio-one"},

@@ -52,20 +52,16 @@ namespace lyren {
     }
 
     struct Columns {
-        Rect index, title, album, source, like, duration;
+        Rect index, title, album, like, duration;
     };
 
-    static Columns columns(Rect r, bool show_source = false) {
+    static Columns columns(Rect r) {
         Columns c;
         r = r.inset(12, 0);
         c.index = ui::cut_left(r, 40);
         ui::cut_left(r, 4);
         c.duration = ui::cut_right(r, 48);
         c.like = ui::cut_right(r, 44);
-        if (show_source) {
-            c.source = ui::cut_right(r, 86);
-            ui::cut_right(r, 12);
-        }
         if (r.w > 460) {
             c.album = ui::cut_right(r, std::round(r.w * 0.36f));
             ui::cut_right(r, 16);
@@ -528,7 +524,6 @@ namespace lyren {
         uint64_t gen = lib.gen;
         place(lib.playlists, playlist, on);
         list->saving_playlist = true;
-        notify(std::string(lyren::tr(on ? "Playlist saved" : "Playlist removed")), on ? "star-fill" : "star");
         spawn([](Shell *self, std::shared_ptr<List> list, Card playlist, bool on, uint64_t gen) -> Task<void> {
             auto &lib = self->library(playlist.source);
             auto r = co_await self->provider(playlist).features.library.collect_playlist(playlist.id, on);
@@ -541,6 +536,7 @@ namespace lyren {
                 place(lib.playlists, playlist, !on);
                 co_return self->notify(lyren::trf("Action failed: {}", r.error()), "triangle-alert", true);
             }
+            self->notify(std::string(lyren::tr(on ? "Playlist saved" : "Playlist removed")), on ? "star-fill" : "star");
             auto favorites = co_await self->provider(playlist).features.library.collected_playlists();
             list->saving_playlist = false;
             if (gen != lib.gen) {
@@ -1120,39 +1116,35 @@ namespace lyren {
 
     // Navigation.
 
+    static ui::Id search_scroll_id(ui::Ui &ui, Source source, int tab) {
+        return ui::sub_id(ui.id("search-results"), static_cast<uint64_t>(source) * 4 + static_cast<uint64_t>(tab));
+    }
+
     void Shell::search(ui::Ui &ui) {
         if (query_.empty()) {
             return;
         }
         searched_ = query_;
         ++search_gen_;
-        for (auto &r : results_) {
-            r = {};
-        }
+        results_ = {};
         search_tab_ = 0;
-        for (const char *id : {"search-list", "search-albums", "search-artists", "search-playlists"}) {
-            ui.scroll_to(ui.id(id), 0);
+        for (const auto &entry : platforms) {
+            for (int tab = 0; tab < 4; ++tab) {
+                ui.scroll_to(search_scroll_id(ui, entry.source, tab), 0);
+            }
         }
         load_results(0);
         open(ui, Page::search);
     }
 
-    // Card tabs show the first page only. A failed next page is not retried on its own, or it would be every frame.
-    void Shell::load_results(int tab) {
-        SearchResults &res = results_[tab];
-        if (res.loading || (res.loaded && (tab != 0 || !res.more() || !res.error.empty()))) {
+    void Shell::load_results(int tab, bool retry) {
+        SearchResults &res = results_[static_cast<size_t>(active_)][tab];
+        if (res.loading || (!retry && (!res.more() || !res.error.empty()))) {
             return;
         }
         res.loading = true;
         res.error.clear();
-        res.pending = static_cast<int>(std::ranges::count(res.done, false));
-        for (size_t i = 0; i < platforms.size(); ++i) {
-            if (res.done[i]) {
-                continue;
-            }
-            int offset = static_cast<int>(res.sources[i].tracks.size() + res.sources[i].cards.size());
-            spawn(fetch_results(search_gen_, tab, platforms[i].source, searched_, offset));
-        }
+        spawn(fetch_results(search_gen_, tab, active_, searched_, res.next_offset));
     }
 
     Task<void> Shell::fetch_results(uint64_t gen, int tab, Source source, std::string query, int offset) {
@@ -1160,53 +1152,13 @@ namespace lyren {
         if (gen != search_gen_) {
             co_return;
         }
-        SearchResults &res = results_[tab];
-        int i = static_cast<int>(source);
-        res.loading = --res.pending != 0;
-        if (!res.loaded) {
-            res.since = now_();
-        }
-        res.loaded = true;
+        SearchResults &res = results_[static_cast<size_t>(source)][tab];
         if (r) {
-            Batch &part = res.sources[i];
-            prefetch_covers(images_, r->tracks);
-            prefetch_covers(images_, r->cards);
-            int count = static_cast<int>(r->tracks.size() + r->cards.size());
-            res.done[i] = count == 0 || offset + count >= r->total;
-            part.total = r->total;
-            part.tracks.insert(part.tracks.end(), std::make_move_iterator(r->tracks.begin()), std::make_move_iterator(r->tracks.end()));
-            part.cards.insert(part.cards.end(), std::make_move_iterator(r->cards.begin()), std::make_move_iterator(r->cards.end()));
-        } else {
-            res.done[i] = true;
-            res.errors[i] = r.error();
-            notify(std::format("{}: {}", lyren::tr(platform(source).name), r.error()), "cloud-off", true);
+            res.next_offset = r->tracks.empty() && r->cards.empty() ? -1 : r->next_offset;
         }
-        std::optional<Track> selected;
-        if (tab == search_tab_ && selected_ >= 0 && selected_ < static_cast<int>(res.tracks.size())) {
-            selected = res.tracks[static_cast<size_t>(selected_)];
-        }
-        res.tracks = interleave(res.sources, &Batch::tracks);
-        res.cards = interleave(res.sources, &Batch::cards);
-        if (selected) {
-            auto at = std::ranges::find_if(res.tracks, [&](const Track &t) {
-                return same(t, *selected);
-            });
-            selected_ = static_cast<int>(at - res.tracks.begin());
-        }
-        int total = 0;
-        for (const auto &part : res.sources) {
-            total += part.total;
-        }
-        res.total = res.more() ? std::max(static_cast<int>(res.size()), total) : static_cast<int>(res.size());
-        if (!res.loading && res.size() == 0) {
-            for (size_t j = 0; j < platforms.size(); ++j) {
-                if (!res.errors[j].empty()) {
-                    if (!res.error.empty()) {
-                        res.error += "；";
-                    }
-                    std::format_to(std::back_inserter(res.error), "{}: {}", lyren::tr(platforms[j].name), res.errors[j]);
-                }
-            }
+        arrived(images_, res, std::move(r), now_());
+        if (!res.more()) {
+            res.total = static_cast<int>(res.size());
         }
         redraw_();
     }
@@ -1240,9 +1192,13 @@ namespace lyren {
         if (source == active_) {
             return;
         }
-        // Search and settings stay, search with its query, results and scroll position intact.
+        // Search keeps each platform's cached results and scroll positions.
         if (route_.page == Page::search || route_.page == Page::settings) {
+            tab_dir_ = source > active_ ? 1 : -1;
             active_ = route_.card.source = source;
+            selected_ = -1;
+            tab_time_ = ui.now;
+            ensure_route_data();
             changed();
             ui.redraw();
             return;
@@ -1272,7 +1228,18 @@ namespace lyren {
             old.list.reset();
             old.artist.reset();
         }
-        enter(ui, {page, card}, 1);
+        Card target = card;
+        if (page == Page::playlist) {
+            const auto &playlists = library(card.source).playlists;
+            if (auto it = std::ranges::find_if(playlists,
+                                               [&](const Card &p) {
+                                                   return same(p, card) && p.owned;
+                                               });
+                it != playlists.end()) {
+                target.owned = true;
+            }
+        }
+        enter(ui, {page, std::move(target)}, 1);
     }
 
     void Shell::open(ui::Ui &ui, const Card &card) {
@@ -1372,6 +1339,9 @@ namespace lyren {
     void Shell::ensure_route_data() {
         Page page = route_.page;
         Library &lib = library();
+        if (page == Page::search && !results_[static_cast<size_t>(active_)][search_tab_].loaded) {
+            load_results(search_tab_);
+        }
         bool listed = page == Page::daily || page == Page::radar || page == Page::cloud || page == Page::liked || page == Page::playlist || page == Page::album ||
                       page == Page::similar || (page == Page::recent && lib.recent_tab == 1 && signed_in());
         if (listed && !route_.list && !(needs_login(page) && !signed_in())) {
@@ -2219,7 +2189,7 @@ namespace lyren {
         }
         float w = std::min(440.f, r.w - 32);
         float x = std::clamp(center_x - w / 2, r.x + 16, r.right() - 16 - w);
-        if (ui.text_box(ui.id("search"), {x, bar.y + (bar.h - 34) / 2, w, 34}, query_, lyren::tr("Search all platforms"), "search")) {
+        if (ui.text_box(ui.id("search"), {x, bar.y + (bar.h - 34) / 2, w, 34}, query_, lyren::tr("Search music"), "search")) {
             show_stage(false);
             search(ui);
         }
@@ -2636,13 +2606,6 @@ namespace lyren {
             p.shadow({cov.x, cov.y + 8, cov.w, cov.h}, radius, 24, t.shadow.with_alpha(hot));
         }
         cover(ui, cov, c.cover, radius, round ? "user" : c.kind == CardKind::album ? "disc-album" : "list-music");
-        if (route_.page == Page::search) {
-            TextStyle source_style{.size = t.fs(11), .color = t.text};
-            float width = p.measure(lyren::tr(platform(c.source).short_name), source_style) + 16;
-            Rect badge{cov.right() - width - 8, cov.y + 8, width, 22};
-            p.rect(badge, t.elevated.with_alpha(0.94f), 11, t.border.with_alpha(0.6f), 1);
-            ui.label(badge, lyren::tr(platform(c.source).short_name), source_style, Align::center);
-        }
         if (hot > 0 && !round) {
             // The play button rises into place.
             Rect b{cov.right() - 48, cov.bottom() - 48 + 8 * (1 - hot), 36, 36};
@@ -3146,26 +3109,50 @@ namespace lyren {
 
     void Shell::search_page(ui::Ui &ui, Rect r) {
         Rect body = r.inset(32, 0);
-        SearchResults &res = results_[search_tab_];
-        const std::array kinds = {lyren::tr("songs"), lyren::tr("albums"), lyren::tr("artists"), lyren::tr("playlists")};
-        page_title(ui, body, r.y + 28, '"' + searched_ + '"',
-                   res.loaded ? lyren::trf("All platforms · {}{} {} found", res.more() ? lyren::tr("About ") : "", res.total, kinds[search_tab_])
-                              : lyren::tr("Searching all platforms"));
+        std::array<std::string_view, platforms.size()> sources;
+        float source_w = 0;
+        for (size_t i = 0; i < platforms.size(); ++i) {
+            sources[i] = lyren::tr(platforms[i].short_name);
+            source_w += button_width(ui, sources[i], false);
+        }
+        int source = static_cast<int>(active_);
+        if (ui.tabs(ui.id("search-platforms"), {body.x, r.y + 100, source_w, 36}, sources, source, ui::TabStyle::pill)) {
+            switch_platform(ui, static_cast<Source>(source));
+        }
         const std::array<std::string_view, 4> tabs = {lyren::tr("Tracks"), lyren::tr("Albums"), lyren::tr("Artists"), lyren::tr("Playlists")};
         int before = search_tab_;
-        if (ui.tabs(ui.id("search-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, search_tab_)) {
+        if (ui.tabs(ui.id("search-tabs"), {body.x, r.y + 148, body.w, 36}, tabs, search_tab_)) {
             selected_ = -1;
             tab_time_ = ui.now;
             tab_dir_ = search_tab_ > before ? 1 : -1;
-            load_results(search_tab_);
+            ensure_route_data();
         }
+        SearchResults &shown = results_[static_cast<size_t>(active_)][search_tab_];
+        ui::Id scroll = search_scroll_id(ui, active_, search_tab_);
+        if (shown.loading) {
+            ui.spinner({body.right() - 26, r.y + 109, 18, 18}, ui.theme().text_dim, 2);
+        } else {
+            auto label = lyren::tr(shown.error.empty() ? "Refresh" : "Retry");
+            float w = button_width(ui, label, true);
+            if (ui.button(ui.id("search-refresh"), {body.right() - w, r.y + 100, w, 36}, label, ui::ButtonKind::secondary, "refresh-cw")) {
+                if (shown.error.empty()) {
+                    shown = {};
+                    selected_ = -1;
+                    ui.scroll_to(scroll, 0);
+                }
+                load_results(search_tab_, true);
+            }
+        }
+        const std::array kinds = {lyren::tr("songs"), lyren::tr("albums"), lyren::tr("artists"), lyren::tr("playlists")};
+        page_title(ui, body, r.y + 28, '"' + searched_ + '"',
+                   shown.loaded ? lyren::trf("{}{} {} found", shown.more() ? lyren::tr("About ") : "", shown.total, kinds[search_tab_])
+                                : lyren::trf("Searching {}", lyren::tr(platform(active_).short_name)));
         // Tab content slides toward the tab that was picked.
         float enter = ui.progress(tab_time_, 380);
         Fade fade(ui.painter(), enter);
-        Rect content{r.x + 16 + (1 - enter) * 36 * static_cast<float>(tab_dir_), r.y + 148, r.w - 32, r.h - 156};
-        Results &shown = results_[search_tab_];
+        Rect content{r.x + 16 + (1 - enter) * 36 * static_cast<float>(tab_dir_), r.y + 196, r.w - 32, r.h - 204};
         double since = std::max({page_time_, tab_time_, shown.since});
-        bool empty = shown.tracks.empty() && shown.cards.empty();
+        bool empty = shown.size() == 0;
         std::string error = empty ? shown.error : "";
         if (empty && shown.loaded && error.empty()) {
             error = lyren::tr("No results found");
@@ -3173,15 +3160,21 @@ namespace lyren {
         if (empty && page_status(ui, content, shown.loading, error, false)) {
             return;
         }
+        if (!shown.error.empty()) {
+            ui.label(ui::cut_bottom(content, 32).inset(12, 0), shown.error, {.size = ui.theme().fs(12), .color = ui.theme().danger});
+        }
         if (search_tab_ == 0) {
-            if (track_list(ui, content, ui.id("search-list"), shown.tracks, since)) {
+            if (track_list(ui, content, scroll, shown.tracks, since)) {
                 load_results(0);
             }
             return;
         }
-        static constexpr std::array ids = {"", "search-albums", "search-artists", "search-playlists"};
         bool near_end;
-        if (int i = grid_view(ui, content, ui.id(ids[search_tab_]), shown.cards, search_tab_ == 2, since, false, near_end); i >= 0) {
+        int i = grid_view(ui, content, scroll, shown.cards, search_tab_ == 2, since, shown.loading, near_end);
+        if (near_end) {
+            load_results(search_tab_);
+        }
+        if (i >= 0) {
             open(ui, shown.cards[static_cast<size_t>(i)]);
         }
     }
@@ -3313,15 +3306,12 @@ namespace lyren {
         const auto &t = ui.theme();
         constexpr float row_h = 56;
         Rect head = ui::cut_top(r, 34);
-        Columns c = columns(head, route_.page == Page::search);
+        Columns c = columns(head);
         TextStyle hs{.size = t.fs(12), .color = t.text_dim};
         ui.label(c.index, "#", hs, Align::center);
         ui.label(c.title, lyren::tr("Title"), hs);
         if (c.album.w > 0) {
             ui.label(c.album, lyren::tr("Album"), hs);
-        }
-        if (c.source.w > 0) {
-            ui.label(c.source, lyren::tr("Platform"), hs, Align::center);
         }
         const bool ordering = route_.page == Page::playlist && route_.list && &tracks == &route_.list->tracks && route_.list->ordering;
         ui.label(c.duration, lyren::tr(ordering ? "Order" : "Time"), hs, Align::right);
@@ -3365,7 +3355,7 @@ namespace lyren {
             p.rect(bg, t.text.with_alpha(0.06f * h + 0.05f * s), t.radius_s());
         }
 
-        Columns c = columns(r, route_.page == Page::search);
+        Columns c = columns(r);
         TextStyle num{.size = t.fs(13), .color = t.text_dim, .features = text::tabular_nums};
         if (hot) {
             if (ui.icon_button(ui.id("play"), ui::center(c.index, 30, 30), now_playing && playing() ? "pause-fill" : "play-fill", 14)) {
@@ -3393,9 +3383,6 @@ namespace lyren {
         p.text(tx, r.y + 43, tr.artist, {.size = t.fs(12), .color = t.text_dim}, tw);
         if (c.album.w > 0) {
             ui.label(c.album, tr.album, {.size = t.fs(13), .color = t.text_dim});
-        }
-        if (c.source.w > 0) {
-            ui.label(c.source, lyren::tr(platform(tr.source).short_name), {.size = t.fs(12), .color = t.text_dim}, Align::center);
         }
         const bool ordering = route_.page == Page::playlist && route_.list && &tracks == &route_.list->tracks && route_.list->ordering;
         if (ordering) {
@@ -3427,7 +3414,12 @@ namespace lyren {
             ui.label(c.duration, mmss(tr.duration), num, Align::right);
         }
 
-        auto it = ui.interact(row_id, r);
+        // Disabled ordering buttons still own their cells; a repeated click must not reach the row's play action.
+        Rect row = r;
+        if (ordering) {
+            row.w = c.like.x - r.x;
+        }
+        auto it = ui.interact(row_id, row);
         if (it.pressed) {
             selected_ = i;
         }

@@ -110,27 +110,9 @@ namespace lyren {
     struct Batch {
         std::vector<Track> tracks;
         std::vector<Card> cards;
-        int total = 0; // nonnegative service count; may be an estimate while more pages remain
+        int total = 0;        // nonnegative service count; may be an estimate while more pages remain
+        int next_offset = -1; // search continuation; -1 ends the results, independent of the visible row count
     };
-
-    // Round-robin rankings from every registered platform, retaining each listing and its identity.
-    template <class T>
-    std::vector<T> interleave(const std::array<Batch, platforms.size()> &sources, std::vector<T> Batch::*rows) {
-        size_t count = 0;
-        for (const auto &source : sources) {
-            count += (source.*rows).size();
-        }
-        std::vector<T> out;
-        out.reserve(count);
-        for (size_t rank = 0; out.size() < count; ++rank) {
-            for (const auto &source : sources) {
-                if (rank < (source.*rows).size()) {
-                    out.push_back((source.*rows)[rank]);
-                }
-            }
-        }
-        return out;
-    }
 
     struct Category {
         std::string id; // empty for all categories; independent of the displayed name

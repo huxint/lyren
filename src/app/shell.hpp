@@ -117,12 +117,9 @@ namespace lyren {
             }
         };
         struct SearchResults : Results {
-            std::array<Batch, platforms.size()> sources;
-            int pending = 0;
-            std::array<bool, platforms.size()> done{};
-            std::array<std::string, platforms.size()> errors;
+            int next_offset = 0;
             bool more() const {
-                return std::ranges::find(done, false) != done.end();
+                return next_offset >= 0;
             }
         };
         struct DislikeList {
@@ -304,7 +301,7 @@ namespace lyren {
 
         // Navigation.
         void search(ui::Ui &ui);
-        void load_results(int tab);
+        void load_results(int tab, bool retry = false);
         void switch_platform(ui::Ui &ui, Source source);
         bool supports(Page page, Source source) const;
         void open(ui::Ui &ui, Page page);
@@ -468,7 +465,7 @@ namespace lyren {
         // Search.
         std::string query_, searched_;
         int search_tab_ = 0;
-        std::array<SearchResults, 4> results_;
+        std::array<std::array<SearchResults, 4>, platforms.size()> results_;
         uint64_t search_gen_ = 0;
         int selected_ = -1;
 

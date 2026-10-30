@@ -89,6 +89,7 @@ git config core.hooksPath .githooks
 
 ## 文档
 
+- [平台接口与账号连接](docs/integrations.md)
 - [QQ 音乐接口规范](docs/qqmusic-api.md)
 - [资源与调度](docs/performance.md)
 - [测试数据说明](tests/data/README.md)

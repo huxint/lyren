@@ -29,6 +29,89 @@ TEST_CASE("rsa known vector") {
                                          "fa0bb96c4cf4bc3ed6d9ab76cf08441153d9d85e1ea3d78fa8d9210d581cee");
 }
 
+TEST_CASE("NetEase new songs preserve legacy metadata and exact resource IDs") {
+    auto songs = parse_new_songs({.body = R"({"code":200,"data":[{
+        "id":9007199254740993,"name":"新歌","duration":215900,"fee":1,"transNames":["译名"],
+        "artists":[{"id":31,"name":"甲"},{"id":32,"name":"乙"}],
+        "album":{"id":42,"name":"新碟","picUrl":"http://example.com/cover.jpg"}
+    }]})"});
+    REQUIRE(songs);
+    REQUIRE(songs->size() == 1);
+    const auto &song = songs->front();
+    CHECK(song.source == lyren::Source::netease);
+    CHECK(song.id == "9007199254740993");
+    CHECK(song.title == "新歌");
+    CHECK(song.alias == "译名");
+    CHECK(song.duration == 215);
+    CHECK(song.paid);
+    CHECK(song.artist == "甲 / 乙");
+    CHECK(song.artist_id == "31");
+    CHECK(song.album_id == "42");
+    CHECK(song.cover == "https://example.com/cover.jpg");
+    CHECK_FALSE(parse_new_songs({.body = R"({"code":200,"data":null})"}));
+    CHECK_FALSE(parse_new_songs({.error = "Connection failed"}));
+}
+
+TEST_CASE("NetEase new albums retain pagination totals and all credited artists") {
+    auto page = parse_new_albums({.body = R"({"code":200,"total":500,"albums":[{
+        "id":9007199254740993,"name":"联合创作","picUrl":"http://example.com/album.jpg","publishTime":0,"size":12,
+        "artist":{"id":1,"name":"甲"},"artists":[{"id":1,"name":"甲"},{"id":2,"name":"乙"}]
+    }]})"});
+    REQUIRE(page);
+    CHECK(page->total == 500);
+    REQUIRE(page->cards.size() == 1);
+    const auto &album = page->cards.front();
+    CHECK(album.source == lyren::Source::netease);
+    CHECK(album.kind == lyren::CardKind::album);
+    CHECK(album.id == "9007199254740993");
+    CHECK(album.title == "联合创作");
+    CHECK(album.subtitle == "甲 / 乙");
+    CHECK(album.cover == "https://example.com/album.jpg");
+    CHECK(album.count == 12);
+    CHECK(album.count_kind == lyren::Card::Count::songs);
+    auto empty = parse_new_albums({.body = R"({"code":200,"total":500,"albums":[]})"});
+    REQUIRE(empty);
+    CHECK(empty->cards.empty());
+    CHECK_FALSE(parse_new_albums({.body = R"({"code":502,"message":"请求失败"})"}));
+}
+
+TEST_CASE("NetEase playlist pages distinguish owned, liked, private and saved lists") {
+    auto page = parse_user_playlists({.body = R"({"code":200,"more":true,"playlist":[
+        {"id":1,"name":"我喜欢的音乐","specialType":5,"creator":{"userId":123}},
+        {"id":2,"name":"自己的歌单","creator":{"userId":123}},
+        {"id":9007199254740993,"name":"收藏歌单","creator":{"userId":456},"subscribed":true,"trackCount":37},
+        {"id":4,"name":"私密歌单","creator":{"userId":456},"privacy":10}
+    ]})"},
+                                     "123");
+    REQUIRE(page);
+    CHECK(page->more);
+    CHECK(page->liked.id == "1");
+    CHECK(page->liked.owned);
+    CHECK_FALSE(page->liked.collectable);
+    REQUIRE(page->playlists.size() == 3);
+    CHECK(page->playlists[0].owned);
+    CHECK_FALSE(page->playlists[0].collectable);
+    CHECK(page->playlists[1].id == "9007199254740993");
+    CHECK_FALSE(page->playlists[1].owned);
+    CHECK(page->playlists[1].collectable);
+    CHECK(page->playlists[1].count == 37);
+    CHECK_FALSE(page->playlists[2].collectable);
+    auto end = parse_user_playlists({.body = R"({"code":200,"more":true,"playlist":[]})"}, "123");
+    REQUIRE(end);
+    CHECK_FALSE(end->more);
+    CHECK_FALSE(parse_user_playlists({.body = R"({"code":200,"playlist":null})"}, "123"));
+}
+
+TEST_CASE("NetEase playlist writes preserve refusals instead of reporting success") {
+    CHECK(parse_playlist_write({.body = R"({"code":200})"}));
+    CHECK_FALSE(parse_playlist_write({.body = "{}"}));
+    CHECK_FALSE(parse_playlist_write({.body = R"({"code":502})"}));
+    auto refused = parse_playlist_write({.body = R"({"code":400,"message":"没有权限修改歌单"})"});
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error() == "没有权限修改歌单");
+    CHECK_FALSE(parse_playlist_write({.error = "Connection failed"}));
+}
+
 TEST_CASE("NetEase comments keep exact IDs, like state, replies and text") {
     auto page = parse_comments({.body = R"({"code":200,"data":{"totalCount":45,"hasMore":true,"cursor":"normalHot#20","comments":[
         {"commentId":9007199254740993,"user":{"nickname":"听众","avatarUrl":"http://example.com/avatar.jpg"},

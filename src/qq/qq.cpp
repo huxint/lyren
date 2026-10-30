@@ -106,7 +106,7 @@ namespace lyren::qq {
             std::optional<QList<QSearchList>> songlist;
         };
         struct QSearchMeta {
-            int sum = 0;
+            int sum = 0, nextpage = -1;
         };
         struct QSearch {
             std::optional<QSearchBody> body;
@@ -1089,17 +1089,21 @@ namespace lyren::qq {
         std::mt19937_64 rng{std::random_device{}()};
         std::string param = std::format(R"({{"query":{},"search_type":{},"page_num":{},"num_per_page":{},"searchid":"{}"}})", glz::write_json(glz::escape_bytes_t{query}).value(),
                                         types[static_cast<int>(kind)], offset / limit + 1, limit, rng() % 100000000000000);
-        auto r = parse<One<QSearch>>(co_await client.call({{"music.search.SearchCgiService", "DoSearchForQQMusicDesktop", param}}));
+        co_return parse_search(co_await client.call({{"music.search.SearchCgiService", "DoSearchForQQMusicDesktop", param}}), kind, limit);
+    }
+
+    Result<Batch> parse_search(const Reply &reply, SearchKind kind, int limit) {
+        auto r = parse<One<QSearch>>(reply);
         if (!r) {
-            co_return std::unexpected(r.error());
+            return std::unexpected(r.error());
         }
         auto d = take_data(r->req_0);
         if (!d) {
-            co_return std::unexpected(d.error());
+            return std::unexpected(d.error());
         }
-        Batch out{.total = d->meta ? d->meta->sum : 0};
+        Batch out{.total = d->meta ? d->meta->sum : 0, .next_offset = d->meta && d->meta->nextpage > 0 ? (d->meta->nextpage - 1) * limit : -1};
         if (!d->body) {
-            co_return out;
+            return out;
         }
         const QSearchBody &b = *d->body;
         switch (kind) {
@@ -1151,7 +1155,7 @@ namespace lyren::qq {
                 }
                 break;
         }
-        co_return out;
+        return out;
     }
 
     Task<Result<Stream>> Qq::stream(Track t, Quality quality) {

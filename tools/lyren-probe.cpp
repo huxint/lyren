@@ -1,7 +1,8 @@
 // Development CLI.
 //
 //   lyren-probe play <url|file> [step...]
-//   lyren-probe search <query> [tracks|albums|artists|playlists]
+//   lyren-probe [qq] search <query> [tracks|albums|artists|playlists] [offset]
+//   lyren-probe [qq] new-songs [area] | new-albums [area] [offset] | saved-playlists
 //   lyren-probe url <song id> [standard|higher|exhigh|lossless|hires]
 //   lyren-probe lyrics <song id>
 //   lyren-probe login     QR login in the terminal; saves the credentials like the app does
@@ -240,6 +241,85 @@ static Task<Result<std::string>> post_comment(Provider &provider, std::span<cons
     co_return co_await provider.features.comments.post(*subject, args[1], std::move(content), args.size() == 4 ? args[3] : "");
 }
 
+static void print_tracks(const std::vector<Track> &tracks) {
+    for (auto &t : tracks) {
+        std::println("{:>12} {:>14} {:>14}  {}{}  {} · {}  {}:{:02}{}", t.id, t.mid, t.media, t.title, t.alias.empty() ? "" : " (" + t.alias + ')', t.artist, t.album,
+                     t.duration / 60, t.duration % 60, t.paid ? "  paid" : "");
+    }
+}
+
+static void print_cards(const std::vector<Card> &cards) {
+    for (auto &c : cards) {
+        std::println("{:>16}  {}  {}  {}", c.id, c.title, c.subtitle, c.cover);
+    }
+}
+
+static Result<int> page_offset(std::string_view value) {
+    int offset = 0;
+    if (!value.empty()) {
+        auto parsed = std::from_chars(value.data(), value.data() + value.size(), offset);
+        if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || offset < 0) {
+            return std::unexpected("Expected a nonnegative offset");
+        }
+    }
+    return offset;
+}
+
+static Task<Result<void>> search_command(Provider &provider, std::span<const std::string> args) {
+    if (args.empty() || args.size() > 3) {
+        co_return std::unexpected("Expected search <query> [tracks|albums|artists|playlists] [offset]");
+    }
+    static constexpr std::array kinds = {"tracks", "albums", "artists", "playlists"};
+    auto kind = std::ranges::find(kinds, args.size() > 1 ? args[1] : "tracks");
+    if (kind == kinds.end()) {
+        co_return std::unexpected("Expected tracks, albums, artists or playlists");
+    }
+    auto offset = page_offset(args.size() > 2 ? args[2] : "");
+    if (!offset) {
+        co_return std::unexpected(offset.error());
+    }
+    auto type = static_cast<SearchKind>(kind - kinds.begin());
+    auto r = co_await provider.search(args[0], type, *offset, type == SearchKind::tracks ? 30 : 40);
+    if (!r) {
+        co_return std::unexpected(r.error());
+    }
+    std::println("{} total, next offset {}", r->total, r->next_offset);
+    print_tracks(r->tracks);
+    print_cards(r->cards);
+    co_return Result<void>{};
+}
+
+static Task<Result<void>> releases_command(Provider &provider, bool albums, std::span<const std::string> args) {
+    if (args.size() > (albums ? 2u : 1u)) {
+        co_return std::unexpected("Expected new-songs [area] or new-albums [area] [offset]");
+    }
+    auto &releases = provider.features.releases;
+    const auto &categories = releases.categories[albums];
+    std::string category = args.empty() ? categories.front().id : args[0];
+    if (std::ranges::find(categories, category, &Category::id) == categories.end()) {
+        co_return std::unexpected("Expected a supported release category ID");
+    }
+    if (albums) {
+        auto offset = page_offset(args.size() > 1 ? args[1] : "");
+        if (!offset) {
+            co_return std::unexpected(offset.error());
+        }
+        auto r = co_await releases.albums(category, *offset);
+        if (!r) {
+            co_return std::unexpected(r.error());
+        }
+        std::println("{} total", r->total);
+        print_cards(r->cards);
+    } else {
+        auto r = co_await releases.songs(category);
+        if (!r) {
+            co_return std::unexpected(r.error());
+        }
+        print_tracks(*r);
+    }
+    co_return Result<void>{};
+}
+
 static int ncm_command(const std::vector<std::string> &args) {
     Loop loop;
     net::Http http;
@@ -259,24 +339,21 @@ static int ncm_command(const std::vector<std::string> &args) {
         ncm.client.ensure_fingerprint();
         const std::string &cmd = args[0];
         if (cmd == "search") {
-            static constexpr std::array kinds = {"tracks", "albums", "artists", "playlists"};
-            int kind = 0;
-            for (int k = 0; k < 4; ++k) {
-                if (args.size() > 2 && args[2] == kinds[k]) {
-                    kind = k;
-                }
-            }
-            auto r = co_await ncm.search(args.at(1), static_cast<SearchKind>(kind), 0, 30);
+            auto r = co_await search_command(ncm, std::span(args).subspan(1));
             if (!r) {
                 co_return fail(r.error());
             }
-            std::println("{} total", r->total);
-            for (auto &t : r->tracks) {
-                std::println("{:>12}  {} ({})  {} · {}  {}:{:02}", t.id, t.title, t.alias, t.artist, t.album, t.duration / 60, t.duration % 60);
+        } else if (cmd == "new-songs" || cmd == "new-albums") {
+            auto r = co_await releases_command(ncm, cmd == "new-albums", std::span(args).subspan(1));
+            if (!r) {
+                co_return fail(r.error());
             }
-            for (auto &c : r->cards) {
-                std::println("{:>12}  {}  {}  {}", c.id, c.title, c.subtitle, c.cover);
+        } else if (cmd == "saved-playlists") {
+            auto r = co_await ncm.collected_playlists();
+            if (!r) {
+                co_return fail(r.error());
             }
+            print_cards(*r);
         } else if (cmd == "url") {
             static constexpr std::array names = {"standard", "higher", "exhigh", "lossless", "hires"};
             int q = 3;
@@ -391,19 +468,6 @@ static int ncm_command(const std::vector<std::string> &args) {
     return rc;
 }
 
-static void print_tracks(const std::vector<Track> &tracks) {
-    for (auto &t : tracks) {
-        std::println("{:>12} {:>14} {:>14}  {}{}  {} · {}  {}:{:02}{}", t.id, t.mid, t.media, t.title, t.alias.empty() ? "" : " (" + t.alias + ')', t.artist, t.album,
-                     t.duration / 60, t.duration % 60, t.paid ? "  paid" : "");
-    }
-}
-
-static void print_cards(const std::vector<Card> &cards) {
-    for (auto &c : cards) {
-        std::println("{:>16}  {}  {}  {}", c.id, c.title, c.subtitle, c.cover);
-    }
-}
-
 static std::string_view prefix(std::string_view text, size_t bytes) {
     size_t i = 0, end = 0;
     while (i < text.size() && i < bytes) {
@@ -436,20 +500,10 @@ static int qq_command(const std::vector<std::string> &args) {
             return args.size() > i ? args[i] : std::string{};
         };
         if (cmd == "search") {
-            static constexpr std::array kinds = {"tracks", "albums", "artists", "playlists"};
-            int kind = 0;
-            for (int k = 0; k < 4; ++k) {
-                if (arg(3) == kinds[k]) {
-                    kind = k;
-                }
-            }
-            auto r = co_await q.search(args.at(2), static_cast<SearchKind>(kind), 0, 30);
+            auto r = co_await search_command(q, std::span(args).subspan(2));
             if (!r) {
                 co_return fail(r.error());
             }
-            std::println("{} total", r->total);
-            print_tracks(r->tracks);
-            print_cards(r->cards);
         } else if (cmd == "url") {
             static constexpr std::array names = {"standard", "higher", "exhigh", "lossless", "hires"};
             int quality = 3;
@@ -642,35 +696,9 @@ static int qq_command(const std::vector<std::string> &args) {
                 std::println("{}", on ? "Hidden from recommendations" : "Restored to recommendations");
             }
         } else if (cmd == "new-songs" || cmd == "new-albums") {
-            int tab = cmd == "new-albums";
-            const auto &categories = q.features.releases.categories[tab];
-            std::string category = arg(2).empty() ? categories.front().id : arg(2);
-            if (!std::ranges::any_of(categories, [&](const Category &entry) {
-                    return entry.id == category;
-                })) {
-                co_return fail("Expected a supported release category ID");
-            }
-            if (tab == 0) {
-                auto r = co_await q.new_songs(category);
-                if (!r) {
-                    co_return fail(r.error());
-                }
-                print_tracks(*r);
-            } else {
-                int offset = 0;
-                if (!arg(3).empty()) {
-                    const auto value = arg(3);
-                    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), offset);
-                    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || offset < 0) {
-                        co_return fail("Expected a nonnegative album offset");
-                    }
-                }
-                auto r = co_await q.new_albums(category, offset);
-                if (!r) {
-                    co_return fail(r.error());
-                }
-                std::println("{} total", r->total);
-                print_cards(r->cards);
+            auto r = co_await releases_command(q, cmd == "new-albums", std::span(args).subspan(2));
+            if (!r) {
+                co_return fail(r.error());
             }
         } else if (cmd == "collect-playlist") {
             if (args.size() != 4 || (arg(3) != "on" && arg(3) != "off")) {
@@ -902,7 +930,7 @@ int main(int argc, char **argv) {
     if (args.size() >= 2 && args[0] == "qq") {
         return qq_command(args);
     }
-    for (const char *cmd : {"search", "url", "lyrics", "login", "account", "comments", "replies", "post-comment", "call"}) {
+    for (const char *cmd : {"search", "url", "lyrics", "login", "account", "new-songs", "new-albums", "saved-playlists", "comments", "replies", "post-comment", "call"}) {
         if (!args.empty() && args[0] == cmd) {
             return ncm_command(args);
         }
@@ -910,9 +938,10 @@ int main(int argc, char **argv) {
     std::println(
         stderr,
         "usage: lyren-probe [--debug] play <url|file> [wait:MS seek:S pause play vol:V open:SRC quit ...]\n"
-        "       lyren-probe search <query> [tracks|albums|artists|playlists] | url <id> [quality] | lyrics <id> | login | account\n"
+        "       lyren-probe search <query> [tracks|albums|artists|playlists] [offset] | url <id> [quality] | lyrics <id> | login | account\n"
         "       lyren-probe comments <song|album|playlist> <id> [new] | replies <song|album|playlist> <id> <comment id>\n"
         "       lyren-probe [qq] post-comment <song|album|playlist> <id> <text file> [reply id]\n"
+        "       lyren-probe [qq] new-songs [area] | new-albums [area] [offset] | saved-playlists\n"
         "       lyren-probe call <uri> [fields] [weapi|clientlog]\n"
         "       lyren-probe qq search|url|lyrics|album|artist|playlist|top|recommend|guess|radar|new-songs|new-albums|saved-playlists|categories|square|similar|comments|call ...");
     return 2;

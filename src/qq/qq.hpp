@@ -27,6 +27,7 @@ namespace lyren::qq {
     Result<std::vector<Track>> parse_radar(const Reply &reply);
     Result<std::vector<Track>> parse_new_songs(const Reply &reply);
     Result<Batch> parse_new_albums(const Reply &reply);
+    Result<Batch> parse_search(const Reply &reply, SearchKind kind, int limit);
     Result<void> parse_playlist_write(const Reply &reply);
     Result<void> parse_playlist_order_write(const Reply &reply);
     Result<CommentPage> parse_comments(const Reply &reply, bool replies = false);

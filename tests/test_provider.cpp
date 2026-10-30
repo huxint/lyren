@@ -25,48 +25,8 @@ TEST_CASE("identical songs on different platforms keep independent identities") 
     CHECK_FALSE(same(n, q));
     CHECK(key(n) != key(q));
     CHECK(same(n, Track{.id = "1"}));
-    std::array<Batch, 2> sources{Batch{.tracks = {n}}, Batch{.tracks = {q}}};
-    auto songs = interleave(sources, &Batch::tracks);
-    REQUIRE(songs.size() == 2);
-    CHECK(songs[0].source == Source::netease);
-    CHECK(songs[0].paid);
-    CHECK(songs[1].source == Source::qq);
-    CHECK(songs[1].media == "media");
     Card nc{.id = "5"}, qc{.source = Source::qq, .id = "5"};
     CHECK_FALSE(same(nc, qc));
-}
-
-TEST_CASE("search rankings retain every listing across uneven and empty batches") {
-    std::array<Batch, platforms.size()> sources{
-        Batch{.tracks = {{.id = "a1"}, {.id = "a2"}, {.id = "a3"}}, .cards = {{.id = "album-a"}}},
-        Batch{.tracks = {{.source = Source::qq, .id = "b1"}, {.source = Source::qq, .id = "b2"}},
-              .cards = {{.source = Source::qq, .id = "album-b"}, {.source = Source::qq, .id = "album-c"}}},
-    };
-    auto tracks = interleave(sources, &Batch::tracks);
-    REQUIRE(tracks.size() == 5);
-    std::vector<std::string> ids;
-    for (const auto &track : tracks) {
-        ids.push_back(track.id);
-    }
-    CHECK(ids == (std::vector<std::string>{"a1", "b1", "a2", "b2", "a3"}));
-    auto cards = interleave(sources, &Batch::cards);
-    REQUIRE(cards.size() == 3);
-    CHECK(cards[0].id == "album-a");
-    CHECK(cards[1].id == "album-b");
-    CHECK(cards[2].id == "album-c");
-    CHECK(interleave(std::array<Batch, platforms.size()>{}, &Batch::tracks).empty());
-}
-
-TEST_CASE("search rankings retain songs when either service returns an empty batch") {
-    for (Source source : {Source::netease, Source::qq}) {
-        CAPTURE(source);
-        std::array<Batch, platforms.size()> sources;
-        sources[static_cast<size_t>(source)].tracks = {{.source = source, .id = "song"}};
-        const auto songs = interleave(sources, &Batch::tracks);
-        REQUIRE(songs.size() == 1);
-        CHECK(songs[0].source == source);
-        CHECK(songs[0].id == "song");
-    }
 }
 
 TEST_CASE("saved platform survives a round trip and old queues remain readable") {
