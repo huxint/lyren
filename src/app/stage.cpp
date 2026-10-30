@@ -93,7 +93,7 @@ namespace lyren {
         float change = ui.progress(cover_time_, 520);
         int preview_px = Images::tier(small.w * p.scale()), sharp_px = Images::tier((np_wide_ ? 420.f : nl.cover.w) * p.scale());
         auto artwork = [&](const std::string &url) {
-            const auto &preview = images_.get(cover_url(url, preview_px), static_cast<uint32_t>(preview_px));
+            const auto &preview = images_.get(url, static_cast<uint32_t>(preview_px));
             float shown = preview.ready ? ui.progress(preview.ready_at, 320, ease::standard) : 0;
             if (shown < 1) {
                 p.rect(cov, t.text.with_alpha(0.07f), radius);
@@ -106,7 +106,7 @@ namespace lyren {
                 p.image(cov, preview.tex, radius);
             }
             if (np > 0 && sharp_px > preview_px) {
-                const auto &sharp = images_.get(cover_url(url, sharp_px), static_cast<uint32_t>(sharp_px));
+                const auto &sharp = images_.get(url, static_cast<uint32_t>(sharp_px));
                 if (sharp.ready) {
                     Fade fade(p, ui.progress(sharp.ready_at, 240, ease::standard));
                     p.image(cov, sharp.tex, radius);
@@ -216,7 +216,7 @@ namespace lyren {
               uv.h * zoom};
         float luma = 0.3f;
         auto backdrop = [&](const std::string &url, float a) {
-            const auto &e = images_.get(cover_url(url, 128), 128, true);
+            const auto &e = images_.get(url, 128, true);
             if (!e.ready) {
                 return;
             }

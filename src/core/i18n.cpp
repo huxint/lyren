@@ -1,7 +1,7 @@
 #include "core/i18n.hpp"
 
 #include <glaze/glaze.hpp>
-#include <map>
+#include "core/string_map.hpp"
 
 namespace lyren {
 
@@ -14,7 +14,7 @@ namespace lyren {
 
         const auto &chinese() {
             static const auto catalog = [] {
-                std::map<std::string, std::string, std::less<>> entries;
+                StringHashMap<std::string> entries;
                 static_cast<void>(glz::read_json(entries, std::string_view{reinterpret_cast<const char *>(chinese_json), sizeof(chinese_json) - 1}));
                 return entries;
             }();

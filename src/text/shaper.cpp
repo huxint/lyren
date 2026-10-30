@@ -20,14 +20,13 @@ namespace lyren::text {
     }
 
     const Shaped &Shaper::shape(std::string_view text, uint8_t features) {
-        key_.assign(1, static_cast<char>(features));
-        key_.append(text);
-        if (auto it = cache_.find(key_); it != cache_.end()) {
+        const CacheKey::View key{text, features};
+        if (auto it = cache_.find(key); it != cache_.end()) {
             it->second.used = frame_;
             return it->second.shaped;
         }
+        Shaped &out = cache_.emplace(CacheKey(key), Entry{.used = frame_}).first->second.shaped;
 
-        Shaped out;
         std::array<hb_feature_t, 1> feats;
         unsigned nfeats = 0;
         if (features & tabular_nums) {
@@ -72,7 +71,7 @@ namespace lyren::text {
         }
         out.width = pen;
         glyphs_ += out.glyphs.size();
-        return cache_.emplace(key_, Entry{std::move(out), frame_}).first->second.shaped;
+        return out;
     }
 
     void Shaper::end_frame() {

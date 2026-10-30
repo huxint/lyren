@@ -1,7 +1,6 @@
 #pragma once
 #include <array>
 #include <cmath>
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -318,6 +317,7 @@ namespace lyren {
             return provider().logged_in();
         }
         void ensure_route_data();
+        Task<void> warm_pages(Source source);
         Task<void> load_list(std::shared_ptr<List> list, Page page, Card card);
         Task<void> fetch_results(uint64_t gen, int tab, Source source, std::string query, int offset);
         Task<void> load_artist(std::shared_ptr<ArtistPage> page, Card card);
@@ -585,8 +585,8 @@ namespace lyren {
         // Comments panel and the playlist editor.
         Thread thread_;
         // The user's own like per comment, key(source, id): the panel shows it over the service's until a read echoes it.
-        std::map<std::string, Like> comment_likes_;
-        std::map<std::string, uint64_t> comment_deletes_;
+        CacheMap<Like> comment_likes_;
+        CacheMap<uint64_t> comment_deletes_;
         uint64_t comment_write_gen_ = 0;
         std::string edit_name_;
         bool edit_hidden_ = false, edit_focus_ = false;
@@ -601,7 +601,7 @@ namespace lyren {
         double settings_jump_until_ = 0, settings_drawn_ = -10, settings_moved_ = -10;
         std::array<float, 9> settings_heights_{196, 248, 290, 132, 234, 386, 250, 256, 132};
         std::array<ui::Rect, 14> settings_shown_{}, settings_from_{};
-        std::map<std::string, float> settings_sliders_; // values being dragged, written on release
+        StringMap<float> settings_sliders_; // values being dragged, written on release
         std::move_only_function<void()> open_config_;
         const ui::Theme *stage_ = nullptr; // this frame's stage theme, for the desktop previews
     };

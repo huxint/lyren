@@ -1,10 +1,11 @@
 #pragma once
 #include <cstdint>
-#include <map>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "core/string_map.hpp"
 #include "core/task.hpp"
 #include "net/fetch.hpp"
 
@@ -34,13 +35,13 @@ namespace lyren::qq {
           http_(http) {}
 
         // The login: musicid, musickey and the open-platform tokens; persisted with the credentials.
-        std::map<std::string, std::string> session;
+        StringMap<std::string> session;
         std::move_only_function<void()> on_session;
 
         bool logged_in() const {
             return !get("musickey").empty();
         }
-        const std::string &get(const std::string &key) const;
+        const std::string &get(std::string_view key) const;
 
         Task<Reply> call(std::vector<Rpc> parts, Comm comm = Comm::app, net::Retry retry = net::Retry::network);
 

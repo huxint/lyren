@@ -87,12 +87,16 @@ namespace lyren {
     }
 
     void Loop::post(std::move_only_function<void() &> fn) {
+        bool wake;
         {
             std::lock_guard lock(post_mutex_);
+            wake = posted_.empty();
             posted_.push_back(std::move(fn));
         }
-        uint64_t one = 1;
-        write(eventfd_, &one, sizeof one);
+        if (wake) {
+            uint64_t one = 1;
+            write(eventfd_, &one, sizeof one);
+        }
     }
 
     void Loop::run_posted() {

@@ -10,6 +10,15 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
+option(LYREN_LTO "Optimize across translation units in optimized builds" ON)
+option(LYREN_NATIVE "Tune optimized builds for this machine's CPU" OFF)
+if(LYREN_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(LANGUAGES C CXX)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+endif()
+
 include(cmake/Deps.cmake)
 include(cmake/WaylandProtocols.cmake)
 include(cmake/Shaders.cmake)
@@ -86,6 +95,9 @@ add_library(
 target_include_directories(lyren_base PUBLIC src)
 target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA glaze)
 target_compile_options(lyren_base PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
+if(LYREN_NATIVE)
+    target_compile_options(lyren_base PUBLIC $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-march=native>)
+endif()
 
 # Window, renderer, text, UI toolkit, D-Bus media controls and the app.
 pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libwebp libwebpdemux libqrencode)
@@ -124,6 +136,7 @@ add_library(
     src/app/panel.cpp
     src/app/desktop.cpp)
 target_link_libraries(lyren_lib PUBLIC lyren_base PkgConfig::SYSLIBS PkgConfig::UILIBS PkgConfig::SDBUS vulkan_headers nanosvg)
+target_link_libraries(lyren_lib PRIVATE nexus)
 add_wayland_protocols(
     lyren_lib
     ${WP_DIR}/stable/xdg-shell/xdg-shell.xml
@@ -151,6 +164,7 @@ add_executable(
     tests/test_loop.cpp
     tests/test_config.cpp
     tests/test_i18n.cpp
+    tests/test_text.cpp
     tests/test_utf8.cpp
     tests/test_encoding.cpp
     tests/test_ui.cpp

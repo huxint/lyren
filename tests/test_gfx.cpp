@@ -1,7 +1,11 @@
 #include <doctest/doctest.h>
+#include <png.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <mutex>
 #include <optional>
 
 #include "app/images.hpp"
@@ -9,10 +13,18 @@
 #include "ui/ui.hpp"
 #include "wl/display.hpp"
 #include "wl/window.hpp"
+#include "http_server.hpp"
 
 using namespace lyren;
 
 namespace {
+
+    std::string_view cover_body() {
+        static constexpr unsigned char data[]{
+#embed "data/cover.webp"
+        };
+        return {reinterpret_cast<const char *>(data), sizeof(data)};
+    }
 
     struct Graphics {
         struct Validation {
@@ -127,10 +139,10 @@ TEST_CASE("cover eviction discards old covers and preserves visible covers") {
             return 0.;
         });
     gfx::Image image{side, side, std::vector<uint8_t>(static_cast<size_t>(side) * side * 4, 255)};
-    images.put("visible", image);
+    images.put("visible", side, image);
     auto visible = images.get("visible", side).tex;
     for (int i = 0; i < count; ++i) {
-        images.put("cover-" + std::to_string(i), image);
+        images.put("cover-" + std::to_string(i), side, image);
         images.get("visible", side);
         images.end_frame();
     }
@@ -138,6 +150,254 @@ TEST_CASE("cover eviction discards old covers and preserves visible covers") {
     CHECK(images.get("cover-" + std::to_string(count - 1), side).ready);
     CHECK(images.get("visible", side).ready);
     CHECK(images.get("visible", side).tex == visible);
+}
+
+TEST_CASE("cover preloads finish without being drawn and survive page switches") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    net::Http http;
+    int completed = 0;
+    Images images(
+        g.loop, http, g.renderer,
+        [&] {
+            if (++completed == 4) {
+                g.loop.quit();
+            }
+        },
+        [] {
+            return 1.;
+        });
+    std::atomic<int> requests{0};
+    test::Server server([&](std::string_view) {
+        ++requests;
+        g.loop.post([&] {
+            for (int i = 0; i < 20; ++i) {
+                images.end_frame();
+            }
+        });
+        return test::ok(cover_body());
+    });
+    // libcurl's scheme-less loopback URLs keep this HTTP fixture out of the CDN's HTTPS normalization.
+    const std::string url = server.url().substr(7);
+    for (int i = 0; i < 4; ++i) {
+        images.prefetch(url + '/' + std::to_string(i), 64);
+        images.prefetch(url + '/' + std::to_string(i), 64);
+    }
+    for (int i = 0; i < 20; ++i) {
+        images.end_frame();
+    }
+    auto timeout = g.loop.after(3s, [&] {
+        g.loop.quit();
+    });
+    g.loop.run();
+    g.loop.cancel(timeout);
+    REQUIRE(completed == 4);
+    CHECK(requests == 4);
+    for (int i = 0; i < 4; ++i) {
+        const auto &image = images.get(url + '/' + std::to_string(i), 64);
+        CHECK(image.ready);
+        CHECK_FALSE(image.failed);
+        CHECK(image.bytes == 16);
+    }
+}
+
+TEST_CASE("visible covers overtake preloads and promotion does not duplicate a download") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    net::Http http;
+    std::mutex mutex;
+    std::vector<std::string> requests;
+    test::Server server([&](std::string_view request) {
+        std::lock_guard lock(mutex);
+        requests.emplace_back(request.substr(0, request.find('\r')));
+        return test::ok(cover_body());
+    });
+    int completed = 0;
+    Images images(
+        g.loop, http, g.renderer,
+        [&] {
+            if (++completed == 5) {
+                g.loop.quit();
+            }
+        },
+        [] {
+            return 1.;
+        });
+    const std::string url = server.url().substr(7);
+    for (int i = 0; i < 4; ++i) {
+        images.prefetch(url + '/' + std::to_string(i), 64);
+    }
+    images.prefetch(url + "/visible", 64);
+    images.get(url + "/visible", 64);
+    images.get(url + "/visible", 64);
+    auto timeout = g.loop.after(3s, [&] {
+        g.loop.quit();
+    });
+    g.loop.run();
+    g.loop.cancel(timeout);
+    REQUIRE(completed == 5);
+    std::lock_guard lock(mutex);
+    REQUIRE(requests.size() == 5);
+    const auto visible = [](std::string_view request) {
+        return request.starts_with("GET /visible ");
+    };
+    CHECK(std::ranges::count_if(requests, visible) == 1);
+    CHECK(std::ranges::any_of(std::span(requests).first(3), visible));
+}
+
+TEST_CASE("stationary cover preloads settle under cache pressure and visible requests still load") {
+    uint32_t side = 512;
+    int count = 40;
+    SUBCASE("pixel budget") {}
+    SUBCASE("entry budget") {
+        side = 64;
+        count = 640;
+    }
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    net::Http http;
+    png_image png{};
+    png.version = PNG_IMAGE_VERSION;
+    png.width = png.height = side;
+    png.format = PNG_FORMAT_RGBA;
+    std::vector<uint8_t> pixels(static_cast<size_t>(side) * side * 4, 255);
+    png_alloc_size_t length = 0;
+    REQUIRE(png_image_write_to_memory(&png, nullptr, &length, 0, pixels.data(), 0, nullptr));
+    std::string body(length, '\0');
+    REQUIRE(png_image_write_to_memory(&png, body.data(), &length, 0, pixels.data(), 0, nullptr));
+    body.resize(length);
+    std::atomic<int> requests{0};
+    test::Server server([&](std::string_view) {
+        ++requests;
+        return test::ok(body);
+    });
+    std::vector<std::string> covers;
+    for (int i = 0; i < count; ++i) {
+        covers.push_back(server.url().substr(7) + '/' + std::to_string(i));
+    }
+
+    constexpr int visible = 12;
+    int first = 0, completed = 0;
+    bool scheduled = false, settled = false;
+    Loop::TimerId idle = 0;
+    std::function<void()> draw;
+    Images images(
+        g.loop, http, g.renderer,
+        [&] {
+            if (++completed > count) {
+                g.loop.quit();
+                return;
+            }
+            if (!scheduled) {
+                scheduled = true;
+                g.loop.defer([&] {
+                    scheduled = false;
+                    draw();
+                });
+            }
+            g.loop.cancel(idle);
+            idle = g.loop.after(100ms, [&] {
+                settled = true;
+                g.loop.quit();
+            });
+        },
+        [] {
+            return 0.;
+        });
+    draw = [&] {
+        for (int i = first; i < first + visible; ++i) {
+            images.get(covers[i], side);
+        }
+        for (int i = 0; i < count; ++i) {
+            if (i < first || i >= first + visible) {
+                images.prefetch(covers[i], side);
+            }
+        }
+        images.end_frame();
+    };
+    auto settle = [&] {
+        completed = 0;
+        settled = false;
+        const int before = requests.load();
+        auto timeout = g.loop.after(3s, [&] {
+            g.loop.quit();
+        });
+        draw();
+        g.loop.run();
+        g.loop.cancel(timeout);
+        g.loop.cancel(idle);
+        REQUIRE(settled);
+        CHECK(requests.load() - before <= count);
+        for (int i = first; i < first + visible; ++i) {
+            CHECK(images.get(covers[i], side).ready);
+        }
+    };
+    settle();
+    CHECK(requests.load() > visible);
+    CHECK(requests.load() < count);
+    first = count - visible;
+    settle();
+}
+
+TEST_CASE("cached covers fill other sizes while sharp and blurred versions remain separate") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    net::Http http;
+    Images images(
+        g.loop, http, g.renderer, [] {},
+        [] {
+            return 0.;
+        });
+    gfx::Image image{128, 128, std::vector<uint8_t>(128 * 128 * 4, 255)};
+    images.put("cover", 128, image);
+    const auto texture = images.get("cover", 128).tex;
+    CHECK(images.get("cover", 64).tex == texture);
+    CHECK(images.get("cover", 256).tex == texture);
+    CHECK_FALSE(images.get("cover", 128, true).ready);
+    images.erase("cover");
+    CHECK_FALSE(images.get("cover", 128).ready);
+}
+
+TEST_CASE("destroying a cover cache with pending downloads leaves the HTTP loop usable") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    net::Http http;
+    int redraws = 0;
+    bool ping = false;
+    auto images = std::make_unique<Images>(
+        g.loop, http, g.renderer,
+        [&] {
+            ++redraws;
+        },
+        [] {
+            return 0.;
+        });
+    test::Server server([&](std::string_view request) {
+        if (request.starts_with("GET /cover ")) {
+            g.loop.post([&] {
+                images.reset();
+            });
+            return test::ok(cover_body());
+        }
+        return test::ok("pong");
+    });
+    images->get(server.url().substr(7) + "/cover", 64);
+    auto timeout = g.loop.after(3s, [&] {
+        g.loop.quit();
+    });
+    g.loop.after(50ms, [&] {
+        http.request({.url = server.url() + "/ping"}, [&](net::Response response) {
+            g.loop.post([&, response = std::move(response)] {
+                ping = response.body == "pong";
+                g.loop.quit();
+            });
+        });
+    });
+    g.loop.run();
+    g.loop.cancel(timeout);
+    CHECK_FALSE(images);
+    CHECK(redraws == 0);
+    CHECK(ping);
 }
 
 TEST_CASE("texture replacement preserves the uploaded pixels across submissions") {

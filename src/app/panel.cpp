@@ -11,6 +11,10 @@ namespace lyren {
     using ui::Rect;
     using ui::TextStyle;
 
+    static CacheKey::View comment_key(Source source, std::string_view id) {
+        return {id, static_cast<uint32_t>(source)};
+    }
+
     float Shell::panel_width(Panel panel) {
         return panel == Panel::queue ? 336 : panel == Panel::comments ? 408 : 0;
     }
@@ -261,7 +265,7 @@ namespace lyren {
 
     void Shell::settle_likes(Source source, const std::vector<Comment> &comments) {
         for (const auto &comment : comments) {
-            auto like = comment_likes_.find(key(source, comment.id));
+            auto like = comment_likes_.find(comment_key(source, comment.id));
             if (like != comment_likes_.end() && !like->second.pending && like->second.liked == comment.liked) {
                 auto update = [&](Comment &cached) {
                     if (cached.id == comment.id) {
@@ -287,10 +291,10 @@ namespace lyren {
 
     void Shell::clear_comment_writes(Source source) {
         std::erase_if(comment_likes_, [&](const auto &like) {
-            return like.first.starts_with(std::string(platform(source).id) + ':');
+            return like.first.variant == static_cast<uint32_t>(source);
         });
         std::erase_if(comment_deletes_, [&](const auto &entry) {
-            return entry.first.starts_with(std::string(platform(source).id) + ':');
+            return entry.first.variant == static_cast<uint32_t>(source);
         });
     }
 
@@ -298,7 +302,7 @@ namespace lyren {
         if (!provider(source).logged_in()) {
             return notify(lyren::trf("Sign in to {} to like comments", lyren::tr(platform(source).name)), "thumbs-up");
         }
-        std::string k = key(source, comment.id);
+        auto k = comment_key(source, comment.id);
         auto mine = comment_likes_.find(k);
         if (mine != comment_likes_.end() && mine->second.pending) {
             return;
@@ -311,11 +315,15 @@ namespace lyren {
         int likes = previous ? previous->likes : comment.likes;
         likes = std::max(0, likes + (liked ? 1 : -1));
         uint64_t gen = ++comment_write_gen_;
-        comment_likes_[k] = {.liked = liked, .likes = likes, .pending = gen};
+        if (mine == comment_likes_.end()) {
+            comment_likes_.emplace(CacheKey(k), Like{.liked = liked, .likes = likes, .pending = gen});
+        } else {
+            mine->second = {.liked = liked, .likes = likes, .pending = gen};
+        }
         redraw_();
         spawn([](Shell *self, Source source, Subject subject, std::string resource, std::string id, bool like, std::optional<Like> previous, uint64_t gen) -> Task<void> {
             auto r = co_await self->provider(source).features.comments.like(subject, std::move(resource), id, like);
-            auto mine = self->comment_likes_.find(key(source, id));
+            auto mine = self->comment_likes_.find(comment_key(source, id));
             if (mine == self->comment_likes_.end() || mine->second.pending != gen) {
                 co_return;
             }
@@ -389,10 +397,10 @@ namespace lyren {
             }
             u.close_modal();
             uint64_t gen = ++comment_write_gen_;
-            comment_deletes_[key(source, comment.id)] = gen;
+            comment_deletes_.insert_or_assign(CacheKey(comment_key(source, comment.id)), gen);
             spawn([](Shell *self, Source source, Subject subject, std::string resource, std::string id, uint64_t gen) -> Task<void> {
                 auto result = co_await self->provider(source).features.comments.remove(subject, resource, id);
-                auto pending = self->comment_deletes_.find(key(source, id));
+                auto pending = self->comment_deletes_.find(comment_key(source, id));
                 if (pending == self->comment_deletes_.end() || pending->second != gen) {
                     co_return;
                 }
@@ -400,7 +408,7 @@ namespace lyren {
                 if (!result) {
                     co_return self->notify(lyren::trf("Could not delete comment: {}", lyren::tr(result.error())), "triangle-alert", true);
                 }
-                self->comment_likes_.erase(key(source, id));
+                self->comment_likes_.erase(comment_key(source, id));
                 self->notify(std::string(lyren::tr("Comment deleted")), "trash");
                 if (self->thread_.source != source || self->thread_.subject != subject || self->thread_.id != resource) {
                     co_return;
@@ -623,7 +631,7 @@ namespace lyren {
         float top = y + 16;
         cover(ui, {x, top, 32, 32}, c.avatar, 16, "user");
         float likes_w = 0;
-        auto mine = comment_likes_.find(key(source, c.id));
+        auto mine = comment_likes_.find(comment_key(source, c.id));
         bool liked = mine != comment_likes_.end() ? mine->second.liked : c.liked;
         if (provider(source).features.comments.like) {
             std::string n = short_count(mine != comment_likes_.end() ? mine->second.likes : c.likes);
@@ -670,7 +678,7 @@ namespace lyren {
         float time_w = tw;
         float actions_right = x + w;
         if (c.owned && provider(source).logged_in() && provider(source).features.comments.remove) {
-            ui.disabled = comment_deletes_.contains(key(source, c.id));
+            ui.disabled = comment_deletes_.contains(comment_key(source, c.id));
             {
                 Fade dim(p, ui.disabled ? 0.4f : 1.f);
                 if (ui.icon_button(ui.id("comment-delete"), {actions_right - 24, ly + 2, 24, 24}, "trash", 13)) {

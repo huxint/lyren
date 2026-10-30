@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/string_map.hpp"
 #include "gfx/renderer.hpp"
 #include "text/fonts.hpp"
 
@@ -70,7 +71,7 @@ namespace lyren::text {
         Sheet mono_{VK_FORMAT_R8_UNORM, 1024, 2048}, color_{VK_FORMAT_B8G8R8A8_UNORM, 0, 1024};
         bool reset_ = false;
         std::unordered_map<uint64_t, AtlasEntry> glyphs_;
-        std::unordered_map<std::string, AtlasEntry> icons_;
+        CacheMap<AtlasEntry> icons_;
         std::vector<uint8_t> scratch_;
     };
 

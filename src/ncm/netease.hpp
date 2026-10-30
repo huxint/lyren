@@ -15,7 +15,7 @@ namespace lyren::ncm {
 
         Client client;
 
-        std::map<std::string, std::string> &session() override {
+        StringMap<std::string> &session() override {
             return client.cookies;
         }
         void on_session_changed(std::move_only_function<void()> changed) override {

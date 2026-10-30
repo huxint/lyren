@@ -1,10 +1,10 @@
 #pragma once
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <string>
 #include <string_view>
 
+#include "core/string_map.hpp"
 #include "core/task.hpp"
 #include "net/fetch.hpp"
 
@@ -31,13 +31,13 @@ namespace lyren::ncm {
           http_(http) {}
 
         // The whole session including the device fingerprint; persisted with the credentials.
-        std::map<std::string, std::string> cookies;
+        StringMap<std::string> cookies;
         std::move_only_function<void()> on_cookies; // a response changed the session
 
         bool logged_in() const;
         void ensure_fingerprint();
         void clear_login();
-        const std::string &get(const std::string &key) const;
+        const std::string &get(std::string_view key) const;
 
         // fields: JSON object members without the braces, e.g. R"("id":1)". uri is the /api/... path.
         Task<Reply> call(std::string uri, std::string fields, Api api = Api::eapi, net::Retry retry = net::Retry::network);

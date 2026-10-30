@@ -183,18 +183,17 @@ namespace lyren {
             const Rect rr = row(66, first, last);
             const float cw = std::min(250.f, w * 0.42f);
             caption(rr, title, hint, cw);
-            const std::string draft_key(id);
-            auto draft = settings_sliders_.find(draft_key);
+            auto draft = settings_sliders_.find(id);
             float value = draft == settings_sliders_.end() ? static_cast<float>((current - low) / (high - low)) : draft->second;
             const ui::Id slider_id = ui.id(id);
             if (ui.slider(slider_id, {rr.right() - 18 - cw, rr.y + (rr.h - 18) / 2, cw - 52, 18}, value)) {
-                settings_sliders_[draft_key] = value;
+                settings_sliders_[id] = value;
             }
             const double result = std::round((low + static_cast<double>(value) * (high - low)) / step) * step;
             ui.label({rr.right() - 18 - 46, rr.y, 46, rr.h}, display(result), {.size = t.fs(13), .color = t.text_dim, .features = text::tabular_nums}, Align::right);
-            if (!ui.is_active(slider_id) && settings_sliders_.contains(draft_key)) {
+            if (!ui.is_active(slider_id) && settings_sliders_.contains(id)) {
                 set_setting_(section, key, std::format("{:.2f}", result));
-                settings_sliders_.erase(draft_key);
+                settings_sliders_.erase(id);
             }
         };
         auto button_row = [&](std::string_view id, std::string_view title, std::string_view hint, std::string_view label, std::string_view icon, bool first, bool last) {
@@ -631,7 +630,7 @@ namespace lyren {
         auto &p = ui.painter();
         p.gradient(r, ui::hsl(0.62f, 0.35f, 0.42f), ui::hsl(0.7f, 0.3f, 0.2f), radius);
         if (const Track *track = current()) {
-            const auto &e = images_.get(cover_url(track->cover, 128), 128, true);
+            const auto &e = images_.get(track->cover, 128, true);
             if (e.ready) {
                 const float aspect = r.w / r.h;
                 const Rect uv = aspect > 1 ? Rect{0, (1 - 1 / aspect) / 2, 1, 1 / aspect} : Rect{(1 - aspect) / 2, 0, aspect, 1};

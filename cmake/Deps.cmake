@@ -32,8 +32,14 @@ FetchContent_Declare(
   URL_HASH
     SHA256=174ebc4e769928959614789c5b4e9c3d0a0f81a62bb608756b127bfebfb21331
   SOURCE_SUBDIR none)
+FetchContent_Declare(
+  nexus
+  URL https://github.com/huxint/nexus/archive/28946ed94718047baee966b34237a12efe961115.tar.gz
+  URL_HASH
+    SHA256=3e851022efb502b35b574675c011b58b8847870c6fbe95f8ebab1ef42ad0198f
+  SOURCE_SUBDIR none)
 FetchContent_MakeAvailable(vulkan_headers wayland_protocols glaze nanosvg
-                           doctest)
+                           doctest nexus)
 
 add_library(vulkan_headers INTERFACE)
 target_include_directories(vulkan_headers SYSTEM
@@ -44,6 +50,15 @@ add_library(nanosvg INTERFACE)
 target_include_directories(nanosvg SYSTEM INTERFACE ${nanosvg_SOURCE_DIR}/src)
 add_library(doctest INTERFACE)
 target_include_directories(doctest SYSTEM INTERFACE ${doctest_SOURCE_DIR})
+
+find_package(Threads REQUIRED)
+add_library(nexus INTERFACE)
+target_include_directories(nexus SYSTEM INTERFACE ${nexus_SOURCE_DIR}/include)
+target_link_libraries(nexus INTERFACE Threads::Threads)
+target_compile_options(nexus INTERFACE
+  $<$<COMPILE_LANGUAGE:CXX>:-fcontracts>
+  $<$<COMPILE_LANGUAGE:CXX>:$<IF:$<CONFIG:Debug>,-fcontract-evaluation-semantic=enforce,-fcontract-evaluation-semantic=ignore>>)
+target_link_options(nexus INTERFACE -fcontracts)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(

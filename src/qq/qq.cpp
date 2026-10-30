@@ -633,7 +633,7 @@ namespace lyren::qq {
             return std::format("{:08x}{:08x}{:08x}{:08x}", rng(), rng(), rng(), rng());
         }
 
-        Result<std::map<std::string, std::string>> login_session(const Reply &reply) {
+        Result<StringMap<std::string>> login_session(const Reply &reply) {
             auto r = parse<One<QSession>>(reply);
             if (!r) {
                 return std::unexpected(r.error());
@@ -645,14 +645,14 @@ namespace lyren::qq {
             if (!s->musicid || s->musickey.value_or("").empty() || s->openid.value_or("").empty() || s->refresh_token.value_or("").empty()) {
                 return std::unexpected("QQ Music returned incomplete credentials");
             }
-            return std::map<std::string, std::string>{{"musicid", std::to_string(s->musicid)},
-                                                      {"musickey", *s->musickey},
-                                                      {"openid", *s->openid},
-                                                      {"access_token", s->access_token.value_or("")},
-                                                      {"refresh_token", *s->refresh_token},
-                                                      {"unionid", s->unionid.value_or("")},
-                                                      {"expired_at", std::to_string(s->expired_at)},
-                                                      {"encrypt_uin", s->encryptUin.value_or("")}};
+            return StringMap<std::string>{{"musicid", std::to_string(s->musicid)},
+                                          {"musickey", *s->musickey},
+                                          {"openid", *s->openid},
+                                          {"access_token", s->access_token.value_or("")},
+                                          {"refresh_token", *s->refresh_token},
+                                          {"unionid", s->unionid.value_or("")},
+                                          {"expired_at", std::to_string(s->expired_at)},
+                                          {"encrypt_uin", s->encryptUin.value_or("")}};
         }
 
     } // namespace

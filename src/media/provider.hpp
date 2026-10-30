@@ -1,12 +1,12 @@
 #pragma once
 #include <array>
 #include <functional>
-#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "core/result.hpp"
+#include "core/string_map.hpp"
 #include "core/task.hpp"
 #include "media/lyrics.hpp"
 #include "media/quality.hpp"
@@ -85,7 +85,7 @@ namespace lyren {
 
         Features features;
         bool reload_after_edit = false; // server-assigned playlist metadata and order need a readback
-        virtual std::map<std::string, std::string> &session() = 0;
+        virtual StringMap<std::string> &session() = 0;
         virtual void on_session_changed(std::move_only_function<void()> changed) = 0;
         virtual Task<Result<void>> initialize() = 0;
         virtual void cancel_qr() = 0;

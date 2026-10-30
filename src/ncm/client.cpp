@@ -53,7 +53,7 @@ namespace lyren::ncm {
         return !get("MUSIC_U").empty();
     }
 
-    const std::string &Client::get(const std::string &key) const {
+    const std::string &Client::get(std::string_view key) const {
         static const std::string empty;
         auto it = cookies.find(key);
         return it == cookies.end() ? empty : it->second;
@@ -109,7 +109,7 @@ namespace lyren::ncm {
             }
             return v;
         };
-        std::string key(trim(first.substr(0, eq))), value(trim(first.substr(eq + 1)));
+        std::string_view key = trim(first.substr(0, eq)), value = trim(first.substr(eq + 1));
         std::string lower(raw);
         for (auto &ch : lower) {
             ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -118,7 +118,7 @@ namespace lyren::ncm {
         if (expired || value.empty()) {
             cookies.erase(key);
         } else {
-            cookies[key] = value;
+            cookies.insert_or_assign(key, value);
         }
     }
 

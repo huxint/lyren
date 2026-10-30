@@ -124,7 +124,7 @@ namespace lyren::audio {
                               PW_KEY_NODE_NAME, "lyren", PW_KEY_NODE_LATENCY, "2048/48000", "state.restore-props", "false", PW_KEY_MEDIA_NAME, name_.c_str(), nullptr);
         stream_ = pw_stream_new(core_, "Lyren", props);
         pw_stream_add_listener(stream_, &listener_, &StreamEvents::events, this);
-        std::array<uint8_t, 1024> buf;
+        alignas(SPA_POD_ALIGN) std::array<uint8_t, 1024> buf;
         spa_pod_builder b = SPA_POD_BUILDER_INIT(buf.data(), buf.size());
         spa_audio_info_raw info{.format = SPA_AUDIO_FORMAT_F32, .rate = f.rate, .channels = f.channels};
         if (f.channels == 1) {

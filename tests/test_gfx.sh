@@ -9,7 +9,7 @@ mkdir -p "$LYREN_GFX_TEST_DIR/config" "$LYREN_GFX_TEST_DIR/cache" "$LYREN_GFX_TE
 
 cat > "$LYREN_GFX_TEST_DIR/session.sh" <<'SESSION'
 #!/bin/sh
-env LYREN_VALIDATION=1 VK_LAYER_VALIDATE_SYNC=1 "$LYREN_GFX_TEST_BIN" > "$LYREN_GFX_TEST_DIR/tests.log" 2>&1
+env LYREN_VALIDATION=1 VK_LAYER_VALIDATE_SYNC=1 NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 "$LYREN_GFX_TEST_BIN" > "$LYREN_GFX_TEST_DIR/tests.log" 2>&1
 printf '%s\n' "$?" > "$LYREN_GFX_TEST_DIR/status"
 SESSION
 chmod +x "$LYREN_GFX_TEST_DIR/session.sh"

@@ -1,8 +1,8 @@
 #pragma once
-#include <map>
 #include <string>
 
 #include "core/result.hpp"
+#include "core/string_map.hpp"
 #include "core/task.hpp"
 
 namespace lyren::creds {
@@ -14,7 +14,7 @@ namespace lyren::creds {
     Task<Result<void>> save(Loop &loop, std::string plaintext);
 
     // What the plaintext holds: each service's cookie session.
-    using Credentials = std::map<std::string, std::map<std::string, std::string>>;
+    using Credentials = StringMap<StringMap<std::string>>;
     std::string to_json(const Credentials &c);
     Credentials from_json(std::string_view json);
 

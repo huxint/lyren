@@ -50,7 +50,7 @@ namespace lyren::qq {
 
         Client client;
 
-        std::map<std::string, std::string> &session() override {
+        StringMap<std::string> &session() override {
             return client.session;
         }
         void on_session_changed(std::move_only_function<void()> changed) override {

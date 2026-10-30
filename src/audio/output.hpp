@@ -81,10 +81,13 @@ namespace lyren::audio {
         // Fixed across translation units and compiler tuning; the supported x86-64 targets use 64-byte lines.
         static constexpr size_t cache_line_bytes = 64;
         alignas(cache_line_bytes) std::atomic<uint64_t> w_{0};
-        alignas(cache_line_bytes) std::atomic<uint64_t> r_{0};
         // A flush is published as (drop_to, base) then a new flush_seq_; the reader applies it before its next read.
-        std::atomic<uint64_t> drop_to_{0}, base_{0}, eos_{UINT64_MAX}, played_{0};
-        std::atomic<uint32_t> flush_seq_{0}, flush_applied_{0};
+        std::atomic<uint64_t> drop_to_{0}, base_{0}, eos_{UINT64_MAX};
+        std::atomic<uint32_t> flush_seq_{0};
+
+        alignas(cache_line_bytes) std::atomic<uint64_t> r_{0};
+        std::atomic<uint64_t> played_{0};
+        std::atomic<uint32_t> flush_applied_{0};
         uint32_t flush_seen_ = 0; // realtime thread
         bool draining_ = false;   // realtime thread
     };

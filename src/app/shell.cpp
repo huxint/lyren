@@ -10,6 +10,7 @@
 #include <ctime>
 #include <format>
 #include <iterator>
+#include <inplace_vector>
 #include <numbers>
 #include <ranges>
 
@@ -115,8 +116,20 @@ namespace lyren {
         return lyren::trf("{}/{}", month, day);
     }
 
+    static void prefetch_covers(Images &images, std::span<const Card> cards) {
+        for (const auto &card : cards.first(std::min(cards.size(), 16uz))) {
+            images.prefetch(card.cover, 128);
+        }
+    }
+
+    static void prefetch_covers(Images &images, std::span<const Track> tracks) {
+        for (const auto &track : tracks.first(std::min(tracks.size(), 32uz))) {
+            images.prefetch(track.cover, 64);
+        }
+    }
+
     // A page of a listing arrived; an empty one ends it, whatever the total said.
-    static void arrived(auto &res, Result<Batch> r, double now) {
+    static void arrived(Images &images, auto &res, Result<Batch> r, double now) {
         res.loading = false;
         if (!r) {
             res.error = r.error();
@@ -126,6 +139,8 @@ namespace lyren {
             res.since = now;
         }
         res.loaded = true;
+        prefetch_covers(images, r->tracks);
+        prefetch_covers(images, r->cards);
         bool empty = r->tracks.empty() && r->cards.empty();
         res.tracks.insert(res.tracks.end(), std::make_move_iterator(r->tracks.begin()), std::make_move_iterator(r->tracks.end()));
         res.cards.insert(res.cards.end(), std::make_move_iterator(r->cards.begin()), std::make_move_iterator(r->cards.end()));
@@ -200,6 +215,7 @@ namespace lyren {
         resume_at_ = last_pos_ = saved.position;
         recent_ = std::move(saved.recent);
         refresh_recent();
+        prefetch_covers(images_, queue_);
         dl_x_ = saved.lyrics_x, dl_bottom_ = saved.lyrics_bottom, dl_locked_ = saved.lyrics_locked;
         dl_enabled_ = saved.lyrics_enabled;
         dl_island_ = saved.lyrics_island;
@@ -369,7 +385,7 @@ namespace lyren {
 
     float Shell::cover_hue(const std::string &url, float size) {
         int px = Images::tier(size);
-        const auto &e = images_.get(cover_url(url, px), static_cast<uint32_t>(px));
+        const auto &e = images_.get(url, static_cast<uint32_t>(px));
         return e.ready ? e.hue : e.failed ? -1 : -2;
     }
 
@@ -735,7 +751,7 @@ namespace lyren {
         if (saved) {
             credentials_ = creds::from_json(*saved);
             for (const auto &entry : platforms) {
-                provider(entry.source).session() = std::move(credentials_[std::string(entry.id)]);
+                provider(entry.source).session() = std::move(credentials_[entry.id]);
             }
             can_save_creds_ = true;
         } else {
@@ -755,6 +771,7 @@ namespace lyren {
         if (source == active_) {
             ensure_route_data();
         }
+        spawn(warm_pages(source));
         if (provider(source).logged_in()) {
             co_await load_library(source);
         }
@@ -770,7 +787,7 @@ namespace lyren {
             creds_timer_ = 0;
             spawn([](Shell *self) -> Task<void> {
                 for (const auto &entry : platforms) {
-                    self->credentials_[std::string(entry.id)] = self->provider(entry.source).session();
+                    self->credentials_[entry.id] = self->provider(entry.source).session();
                 }
                 auto r = co_await creds::save(self->loop_, creds::to_json(self->credentials_));
                 if (!r) {
@@ -803,6 +820,7 @@ namespace lyren {
             clear_comment_writes(source);
         }
         lib.account = *a;
+        images_.prefetch(a->avatar, 64);
         if (account_changed && thread_.source == source && !thread_.id.empty()) {
             thread_.draft = std::make_shared<CommentDraft>();
             thread_.replies.reset();
@@ -819,6 +837,7 @@ namespace lyren {
         if (pl) {
             lib.liked = std::move(pl->first);
             lib.playlists = std::move(pl->second);
+            prefetch_covers(images_, lib.playlists);
         } else {
             notify(pl.error(), "list-music", true);
         }
@@ -846,7 +865,7 @@ namespace lyren {
         res.loading = true;
         auto r = co_await provider(source).recommended_playlists();
         Results fresh;
-        arrived(fresh, std::move(r).transform([](std::vector<Card> v) {
+        arrived(images_, fresh, std::move(r).transform([](std::vector<Card> v) {
             return Batch{.cards = std::move(v)};
         }),
                 now_());
@@ -862,6 +881,7 @@ namespace lyren {
             co_return;
         }
         lib.daily_lists = std::move(*r);
+        prefetch_covers(images_, lib.daily_lists);
         lib.daily_since = now_();
         redraw_();
     }
@@ -871,7 +891,7 @@ namespace lyren {
         res.loading = true;
         auto r = co_await provider(source).toplists();
         Results fresh;
-        arrived(fresh, std::move(r).transform([](std::vector<Card> v) {
+        arrived(images_, fresh, std::move(r).transform([](std::vector<Card> v) {
             return Batch{.cards = std::move(v)};
         }),
                 now_());
@@ -890,6 +910,7 @@ namespace lyren {
         }
         lib.fm_loading = false;
         if (r) {
+            prefetch_covers(images_, *r);
             lib.fm.insert(lib.fm.end(), r->begin(), r->end());
         } else {
             lib.fm_error = r.error();
@@ -903,6 +924,9 @@ namespace lyren {
         }
         for (const auto &track : recent_) {
             library(track.source).recent.push_back(track);
+        }
+        for (const auto &lib : libraries_) {
+            prefetch_covers(images_, lib.recent);
         }
     }
 
@@ -996,7 +1020,7 @@ namespace lyren {
             if (!img.w) {
                 co_return redraw_();
             }
-            images_.put("qr", img);
+            images_.put("qr", 512, img);
             qr_image_ = true;
         } else {
             QRcode *q = QRcode_encodeString(code->text.c_str(), 0, QR_ECLEVEL_H, QR_MODE_8, 1);
@@ -1145,6 +1169,8 @@ namespace lyren {
         res.loaded = true;
         if (r) {
             Batch &part = res.sources[i];
+            prefetch_covers(images_, r->tracks);
+            prefetch_covers(images_, r->cards);
             int count = static_cast<int>(r->tracks.size() + r->cards.size());
             res.done[i] = count == 0 || offset + count >= r->total;
             part.total = r->total;
@@ -1311,6 +1337,38 @@ namespace lyren {
         return p == Page::daily || p == Page::fm || p == Page::liked || p == Page::cloud || p == Page::collection || p == Page::dislikes;
     }
 
+    Task<void> Shell::warm_pages(Source source) {
+        // Current-page work starts first. Warm only small, reusable listings, not every playlist's tracks.
+        co_await lyren::sleep{loop_, source == active_ ? 200ms : 800ms};
+        auto &lib = library(source);
+        auto &features = provider(source).features;
+        if (!lib.recommended.loaded && !lib.recommended.loading) {
+            co_await load_recommended(source);
+        }
+        if (!lib.toplists.loaded && !lib.toplists.loading) {
+            co_await load_toplists(source);
+        }
+        if (features.square.playlists && !lib.square.loaded && !lib.square.loading) {
+            lib.square.loading = true;
+            co_await fetch_square(source, lib.square_gen, lib.category.id, 0);
+        }
+        if (features.square.categories && lib.categories.groups.empty() && !lib.categories_loading) {
+            co_await load_categories(source);
+        }
+        if (features.releases.songs && features.releases.albums) {
+            for (int tab = 0; tab < 2; ++tab) {
+                auto &res = lib.releases[tab];
+                if (!res.loaded && !res.loading) {
+                    res.loading = true;
+                    co_await fetch_releases(source, tab, lib.release_gen[tab], features.releases.categories[tab][lib.release_category[tab]].id, 0);
+                }
+            }
+        }
+        if (provider(source).logged_in() && !lib.collection[0].loaded && !lib.collection[0].loading) {
+            co_await load_collection(source);
+        }
+    }
+
     void Shell::ensure_route_data() {
         Page page = route_.page;
         Library &lib = library();
@@ -1390,6 +1448,7 @@ namespace lyren {
         list->loading = false;
         if (r) {
             list->tracks = std::move(*r);
+            prefetch_covers(images_, list->tracks);
             list->since = now_();
         } else {
             list->error = r.error();
@@ -1439,7 +1498,7 @@ namespace lyren {
         } else {
             r = co_await provider(card).artist_albums(card.id, offset);
         }
-        arrived(tab == 0 ? page->songs : page->albums, std::move(r), now_());
+        arrived(images_, tab == 0 ? page->songs : page->albums, std::move(r), now_());
         redraw_();
     }
 
@@ -1483,7 +1542,7 @@ namespace lyren {
         if (gen != lib.square_gen) {
             co_return;
         }
-        arrived(lib.square, std::move(r), now_());
+        arrived(images_, lib.square, std::move(r), now_());
         redraw_();
     }
 
@@ -1526,7 +1585,7 @@ namespace lyren {
         if (gen != lib.release_gen[tab]) {
             co_return;
         }
-        arrived(lib.releases[tab], std::move(r), now_());
+        arrived(images_, lib.releases[tab], std::move(r), now_());
         redraw_();
     }
 
@@ -1545,8 +1604,8 @@ namespace lyren {
             return Batch{.cards = std::move(v)};
         };
         std::array<Results, 2> fresh;
-        arrived(fresh[0], std::move(albums).transform(batch), now_());
-        arrived(fresh[1], std::move(artists).transform(batch), now_());
+        arrived(images_, fresh[0], std::move(albums).transform(batch), now_());
+        arrived(images_, fresh[1], std::move(artists).transform(batch), now_());
         // A reload does not replay the cards' entrance.
         for (int i = 0; i < 2; ++i) {
             if (lib.collection[i].loaded) {
@@ -1959,7 +2018,7 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         int px = Images::tier(r.w * p.scale());
-        const auto &e = images_.get(cover_url(url, px), static_cast<uint32_t>(px));
+        const auto &e = images_.get(url, static_cast<uint32_t>(px));
         float a = e.ready ? ui.progress(e.ready_at, 320, ease::standard) : 0;
         if (a < 1) {
             p.rect(r, t.text.with_alpha(0.07f), radius);
@@ -2402,7 +2461,7 @@ namespace lyren {
                                                  {Page::cloud, "cloud", lyren::tr("My cloud")},
                                                  {Page::collection, "star", lyren::tr("My collection")},
                                                  {Page::dislikes, "thumbs-down", lyren::tr("Disliked")}});
-        std::vector<Nav> nav;
+        std::inplace_vector<Nav, entries.size()> nav;
         size_t mine = 0;
         for (size_t k = 0; k < entries.size(); ++k) {
             if (supports(entries[k].page, active_)) {
@@ -2609,6 +2668,9 @@ namespace lyren {
             ui::Id item = ui.id(key(cards[i]));
             Rect c = g.cell(r.x, r.y, i, item);
             if (c.bottom() < clip.y || c.y > clip.bottom()) {
+                if (c.bottom() >= clip.y - clip.h && c.y <= clip.bottom() + clip.h) {
+                    images_.prefetch(cards[i].cover, static_cast<uint32_t>(Images::tier(c.w * ui.painter().scale())));
+                }
                 continue;
             }
             // Cards arrive one after another.
@@ -2632,7 +2694,7 @@ namespace lyren {
             std::string_view id, big, title, subtitle, icon;
             float hue;
         };
-        std::vector<Hero> heroes;
+        std::inplace_vector<Hero, 4> heroes;
         std::string day = today_.substr(3);
         if (features.daily.songs) {
             heroes.push_back({Page::daily, "hero-daily", day, "Daily mix", "Fresh picks, every day", {}, 0.98f});
@@ -3269,6 +3331,11 @@ namespace lyren {
         float off = ui.begin_scroll(id, r, static_cast<float>(tracks.size()) * row_h + 8);
         // One row past the bottom keeps its place, so it slides in with the rest when a row above it goes.
         int first = static_cast<int>(off / row_h), last = static_cast<int>((off + r.h) / row_h) + 2;
+        for (int i = std::max(0, first - 8); i < std::min(last + 16, static_cast<int>(tracks.size())); ++i) {
+            if (i < first || i > last) {
+                images_.prefetch(tracks[static_cast<size_t>(i)].cover, static_cast<uint32_t>(Images::tier(40 * p.scale())));
+            }
+        }
         // Rows glide to a new place when the list changes under them; a list that arrives anew starts in place.
         ui.push_id(ui::sub_id(id, std::bit_cast<uint64_t>(since)));
         for (int i = first; i <= last && i < static_cast<int>(tracks.size()); ++i) {

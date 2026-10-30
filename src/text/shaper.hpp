@@ -1,10 +1,9 @@
 #pragma once
 #include <cstdint>
-#include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
+#include "core/string_map.hpp"
 #include "text/fonts.hpp"
 
 namespace lyren::text {
@@ -43,8 +42,7 @@ namespace lyren::text {
         };
         Fonts &fonts_;
         hb_buffer_t *buf_;
-        std::unordered_map<std::string, Entry> cache_;
-        std::string key_;
+        CacheMap<Entry> cache_;
         size_t glyphs_ = 0;
         uint64_t frame_ = 0;
     };

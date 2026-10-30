@@ -1,18 +1,20 @@
 #pragma once
+#include <deque>
 #include <functional>
+#include <memory>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <vector>
 
 #include "core/loop.hpp"
+#include "core/string_map.hpp"
 #include "gfx/renderer.hpp"
 #include "gfx/image.hpp"
 #include "net/http.hpp"
 
 namespace lyren {
 
-    // Cover art as textures. Images are fetched at the requested size, decoded on the network thread and uploaded on the
-    // loop thread; textures that were not drawn recently are evicted once the total passes the budget.
+    // Cover art as textures. Downloads feed a small decode pool; uploads and cache access stay on the loop thread.
     class Images {
     public:
         struct Entry {
@@ -22,7 +24,7 @@ namespace lyren {
             float hue = -1;      // dominant hue, negative for colourless images
             float luma = 0;      // mean luminance (0..1)
             uint32_t px = 0;
-            size_t bytes = 0;
+            size_t bytes = 0;  // pixel bytes, reserved until decoding completes
             uint64_t used = 0; // last frame it was asked for
         };
 
@@ -34,24 +36,44 @@ namespace lyren {
 
         // Size tier for a cover drawn d buffer pixels wide.
         static int tier(float d);
-        // The image at url, which the caller already sized to px; starts loading it on first use. blurred gives a small,
-        // heavily blurred version for backgrounds.
-        const Entry &get(const std::string &url, uint32_t px, bool blurred = false);
-        void put(const std::string &key, const gfx::Image &image); // generated images, such as the login QR code
-        void erase(const std::string &key);
+        // url is the original cover URL; resizing it for the service happens only when a download starts.
+        // A cached size can stand in while a sharper image loads. blurred uses a separate, small background image.
+        const Entry &get(std::string_view url, uint32_t px, bool blurred = false);
+        // Best effort: queued pixels and entries must fit the cache budget.
+        void prefetch(std::string_view url, uint32_t px, bool blurred = false);
+        void put(std::string_view key, uint32_t px, const gfx::Image &image); // generated images, such as the login QR code
+        void erase(std::string_view key);
         void end_frame();
 
     private:
+        enum class Priority : uint8_t {
+            none,
+            background,
+            foreground
+        };
+        struct Cached : Entry {
+            Priority queued = Priority::none;
+            net::Http::Id request = 0;
+            uint64_t ticket = 0;
+        };
+        struct Loader;
+        Cached &request(CacheKey::View key, Priority priority);
+        void erase(CacheMap<Cached>::iterator it);
         void pump();
+        void complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &image, float hue, float luma, const std::string &error);
 
         Loop &loop_;
         net::Http &http_;
         gfx::Renderer &renderer_;
         std::move_only_function<void()> redraw_;
         std::move_only_function<double()> now_;
-        std::unordered_map<std::string, Entry> entries_;
-        std::vector<std::string> queue_; // newest last, which is fetched first
-        int in_flight_ = 0;
+        CacheMap<Cached> entries_;
+        std::vector<CacheKey> queue_; // newest visible image first
+        std::deque<CacheKey> preloads_;
+        std::shared_ptr<Loader> loader_;
+        int in_flight_ = 0, background_in_flight_ = 0;
+        bool pump_scheduled_ = false;
+        uint64_t ticket_ = 0;
         uint64_t frame_ = 1;
         size_t bytes_ = 0;
     };

@@ -12,7 +12,7 @@
 
 namespace lyren::qq {
 
-    const std::string &Client::get(const std::string &key) const {
+    const std::string &Client::get(std::string_view key) const {
         static const std::string empty;
         auto it = session.find(key);
         return it == session.end() ? empty : it->second;

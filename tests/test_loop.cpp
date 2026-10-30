@@ -34,6 +34,35 @@ TEST_CASE("posted deferred and timed work can transfer exclusive ownership") {
     CHECK(ran_on == std::this_thread::get_id());
 }
 
+TEST_CASE("concurrent posts and posts from a running callback all reach the loop exactly once") {
+    Loop loop;
+    constexpr int producers = 4, count = 500;
+    int completed = 0;
+    auto finish = [&] {
+        if (++completed == producers * count * 2) {
+            loop.quit();
+        }
+    };
+    std::vector<std::jthread> threads;
+    for (int p = 0; p < producers; ++p) {
+        threads.emplace_back([&] {
+            for (int i = 0; i < count; ++i) {
+                loop.post([&] {
+                    finish();
+                    loop.post(finish);
+                });
+            }
+        });
+    }
+    auto timeout = loop.after(3s, [&] {
+        loop.quit();
+    });
+    loop.run();
+    loop.cancel(timeout);
+    threads.clear();
+    CHECK(completed == producers * count * 2);
+}
+
 TEST_CASE("timers fire in deadline order and can be cancelled") {
     Loop loop;
     std::string order;

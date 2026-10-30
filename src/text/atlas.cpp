@@ -188,7 +188,7 @@ namespace lyren::text {
     }
 
     const AtlasEntry &Atlas::icon(std::string_view name, int size) {
-        std::string key = std::string(name) + '@' + std::to_string(size);
+        CacheKey::View key{name, static_cast<uint32_t>(size)};
         if (auto it = icons_.find(key); it != icons_.end()) {
             return it->second;
         }
@@ -197,7 +197,7 @@ namespace lyren::text {
         if (rasterize_icon(name, size, cov)) {
             e = add(mono_, size, size, 0, size, cov.data(), size);
         }
-        return icons_.emplace(std::move(key), e).first->second;
+        return icons_.emplace(CacheKey(key), e).first->second;
     }
 
 } // namespace lyren::text
