@@ -1,7 +1,6 @@
 #include "wl/window.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
 #include <span>
 
@@ -54,12 +53,11 @@ namespace lyren::wl {
             },
     };
 
-    Window::Window(Display &display, Callbacks cb, bool client_side, int width, int height)
+    Window::Window(Display &display, Callbacks cb, int width, int height)
     : display_(display),
       cb_(std::move(cb)),
       width_(width),
-      height_(height),
-      csd_(client_side) {
+      height_(height) {
         surface_ = wl_compositor_create_surface(display_.compositor);
         wl_surface_set_user_data(surface_, static_cast<SurfaceSink *>(this));
         viewport_ = wp_viewporter_get_viewport(display_.viewporter, surface_);
@@ -75,8 +73,8 @@ namespace lyren::wl {
         if (display_.decoration) {
             decoration_ = zxdg_decoration_manager_v1_get_toplevel_decoration(display_.decoration, toplevel_);
             zxdg_toplevel_decoration_v1_add_listener(decoration_, &decoration_listener, this);
+            zxdg_toplevel_decoration_v1_set_mode(decoration_, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
         }
-        set_decorations(client_side);
         wl_surface_commit(surface_);
 
         // Launchers hand over focus through this variable.
@@ -90,9 +88,6 @@ namespace lyren::wl {
     }
 
     Window::~Window() {
-        if (effect_) {
-            ext_background_effect_surface_v1_destroy(effect_);
-        }
         if (decoration_) {
             zxdg_toplevel_decoration_v1_destroy(decoration_);
         }
@@ -107,28 +102,9 @@ namespace lyren::wl {
         xdg_toplevel_set_title(toplevel_, title.c_str());
     }
 
-    void Window::set_decorations(bool client_side) {
-        if (decoration_) {
-            zxdg_toplevel_decoration_v1_set_mode(decoration_, client_side ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE : ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
-        } else {
-            csd_ = true;
-        }
-    }
-
-    void Window::set_shadow(int margin, int resize_border, int corner_radius) {
-        shadow_ = margin, resize_border_ = resize_border, radius_ = corner_radius;
+    void Window::set_shadow(int margin, int resize_border) {
+        shadow_ = margin, resize_border_ = resize_border;
         update_margin();
-    }
-
-    void Window::set_blur(bool on) {
-        if (!display_.blur_supported || on == blur_) {
-            return;
-        }
-        blur_ = on;
-        if (on && !effect_) {
-            effect_ = ext_background_effect_manager_v1_get_background_effect(display_.background_effect, surface_);
-        }
-        geometry_dirty_ = true;
     }
 
     void Window::activate(const std::string &token) {
@@ -262,26 +238,6 @@ namespace lyren::wl {
             wl_region_add(input, margin_ - b, margin_ - b, width_ + 2 * b, height_ + 2 * b);
             wl_surface_set_input_region(surface_, input);
             wl_region_destroy(input);
-
-            if (effect_) {
-                wl_region *blur = nullptr;
-                if (blur_) {
-                    // Rounded corners as one-pixel rows; corners vanish when the margin does.
-                    blur = wl_compositor_create_region(display_.compositor);
-                    int r = margin_ ? radius_ : 0;
-                    wl_region_add(blur, margin_, margin_ + r, width_, height_ - 2 * r);
-                    for (int k = 0; k < r; ++k) {
-                        double dy = r - k - 0.5;
-                        int inset = static_cast<int>(std::lround(r - std::sqrt(static_cast<double>(r) * r - dy * dy)));
-                        wl_region_add(blur, margin_ + inset, margin_ + k, width_ - 2 * inset, 1);
-                        wl_region_add(blur, margin_ + inset, margin_ + height_ - 1 - k, width_ - 2 * inset, 1);
-                    }
-                }
-                ext_background_effect_surface_v1_set_blur_region(effect_, blur);
-                if (blur) {
-                    wl_region_destroy(blur);
-                }
-            }
         }
         wl_callback_add_listener(wl_surface_frame(surface_), &frame_listener, this);
         frame_pending_ = true;

@@ -157,7 +157,6 @@ add_wayland_protocols(
     ${WP_DIR}/staging/cursor-shape/cursor-shape-v1.xml
     ${WP_DIR}/staging/fractional-scale/fractional-scale-v1.xml
     ${WP_DIR}/staging/xdg-activation/xdg-activation-v1.xml
-    ${WP_DIR}/staging/ext-background-effect/ext-background-effect-v1.xml
     ${WP_DIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
     ${WP_DIR}/unstable/text-input/text-input-unstable-v3.xml
     ${CMAKE_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml)

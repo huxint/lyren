@@ -11,7 +11,6 @@ TEST_CASE("embedded default config parses to the built-in defaults") {
     REQUIRE(c.has_value());
     Config d;
     CHECK(c->interface.language == Language::zh);
-    CHECK(c->window.decorations == d.window.decorations);
     CHECK(c->render.max_fps == d.render.max_fps);
     CHECK(c->playback.quality == Quality::lossless);
     CHECK(c->theme.font == "sans-serif");
@@ -20,7 +19,7 @@ TEST_CASE("embedded default config parses to the built-in defaults") {
 }
 
 TEST_CASE("config errors carry the line number") {
-    auto bad_enum = parse_config("[window]\ndecorations = \"clint\"\n");
+    auto bad_enum = parse_config("[theme]\nmode = \"murk\"\n");
     REQUIRE_FALSE(bad_enum.has_value());
     CHECK(bad_enum.error().starts_with("2:"));
     auto unknown = parse_config("[theme]\nfont_size = 14\nradus = 3\n");

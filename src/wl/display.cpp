@@ -41,8 +41,6 @@ namespace lyren::wl {
             bind(reg, name, &xdg_activation_v1_interface, ver, 1, d->activation);
         } else if (is(zwlr_layer_shell_v1_interface)) {
             bind(reg, name, &zwlr_layer_shell_v1_interface, ver, 4, d->layer_shell);
-        } else if (is(ext_background_effect_manager_v1_interface)) {
-            bind(reg, name, &ext_background_effect_manager_v1_interface, ver, 1, d->background_effect);
         } else if (is(wl_data_device_manager_interface)) {
             bind(reg, name, &wl_data_device_manager_interface, ver, 3, d->data_device_manager);
         }
@@ -54,11 +52,6 @@ namespace lyren::wl {
         xdg_wm_base_pong(wm, serial);
     }
     static const xdg_wm_base_listener wm_listener{on_ping};
-
-    static void on_effect_caps(void *data, ext_background_effect_manager_v1 *, uint32_t flags) {
-        static_cast<Display *>(data)->blur_supported = flags & EXT_BACKGROUND_EFFECT_MANAGER_V1_CAPABILITY_BLUR;
-    }
-    static const ext_background_effect_manager_v1_listener effect_listener{on_effect_caps};
 
     Display::Display(Loop &l)
     : loop(l) {
@@ -75,9 +68,6 @@ namespace lyren::wl {
             std::exit(1);
         }
         xdg_wm_base_add_listener(wm_base, &wm_listener, this);
-        if (background_effect) {
-            ext_background_effect_manager_v1_add_listener(background_effect, &effect_listener, this);
-        }
         input = std::make_unique<Input>(*this);
         clipboard = std::make_unique<Clipboard>(*this);
         wl_display_roundtrip(display);

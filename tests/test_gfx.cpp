@@ -414,7 +414,7 @@ TEST_CASE("texture replacement preserves the uploaded pixels across submissions"
                        .key = [](const wl::KeyEvent &) {},
                        .focus = [](bool) {},
                        .text_input = [](const wl::TextInputEvent &) {}},
-                      true, 720, 480);
+                      720, 480);
     auto timeout = g.loop.after(2s, [&] {
         g.loop.quit();
     });
@@ -489,7 +489,7 @@ TEST_CASE("emoji are drawn in colour from their own sheet") {
                        .key = [](const wl::KeyEvent &) {},
                        .focus = [](bool) {},
                        .text_input = [](const wl::TextInputEvent &) {}},
-                      true, 720, 480);
+                      720, 480);
     auto timeout = g.loop.after(2s, [&] {
         g.loop.quit();
     });

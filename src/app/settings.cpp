@@ -24,7 +24,7 @@ namespace lyren {
         constexpr std::array<std::string_view, 4> rest_colors{"#ffffff", "#c9c9d2", "#ffe7ad", "#cdeaff"};
         constexpr std::string_view outline_on = "\"#000000a0\"", outline_off = "\"#00000000\"";
         constexpr std::array<double, 4> text_sizes{13, 14, 15, 16};
-        constexpr std::array<double, 3> motions{0, 1, 1.5};
+        constexpr std::array<double, 2> motions{1, 1.5};
         constexpr std::array<int, 6> frame_rates{0, 30, 60, 90, 120, 144};
         constexpr float bar_h = 52; // the tab bar
         // The cards sit in one column up to 720 wide or, once two of 460 fit, each section's side by side, up to 1160 in
@@ -54,7 +54,7 @@ namespace lyren {
         const float left = 32 + (room - content_w) / 2;
         std::array<Rect, 14> layout;
         {
-            float y = 28 + 76 + bar_h + 12;
+            float y = 28 + 52 + bar_h + 12;
             for (size_t s = 0; s < sections.size(); ++s) {
                 layout[s] = {left, y, content_w, 28};
                 settings_tops_[s] = y;
@@ -100,9 +100,8 @@ namespace lyren {
         const float origin = r.y - off; // content coordinates start here
         const Rect frame{r.x + at[13].x, origin, at[13].w, 0};
         ui.label({frame.x, origin + 28, frame.w, 38}, lyren::tr("Settings"), {.size = t.fs(28), .color = t.text});
-        ui.label({frame.x, origin + 70, frame.w, 20}, lyren::tr("Changes apply right away"), {.size = t.fs(13), .color = t.text_dim});
         // The tab bar sits under the title until it reaches the top, then stays there over the content.
-        const float bar_natural = origin + 104, bar_y = std::max(r.y, bar_natural);
+        const float bar_natural = origin + 80, bar_y = std::max(r.y, bar_natural);
         ui.push_clip({r.x, bar_y + bar_h, r.w, std::max(0.f, r.bottom() - bar_y - bar_h)});
 
         // Each card is drawn where the layout puts it, its rows stacked from its top, and its height kept for the next
@@ -311,7 +310,7 @@ namespace lyren {
             }
         }
         {
-            const std::array labels{lyren::tr("Off"), lyren::tr("Standard"), lyren::tr("Relaxed")};
+            const std::array labels{lyren::tr("Standard"), lyren::tr("Relaxed")};
             int motion = static_cast<int>(std::ranges::find(motions, config_.theme.motion) - motions.begin());
             motion = motion < static_cast<int>(motions.size()) ? motion : -1;
             if (segmented_row("motion", lyren::tr("Motion"), {}, labels, motion, false, false)) {
@@ -321,44 +320,20 @@ namespace lyren {
         {
             const std::array fills{lyren::tr("Wave"), lyren::tr("Line")};
             int fill = config_.interface.progress == ProgressStyle::wave ? 0 : 1;
-            if (segmented_row("progress-fill", lyren::tr("Progress bar"), {}, fills, fill, false, false)) {
+            if (segmented_row("progress-fill", lyren::tr("Progress bar"), {}, fills, fill, false, true)) {
                 set_setting_("interface", "progress", fill == 0 ? "\"wave\"" : "\"line\"");
             }
         }
-        slider_row(
-            "opacity", lyren::tr("Window opacity"), lyren::tr("Below 100% the desktop shows through, blurred"), config_.window.opacity, 0.3, 1, 0.05,
-            [](double v) {
-                return std::format("{:.0f}%", v * 100);
-            },
-            "window", "opacity", false, true);
 
         // Playback.
         heading(1);
         place(2);
         {
-            const Rect head = row(60, true, false);
-            caption(head, lyren::tr("Audio quality"), lyren::tr("Actual quality is shown during playback"), 0);
             const std::array<std::string_view, 5> names{lyren::tr("Standard"), lyren::tr("High"), lyren::tr("Very high"), lyren::tr("Lossless"), "Hi-Res"};
-            const std::array<std::string_view, 5> details{"128 kbps", "192 kbps · QQ: 128 kbps", "320 kbps", "FLAC", "24-bit FLAC · QQ: FLAC"};
             const std::array<std::string_view, 5> values{"standard", "higher", "exhigh", "lossless", "hires"};
-            for (size_t i = 0; i < names.size(); ++i) {
-                const Rect rr = row(46, false, i + 1 == names.size());
-                const ui::Id id = ui.id(values[i]);
-                const auto it = ui.interact(id, rr);
-                const bool on = static_cast<size_t>(config_.playback.quality) == i;
-                const float hot = ui.anim(id, it.hovered ? 1 : 0, 140);
-                if (hot > 0) {
-                    p.rect(rr.inset(6, 4), t.hover.with_alpha(hot), t.radius_s());
-                }
-                ui.label({rr.x + 18, rr.y, 160, rr.h}, names[i], {.size = t.fs(14), .color = on ? t.text : t.text.mix(t.text_dim, 0.35f)});
-                ui.label({rr.x + 160, rr.y, rr.w - 220, rr.h}, details[i], {.size = t.fs(12), .color = t.text_dim});
-                const float check = ui.anim(ui::sub_id(id, 1), on ? 1 : 0, 180);
-                if (check > 0) {
-                    p.icon("check", ui::center({rr.right() - 46, rr.y, 28, rr.h}, 17 * (0.6f + 0.4f * check), 17 * (0.6f + 0.4f * check)), t.accent.with_alpha(check));
-                }
-                if (it.clicked && !on) {
-                    set_setting_("playback", "quality", '"' + std::string(values[i]) + '"');
-                }
+            int quality = static_cast<int>(config_.playback.quality);
+            if (segmented_row("quality", lyren::tr("Audio quality"), {}, names, quality, true, true)) {
+                set_setting_("playback", "quality", std::format("\"{}\"", values[static_cast<size_t>(quality)]));
             }
         }
         place(3);
@@ -513,11 +488,6 @@ namespace lyren {
             if (segmented_row("language", lyren::tr("Language"), {}, language_labels, language, true, false)) {
                 set_setting_("interface", "language", language == 0 ? "\"zh\"" : "\"en\"");
             }
-            const std::array titles{lyren::tr("Built in"), lyren::tr("System")};
-            int title_bar = static_cast<int>(config_.window.decorations);
-            if (segmented_row("decorations", lyren::tr("Title bar"), lyren::tr("System draws the desktop's own title bar"), titles, title_bar, false, false)) {
-                set_setting_("window", "decorations", title_bar == 0 ? "\"client\"" : "\"server\"");
-            }
             {
                 // Frame rate: a menu, since it has many choices.
                 const Rect rr = row(66, false, false);
@@ -559,7 +529,6 @@ namespace lyren {
             set_setting_("theme", "font_size", "14");
             set_setting_("theme", "radius", "10");
             set_setting_("theme", "motion", "1.0");
-            set_setting_("window", "opacity", "1.0");
             for (std::string_view key : {"bg", "surface", "elevated", "border", "text", "text_dim", "danger"}) {
                 set_setting_("theme.colors", key, {});
             }

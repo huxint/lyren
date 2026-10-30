@@ -16,11 +16,6 @@
 #include "sys/paths.hpp"
 
 template <>
-struct glz::meta<lyren::Decorations> {
-    using enum lyren::Decorations;
-    static constexpr auto value = enumerate(client, server);
-};
-template <>
 struct glz::meta<lyren::GpuChoice> {
     using enum lyren::GpuChoice;
     static constexpr auto value = enumerate(integrated, discrete);

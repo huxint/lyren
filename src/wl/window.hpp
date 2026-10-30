@@ -24,7 +24,7 @@ namespace lyren::wl {
             std::move_only_function<void(const TextInputEvent &)> text_input;
         };
 
-        Window(Display &display, Callbacks cb, bool client_side, int width, int height);
+        Window(Display &display, Callbacks cb, int width, int height);
         ~Window() override;
 
         wl_surface *surface() const {
@@ -76,10 +76,8 @@ namespace lyren::wl {
         }
 
         void set_title(const std::string &title);
-        void set_decorations(bool client_side);
         // Shadow margin and the band outside the geometry that still resizes (logical px); only used with CSD.
-        void set_shadow(int margin, int resize_border, int corner_radius);
-        void set_blur(bool on);
+        void set_shadow(int margin, int resize_border);
 
         void move();
         void resize(uint32_t xdg_edges);
@@ -132,17 +130,16 @@ namespace lyren::wl {
         zxdg_toplevel_decoration_v1 *decoration_ = nullptr;
         wp_viewport *viewport_ = nullptr;
         wp_fractional_scale_v1 *fractional_ = nullptr;
-        ext_background_effect_surface_v1 *effect_ = nullptr;
 
         int width_, height_;
         int pending_w_ = 0, pending_h_ = 0;
         bool pending_max_ = false, pending_full_ = false, pending_act_ = false, pending_tiled_ = false;
         bool maximized_ = false, fullscreen_ = false, activated_ = false, tiled_ = false;
         bool csd_ = true;
-        int shadow_ = 0, resize_border_ = 0, radius_ = 0, margin_ = 0;
+        int shadow_ = 0, resize_border_ = 0, margin_ = 0;
         uint32_t scale120_ = 120;
         uint32_t ack_serial_ = 0;
-        bool configured_ = false, needs_ack_ = false, geometry_dirty_ = true, blur_ = false;
+        bool configured_ = false, needs_ack_ = false, geometry_dirty_ = true;
         bool frame_pending_ = false;
     };
 

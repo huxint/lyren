@@ -198,7 +198,7 @@ namespace lyren {
         };
         int w = saved_.width > 0 ? std::max(saved_.width, 720) : 1180, h = saved_.height > 0 ? std::max(saved_.height, 480) : 760;
         saved_ = {};
-        window_ = std::make_unique<wl::Window>(display_, std::move(cb), config_.config.window.decorations == Decorations::client, w, h);
+        window_ = std::make_unique<wl::Window>(display_, std::move(cb), w, h);
         window_->set_title("Lyren");
         target_ = renderer_.create_target(display_.display, window_->surface());
         apply_config(true);
@@ -242,9 +242,7 @@ namespace lyren {
         if (!initial && !errors.empty()) {
             toast(errors.substr(0, errors.find('\n')));
         }
-        window_->set_decorations(config_.config.window.decorations == Decorations::client);
-        window_->set_shadow(shadow_margin, resize_border, static_cast<int>(theme_.radius_l()));
-        window_->set_blur(theme_.opacity < 1);
+        window_->set_shadow(shadow_margin, resize_border);
         sync_desktop_lyrics();
         request_redraw();
     }
@@ -345,9 +343,9 @@ namespace lyren {
         bool floating = window_->client_side() && m > 0;
         float radius = floating ? theme_.radius_l() : 0;
         if (floating) {
-            p.shadow({0, 6, w, h}, radius, 20, theme_.shadow, theme_.opacity < 1);
+            p.shadow({0, 6, w, h}, radius, 20, theme_.shadow);
         }
-        p.rect({0, 0, w, h}, theme_.bg.with_alpha(theme_.opacity), radius, floating ? theme_.border : ui::Color{}, floating ? 1 : 0);
+        p.rect({0, 0, w, h}, theme_.bg, radius, floating ? theme_.border : ui::Color{}, floating ? 1 : 0);
 
         ui_.window_radius = radius;
         ui_.toast_bottom = Shell::player_h + 20;

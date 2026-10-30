@@ -3,7 +3,6 @@
 #include <wayland-client.h>
 
 #include "cursor-shape-v1-client.h"
-#include "ext-background-effect-v1-client.h"
 #include "fractional-scale-v1-client.h"
 #include "text-input-unstable-v3-client.h"
 #include "viewporter-client.h"

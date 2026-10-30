@@ -616,7 +616,7 @@ namespace lyren {
         std::array<float, 4> settings_tops_{};
         int settings_jump_ = 0, settings_section_ = 0, settings_columns_ = 0;
         double settings_jump_until_ = 0, settings_drawn_ = -10, settings_moved_ = -10;
-        std::array<float, 9> settings_heights_{196, 248, 290, 132, 234, 386, 250, 256, 132};
+        std::array<float, 9> settings_heights_{196, 240, 58, 132, 234, 386, 250, 190, 132};
         std::array<ui::Rect, 14> settings_shown_{}, settings_from_{};
         StringMap<float> settings_sliders_; // values being dragged, written on release
         std::move_only_function<void()> open_config_;

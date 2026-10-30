@@ -36,7 +36,6 @@ namespace lyren::ui {
         float font_size = 14; // base size; the scale 12/13/14/16/20/28 follows it
         float radius = 10;    // medium; small and large follow it
         float motion = 1;
-        float opacity = 1;
         bool dark = true;
         bool auto_accent = true; // accent follows the cover of the current track
         // Desktop lyrics: the sung part (unset follows the accent), the rest, and an outline that reads over anything.

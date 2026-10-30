@@ -7,12 +7,6 @@ language = "zh"
 # wave | line: wave ripples through the played part, line keeps it flat
 progress = "wave"
 
-[window]
-# client: integrated title bar; server: native compositor decorations
-decorations = "client"
-# Values below 1 enable compositor background blur.
-opacity = 1.0
-
 [gpu]
 # integrated: lower power use; discrete: dedicated GPU. Requires a restart.
 device = "integrated"

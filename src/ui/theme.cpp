@@ -178,7 +178,6 @@ namespace lyren::ui {
         th.font_size = static_cast<float>(std::clamp(t.font_size, 9.0, 32.0));
         th.radius = static_cast<float>(std::clamp(t.radius, 0.0, 24.0));
         th.motion = static_cast<float>(std::clamp(t.motion, 0.0, 4.0));
-        th.opacity = static_cast<float>(std::clamp(config.window.opacity, 0.3, 1.0));
 
         const auto &d = config.desktop_lyrics;
         th.lyric_text = hex("#ffffff"), th.lyric_outline = hex("#000000a0");

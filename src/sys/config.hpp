@@ -14,10 +14,6 @@ namespace lyren {
 
     class Loop;
 
-    enum class Decorations : uint8_t {
-        client,
-        server
-    };
     enum class GpuChoice : uint8_t {
         integrated,
         discrete
@@ -41,10 +37,6 @@ namespace lyren {
             Language language = Language::zh;
             ProgressStyle progress = ProgressStyle::wave;
         } interface;
-        struct Window {
-            Decorations decorations = Decorations::client;
-            double opacity = 1.0;
-        } window;
         struct Gpu {
             GpuChoice device = GpuChoice::integrated;
         } gpu;
