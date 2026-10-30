@@ -286,9 +286,9 @@ namespace lyren {
             lyric_layout_.clear();
             float y = 0;
             for (const auto &l : lyrics_) {
-                LyricBlock b{.lines = wrap(p, l.text, main.size, r.w), .y = y};
+                LyricBlock b{.lines = p.wrap(l.text, main.size, r.w), .y = y};
                 if (lyric_translation_ && !l.translation.empty()) {
-                    b.translation = wrap(p, l.translation, sub.size, r.w);
+                    b.translation = p.wrap(l.translation, sub.size, r.w);
                 }
                 b.h = static_cast<float>(b.lines.size()) * main_lh + static_cast<float>(b.translation.size()) * sub_lh;
                 y += b.h + gap;
@@ -493,6 +493,32 @@ namespace lyren {
         } else if (size_t next = static_cast<size_t>(cur + 1); next < lyrics_.size()) {
             ui.wake(ui.now + (lyrics_[next].time - lead - now));
         }
+    }
+
+    // Where the wipe of a word-timed line stands at t within s, one of its wrapped lines: px from the start of s,
+    // a soft edge's width before it while s is unsung and past its end once sung.
+    float Shell::sung_x(ui::Painter &p, const LyricLine &l, std::string_view s, float size, float soft, double t) {
+        int k = word_at(l, t);
+        if (k < 0) {
+            return -soft;
+        }
+        const LyricWord &w = l.words[static_cast<size_t>(k)];
+        auto from = static_cast<uint32_t>(s.data() - l.text.data()), to = from + static_cast<uint32_t>(s.size());
+        const text::Shaped &sh = p.shape(s, {.size = size});
+        auto x = [&](uint32_t b) {
+            if (b <= from) {
+                return -soft;
+            }
+            if (b >= to) {
+                return sh.width * size + soft;
+            }
+            auto g = std::ranges::find_if(sh.glyphs, [&](const text::Glyph &g) {
+                return g.cluster >= b - from;
+            });
+            return (g == sh.glyphs.end() ? sh.width : g->x) * size;
+        };
+        float sung = w.duration() > 0 ? static_cast<float>(std::clamp((t - w.time()) / w.duration(), 0.0, 1.0)) : 1;
+        return x(w.from) + (x(w.to) - x(w.from)) * sung;
     }
 
 } // namespace lyren

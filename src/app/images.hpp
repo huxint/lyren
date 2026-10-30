@@ -2,6 +2,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,6 +14,9 @@
 #include "net/http.hpp"
 
 namespace lyren {
+
+    struct Track;
+    struct Card;
 
     // Cover art as textures. Downloads feed a small decode pool; uploads and cache access stay on the loop thread.
     class Images {
@@ -41,6 +45,8 @@ namespace lyren {
         const Entry &get(std::string_view url, uint32_t px, bool blurred = false);
         // Best effort: queued pixels and entries must fit the cache budget.
         void prefetch(std::string_view url, uint32_t px, bool blurred = false);
+        void prefetch(std::span<const Track> tracks);
+        void prefetch(std::span<const Card> cards);
         void put(std::string_view key, uint32_t px, const gfx::Image &image); // generated images, such as the login QR code
         void erase(std::string_view key);
         void end_frame();

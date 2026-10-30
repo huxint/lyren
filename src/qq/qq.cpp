@@ -956,62 +956,24 @@ namespace lyren::qq {
             return renew(force);
         };
         reload_after_edit = true;
-        features.radio.title = "Your radio";
-        features.radio.tracks = [this] {
-            return fm();
-        };
-        features.radio.trash = [this](Track track) {
-            return dislike({.source = Source::qq, .id = std::move(track.id), .name = std::move(track.title)}, true);
-        };
+        radio_title = "Your radio";
         features.exclusions.list = [this](DislikeKind kind) {
             return dislikes(kind);
         };
         features.exclusions.set = [this](Dislike item, bool on) {
             return dislike(std::move(item), on);
         };
-        features.library.collected_playlists = [this] {
-            return collected_playlists();
-        };
-        features.library.collect_playlist = [this](std::string id, bool on) {
-            return collect_playlist(std::move(id), on);
-        };
-        features.library.reorder_playlist = [this](std::string id, std::vector<Track> tracks) {
-            return reorder_playlist(std::move(id), std::move(tracks));
-        };
-        features.comments.replies = [this](Subject, std::string, std::string root, int page, std::string cursor) {
-            return comment_replies(std::move(root), page, std::move(cursor));
-        };
-        features.comments.like = [this](Subject, std::string, std::string id, bool on) {
-            return like_comment(std::move(id), on);
-        };
-        features.comments.post = [this](Subject subject, std::string id, std::string content, std::string reply) {
-            return post_comment(subject, std::move(id), std::move(content), std::move(reply));
-        };
-        features.comments.remove = [this](Subject, std::string, std::string id) {
-            return delete_comment(std::move(id));
-        };
-        features.releases.categories[0] = {{"5", "Latest"}, {"1", "Mainland"}, {"6", "HK/TW"}, {"2", "Western"}, {"4", "Korea"}, {"3", "Japan"}};
-        features.releases.categories[1] = {{"1", "Mainland"}, {"2", "HK/TW"}, {"3", "Western"}, {"4", "Korea"}, {"5", "Japan"}};
-        features.releases.songs = [this](std::string type) {
-            return new_songs(std::move(type));
-        };
-        features.releases.albums = [this](std::string area, int offset) {
-            return new_albums(std::move(area), offset);
-        };
-        features.square.categories = [this] {
-            return categories();
-        };
-        features.square.playlists = [this](std::string category, int offset) {
-            return square(std::move(category), offset);
-        };
+        release_categories[0] = {{"5", "Latest"}, {"1", "Mainland"}, {"6", "HK/TW"}, {"2", "Western"}, {"4", "Korea"}, {"3", "Japan"}};
+        release_categories[1] = {{"1", "Mainland"}, {"2", "HK/TW"}, {"3", "Western"}, {"4", "Korea"}, {"5", "Japan"}};
         features.radar = [this] {
             return radar();
         };
-        features.similar = [this](std::string id) {
-            return similar(std::move(id));
-        };
         std::mt19937_64 rng{std::random_device{}()};
         guid_ = std::to_string(1000000000 + rng() % 9000000000);
+    }
+
+    Task<Result<void>> Qq::fm_trash(Track track) {
+        return dislike({.source = Source::qq, .id = std::move(track.id), .name = std::move(track.title)}, true);
     }
 
     Task<Result<void>> Qq::initialize() {
@@ -1612,7 +1574,7 @@ namespace lyren::qq {
         return out;
     }
 
-    Task<Result<CommentPage>> Qq::comment_replies(std::string root, int page, std::string cursor) {
+    Task<Result<CommentPage>> Qq::comment_replies(Subject, std::string, std::string root, int page, std::string cursor) {
         std::array<std::string, 2> continuation;
         if (!cursor.empty()) {
             static_cast<void>(glz::read_json(continuation, cursor));
@@ -1640,7 +1602,7 @@ namespace lyren::qq {
         return {};
     }
 
-    Task<Result<void>> Qq::like_comment(std::string id, bool on) {
+    Task<Result<void>> Qq::like_comment(Subject, std::string, std::string id, bool on) {
         std::string param =
             std::format(R"({{"comment_id":{},"type":{},"uin":{}}})", glz::write_json(glz::escape_bytes_t{id}).value(), on ? 3 : 4, glz::write_json(client.get("musicid")).value());
         co_return parse_comment_like(co_await client.call({{"GlobalComment.GlobalCommentWriteServer", "UpdateHotComment", std::move(param)}}, Comm::app, net::Retry::never));
@@ -1696,7 +1658,7 @@ namespace lyren::qq {
         return {};
     }
 
-    Task<Result<void>> Qq::delete_comment(std::string id) {
+    Task<Result<void>> Qq::delete_comment(Subject, std::string, std::string id) {
         auto param = std::format(R"({{"CommentId":{}}})", glz::write_json(glz::escape_bytes_t{id}).value());
         co_return parse_comment_delete(co_await client.call({{"music.globalComment.CommentWriteServer", "DelComment", std::move(param)}}, Comm::app, net::Retry::never));
     }

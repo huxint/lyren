@@ -238,7 +238,7 @@ static Task<Result<std::string>> post_comment(Provider &provider, std::span<cons
     if (content.find_first_not_of(" \t\r\n") == std::string::npos) {
         co_return std::unexpected("Comment cannot be empty");
     }
-    co_return co_await provider.features.comments.post(*subject, args[1], std::move(content), args.size() == 4 ? args[3] : "");
+    co_return co_await provider.post_comment(*subject, args[1], std::move(content), args.size() == 4 ? args[3] : "");
 }
 
 static void print_tracks(const std::vector<Track> &tracks) {
@@ -293,8 +293,7 @@ static Task<Result<void>> releases_command(Provider &provider, bool albums, std:
     if (args.size() > (albums ? 2u : 1u)) {
         co_return std::unexpected("Expected new-songs [area] or new-albums [area] [offset]");
     }
-    auto &releases = provider.features.releases;
-    const auto &categories = releases.categories[albums];
+    const auto &categories = provider.release_categories[albums];
     std::string category = args.empty() ? categories.front().id : args[0];
     if (std::ranges::find(categories, category, &Category::id) == categories.end()) {
         co_return std::unexpected("Expected a supported release category ID");
@@ -304,14 +303,14 @@ static Task<Result<void>> releases_command(Provider &provider, bool albums, std:
         if (!offset) {
             co_return std::unexpected(offset.error());
         }
-        auto r = co_await releases.albums(category, *offset);
+        auto r = co_await provider.new_albums(category, *offset);
         if (!r) {
             co_return std::unexpected(r.error());
         }
         std::println("{} total", r->total);
         print_cards(r->cards);
     } else {
-        auto r = co_await releases.songs(category);
+        auto r = co_await provider.new_songs(category);
         if (!r) {
             co_return std::unexpected(r.error());
         }
@@ -387,8 +386,12 @@ static int ncm_command(const std::vector<std::string> &args) {
             }
             std::string cursor;
             for (int page = 1; page <= 2; ++page) {
-                auto r = replies ? co_await ncm.comment_replies(*subject, args[2], args[3], cursor)
-                                 : co_await ncm.comments(*subject, args[2], args.size() < 4 || args[3] != "new", page, cursor);
+                Result<CommentPage> r;
+                if (replies) {
+                    r = co_await ncm.comment_replies(*subject, args[2], args[3], page, cursor);
+                } else {
+                    r = co_await ncm.comments(*subject, args[2], args.size() < 4 || args[3] != "new", page, cursor);
+                }
                 if (!r) {
                     co_return fail(r.error());
                 }
@@ -768,7 +771,7 @@ static int qq_command(const std::vector<std::string> &args) {
             }
             std::string cursor;
             for (int page = 1; page <= 2; ++page) {
-                auto r = co_await q.comment_replies(arg(2), page, cursor);
+                auto r = co_await q.comment_replies(Subject::song, {}, arg(2), page, cursor);
                 if (!r) {
                     co_return fail(r.error());
                 }
@@ -788,7 +791,7 @@ static int qq_command(const std::vector<std::string> &args) {
             if (!q.logged_in()) {
                 co_return fail("Sign in to QQ Music first");
             }
-            auto r = co_await q.like_comment(arg(2), arg(3) == "on");
+            auto r = co_await q.like_comment(Subject::song, {}, arg(2), arg(3) == "on");
             if (!r) {
                 co_return fail(r.error());
             }

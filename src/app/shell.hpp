@@ -237,12 +237,6 @@ namespace lyren {
             comments
         };
 
-    public:
-        static std::vector<std::string_view> wrap(ui::Painter &p, std::string_view text, float size, float width);
-        // wrap() for text with line breaks; blank lines stay.
-        static std::vector<std::string_view> wrap_lines(ui::Painter &p, std::string_view text, float size, float width);
-
-    private:
         // Pages and parts.
         void sidebar(ui::Ui &ui, ui::Rect r);
         void recommend_page(ui::Ui &ui, ui::Rect r);
@@ -313,8 +307,10 @@ namespace lyren {
         void cover(ui::Ui &ui, ui::Rect r, const std::string &url, float radius, std::string_view placeholder = "music");
         float cover_hue(const std::string &url, float size);
         float special_hue(Page page) const;
+        std::string date_label() const;
 
         // Navigation.
+        static ui::Id search_scroll_id(ui::Ui &ui, Source source, int tab);
         void search(ui::Ui &ui);
         void load_results(int tab, bool retry = false);
         void switch_platform(ui::Ui &ui, Source source);
@@ -329,6 +325,7 @@ namespace lyren {
             return provider().logged_in();
         }
         void ensure_route_data();
+        void arrived(Results &res, Result<Batch> result);
         Task<void> warm_pages(Source source);
         Task<void> load_list(std::shared_ptr<List> list, Page page, Card card);
         Task<void> fetch_results(uint64_t gen, int tab, Source source, std::string query, int offset);
@@ -367,6 +364,7 @@ namespace lyren {
         void seek_song(double at); // song time; resolves the file offset once the stream is known
         void set_mode(Mode m);
         int next_index();
+        uint64_t random();
         void start(double at = 0, bool play = true);
         Task<void> load_track(uint64_t gen, Track t);
         Task<void> load_lyrics(Track t);
@@ -415,9 +413,8 @@ namespace lyren {
         Task<void> startup();
         Task<void> initialize_platform(Source source);
         Task<void> load_library(Source source);
-        Task<void> load_recommended(Source source);
+        Task<void> load_cards(Results &res, Task<Result<std::vector<Card>>> request);
         Task<void> load_daily_lists(Source source);
-        Task<void> load_toplists(Source source);
         Task<void> load_fm(Source source);
         Task<void> load_dislikes(Source source, DislikeKind kind);
         void set_dislike(Dislike item, bool on);

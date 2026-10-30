@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ranges>
+
+#include "core/utf8.hpp"
 
 namespace lyren::ui {
 
@@ -232,6 +235,62 @@ namespace lyren::ui {
 
     void Painter::pop_clip() {
         clips_.pop_back();
+    }
+
+    // Greedy line breaking at spaces and around CJK characters, from a single shaping pass. The lines point into s.
+    std::vector<std::string_view> Painter::wrap(std::string_view s, float size, float width) {
+        const text::Shaped &sh = shape(s, {.size = size});
+        if (sh.width * size <= width || sh.glyphs.size() < 2) {
+            return {s};
+        }
+        auto at = [&](uint32_t byte) {
+            size_t i = byte;
+            return utf8::decode(s, i);
+        };
+        auto wide = [&](uint32_t byte) {
+            return at(byte) >= 0x2e80;
+        };
+        // Closing punctuation stays at the end of the line before.
+        auto closing = [&](uint32_t byte) {
+            return std::u32string_view(U"，。、；：？！）」』》〉】”’…").contains(at(byte));
+        };
+        std::vector<std::string_view> out;
+        auto emit = [&](size_t from, size_t to) {
+            std::string_view v = s.substr(from, to - from);
+            while (v.ends_with(' ')) {
+                v.remove_suffix(1);
+            }
+            while (v.starts_with(' ')) {
+                v.remove_prefix(1);
+            }
+            if (!v.empty()) {
+                out.push_back(v);
+            }
+        };
+        const auto &g = sh.glyphs;
+        size_t start = 0, candidate = 0;
+        for (size_t i = 1; i < g.size(); ++i) {
+            uint32_t c = g[i].cluster, pc = g[i - 1].cluster;
+            if (c != pc && c > 0 && (s[c - 1] == ' ' || wide(c) || wide(pc)) && !closing(c)) {
+                candidate = i;
+            }
+            float end = (i + 1 < g.size() ? g[i + 1].x : sh.width) - g[start].x;
+            if (end * size > width && candidate > start) {
+                emit(g[start].cluster, g[candidate].cluster);
+                start = candidate;
+            }
+        }
+        emit(g[start].cluster, s.size());
+        return out;
+    }
+
+    std::vector<std::string_view> Painter::wrap_lines(std::string_view s, float size, float width) {
+        std::vector<std::string_view> out;
+        for (auto part : std::views::split(s, '\n')) {
+            auto lines = wrap(std::string_view(part.begin(), part.end()), size, width);
+            out.insert(out.end(), lines.begin(), lines.end());
+        }
+        return out;
     }
 
 } // namespace lyren::ui

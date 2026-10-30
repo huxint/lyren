@@ -75,6 +75,10 @@ namespace lyren::ui {
         // Draws text vertically centred in r.
         float text_in(Rect r, std::string_view s, const TextStyle &style);
         float measure(std::string_view s, const TextStyle &style);
+        // Display text wraps at word and CJK boundaries; returned views borrow s.
+        std::vector<std::string_view> wrap(std::string_view s, float size, float width);
+        // Explicit line breaks and blank lines stay.
+        std::vector<std::string_view> wrap_lines(std::string_view s, float size, float width);
         const text::Shaped &shape(std::string_view s, const TextStyle &style) {
             return shaper_.shape(s, style.features);
         }
@@ -117,9 +121,6 @@ namespace lyren::ui {
         // few frames does not rasterize new glyphs every frame. 1 turns it off.
         void set_zoom(float s, float x = 0, float y = 0) {
             zoom_ = s, zx_ = (x + ox_) * scale_, zy_ = (y + oy_) * scale_;
-        }
-        float zoom() const {
-            return zoom_;
         }
         // Glyphs of text drawn afterwards rise by the dy of the last entry whose byte offset in that text they have
         // reached (lyric words lifting as they are sung). Entries are in text order; the span must outlive the drawing.

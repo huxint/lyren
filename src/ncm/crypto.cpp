@@ -51,7 +51,8 @@ namespace lyren::ncm {
         return encoding::hex(aes(EVP_aes_128_ecb(), data, eapi_key, nullptr), true);
     }
 
-    std::string rsa_hex(std::string_view data) {
+    // Unpadded RSA with the web client's public key, as 256 hex digits.
+    static std::string rsa_hex(std::string_view data) {
         BN_CTX *ctx = BN_CTX_new();
         BIGNUM *n = nullptr, *e = BN_new(), *m = BN_bin2bn(reinterpret_cast<const unsigned char *>(data.data()), static_cast<int>(data.size()), nullptr), *c = BN_new();
         BN_hex2bn(&n, modulus);

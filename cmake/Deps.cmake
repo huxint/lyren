@@ -38,8 +38,7 @@ FetchContent_Declare(
   URL_HASH
     SHA256=3e851022efb502b35b574675c011b58b8847870c6fbe95f8ebab1ef42ad0198f
   SOURCE_SUBDIR none)
-FetchContent_MakeAvailable(vulkan_headers wayland_protocols glaze nanosvg
-                           doctest nexus)
+FetchContent_MakeAvailable(vulkan_headers wayland_protocols glaze nanosvg nexus)
 
 add_library(vulkan_headers INTERFACE)
 target_include_directories(vulkan_headers SYSTEM
@@ -48,8 +47,11 @@ add_library(glaze INTERFACE)
 target_include_directories(glaze SYSTEM INTERFACE ${glaze_SOURCE_DIR}/include)
 add_library(nanosvg INTERFACE)
 target_include_directories(nanosvg SYSTEM INTERFACE ${nanosvg_SOURCE_DIR}/src)
-add_library(doctest INTERFACE)
-target_include_directories(doctest SYSTEM INTERFACE ${doctest_SOURCE_DIR})
+if(BUILD_TESTING)
+  FetchContent_MakeAvailable(doctest)
+  add_library(doctest INTERFACE)
+  target_include_directories(doctest SYSTEM INTERFACE ${doctest_SOURCE_DIR})
+endif()
 
 find_package(Threads REQUIRED)
 add_library(nexus INTERFACE)

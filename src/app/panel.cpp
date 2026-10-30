@@ -240,7 +240,7 @@ namespace lyren {
 
     Task<void> Shell::fetch_replies(std::shared_ptr<ReplyView> view, int page, std::string cursor) {
         auto feed = view->feed;
-        auto r = co_await provider(thread_.source).features.comments.replies(thread_.subject, thread_.id, view->root.id, page, std::move(cursor));
+        auto r = co_await provider(thread_.source).comment_replies(thread_.subject, thread_.id, view->root.id, page, std::move(cursor));
         if (thread_.replies != view || view->feed != feed) {
             co_return;
         }
@@ -322,7 +322,7 @@ namespace lyren {
         }
         redraw_();
         spawn([](Shell *self, Source source, Subject subject, std::string resource, std::string id, bool like, std::optional<Like> previous, uint64_t gen) -> Task<void> {
-            auto r = co_await self->provider(source).features.comments.like(subject, std::move(resource), id, like);
+            auto r = co_await self->provider(source).like_comment(subject, std::move(resource), id, like);
             auto mine = self->comment_likes_.find(comment_key(source, id));
             if (mine == self->comment_likes_.end() || mine->second.pending != gen) {
                 co_return;
@@ -349,7 +349,7 @@ namespace lyren {
         spawn([](Shell *self, Source source, Subject subject, std::string resource, std::shared_ptr<CommentDraft> thread_draft, std::shared_ptr<ReplyView> view,
                  std::optional<Comment> target) -> Task<void> {
             auto &draft = view ? *view->draft : *thread_draft;
-            auto r = co_await self->provider(source).features.comments.post(subject, std::move(resource), draft.text, target ? target->id : "");
+            auto r = co_await self->provider(source).post_comment(subject, std::move(resource), draft.text, target ? target->id : "");
             draft.sending = false;
             // The thread draft changes only when the resource or account changes.
             if (self->thread_.draft != thread_draft) {
@@ -383,7 +383,7 @@ namespace lyren {
         ui.open_modal(400, 232, [this, source = thread_.source, subject = thread_.subject, resource = thread_.id, comment](ui::Ui &u, Rect r) {
             const auto &t = u.theme();
             u.label({r.x, r.y, r.w - 40, 30}, lyren::tr("Delete comment?"), {.size = t.fs(20), .color = t.text});
-            auto lines = wrap_lines(u.painter(), comment.text, t.fs(13), r.w);
+            auto lines = u.painter().wrap_lines(comment.text, t.fs(13), r.w);
             for (size_t i = 0; i < std::min<size_t>(lines.size(), 3); ++i) {
                 u.label({r.x, r.y + 46 + static_cast<float>(i) * 22, r.w, 22}, lines[i], {.size = t.fs(13), .color = t.text_dim});
             }
@@ -399,7 +399,7 @@ namespace lyren {
             uint64_t gen = ++comment_write_gen_;
             comment_deletes_.insert_or_assign(CacheKey(comment_key(source, comment.id)), gen);
             spawn([](Shell *self, Source source, Subject subject, std::string resource, std::string id, uint64_t gen) -> Task<void> {
-                auto result = co_await self->provider(source).features.comments.remove(subject, resource, id);
+                auto result = co_await self->provider(source).delete_comment(subject, resource, id);
                 auto pending = self->comment_deletes_.find(comment_key(source, id));
                 if (pending == self->comment_deletes_.end() || pending->second != gen) {
                     co_return;
@@ -437,9 +437,6 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto &provider = this->provider(thread_.source);
-        if (!provider.features.comments.post) {
-            return 0;
-        }
         if (!provider.logged_in()) {
             constexpr float height = 58;
             p.rect({r.x + 18, r.bottom() - height, r.w - 36, 1}, t.border);
@@ -616,10 +613,10 @@ namespace lyren {
         TextStyle body{.size = t.fs(14), .color = t.text}, quote{.size = t.fs(13), .color = t.text_dim}, small{.size = t.fs(12), .color = t.text_dim};
         const float lh = std::round(body.size * 1.6f), qh = std::round(quote.size * 1.55f), tx = x + 44, tw = w - 44;
         std::string replied = c.reply.empty() ? "" : '@' + c.reply_user + "：" + c.reply;
-        auto lines = wrap_lines(p, c.text, body.size, tw);
+        auto lines = p.wrap_lines(c.text, body.size, tw);
         std::vector<std::string_view> quoted;
         if (!replied.empty()) {
-            quoted = wrap_lines(p, replied, quote.size, tw - 24);
+            quoted = p.wrap_lines(replied, quote.size, tw - 24);
         }
         // Avatar beside the name and likes, then the text, the comment it answers and the time.
         float quote_h = quoted.empty() ? 0 : static_cast<float>(quoted.size()) * qh + 22;
@@ -630,34 +627,25 @@ namespace lyren {
         ui.push_id(ui.id(key(source, c.id)));
         float top = y + 16;
         cover(ui, {x, top, 32, 32}, c.avatar, 16, "user");
-        float likes_w = 0;
         auto mine = comment_likes_.find(comment_key(source, c.id));
         bool liked = mine != comment_likes_.end() ? mine->second.liked : c.liked;
-        if (provider(source).features.comments.like) {
-            std::string n = short_count(mine != comment_likes_.end() ? mine->second.likes : c.likes);
-            likes_w = p.measure(n, small) + 34;
-            ui.disabled = mine != comment_likes_.end() && mine->second.pending;
-            Rect button{x + w - likes_w, top - 5, likes_w, 28};
-            {
-                Fade dim(p, ui.disabled ? 0.4f : 1.f);
-                auto it = ui.interact(ui.id("comment-like"), button);
-                if (it.hovered) {
-                    p.rect(button, t.text.with_alpha(0.06f), t.radius_s());
-                }
-                if (it.clicked) {
-                    toggle_comment_like(source, c);
-                }
-                p.icon("thumbs-up", {button.x + 4, top + 2, 14, 14}, liked ? t.accent : t.text_dim);
-                ui.label({button.x + 24, top, likes_w - 24, 18}, n, {.size = small.size, .color = liked ? t.accent : t.text_dim});
+        std::string n = short_count(mine != comment_likes_.end() ? mine->second.likes : c.likes);
+        float likes_w = p.measure(n, small) + 34;
+        ui.disabled = mine != comment_likes_.end() && mine->second.pending;
+        Rect button{x + w - likes_w, top - 5, likes_w, 28};
+        {
+            Fade dim(p, ui.disabled ? 0.4f : 1.f);
+            auto it = ui.interact(ui.id("comment-like"), button);
+            if (it.hovered) {
+                p.rect(button, t.text.with_alpha(0.06f), t.radius_s());
             }
-            ui.disabled = false;
-        } else if (c.likes > 0) {
-            std::string n = short_count(c.likes);
-            float nw = p.measure(n, small);
-            likes_w = nw + 22;
-            ui.label({x + w - nw, top, nw + 1, 18}, n, small);
-            p.icon("thumbs-up", {x + w - nw - 18, top + 2, 13, 13}, t.text_dim);
+            if (it.clicked) {
+                toggle_comment_like(source, c);
+            }
+            p.icon("thumbs-up", {button.x + 4, top + 2, 14, 14}, liked ? t.accent : t.text_dim);
+            ui.label({button.x + 24, top, likes_w - 24, 18}, n, {.size = small.size, .color = liked ? t.accent : t.text_dim});
         }
+        ui.disabled = false;
         p.text(tx, top + 13, c.user, {.size = t.fs(13), .color = t.text_dim.mix(t.text, 0.35f)}, tw - likes_w - 8);
         float ly = top + 22;
         for (auto l : lines) {
@@ -677,7 +665,7 @@ namespace lyren {
         }
         float time_w = tw;
         float actions_right = x + w;
-        if (c.owned && provider(source).logged_in() && provider(source).features.comments.remove) {
+        if (c.owned && provider(source).logged_in()) {
             ui.disabled = comment_deletes_.contains(comment_key(source, c.id));
             {
                 Fade dim(p, ui.disabled ? 0.4f : 1.f);
@@ -689,7 +677,7 @@ namespace lyren {
             actions_right -= 30;
             time_w -= 30;
         }
-        if (provider(source).features.comments.post) {
+        {
             auto draft = thread_.replies ? thread_.replies->draft : thread_.draft;
             std::string_view label = lyren::tr("Reply");
             float rw = p.measure(label, small) + 16;
@@ -702,7 +690,7 @@ namespace lyren {
             actions_right -= rw + 8;
             time_w -= rw + 8;
         }
-        if (c.replies > 0 && provider(source).features.comments.replies) {
+        if (c.replies > 0) {
             std::string label = lyren::trf("{} replies", c.replies);
             float rw = p.measure(label, small) + 20;
             Rect button{actions_right - rw, ly + 2, rw, 24};

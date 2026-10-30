@@ -30,6 +30,7 @@ CMake 可选参数：
 
 | 参数 | 作用 |
 |---|---|
+| `-DBUILD_TESTING=OFF` | 只构建应用和命令行工具 |
 | `-DLYREN_LTO=OFF` | 关闭 Release / RelWithDebInfo 的链接时优化 |
 | `-DLYREN_NATIVE=ON` | 按本机 CPU 优化；生成的程序需要兼容的 CPU |
 | `-DLYREN_TEST_GRAPHICS=ON` | 启用 Wayland / Vulkan 集成测试，需要 `kwin_wayland` |

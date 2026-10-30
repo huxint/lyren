@@ -276,4 +276,16 @@ namespace lyren {
         }
     }
 
+    void Images::prefetch(std::span<const Card> cards) {
+        for (const auto &card : cards.first(std::min(cards.size(), 16uz))) {
+            prefetch(card.cover, 128);
+        }
+    }
+
+    void Images::prefetch(std::span<const Track> tracks) {
+        for (const auto &track : tracks.first(std::min(tracks.size(), 32uz))) {
+            prefetch(track.cover, 64);
+        }
+    }
+
 } // namespace lyren

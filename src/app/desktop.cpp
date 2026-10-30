@@ -108,7 +108,7 @@ namespace lyren {
         const float left = art ? 46.f : 20.f, right = 42;
         const float text_w = p.measure(text, {.size = line_size});
         const float pill_w = ui.spring(ui.id("island-w"), std::clamp(left + text_w + right, 230.f, 460.f), 420, 0.2f);
-        const auto lines = wrap(p, text, 16, open_w - 2 * pad);
+        const auto lines = p.wrap(text, 16, open_w - 2 * pad);
         const bool lyric_text = line || !track;
         const size_t shown_lines = lyric_text ? std::min(lines.size(), size_t{2}) : 0;
         const float head_h = art ? 52.f : 40.f, lines_h = static_cast<float>(shown_lines) * 23;

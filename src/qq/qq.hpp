@@ -67,13 +67,14 @@ namespace lyren::qq {
 
         Task<Result<std::vector<Card>>> recommended_playlists() override;
         Task<Result<std::vector<Card>>> toplists() override;
-        Task<Result<std::vector<Track>>> fm();
+        Task<Result<std::vector<Track>>> fm() override;
+        Task<Result<void>> fm_trash(Track track) override;
         Task<Result<std::vector<Track>>> radar();
-        Task<Result<std::vector<Track>>> new_songs(std::string type);
-        Task<Result<Batch>> new_albums(std::string area, int offset);
-        Task<Result<Categories>> categories();
-        Task<Result<Batch>> square(std::string category, int offset);
-        Task<Result<std::vector<Track>>> similar(std::string id);
+        Task<Result<std::vector<Track>>> new_songs(std::string type) override;
+        Task<Result<Batch>> new_albums(std::string area, int offset) override;
+        Task<Result<Categories>> categories() override;
+        Task<Result<Batch>> square(std::string category, int offset) override;
+        Task<Result<std::vector<Track>>> similar(std::string id) override;
         Task<Result<std::vector<Dislike>>> dislikes(DislikeKind kind);
         Task<Result<void>> dislike(Dislike item, bool on);
         Task<Result<AlbumInfo>> album(std::string mid) override;
@@ -82,25 +83,25 @@ namespace lyren::qq {
         Task<Result<Batch>> artist_albums(std::string mid, int offset) override;
         Task<Result<std::vector<std::pair<std::string, std::string>>>> artist_intro(std::string mid) override;
         Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) override;
-        Task<Result<CommentPage>> comment_replies(std::string root, int page, std::string cursor);
-        Task<Result<void>> like_comment(std::string id, bool on);
-        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {});
-        Task<Result<void>> delete_comment(std::string id);
+        Task<Result<CommentPage>> comment_replies(Subject subject, std::string id, std::string root, int page, std::string cursor) override;
+        Task<Result<void>> like_comment(Subject subject, std::string resource, std::string id, bool on) override;
+        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {}) override;
+        Task<Result<void>> delete_comment(Subject subject, std::string resource, std::string id) override;
 
         Task<Result<std::pair<Card, std::vector<Card>>>> user_playlists(std::string uid) override;
         Task<Result<std::vector<std::string>>> liked_ids(std::string uid) override;
         Task<Result<void>> like(Track track, bool on) override;
         Task<Result<void>> follow(std::string artist, bool on) override;
         Task<Result<void>> collect(std::string album, bool on) override;
-        Task<Result<void>> collect_playlist(std::string id, bool on);
-        Task<Result<std::vector<Card>>> collected_playlists();
+        Task<Result<void>> collect_playlist(std::string id, bool on) override;
+        Task<Result<std::vector<Card>>> collected_playlists() override;
         Task<Result<std::vector<Card>>> collected_albums() override;
         Task<Result<std::vector<Card>>> followed_artists() override;
         Task<Result<Card>> create_playlist(std::string name, bool hidden) override;
         Task<Result<void>> rename_playlist(std::string id, std::string name) override;
         Task<Result<void>> delete_playlist(std::string id) override;
         Task<Result<void>> edit_playlist(std::string id, Track track, bool add) override;
-        Task<Result<void>> reorder_playlist(std::string id, std::vector<Track> tracks);
+        Task<Result<void>> reorder_playlist(std::string id, std::vector<Track> tracks) override;
 
         bool logged_in() const override {
             return client.logged_in();

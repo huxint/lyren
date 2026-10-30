@@ -19,6 +19,9 @@ if(LYREN_LTO)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
 endif()
 
+include(CTest)
+option(LYREN_TEST_GRAPHICS "Include tests requiring Wayland and Vulkan in CTest" OFF)
+
 include(cmake/Deps.cmake)
 include(cmake/WaylandProtocols.cmake)
 include(cmake/Shaders.cmake)
@@ -50,7 +53,7 @@ const std::size_t icon_source_count = std::size(icon_sources);
 "
     @ONLY)
 
-# Everything below the window: loop, config, credentials, network, audio and both services' clients.
+# Headless services, playback and persistence.
 pkg_check_modules(
     MEDIA
     REQUIRED
@@ -90,20 +93,22 @@ add_library(
     src/qq/auth.cpp
     src/qq/client.cpp
     src/qq/qq.cpp
+    src/app/state.cpp
     src/media/types.cpp
     src/media/lyrics.cpp)
 target_include_directories(lyren_base PUBLIC src)
-target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA glaze)
+target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA PRIVATE glaze)
 target_compile_options(lyren_base PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
 if(LYREN_NATIVE)
     target_compile_options(lyren_base PUBLIC $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-march=native>)
 endif()
 
-# Window, renderer, text, UI toolkit, D-Bus media controls and the app.
-pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libwebp libwebpdemux libqrencode)
+# Reusable window, rendering and UI code; tests do not need the application shell.
+pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libwebp libwebpdemux)
+pkg_check_modules(QRENCODE REQUIRED IMPORTED_TARGET libqrencode)
 pkg_check_modules(SDBUS REQUIRED IMPORTED_TARGET libsystemd)
 add_library(
-    lyren_lib STATIC
+    lyren_ui STATIC
     ${CMAKE_BINARY_DIR}/generated/icon_data.cpp
     src/wl/display.cpp
     src/wl/input.cpp
@@ -124,21 +129,28 @@ add_library(
     src/ui/ui.cpp
     src/ui/widgets.cpp
     src/ui/text_box.cpp
+    src/app/frames.cpp
+    src/app/images.cpp)
+target_link_libraries(lyren_ui PUBLIC lyren_base PkgConfig::SYSLIBS vulkan_headers PRIVATE PkgConfig::UILIBS nanosvg nexus)
+
+add_library(
+    lyren_lib STATIC
     src/sys/bus.cpp
     src/sys/mpris.cpp
     src/app/app.cpp
-    src/app/frames.cpp
-    src/app/images.cpp
-    src/app/state.cpp
     src/app/shell.cpp
+    src/app/account.cpp
+    src/app/library.cpp
+    src/app/catalog.cpp
+    src/app/playback.cpp
+    src/app/pages.cpp
     src/app/settings.cpp
     src/app/stage.cpp
     src/app/panel.cpp
     src/app/desktop.cpp)
-target_link_libraries(lyren_lib PUBLIC lyren_base PkgConfig::SYSLIBS PkgConfig::UILIBS PkgConfig::SDBUS vulkan_headers nanosvg)
-target_link_libraries(lyren_lib PRIVATE nexus)
+target_link_libraries(lyren_lib PUBLIC lyren_ui PkgConfig::SDBUS PRIVATE PkgConfig::QRENCODE)
 add_wayland_protocols(
-    lyren_lib
+    lyren_ui
     ${WP_DIR}/stable/xdg-shell/xdg-shell.xml
     ${WP_DIR}/stable/viewporter/viewporter.xml
     ${WP_DIR}/stable/tablet/tablet-v2.xml
@@ -149,44 +161,44 @@ add_wayland_protocols(
     ${WP_DIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
     ${WP_DIR}/unstable/text-input/text-input-unstable-v3.xml
     ${CMAKE_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml)
-add_shaders(lyren_lib shaders/ui.vert shaders/ui.frag)
+add_shaders(lyren_ui shaders/ui.vert shaders/ui.frag)
 
 add_executable(lyren src/main.cpp)
 target_link_libraries(lyren PRIVATE lyren_lib)
 
 add_executable(lyren-probe tools/lyren-probe.cpp)
-target_link_libraries(lyren-probe PRIVATE lyren_base PkgConfig::UILIBS)
+target_link_libraries(lyren-probe PRIVATE lyren_base PkgConfig::QRENCODE glaze)
 
-enable_testing()
-add_executable(
-    lyren_tests
-    tests/main.cpp
-    tests/test_loop.cpp
-    tests/test_config.cpp
-    tests/test_i18n.cpp
-    tests/test_text.cpp
-    tests/test_utf8.cpp
-    tests/test_encoding.cpp
-    tests/test_ui.cpp
-    tests/test_audio.cpp
-    tests/test_http.cpp
-    tests/test_ncm.cpp
-    tests/test_qq.cpp
-    tests/test_provider.cpp
-    tests/test_timeline.cpp
-    tests/test_lyrics.cpp
-    tests/test_image.cpp)
-target_link_libraries(lyren_tests PRIVATE lyren_lib doctest)
-target_compile_definitions(lyren_tests PRIVATE LYREN_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data")
-add_test(NAME unit COMMAND lyren_tests)
-set_tests_properties(unit PROPERTIES ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_BINARY_DIR}/test-cache;NO_PROXY=127.0.0.1;no_proxy=127.0.0.1")
-add_test(NAME no_alsa COMMAND ${CMAKE_COMMAND} "-DEXECUTABLES=$<TARGET_FILE:lyren>;$<TARGET_FILE:lyren-probe>" -P ${CMAKE_SOURCE_DIR}/tests/no_alsa.cmake)
+if(BUILD_TESTING)
+    add_executable(
+        lyren_tests
+        tests/main.cpp
+        tests/test_loop.cpp
+        tests/test_config.cpp
+        tests/test_i18n.cpp
+        tests/test_text.cpp
+        tests/test_utf8.cpp
+        tests/test_encoding.cpp
+        tests/test_ui.cpp
+        tests/test_audio.cpp
+        tests/test_http.cpp
+        tests/test_ncm.cpp
+        tests/test_qq.cpp
+        tests/test_provider.cpp
+        tests/test_timeline.cpp
+        tests/test_lyrics.cpp
+        tests/test_image.cpp)
+    target_link_libraries(lyren_tests PRIVATE lyren_ui doctest glaze)
+    target_compile_definitions(lyren_tests PRIVATE LYREN_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data")
+    add_test(NAME unit COMMAND lyren_tests)
+    set_tests_properties(unit PROPERTIES ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_BINARY_DIR}/test-cache;NO_PROXY=127.0.0.1;no_proxy=127.0.0.1")
+    add_test(NAME no_alsa COMMAND ${CMAKE_COMMAND} "-DEXECUTABLES=$<TARGET_FILE:lyren>;$<TARGET_FILE:lyren-probe>" -P ${CMAKE_SOURCE_DIR}/tests/no_alsa.cmake)
 
-add_executable(lyren_gfx_tests tests/main.cpp tests/test_gfx.cpp)
-target_link_libraries(lyren_gfx_tests PRIVATE lyren_lib doctest)
-option(LYREN_TEST_GRAPHICS "Include tests requiring Wayland and Vulkan in CTest" OFF)
-if(LYREN_TEST_GRAPHICS)
-    find_program(LYREN_KWIN_WAYLAND kwin_wayland REQUIRED)
-    add_test(NAME graphics COMMAND sh ${CMAKE_SOURCE_DIR}/tests/test_gfx.sh $<TARGET_FILE:lyren_gfx_tests> ${LYREN_KWIN_WAYLAND})
-    set_tests_properties(graphics PROPERTIES TIMEOUT 30)
+    if(LYREN_TEST_GRAPHICS)
+        add_executable(lyren_gfx_tests tests/main.cpp tests/test_gfx.cpp)
+        target_link_libraries(lyren_gfx_tests PRIVATE lyren_ui doctest)
+        find_program(LYREN_KWIN_WAYLAND kwin_wayland REQUIRED)
+        add_test(NAME graphics COMMAND sh ${CMAKE_SOURCE_DIR}/tests/test_gfx.sh $<TARGET_FILE:lyren_gfx_tests> ${LYREN_KWIN_WAYLAND})
+        set_tests_properties(graphics PROPERTIES TIMEOUT 30)
+    endif()
 endif()

@@ -16,7 +16,5 @@ namespace lyren::ncm {
     };
     Weapi weapi(std::string_view text);
     Weapi weapi(std::string_view text, std::string_view secret);
-    // Unpadded RSA with the web client's public key, as 256 hex digits.
-    std::string rsa_hex(std::string_view data);
 
 } // namespace lyren::ncm

@@ -439,47 +439,8 @@ namespace lyren::ncm {
         features.daily.dislike = [this](std::string id) {
             return dislike_daily(std::move(id));
         };
-        features.radio.tracks = [this] {
-            return fm();
-        };
-        features.radio.trash = [this](Track track) {
-            return fm_trash(std::move(track.id));
-        };
-        features.square.categories = [this] {
-            return categories();
-        };
-        features.square.playlists = [this](std::string category, int offset) {
-            return square(std::move(category), offset);
-        };
-        features.releases.categories[0] = {{"0", "All"}, {"7", "Chinese"}, {"96", "Western"}, {"8", "Japan"}, {"16", "Korea"}};
-        features.releases.categories[1] = {{"ALL", "All"}, {"ZH", "Chinese"}, {"EA", "Western"}, {"JP", "Japan"}, {"KR", "Korea"}};
-        features.releases.songs = [this](std::string area) {
-            return new_songs(std::move(area));
-        };
-        features.releases.albums = [this](std::string area, int offset) {
-            return new_albums(std::move(area), offset);
-        };
-        features.library.collected_playlists = [this] {
-            return collected_playlists();
-        };
-        features.library.collect_playlist = [this](std::string id, bool on) {
-            return collect_playlist(std::move(id), on);
-        };
-        features.library.reorder_playlist = [this](std::string id, std::vector<Track> tracks) {
-            return reorder_playlist(std::move(id), std::move(tracks));
-        };
-        features.comments.replies = [this](Subject subject, std::string id, std::string root, int, std::string cursor) {
-            return comment_replies(subject, std::move(id), std::move(root), std::move(cursor));
-        };
-        features.comments.like = [this](Subject subject, std::string id, std::string comment, bool on) {
-            return like_comment(subject, std::move(id), std::move(comment), on);
-        };
-        features.comments.post = [this](Subject subject, std::string id, std::string content, std::string reply) {
-            return post_comment(subject, std::move(id), std::move(content), std::move(reply));
-        };
-        features.comments.remove = [this](Subject subject, std::string id, std::string comment) {
-            return delete_comment(subject, std::move(id), std::move(comment));
-        };
+        release_categories[0] = {{"0", "All"}, {"7", "Chinese"}, {"96", "Western"}, {"8", "Japan"}, {"16", "Korea"}};
+        release_categories[1] = {{"ALL", "All"}, {"ZH", "Chinese"}, {"EA", "Western"}, {"JP", "Japan"}, {"KR", "Korea"}};
         features.reporting.start = [this](std::string id, std::string source) {
             return report_start(std::move(id), std::move(source));
         };
@@ -491,9 +452,6 @@ namespace lyren::ncm {
         };
         features.recent_plays = [this] {
             return recent_plays();
-        };
-        features.similar = [this](std::string id) {
-            return similar(std::move(id));
         };
         features.heartbeat = [this](std::string seed, std::string playlist) {
             return heartbeat(std::move(seed), std::move(playlist));
@@ -866,8 +824,8 @@ namespace lyren::ncm {
         co_return tracks_of(r->data);
     }
 
-    Task<Result<void>> Netease::fm_trash(std::string id) {
-        co_return done(co_await client.call("/api/radio/trash/add", std::format(R"("songId":{},"alg":"RT","time":25)", id), Api::weapi, net::Retry::never));
+    Task<Result<void>> Netease::fm_trash(Track track) {
+        co_return done(co_await client.call("/api/radio/trash/add", std::format(R"("songId":{},"alg":"RT","time":25)", track.id), Api::weapi, net::Retry::never));
     }
 
     Task<Result<std::vector<Track>>> Netease::cloud() {
@@ -1280,7 +1238,7 @@ namespace lyren::ncm {
         return out;
     }
 
-    Task<Result<CommentPage>> Netease::comment_replies(Subject subject, std::string id, std::string root, std::string cursor) {
+    Task<Result<CommentPage>> Netease::comment_replies(Subject subject, std::string id, std::string root, int, std::string cursor) {
         co_return parse_comments(
             co_await client.call("/api/resource/comment/floor/get",
                                  std::format(R"("threadId":"{}","parentCommentId":"{}","time":{},"limit":20)", comment_thread(subject, id), root, cursor.empty() ? "-1" : cursor),

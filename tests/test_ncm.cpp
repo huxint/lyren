@@ -21,14 +21,6 @@ TEST_CASE("weapi matches independent AES and RSA vectors") {
                            "f4cafbb0cf5a66731a3f1776c75ca35d0062dac70a3e33245afabcf47938487");
 }
 
-TEST_CASE("rsa known vector") {
-    // From YetEaseMusic crypto.rs, computed with Python's pow(m, 65537, n).
-    CHECK(rsa_hex("aaaaaaaaaaaaaaaa") == "d473b9eca232f1b4090dd606b0df86de318748dd2eec307e4ed4345030fc4ee30"
-                                         "331e598f41d5a6f5befaab94630ea1a1eda7cfade84fbec1a907913d2e4d2c87"
-                                         "44bc572b99a050075e075b4537f645ecfa994f95906c32818e076aeda6bdb906b"
-                                         "fa0bb96c4cf4bc3ed6d9ab76cf08441153d9d85e1ea3d78fa8d9210d581cee");
-}
-
 TEST_CASE("NetEase new songs preserve legacy metadata and exact resource IDs") {
     auto songs = parse_new_songs({.body = R"({"code":200,"data":[{
         "id":9007199254740993,"name":"新歌","duration":215900,"fee":1,"transNames":["译名"],

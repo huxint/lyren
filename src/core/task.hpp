@@ -37,18 +37,31 @@ namespace lyren {
                 std::terminate();
             }
         };
+
+        template <class T>
+        struct PromiseValue {
+            std::optional<T> value;
+            void return_value(T v) {
+                value = std::move(v);
+            }
+            T result() {
+                return std::move(*value);
+            }
+        };
+
+        template <>
+        struct PromiseValue<void> {
+            void return_void() {}
+            void result() {}
+        };
     } // namespace detail
 
     template <class T>
     class Task {
     public:
-        struct promise_type : detail::PromiseBase {
-            std::optional<T> value;
+        struct promise_type : detail::PromiseBase, detail::PromiseValue<T> {
             Task get_return_object() {
                 return Task(std::coroutine_handle<promise_type>::from_promise(*this));
-            }
-            void return_value(T v) {
-                value = std::move(v);
             }
         };
 
@@ -68,41 +81,8 @@ namespace lyren {
             return h_;
         }
         T await_resume() {
-            return std::move(*h_.promise().value);
+            return h_.promise().result();
         }
-
-    private:
-        explicit Task(std::coroutine_handle<promise_type> h)
-        : h_(h) {}
-        std::coroutine_handle<promise_type> h_;
-    };
-
-    template <>
-    class Task<void> {
-    public:
-        struct promise_type : detail::PromiseBase {
-            Task get_return_object() {
-                return Task(std::coroutine_handle<promise_type>::from_promise(*this));
-            }
-            void return_void() {}
-        };
-
-        Task(Task &&o) noexcept
-        : h_(std::exchange(o.h_, {})) {}
-        ~Task() {
-            if (h_) {
-                h_.destroy();
-            }
-        }
-
-        bool await_ready() const noexcept {
-            return false;
-        }
-        std::coroutine_handle<> await_suspend(std::coroutine_handle<> c) noexcept {
-            h_.promise().continuation = c;
-            return h_;
-        }
-        void await_resume() {}
 
     private:
         explicit Task(std::coroutine_handle<promise_type> h)

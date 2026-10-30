@@ -51,19 +51,19 @@ namespace lyren::ncm {
 
         Task<Result<std::vector<Card>>> recommended_playlists() override;
         Task<Result<std::vector<Card>>> toplists() override;
-        Task<Result<std::vector<Track>>> new_songs(std::string area);
-        Task<Result<Batch>> new_albums(std::string area, int offset);
+        Task<Result<std::vector<Track>>> new_songs(std::string area) override;
+        Task<Result<Batch>> new_albums(std::string area, int offset) override;
         Task<Result<std::vector<Track>>> daily();
         Task<Result<std::vector<Card>>> daily_playlists();
         // Takes a song out of the daily recommendations; the server may name one to take its place.
         Task<Result<std::optional<Track>>> dislike_daily(std::string id);
         // Heartbeat mode: songs to follow seed, from the liked playlist and others like them.
         Task<Result<std::vector<Track>>> heartbeat(std::string seed, std::string playlist);
-        Task<Result<std::vector<Track>>> similar(std::string id);
+        Task<Result<std::vector<Track>>> similar(std::string id) override;
         // The account's recent plays on every device.
         Task<Result<std::vector<Track>>> recent_plays();
-        Task<Result<std::vector<Track>>> fm();
-        Task<Result<void>> fm_trash(std::string id);
+        Task<Result<std::vector<Track>>> fm() override;
+        Task<Result<void>> fm_trash(Track track) override;
         Task<Result<std::vector<Track>>> cloud();
         // The "liked songs" playlist, then the created and collected ones.
         Task<Result<std::pair<Card, std::vector<Card>>>> user_playlists(std::string uid) override;
@@ -71,8 +71,8 @@ namespace lyren::ncm {
         Task<Result<void>> like(Track track, bool on) override;
         Task<Result<std::vector<Track>>> song_detail(std::vector<std::string> ids);
 
-        Task<Result<Categories>> categories();
-        Task<Result<Batch>> square(std::string category, int offset);
+        Task<Result<Categories>> categories() override;
+        Task<Result<Batch>> square(std::string category, int offset) override;
 
         Task<Result<ArtistInfo>> artist(std::string id) override;
         Task<Result<Batch>> artist_songs(std::string id, int offset) override;
@@ -88,15 +88,15 @@ namespace lyren::ncm {
         Task<Result<void>> rename_playlist(std::string id, std::string name) override;
         Task<Result<void>> delete_playlist(std::string id) override;
         Task<Result<void>> edit_playlist(std::string id, Track track, bool add) override;
-        Task<Result<std::vector<Card>>> collected_playlists();
-        Task<Result<void>> collect_playlist(std::string id, bool on);
-        Task<Result<void>> reorder_playlist(std::string id, std::vector<Track> tracks);
+        Task<Result<std::vector<Card>>> collected_playlists() override;
+        Task<Result<void>> collect_playlist(std::string id, bool on) override;
+        Task<Result<void>> reorder_playlist(std::string id, std::vector<Track> tracks) override;
 
         Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) override;
-        Task<Result<CommentPage>> comment_replies(Subject subject, std::string id, std::string root, std::string cursor);
-        Task<Result<void>> like_comment(Subject subject, std::string id, std::string comment, bool on);
-        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {});
-        Task<Result<void>> delete_comment(Subject subject, std::string id, std::string comment);
+        Task<Result<CommentPage>> comment_replies(Subject subject, std::string id, std::string root, int page, std::string cursor) override;
+        Task<Result<void>> like_comment(Subject subject, std::string id, std::string comment, bool on) override;
+        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {}) override;
+        Task<Result<void>> delete_comment(Subject subject, std::string id, std::string comment) override;
 
         // Listening reports: start puts the song in the account's recent plays, play counts it in the listening ranking.
         Task<void> report_start(std::string id, std::string source);
