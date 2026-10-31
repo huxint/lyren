@@ -338,7 +338,7 @@ namespace lyren {
                 const Rect b = unfold(end);
                 const auto id = ui.id(name);
                 const auto it = ui.interact(id, b);
-                const float hot = ui.anim(id, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(id, 0xd0), it.held ? 1 : 0, 90);
+                const auto [hot, down] = ui.feel(id, it);
                 const Rect face = b.inset(down * 1.5f * open);
                 p.rect(face, primary ? white.with_alpha(0.95f) : white.with_alpha(0.1f * hot), face.h / 2);
                 const float s = primary ? 16 : 17;

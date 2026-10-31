@@ -133,6 +133,12 @@ namespace lyren::ui {
         float px = 0, py = 0; // pointer (or the right-click) position
     };
 
+    // How a pressable surface responds: hot eases in under the pointer; down follows a press held over it on a
+    // slightly underdamped spring, so the surface settles back with a small rebound when it is let go.
+    struct Feel {
+        float hot, down;
+    };
+
     struct MenuItem {
         std::string icon;
         std::string label;
@@ -217,6 +223,10 @@ namespace lyren::ui {
             auto it = springs_.find(id);
             return it == springs_.end() ? fallback : it->second.motion.value;
         }
+        // Hover and press for a widget that interact() just returned it for.
+        Feel feel(Id id, const Interaction &it, float hover_ms = 150) {
+            return {anim(id, it.hovered ? 1 : 0, hover_ms), spring(sub_id(id, 0xd0), it.held && it.hovered ? 1 : 0, 200, 0.3f)};
+        }
         // Eased 0..1 for a transition that started at the given time.
         float progress(double since, float ms, Bezier curve = ease::emphasized);
         void keep_animating() {
@@ -249,6 +259,10 @@ namespace lyren::ui {
         // Equal segments under a thumb that glides to the selected one; -1 selects none. True when one is picked.
         bool segmented(Id id, Rect r, std::span<const std::string_view> labels, int &selected);
         void spinner(Rect r, Color color, float thickness = 2);
+        // A placeholder for content on its way: it breathes in a wave that sweeps diagonally across the window.
+        void skeleton(Rect r, float radius);
+        // Three bars dancing to the music, settling low while it is paused.
+        void equalizer(Id id, Rect r, Color color, bool playing);
         void label(Rect r, std::string_view s, const TextStyle &style, Align align = Align::left);
 
         // Scrollable viewport: draw the content shifted up by the returned offset, then call end_scroll(), which

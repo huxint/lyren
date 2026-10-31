@@ -4,9 +4,11 @@
 #include <cstdint>
 #include <format>
 #include <string>
+#include <utility>
 
 #include "core/i18n.hpp"
 #include "media/lyrics.hpp"
+#include "media/types.hpp"
 #include "ui/ui.hpp"
 
 // Drawing helpers shared by the parts of the shell.
@@ -42,6 +44,14 @@ namespace lyren {
             ui.use_theme(saved);
         }
     };
+
+    // Widget ids for a track or a card, hashed from its identity without building its key string every frame.
+    inline ui::Id item_id(ui::Ui &ui, const Track &t) {
+        return ui::sub_id(ui.id(t.id), std::to_underlying(t.source));
+    }
+    inline ui::Id item_id(ui::Ui &ui, const Card &c) {
+        return ui::sub_id(ui.id(c.id), std::to_underlying(c.source) << 8 | std::to_underlying(c.kind));
+    }
 
     // Quintic smoothstep of t, clamped to 0..1.
     inline float smooth01(float t) {

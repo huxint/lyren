@@ -437,7 +437,7 @@ namespace lyren::qq {
         }
 
         Track track(const QSong &s) {
-            Track t{.source = Source::qq, .id = std::to_string(s.id), .mid = s.mid.value_or("")};
+            Track t{.id = std::to_string(s.id), .mid = s.mid.value_or(""), .source = Source::qq};
             t.title = s.title.value_or(s.name.value_or(""));
             t.alias = s.subtitle.value_or("");
             if (s.file) {
@@ -915,7 +915,7 @@ namespace lyren::qq {
             if (!item.ID || item.ID->empty() || !item.IdType) {
                 return std::unexpected("QQ Music returned incomplete dislike details");
             }
-            out.items.push_back({.source = Source::qq, .kind = kind, .id = *item.ID, .name = item.Name.value_or(""), .cover = item.Img.value_or(""), .id_type = *item.IdType});
+            out.items.push_back({.id = *item.ID, .name = item.Name.value_or(""), .cover = item.Img.value_or(""), .id_type = *item.IdType, .source = Source::qq, .kind = kind});
         }
         if (!out.items.empty()) {
             out.cursor = out.items.back().id;
@@ -974,7 +974,7 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::fm_trash(Track track) {
-        return dislike({.source = Source::qq, .id = std::move(track.id), .name = std::move(track.title)}, true);
+        return dislike({.id = std::move(track.id), .name = std::move(track.title), .source = Source::qq}, true);
     }
 
     Task<Result<void>> Qq::initialize() {
@@ -1172,7 +1172,7 @@ namespace lyren::qq {
             }
             // The RS02 preview file always holds the song's first 60 s, whatever the detail's try_begin/b_30s
             // windows say (they mark the highlight segment QQ's own player offers), so its lyrics need no offset.
-            Stream s{.url = host + *u->purl, .trial = std::string_view(files[i].prefix) == "RS02", .level = files[i].level};
+            Stream s{.url = host + *u->purl, .level = files[i].level, .trial = std::string_view(files[i].prefix) == "RS02"};
             auto d = take_data(r->req_1);
             if (d && d->track_info) {
                 const QSong &song = *d->track_info;

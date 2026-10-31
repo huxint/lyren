@@ -100,8 +100,7 @@ namespace lyren {
         Rect c{x, y, chip_w(ui, label, !icon.empty()), 30};
         ui::Id id = ui.id(label);
         auto it = ui.interact(id, c);
-        float hot = ui.anim(id, it.hovered ? 1 : 0, 150);
-        float down = ui.anim(ui::sub_id(id, 0xd0), it.held ? 1 : 0, 90);
+        const auto [hot, down] = ui.feel(id, it);
         c = c.inset(down * 1.5f);
         p.rect(c, selected ? t.accent.with_alpha(0.2f + 0.06f * hot) : t.text.with_alpha(0.06f + 0.05f * hot), c.h / 2);
         ui::Color fg = selected ? t.accent : t.text_dim.mix(t.text, hot);
@@ -146,7 +145,42 @@ namespace lyren {
         ui.end_scroll();
     }
 
-    bool Shell::page_status(ui::Ui &ui, Rect r, bool loading, const std::string &error, bool login) {
+    // Track rows as track_list lays them out, in r below its header.
+    static void skeleton_rows(ui::Ui &ui, Rect r) {
+        constexpr float row_h = 56;
+        Columns head = columns(ui::cut_top(r, 38));
+        const float radius = ui.theme().radius_s();
+        for (int i = 0; r.y + static_cast<float>(i) * row_h < r.bottom(); ++i) {
+            const float y = r.y + static_cast<float>(i) * row_h;
+            // Each row its own lengths, so the list reads as text rather than as stripes.
+            const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
+            ui.skeleton({head.index.x + 14, y + 23, 12, 10}, 5);
+            ui.skeleton({head.title.x, y + 8, 40, 40}, radius);
+            const float tw = head.title.w - 62;
+            ui.skeleton({head.title.x + 54, y + 13, tw * (0.4f + 0.3f * k), 12}, 6);
+            ui.skeleton({head.title.x + 54, y + 33, tw * (0.22f + 0.18f * (1 - k)), 10}, 5);
+            if (head.album.w > 0) {
+                ui.skeleton({head.album.x, y + 23, head.album.w * (0.35f + 0.3f * k), 10}, 5);
+            }
+            ui.skeleton({head.duration.right() - 32, y + 23, 32, 10}, 5);
+        }
+    }
+
+    // Cards as card_grid lays them out from r's top-left; round ones are artists.
+    static void skeleton_cards(ui::Ui &ui, Rect r, bool round) {
+        const float min_w = round ? 130 : 150, gap = 20;
+        const int cols = std::max(1, static_cast<int>((r.w + gap) / (min_w + gap)));
+        const float cw = (r.w + gap) / static_cast<float>(cols) - gap, ch = cw + 54;
+        for (int i = 0; r.y + static_cast<float>(i / cols) * (ch + gap) < r.bottom(); ++i) {
+            const Rect c{r.x + static_cast<float>(i % cols) * (cw + gap), r.y + static_cast<float>(i / cols) * (ch + gap), cw, ch};
+            const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f), tw = cw * (0.5f + 0.35f * k);
+            ui.skeleton({c.x, c.y, cw, cw}, round ? cw / 2 : ui.theme().radius);
+            ui.skeleton({round ? c.x + (cw - tw) / 2 : c.x, c.y + cw + 14, tw, 12}, 6);
+            ui.skeleton({round ? c.x + (cw - tw * 0.6f) / 2 : c.x, c.y + cw + 35, tw * 0.6f, 10}, 5);
+        }
+    }
+
+    bool Shell::page_status(ui::Ui &ui, Rect r, bool loading, const std::string &error, bool login, Placeholder look) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         Rect c = ui::center(r, std::min(r.w, 360.f), 150);
@@ -165,7 +199,20 @@ namespace lyren {
             return true;
         }
         if (loading) {
-            ui.spinner(ui::center(r, 24, 24), t.text_dim, 2);
+            ui.push_clip(r);
+            switch (look) {
+                case Placeholder::spinner:
+                    ui.spinner(ui::center(r, 24, 24), t.text_dim, 2);
+                    break;
+                case Placeholder::rows:
+                    skeleton_rows(ui, r);
+                    break;
+                case Placeholder::cards:
+                case Placeholder::faces:
+                    skeleton_cards(ui, r, look == Placeholder::faces);
+                    break;
+            }
+            ui.pop_clip();
             return true;
         }
         if (!error.empty()) {
@@ -176,12 +223,44 @@ namespace lyren {
         return false;
     }
 
+    float Shell::play_buttons(ui::Ui &ui, float x, float y, std::vector<Track> &tracks) {
+        const float play_w = button_width(ui, lyren::tr("Play all"), true), shuffle_w = button_width(ui, lyren::tr("Shuffle"), true);
+        if (ui.button(ui.id("play-all"), {x, y, play_w, 40}, lyren::tr("Play all"), ui::ButtonKind::primary, "play-fill") && !tracks.empty()) {
+            if (mode_ == Mode::shuffle) {
+                set_mode(Mode::list);
+            }
+            play(tracks, 0);
+        }
+        x += play_w + 12;
+        if (ui.button(ui.id("shuffle-all"), {x, y, shuffle_w, 40}, lyren::tr("Shuffle"), ui::ButtonKind::secondary, "shuffle") && !tracks.empty()) {
+            set_mode(Mode::shuffle);
+            play(tracks, static_cast<int>(random() % tracks.size()));
+        }
+        return x + shuffle_w + 12;
+    }
+
+    bool Shell::page_tabs(ui::Ui &ui, ui::Id id, Rect r, std::span<const std::string_view> labels, int &selected) {
+        const int before = selected;
+        if (!ui.tabs(id, r, labels, selected)) {
+            return false;
+        }
+        selected_ = -1;
+        tab_time_ = ui.now;
+        tab_dir_ = selected > before ? 1 : -1;
+        return true;
+    }
+
+    float Shell::tab_enter(ui::Ui &ui, Rect &content) const {
+        const float k = ui.progress(tab_time_, 380);
+        content.x += (1 - k) * 36 * static_cast<float>(tab_dir_);
+        return k;
+    }
+
     bool Shell::hero(ui::Ui &ui, ui::Id id, Rect r, std::string_view big, std::string_view title, std::string_view subtitle, float hue, std::string_view icon) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto it = ui.interact(id, r);
-        float hot = ui.anim(id, it.hovered ? 1 : 0, 240);
-        float down = ui.anim(ui::sub_id(id, 0xd0), it.held ? 1 : 0, 90);
+        const auto [hot, down] = ui.feel(id, it, 240);
         r = r.inset(down * 3);
         r.y -= 3 * hot;
         p.shadow({r.x, r.y + 10, r.w, r.h}, t.radius_l(), 32, t.shadow.with_alpha(0.35f + 0.65f * hot));
@@ -203,8 +282,7 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto it = ui.interact(id, r);
-        float hot = ui.anim(id, it.hovered ? 1 : 0, 240);
-        float down = ui.anim(ui::sub_id(id, 0xd0), it.held ? 1 : 0, 90);
+        const auto [hot, down] = ui.feel(id, it, 240);
         Rect cov = Rect{r.x, r.y - 4 * hot, r.w, r.w}.inset(down * 3);
         float radius = round ? cov.w / 2 : t.radius;
         if (hot > 0) {
@@ -212,7 +290,8 @@ namespace lyren {
         }
         cover(ui, cov, c.cover, radius, round ? "user" : c.kind == CardKind::album ? "disc-album" : "list-music");
         if (hot > 0 && !round) {
-            // The play button rises into place.
+            // A shade gathers under the play button, which rises into place.
+            p.gradient({cov.x, cov.y + cov.h * 0.45f, cov.w, cov.h * 0.55f}, {0, 0, 0, 0}, {0, 0, 0, 0.3f * hot}, radius);
             Rect b{cov.right() - 48, cov.bottom() - 48 + 8 * (1 - hot), 36, 36};
             p.shadow(b, 18, 10, t.shadow.with_alpha(hot));
             p.rect(b, t.accent.with_alpha(hot), 18);
@@ -233,7 +312,7 @@ namespace lyren {
         int clicked = -1, shown = 0;
         ui.push_id(id);
         for (size_t i = 0; i < cards.size(); ++i) {
-            ui::Id item = ui.id(key(cards[i]));
+            ui::Id item = item_id(ui, cards[i]);
             Rect c = g.cell(r.x, r.y, i, item);
             if (c.bottom() < clip.y || c.y > clip.bottom()) {
                 if (c.bottom() >= clip.y - clip.h && c.y <= clip.bottom() + clip.h) {
@@ -308,7 +387,7 @@ namespace lyren {
         ui.label({body.x, y, body.w, 28}, lyren::tr("Recommended playlists"), {.size = t.fs(18), .color = t.text});
         y += 44;
         const Results &res = lib.recommended;
-        if (!page_status(ui, {body.x, y, body.w, 120}, res.loading && res.cards.empty(), res.error, false)) {
+        if (!page_status(ui, {body.x, y, body.w, std::max(120.f, r.bottom() - y)}, res.loading && res.cards.empty(), res.error, false, Placeholder::cards)) {
             if (int i = card_grid(ui, {body.x, y, body.w, 0}, ui.id("rec-cards"), res.cards, false, std::max(page_time_ + 0.08, res.since)); i >= 0) {
                 open(ui, res.cards[static_cast<size_t>(i)]);
             }
@@ -323,7 +402,7 @@ namespace lyren {
         float off = ui.begin_scroll(ui.id("toplists"), r, 28 + 84 + g.height(res.cards.size()) + 32);
         float y = r.y + 28 - off;
         page_title(ui, body, y, lyren::tr("Charts"), lyren::tr("Official charts, updated daily or weekly"));
-        if (!page_status(ui, {body.x, y + 84, body.w, r.h - 140}, res.loading, res.error, false)) {
+        if (!page_status(ui, {body.x, y + 84, body.w, r.bottom() - y - 84}, res.loading, res.error, false, Placeholder::cards)) {
             if (int i = card_grid(ui, {body.x, y + 84, body.w, 0}, ui.id("top-cards"), res.cards, false, std::max(page_time_ + 0.05, res.since)); i >= 0) {
                 open(ui, res.cards[static_cast<size_t>(i)]);
             }
@@ -378,7 +457,8 @@ namespace lyren {
         }
 
         float gy = y + grid_y;
-        if (!page_status(ui, {body.x, gy, body.w, 120}, lib.square.loading && lib.square.cards.empty(), lib.square.cards.empty() ? lib.square.error : "", false)) {
+        if (!page_status(ui, {body.x, gy, body.w, std::max(120.f, r.bottom() - gy)}, lib.square.loading && lib.square.cards.empty(),
+                         lib.square.cards.empty() ? lib.square.error : "", false, Placeholder::cards)) {
             double since = std::max({page_time_ + 0.05, lib.square_time, lib.square.since});
             if (int i = card_grid(ui, {body.x, gy, body.w, 0}, ui.id("square-cards"), lib.square.cards, false, since); i >= 0) {
                 open(ui, lib.square.cards[static_cast<size_t>(i)]);
@@ -445,7 +525,7 @@ namespace lyren {
         ui::Id pid = ui.id("fm-play");
         Rect play_r{like_x + 52, by, 48, 48};
         auto it = ui.interact(pid, play_r);
-        float hot = ui.anim(pid, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(pid, 0xd0), it.held ? 1 : 0, 90);
+        const auto [hot, down] = ui.feel(pid, it);
         Rect pr = play_r.inset(-2 * hot + 2 * down);
         p.rect(pr, t.accent.mix(white, 0.1f * hot), pr.w / 2);
         p.icon(on_air && playing() ? "pause-fill" : "play-fill", ui::center(pr, 20, 20), white);
@@ -468,9 +548,7 @@ namespace lyren {
         Rect body = r.inset(32, 0);
         page_title(ui, body, r.y + 28, lyren::tr("New releases"), lyren::tr("Latest songs and albums"));
         const std::array<std::string_view, 2> tabs = {lyren::tr("Songs"), lyren::tr("Albums")};
-        if (ui.tabs(ui.id("release-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, lib.release_tab)) {
-            selected_ = -1;
-            tab_time_ = ui.now;
+        if (page_tabs(ui, ui.id("release-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, lib.release_tab)) {
             load_releases();
         }
         int tab = lib.release_tab;
@@ -491,27 +569,16 @@ namespace lyren {
         }
         Results &res = lib.releases[tab];
         if (tab == 0) {
-            float play_w = button_width(ui, lyren::tr("Play all"), true);
-            if (ui.button(ui.id("release-play-all"), {body.x, r.y + 200, play_w, 40}, lyren::tr("Play all"), ui::ButtonKind::primary, "play-fill") && !res.tracks.empty()) {
-                if (mode_ == Mode::shuffle) {
-                    set_mode(Mode::list);
-                }
-                play(res.tracks, 0);
-            }
-            float shuffle_w = button_width(ui, lyren::tr("Shuffle"), true);
-            if (ui.button(ui.id("release-shuffle"), {body.x + play_w + 12, r.y + 200, shuffle_w, 40}, lyren::tr("Shuffle"), ui::ButtonKind::secondary, "shuffle") &&
-                !res.tracks.empty()) {
-                set_mode(Mode::shuffle);
-                play(res.tracks, static_cast<int>(random() % res.tracks.size()));
-            }
+            play_buttons(ui, body.x, r.y + 200, res.tracks);
         }
         float top = r.y + (tab ? 200 : 256);
         Rect content{r.x + 16, top, r.w - 32, r.bottom() - top - 8};
+        Fade fade(ui.painter(), tab_enter(ui, content));
         std::string error = res.error;
         if (res.loaded && res.size() == 0 && error.empty()) {
             error = tab ? lyren::tr("No albums found") : lyren::tr("No songs here yet");
         }
-        if (res.size() == 0 && page_status(ui, content, res.loading, error, false)) {
+        if (res.size() == 0 && page_status(ui, tab ? content.inset(12, 12) : content, res.loading, error, false, tab ? Placeholder::cards : Placeholder::rows)) {
             return;
         }
         if (tab == 0) {
@@ -535,20 +602,15 @@ namespace lyren {
             return;
         }
         const std::array<std::string_view, 2> tabs = {lyren::tr("Albums"), lyren::tr("Artists")};
-        int before = lib.collection_tab;
-        if (ui.tabs(ui.id("collection-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, lib.collection_tab)) {
-            tab_time_ = ui.now;
-            tab_dir_ = lib.collection_tab > before ? 1 : -1;
-        }
-        float enter = ui.progress(tab_time_, 380);
-        Fade fade(ui.painter(), enter);
-        Rect content{r.x + 16 + (1 - enter) * 36 * static_cast<float>(tab_dir_), r.y + 148, r.w - 32, r.h - 156};
+        page_tabs(ui, ui.id("collection-tabs"), {body.x, r.y + 100, body.w, 36}, tabs, lib.collection_tab);
+        Rect content{r.x + 16, r.y + 148, r.w - 32, r.h - 156};
+        Fade fade(ui.painter(), tab_enter(ui, content));
         const Results &res = lib.collection[lib.collection_tab];
         std::string error = res.cards.empty() ? res.error : "";
         if (res.cards.empty() && res.loaded && error.empty()) {
             error = lib.collection_tab ? lyren::tr("No followed artists yet") : lyren::tr("No saved albums yet");
         }
-        if (res.cards.empty() && page_status(ui, content, res.loading && !res.loaded, error, false)) {
+        if (res.cards.empty() && page_status(ui, content.inset(12, 12), res.loading && !res.loaded, error, false, lib.collection_tab ? Placeholder::faces : Placeholder::cards)) {
             return;
         }
         bool near_end;
@@ -569,10 +631,7 @@ namespace lyren {
         }
         const std::array<std::string_view, 3> tabs = {lyren::tr("Songs"), lyren::tr("Artists"), lyren::tr("Styles")};
         const std::array icons = {"music", "mic-vocal", "sparkles"};
-        int before = lib.dislike_tab;
-        if (ui.tabs(ui.id("dislike-tabs"), {body.x, r.y + 100, body.w - 48, 36}, tabs, lib.dislike_tab)) {
-            tab_time_ = ui.now;
-            tab_dir_ = lib.dislike_tab > before ? 1 : -1;
+        if (page_tabs(ui, ui.id("dislike-tabs"), {body.x, r.y + 100, body.w - 48, 36}, tabs, lib.dislike_tab)) {
             if (!lib.dislikes[lib.dislike_tab]) {
                 spawn(load_dislikes(active_, static_cast<DislikeKind>(lib.dislike_tab)));
             }
@@ -585,9 +644,8 @@ namespace lyren {
             spawn(load_dislikes(active_, static_cast<DislikeKind>(lib.dislike_tab)));
         }
         ui.disabled = false;
-        float enter = ui.progress(tab_time_, 380);
-        Fade fade(p, enter);
-        Rect content{body.x + (1 - enter) * 36 * static_cast<float>(tab_dir_), r.y + 152, body.w, r.h - 164};
+        Rect content{body.x, r.y + 152, body.w, r.h - 164};
+        Fade fade(p, tab_enter(ui, content));
         if (!list.error.empty()) {
             page_status(ui, content, false, list.error, false);
             return;
@@ -649,17 +707,11 @@ namespace lyren {
         }
         ui.label({tx, head.y + 62, tw, 20}, about, {.size = t.fs(13), .color = t.text_dim});
         std::vector<Track> &songs = a.songs.tracks;
-        float play_w = button_width(ui, lyren::tr("Play all"), true);
-        if (ui.button(ui.id("play-all"), {tx, head.bottom() - 40, play_w, 40}, lyren::tr("Play all"), ui::ButtonKind::primary, "play-fill") && !songs.empty()) {
-            if (mode_ == Mode::shuffle) {
-                set_mode(Mode::list);
-            }
-            play(songs, 0);
-        }
+        const float bx = play_buttons(ui, tx, head.bottom() - 40, songs);
         if (a.info) {
             bool on = preference_value(c.source, Preference::artist, c.id, a.info->followed);
             float follow_w = std::max(button_width(ui, lyren::tr("Following"), true), button_width(ui, lyren::tr("Follow"), true));
-            if (ui.button(ui.id("follow"), {tx + play_w + 12, head.bottom() - 40, follow_w, 40}, on ? lyren::tr("Following") : lyren::tr("Follow"), ui::ButtonKind::secondary,
+            if (ui.button(ui.id("follow"), {bx, head.bottom() - 40, follow_w, 40}, on ? lyren::tr("Following") : lyren::tr("Follow"), ui::ButtonKind::secondary,
                           on ? "user-check" : "user-plus")) {
                 toggle_follow(route_.artist, {.kind = CardKind::artist, .source = c.source, .id = c.id, .title = a.info->name, .cover = a.info->avatar});
             }
@@ -671,15 +723,11 @@ namespace lyren {
         float retry_w = button_width(ui, lyren::tr("Retry"), true);
         Rect retry{bar.right() - retry_w, bar.y, retry_w, bar.h};
         bar.w -= retry_w + 16;
-        int before = a.tab;
-        if (ui.tabs(ui.id("artist-tabs"), bar, tabs, a.tab)) {
-            tab_time_ = ui.now;
-            tab_dir_ = a.tab > before ? 1 : -1;
+        if (page_tabs(ui, ui.id("artist-tabs"), bar, tabs, a.tab)) {
             load_artist_tab(a.tab);
         }
-        float enter = ui.progress(tab_time_, 380);
-        Fade fade(p, enter);
-        Rect content{r.x + 16 + (1 - enter) * 36 * static_cast<float>(tab_dir_), bar.bottom() + 12, r.w - 32, r.bottom() - bar.bottom() - 20};
+        Rect content{r.x + 16, bar.bottom() + 12, r.w - 32, r.bottom() - bar.bottom() - 20};
+        Fade fade(p, tab_enter(ui, content));
         Results &res = a.tab == 0 ? a.songs : a.tab == 1 ? a.albums : a.intro;
         if (res.loading || a.loading) {
             ui.spinner(ui::center(retry, 18, 18), t.text_dim, 2);
@@ -696,7 +744,9 @@ namespace lyren {
         if (empty && res.loaded && error.empty()) {
             error = a.tab == 2 ? lyren::tr("No biography available") : lyren::tr("Nothing here yet");
         }
-        if (empty && page_status(ui, content, res.loading || (!res.loaded && error.empty()), error, false)) {
+        const std::array looks{Placeholder::rows, Placeholder::cards, Placeholder::spinner};
+        if (empty &&
+            page_status(ui, a.tab == 1 ? content.inset(12, 12) : content, res.loading || (!res.loaded && error.empty()), error, false, looks[static_cast<size_t>(a.tab)])) {
             return;
         }
         if (!res.error.empty()) {
@@ -728,11 +778,7 @@ namespace lyren {
         Rect body = r.inset(32, 0);
         const std::array<std::string_view, 4> tabs = {lyren::tr("Tracks"), lyren::tr("Albums"), lyren::tr("Artists"), lyren::tr("Playlists")};
         float tabs_w = body.w - button_width(ui, lyren::tr("Refresh"), true) - 16;
-        int before = search_tab_;
-        if (ui.tabs(ui.id("search-tabs"), {body.x, r.y + 100, tabs_w, 36}, tabs, search_tab_)) {
-            selected_ = -1;
-            tab_time_ = ui.now;
-            tab_dir_ = search_tab_ > before ? 1 : -1;
+        if (page_tabs(ui, ui.id("search-tabs"), {body.x, r.y + 100, tabs_w, 36}, tabs, search_tab_)) {
             ensure_route_data();
         }
         SearchResults &shown = results_[static_cast<size_t>(active_)][search_tab_];
@@ -756,16 +802,16 @@ namespace lyren {
                    shown.loaded ? lyren::trf("{}{} {} found", shown.more() ? lyren::tr("About ") : "", shown.total, kinds[search_tab_])
                                 : lyren::trf("Searching {}", lyren::tr(platform(active_).short_name)));
         // Tab content slides toward the tab that was picked.
-        float enter = ui.progress(tab_time_, 380);
-        Fade fade(ui.painter(), enter);
-        Rect content{r.x + 16 + (1 - enter) * 36 * static_cast<float>(tab_dir_), r.y + 148, r.w - 32, r.h - 156};
+        Rect content{r.x + 16, r.y + 148, r.w - 32, r.h - 156};
+        Fade fade(ui.painter(), tab_enter(ui, content));
         double since = std::max({page_time_, tab_time_, shown.since});
         bool empty = shown.size() == 0;
         std::string error = empty ? shown.error : "";
         if (empty && shown.loaded && error.empty()) {
             error = lyren::tr("No results found");
         }
-        if (empty && page_status(ui, content, shown.loading, error, false)) {
+        const std::array looks{Placeholder::rows, Placeholder::cards, Placeholder::faces, Placeholder::cards};
+        if (empty && page_status(ui, search_tab_ ? content.inset(12, 12) : content, shown.loading, error, false, looks[static_cast<size_t>(search_tab_)])) {
             return;
         }
         if (!shown.error.empty()) {
@@ -883,27 +929,14 @@ namespace lyren {
             const std::string subtitle = route_.page == Page::daily ? lyren::trf("{} · Made for your taste", date_label()) : card_subtitle(c);
             ui.label({tx, head.y + 62, tw, 20}, built_in ? lyren::tr(subtitle) : std::string_view(subtitle), sub);
         }
-        float bx = tx;
-        float play_w = button_width(ui, lyren::tr("Play all"), true), shuffle_w = button_width(ui, lyren::tr("Shuffle"), true);
-        if (ui.button(ui.id("play-all"), {bx, head.bottom() - 40, play_w, 40}, lyren::tr("Play all"), ui::ButtonKind::primary, "play-fill") && !tracks.empty()) {
-            if (mode_ == Mode::shuffle) {
-                set_mode(Mode::list);
-            }
-            play(tracks, 0);
-        }
-        bx += play_w + 12;
-        if (ui.button(ui.id("shuffle-all"), {bx, head.bottom() - 40, shuffle_w, 40}, lyren::tr("Shuffle"), ui::ButtonKind::secondary, "shuffle") && !tracks.empty()) {
-            set_mode(Mode::shuffle);
-            play(tracks, static_cast<int>(random() % tracks.size()));
-        }
-        list_actions(ui, bx + shuffle_w + 12, head.bottom() - 40);
+        list_actions(ui, play_buttons(ui, tx, head.bottom() - 40, tracks), head.bottom() - 40);
         Rect body{r.x + 16, head.bottom() + 28, r.w - 32, r.bottom() - head.bottom() - 36};
         bool login = needs_login(route_.page) && !signed_in();
         std::string error = list_error;
         if (tracks.empty() && error.empty() && !loading && !login) {
             error = route_.page == Page::similar ? lyren::tr("No similar songs found") : lyren::tr("No songs here yet");
         }
-        if (tracks.empty() && page_status(ui, body, loading, error, login)) {
+        if (tracks.empty() && page_status(ui, body, loading, error, login, Placeholder::rows)) {
             return;
         }
         track_list(ui, body, ui.id("tracks"), tracks, std::max(page_time_ + 0.06, since));
@@ -940,7 +973,7 @@ namespace lyren {
             // Rows cascade in when the list appears.
             float a = ui.progress(since + 0.022 * std::max(0, i - first), 380);
             Fade fade(p, a);
-            float y = ui.spring(ui::sub_id(ui.id(key(tracks[static_cast<size_t>(i)])), 0x70), static_cast<float>(i) * row_h, 280);
+            float y = ui.spring(ui::sub_id(item_id(ui, tracks[static_cast<size_t>(i)]), 0x70), static_cast<float>(i) * row_h, 280);
             track_row(ui, {r.x, r.y + y - off + (1 - a) * 14, r.w, row_h}, tracks, i);
         }
         ui.pop_id();
@@ -952,7 +985,7 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Track &tr = tracks[static_cast<size_t>(i)];
-        ui.push_id(ui.id(key(tr)));
+        ui.push_id(item_id(ui, tr));
         ui::Id row_id = ui.id("row");
         bool hot = ui.hovering(r) || ui.is_active(row_id);
         bool now_playing = is_current(tr);
@@ -974,7 +1007,7 @@ namespace lyren {
                 }
             }
         } else if (now_playing) {
-            p.icon(playing() ? "volume-2" : "pause", ui::center(c.index, 16, 16), t.accent);
+            ui.equalizer(ui.id("playing"), ui::center(c.index, 14, 14), t.accent, playing());
         } else {
             ui.label(c.index, std::to_string(i + 1), num, Align::center);
         }
@@ -1203,7 +1236,7 @@ namespace lyren {
         }
         if (provider(tr).features.exclusions.set) {
             items.push_back({"thumbs-down", std::string(lyren::tr("Dislike this song")), [this, tr] {
-                                 set_dislike({.source = tr.source, .id = tr.id, .name = tr.title, .cover = tr.cover}, true);
+                                 set_dislike({.id = tr.id, .name = tr.title, .cover = tr.cover, .source = tr.source}, true);
                              }});
         }
         // One's own playlist can take songs out.

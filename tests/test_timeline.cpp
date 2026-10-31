@@ -29,33 +29,30 @@ TEST_CASE("opening previews keep their zero origin and clamp seeks to the playab
     CHECK(to == doctest::Approx(0.2));
 }
 
-TEST_CASE("complete songs preserve their timestamps across controls") {
+TEST_CASE("complete songs, unknown durations and empty players stay consistent") {
     const Timeline timeline{240, 240};
     CHECK(timeline.to_file(120) == 120);
     CHECK(timeline.to_song(120) == 120);
     CHECK(timeline.progress(120) == doctest::Approx(0.5));
     CHECK(timeline.playable_span() == std::pair{0.f, 1.f});
-}
-
-TEST_CASE("unknown file durations keep song time available for pending seeks") {
-    const Timeline loading{300, 0};
-    CHECK(loading.to_file(120) == 120);
-    CHECK(loading.playable_span() == std::pair{0.f, 1.f});
-    const Timeline loaded{300, 60, 90};
-    CHECK(loaded.to_file(loading.to_song(120)) == 30);
-}
-
-TEST_CASE("a preview supplies the timeline length when listing metadata is missing") {
-    const Timeline timeline{0, 60, 90};
-    CHECK(timeline.duration() == 150);
-    CHECK(timeline.to_song(60) == 150);
-    CHECK(timeline.to_file(150) == 60);
-    CHECK(timeline.progress(60) == 1);
-}
-
-TEST_CASE("an empty player has zero progress before any duration is known") {
-    const Timeline timeline{0, 0};
-    CHECK(timeline.duration() == 0);
-    CHECK(timeline.progress(0) == 0);
-    CHECK(timeline.to_file(120) == 0);
+    {
+        const Timeline loading{300, 0};
+        CHECK(loading.to_file(120) == 120);
+        CHECK(loading.playable_span() == std::pair{0.f, 1.f});
+        const Timeline loaded{300, 60, 90};
+        CHECK(loaded.to_file(loading.to_song(120)) == 30);
+    }
+    {
+        const Timeline timeline{0, 60, 90};
+        CHECK(timeline.duration() == 150);
+        CHECK(timeline.to_song(60) == 150);
+        CHECK(timeline.to_file(150) == 60);
+        CHECK(timeline.progress(60) == 1);
+    }
+    {
+        const Timeline timeline{0, 0};
+        CHECK(timeline.duration() == 0);
+        CHECK(timeline.progress(0) == 0);
+        CHECK(timeline.to_file(120) == 0);
+    }
 }

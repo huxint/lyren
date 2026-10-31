@@ -64,7 +64,7 @@ namespace lyren::text {
             hb_glyph_info_t *info = hb_buffer_get_glyph_infos(buf_, &n);
             hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(buf_, &n);
             for (unsigned g = 0; g < n; ++g) {
-                out.glyphs.push_back({info[g].codepoint, face, pen + pos[g].x_offset / fc.upem, pos[g].y_offset / fc.upem, info[g].cluster});
+                out.glyphs.push_back({pen + pos[g].x_offset / fc.upem, pos[g].y_offset / fc.upem, info[g].cluster, static_cast<uint16_t>(info[g].codepoint), face});
                 pen += pos[g].x_advance / fc.upem;
             }
             i = j;

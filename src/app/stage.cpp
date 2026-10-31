@@ -249,7 +249,7 @@ namespace lyren {
             const ui::Id id = ui.id("np-close");
             const Rect b{window.x + 14, window.y + 8, 36, 36};
             const auto it = ui.interact(id, b);
-            const float hot = ui.anim(id, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(id, 0xd0), it.held && it.hovered ? 1 : 0, 90);
+            const auto [hot, down] = ui.feel(id, it);
             const Rect face = b.inset(down * 2);
             p.rect(face, white.with_alpha(0.08f + 0.1f * hot), face.h / 2);
             p.icon("chevron-down", ui::center(b, 20 - down * 1.5f, 20 - down * 1.5f), white.with_alpha(0.72f + 0.28f * hot));

@@ -431,8 +431,7 @@ namespace lyren {
         }
         Rect selector = ui::center(ui::cut_left(r, platform_w + 56), platform_w + 56, 32);
         auto selected = ui.interact(ui.id("platform"), selector);
-        float hot = ui.anim(ui.id("platform"), selected.hovered ? 1 : 0, 150);
-        float down = ui.anim(ui.id("platform-down"), selected.held ? 1 : 0, 90);
+        const auto [hot, down] = ui.feel(ui.id("platform"), selected);
         Rect pill = selector.inset(down);
         p.rect(pill, t.text.with_alpha(0.045f + 0.055f * hot), pill.h / 2, t.border.with_alpha(0.65f), 1);
         p.icon("music", {pill.x + 11, pill.y + 9, 14, 14}, t.accent);
@@ -750,6 +749,12 @@ namespace lyren {
         float ha = ui.anim(ui.id("side-sel-a"), sel >= 0 ? 1 : 0, 200);
         if (ha > 0) {
             p.rect({row0.x, r.y + hy - off, row0.w, item_h}, t.text.with_alpha(0.09f * ha), t.radius_s());
+            // An accent mark at its edge stretches ahead towards the next entry and gathers up behind it.
+            const float to = (sel >= 0 ? item_y(static_cast<size_t>(sel)) : 0) + 11;
+            const ui::Id top_id = ui.id("side-mark-top"), bottom_id = ui.id("side-mark-bottom");
+            const bool down = to > ui.spring_value(top_id, to);
+            const float top = ui.spring(top_id, to, down ? 380 : 200), bottom = ui.spring(bottom_id, to + item_h - 22, down ? 200 : 380);
+            p.rect({row0.x + 4, r.y + top - off, 3, bottom - top}, t.accent.with_alpha(ha), 1.5f);
         }
 
         auto heading = [&](size_t before, std::string_view s) {
@@ -769,8 +774,7 @@ namespace lyren {
                 return false;
             }
             auto it = ui.interact(id, row);
-            float hot = ui.anim(id, it.hovered ? 1 : 0, 150);
-            float down = ui.anim(ui::sub_id(id, 0xd0), it.held ? 1 : 0, 90);
+            const auto [hot, down] = ui.feel(id, it);
             bool selected = sel == static_cast<int>(k);
             if (hot > 0 && !selected) {
                 p.rect(row.inset(down), t.hover.with_alpha(hot), t.radius_s());
@@ -806,7 +810,7 @@ namespace lyren {
         }
         ui.push_id(ui.id("playlists"));
         for (size_t i = 0; i < playlists.size(); ++i) {
-            if (item(ui.id(key(playlists[i])), lists + i, playlists[i].title, {}, &playlists[i].cover)) {
+            if (item(item_id(ui, playlists[i]), lists + i, playlists[i].title, {}, &playlists[i].cover)) {
                 open(ui, playlists[i]);
             }
         }
@@ -845,7 +849,7 @@ namespace lyren {
             ui::Id pid = ui.id("play");
             Rect play_r{cx - 21, cy - 21, 42, 42};
             auto it = ui.interact(pid, play_r);
-            float hot = ui.anim(pid, it.hovered ? 1 : 0, 150), down = ui.anim(ui::sub_id(pid, 0xd0), it.held ? 1 : 0, 90);
+            const auto [hot, down] = ui.feel(pid, it);
             Rect pr = play_r.inset(-2 * hot + 2.5f * down);
             p.shadow({pr.x, pr.y + 3, pr.w, pr.h}, pr.w / 2, 10, t.shadow.with_alpha(0.5f * hot));
             p.rect(pr, t.text, pr.w / 2);

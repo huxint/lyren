@@ -1,3 +1,4 @@
+#include <array>
 #include <cmath>
 #include <numbers>
 
@@ -15,8 +16,7 @@ namespace lyren::ui {
     bool Ui::button(Id id, Rect r, std::string_view label, ButtonKind kind, std::string_view icon) {
         const Theme &t = *theme_;
         auto it = interact(id, r);
-        float hot = anim(id, it.hovered ? 1 : 0, 150);
-        float down = anim(sub_id(id, 0xd0), it.held && it.hovered ? 1 : 0, 90);
+        const auto [hot, down] = feel(id, it);
         r = r.inset(down * 1.5f);
         Color bg, fg = t.text, border{};
         switch (kind) {
@@ -46,8 +46,7 @@ namespace lyren::ui {
     bool Ui::icon_button(Id id, Rect r, std::string_view icon, float icon_size, bool active) {
         const Theme &t = *theme_;
         auto it = interact(id, r);
-        float hot = anim(id, it.hovered ? 1 : 0, 150);
-        float down = anim(sub_id(id, 0xd0), it.held && it.hovered ? 1 : 0, 90);
+        const auto [hot, down] = feel(id, it);
         Rect bg = r.inset(down * 2);
         if (hot > 0) {
             p_->rect(bg, t.text.with_alpha((0.08f + 0.05f * down) * hot), std::min(bg.w, bg.h) / 2);
@@ -137,9 +136,13 @@ namespace lyren::ui {
             }
             return {x, r.y, p_->measure(labels[static_cast<size_t>(i)], st) + pad, r.h};
         };
-        // The indicator springs within the bar, so it stays under its tab while the bar itself moves.
+        // The indicator springs within the bar, so it stays under its tab while the bar itself moves. Its leading edge
+        // sets off first and the trailing one follows, so it stretches towards the new tab and contracts as it lands.
         Rect sel = cell(selected);
-        float ix = r.x + spring(sub_id(id, 1), sel.x - r.x, 260), iw = spring(sub_id(id, 2), sel.w, 260);
+        const float to0 = sel.x - r.x, to1 = to0 + sel.w;
+        const bool rightwards = to0 > spring_value(sub_id(id, 1), to0);
+        const float x0 = spring(sub_id(id, 1), to0, rightwards ? 380 : 220), x1 = spring(sub_id(id, 2), to1, rightwards ? 220 : 380);
+        const float ix = r.x + x0, iw = x1 - x0;
         if (pill) {
             p_->rect(r, t.text.with_alpha(0.06f), r.h / 2);
             p_->shadow({ix + 2, r.y + 3, iw - 4, r.h - 4}, (r.h - 4) / 2, 6, t.shadow.with_alpha(0.5f));
@@ -212,6 +215,32 @@ namespace lyren::ui {
         float sweep = tau * (0.18f + 0.16f * static_cast<float>(std::sin(now * 2.4)));
         p_->arc(r, thickness, start, sweep + 0.6f, color);
         animating_ = true;
+    }
+
+    void Ui::skeleton(Rect r, float radius) {
+        const Theme &t = *theme_;
+        constexpr float tau = 2 * std::numbers::pi_v<float>;
+        const float wave = t.motion > 0 ? 0.5f + 0.5f * std::sin(tau * (static_cast<float>(std::fmod(now * 0.7, 1.0)) - (r.x + r.y) / 1200)) : 0.5f;
+        p_->rect(r, t.text.with_alpha(0.05f + 0.045f * wave), radius);
+        if (t.motion > 0) {
+            animating_ = true;
+        }
+    }
+
+    void Ui::equalizer(Id id, Rect r, Color color, bool playing) {
+        constexpr float tau = 2 * std::numbers::pi_v<float>;
+        constexpr std::array<float, 3> speed{1.9f, 2.7f, 2.3f}, offset{0.f, 0.37f, 0.71f};
+        const float w = r.w / 5, live = anim(id, playing && theme_->motion > 0 ? 1 : 0, 300);
+        for (size_t i = 0; i < 3; ++i) {
+            const auto t = static_cast<float>(std::fmod(now * speed[i] + offset[i], 1.0));
+            // Two sines at different rates, so the bars never fall into step.
+            const float dance = 0.5f + 0.3f * std::sin(tau * t) + 0.2f * std::sin(tau * (2 * t + offset[i]));
+            const float h = std::max(w, r.h * (0.25f + 0.75f * dance * live));
+            p_->rect({r.x + w * static_cast<float>(2 * i), r.bottom() - h, w, h}, color, w / 2);
+        }
+        if (live > 0) {
+            animating_ = true;
+        }
     }
 
     void Ui::label(Rect r, std::string_view s, const TextStyle &style, Align align) {

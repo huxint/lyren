@@ -536,11 +536,11 @@ namespace lyren::ncm {
         }
         const NUrl &u = r->data->front();
         co_return Stream{.url = https(*u.url),
-                         .trial = u.freeTrialInfo.has_value(),
-                         .trial_start = u.freeTrialInfo ? u.freeTrialInfo->start : 0,
                          .level = u.level.value_or(""),
+                         .trial_start = u.freeTrialInfo ? u.freeTrialInfo->start : 0,
                          .gain = u.gain.value_or(0.f),
-                         .peak = u.peak.value_or(0.f)};
+                         .peak = u.peak.value_or(0.f),
+                         .trial = u.freeTrialInfo.has_value()};
     }
 
     Task<Result<std::vector<LyricLine>>> Netease::lyrics(Track t) {

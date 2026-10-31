@@ -36,7 +36,6 @@ namespace lyren {
     }
 
     struct Track {
-        Source source = Source::netease;
         std::string id;           // QQ Music: the numeric song id
         std::string mid, media;   // QQ Music: the song's mid and its audio file's
         std::string title, alias; // alias: translated or alternative title, shown dimmed
@@ -46,8 +45,9 @@ namespace lyren {
         std::string cover;               // cover_url() sizes it
         uint32_t duration = 0;           // whole seconds; zero when the service supplies no duration
         int type = 0;                    // QQ Music's song type, also used when editing a playlist
-        bool cloud = false;              // uploaded to the user's NetEase cloud drive
-        bool paid = false;               // the listing says more than a preview takes a membership or a purchase
+        Source source = Source::netease;
+        bool cloud = false; // uploaded to the user's NetEase cloud drive
+        bool paid = false;  // the listing says more than a preview takes a membership or a purchase
     };
 
     inline bool same(const Track &a, const Track &b) {
@@ -129,10 +129,10 @@ namespace lyren {
     };
 
     struct Dislike {
-        Source source = Source::netease;
-        DislikeKind kind = DislikeKind::song;
         std::string id, name, cover;
         int id_type = 0; // the service's ID type, retained when restoring an item
+        Source source = Source::netease;
+        DislikeKind kind = DislikeKind::song;
     };
 
     // Playlist square categories, under their headings.
@@ -163,15 +163,14 @@ namespace lyren {
     };
 
     struct Comment {
-        std::string user, avatar, text, time; // time as the service words it
-        int likes = 0;
-        std::string reply_user, reply; // the comment this one answers
         std::string id;
-        int replies = 0;
+        std::string user, avatar, text, time; // time as the service words it
+        std::string reply_user, reply;        // the comment this one answers
+        std::string image;                    // an attached picture, or a sticker
+        int likes = 0, replies = 0;
+        int image_w = 0, image_h = 0; // the picture's size when the service gives it
         bool liked = false;
-        bool owned = false;           // the signed-in account can delete it
-        std::string image;            // an attached picture, or a sticker
-        int image_w = 0, image_h = 0; // its size when the service gives it
+        bool owned = false; // the signed-in account can delete it
         bool sticker = false;
     };
 
@@ -184,12 +183,12 @@ namespace lyren {
 
     struct Stream {
         std::string url;
-        bool trial = false;                          // only a preview clip is playable
+        std::string level;                           // the quality the server granted
         double trial_start = 0;                      // nonnegative finite song seconds (QQ's RS02 file: always 0)
         double highlight_from = 0, highlight_to = 0; // the service's chorus window in the song, s; empty when the end is not after the start
-        std::string level;                           // the quality the server granted
         float gain = 0;                              // finite loudness correction, dB
         float peak = 0;                              // nonnegative finite sample peak, 0 when unknown
+        bool trial = false;                          // only a preview clip is playable
     };
 
     struct Account {

@@ -8,13 +8,15 @@
 
 namespace lyren::text {
 
+    // 16 bytes: OpenType glyph ids are 16-bit, so a whole run packs four glyphs to a cache line.
     struct Glyph {
-        uint32_t gid;
-        uint16_t face;
         float x;          // pen position in em from the start of the text
         float y;          // vertical offset in em (up)
         uint32_t cluster; // byte offset of the source text
+        uint16_t gid;
+        uint16_t face;
     };
+    static_assert(sizeof(Glyph) == 16);
 
     struct Shaped {
         std::vector<Glyph> glyphs;

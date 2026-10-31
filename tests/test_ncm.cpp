@@ -104,7 +104,7 @@ TEST_CASE("NetEase playlist writes preserve refusals instead of reporting succes
     CHECK_FALSE(parse_playlist_write({.error = "Connection failed"}));
 }
 
-TEST_CASE("NetEase comments keep exact IDs, like state, replies and text") {
+TEST_CASE("NetEase comment pages keep exact IDs, pictures, cursors and failures") {
     auto page = parse_comments({.body = R"({"code":200,"data":{"totalCount":45,"hasMore":true,"cursor":"normalHot#20","comments":[
         {"commentId":9007199254740993,"user":{"nickname":"听众","avatarUrl":"http://example.com/avatar.jpg"},
          "content":" 第一行\n第二行 🎵 ","timeStr":"昨天23:18","likedCount":12,"liked":true,"owner":true,"replyCount":3,
@@ -128,48 +128,45 @@ TEST_CASE("NetEase comments keep exact IDs, like state, replies and text") {
     CHECK(c.reply_user == "原作者");
     CHECK(c.reply == "原文");
     CHECK(c.image.empty());
-}
-
-TEST_CASE("NetEase comment pictures come over HTTPS without a known size") {
-    auto page = parse_comments({.body = R"({"code":200,"data":{"totalCount":1,"hasMore":false,"comments":[
-        {"commentId":7,"content":"看图","contentPicUrl":"http://p1.music.126.net/pic.jpg"},
-        {"commentId":8,"content":"没有图","contentPicUrl":null}
-    ]}})"});
-    REQUIRE(page);
-    REQUIRE(page->comments.size() == 2);
-    CHECK(page->comments[0].image == "https://p1.music.126.net/pic.jpg");
-    CHECK(page->comments[0].image_w == 0);
-    CHECK_FALSE(page->comments[0].sticker);
-    CHECK(page->comments[1].image.empty());
-}
-
-TEST_CASE("NetEase floor pagination uses the response timestamp and accepts nullable display fields") {
-    auto page = parse_comments({.body = R"({"code":200,"data":{"totalCount":23,"hasMore":true,"time":1556817501007,
-        "comments":[{"commentId":1436921389,"time":1554031500549,"user":null,"content":"回复","timeStr":null,
-                     "liked":null,"replyCount":null,"beReplied":[{"user":null,"content":null}]}]}})"},
-                               true);
-    REQUIRE(page);
-    CHECK(page->total == 23);
-    CHECK(page->more);
-    CHECK(page->cursor == "1556817501007");
-    REQUIRE(page->comments.size() == 1);
-    CHECK(page->comments.front().id == "1436921389");
-    CHECK(page->comments.front().replies == 0);
-    CHECK_FALSE(page->comments.front().liked);
-    CHECK(page->comments.front().reply.empty());
-    CHECK_FALSE(parse_comments({.body = R"({"code":200,"data":{"hasMore":true,"comments":[{"commentId":1}]}})"}, true));
-}
-
-TEST_CASE("NetEase comment failures do not become empty successful pages") {
-    auto empty = parse_comments({.body = R"({"code":200,"data":{"comments":[],"totalCount":0,"hasMore":false}})"});
-    REQUIRE(empty);
-    CHECK(empty->comments.empty());
-    CHECK_FALSE(empty->more);
-    CHECK_FALSE(parse_comments({.body = R"({"code":400,"message":"无法加载"})"}));
-    CHECK_FALSE(parse_comments({.body = R"({"code":200})"}));
-    CHECK_FALSE(parse_comments({.body = R"({"code":200,"data":{"comments":[{"content":"missing ID"}]}})"}));
-    CHECK_FALSE(parse_comments({.body = R"({"code":200,"data":{"hasMore":true,"comments":[{"commentId":1}]}})"}));
-    CHECK_FALSE(parse_comments({.error = "Network connection failed"}));
+    {
+        auto page = parse_comments({.body = R"({"code":200,"data":{"totalCount":1,"hasMore":false,"comments":[
+            {"commentId":7,"content":"看图","contentPicUrl":"http://p1.music.126.net/pic.jpg"},
+            {"commentId":8,"content":"没有图","contentPicUrl":null}
+        ]}})"});
+        REQUIRE(page);
+        REQUIRE(page->comments.size() == 2);
+        CHECK(page->comments[0].image == "https://p1.music.126.net/pic.jpg");
+        CHECK(page->comments[0].image_w == 0);
+        CHECK_FALSE(page->comments[0].sticker);
+        CHECK(page->comments[1].image.empty());
+    }
+    {
+        auto page = parse_comments({.body = R"({"code":200,"data":{"totalCount":23,"hasMore":true,"time":1556817501007,
+            "comments":[{"commentId":1436921389,"time":1554031500549,"user":null,"content":"回复","timeStr":null,
+                         "liked":null,"replyCount":null,"beReplied":[{"user":null,"content":null}]}]}})"},
+                                   true);
+        REQUIRE(page);
+        CHECK(page->total == 23);
+        CHECK(page->more);
+        CHECK(page->cursor == "1556817501007");
+        REQUIRE(page->comments.size() == 1);
+        CHECK(page->comments.front().id == "1436921389");
+        CHECK(page->comments.front().replies == 0);
+        CHECK_FALSE(page->comments.front().liked);
+        CHECK(page->comments.front().reply.empty());
+        CHECK_FALSE(parse_comments({.body = R"({"code":200,"data":{"hasMore":true,"comments":[{"commentId":1}]}})"}, true));
+    }
+    {
+        auto empty = parse_comments({.body = R"({"code":200,"data":{"comments":[],"totalCount":0,"hasMore":false}})"});
+        REQUIRE(empty);
+        CHECK(empty->comments.empty());
+        CHECK_FALSE(empty->more);
+        CHECK_FALSE(parse_comments({.body = R"({"code":400,"message":"无法加载"})"}));
+        CHECK_FALSE(parse_comments({.body = R"({"code":200})"}));
+        CHECK_FALSE(parse_comments({.body = R"({"code":200,"data":{"comments":[{"content":"missing ID"}]}})"}));
+        CHECK_FALSE(parse_comments({.body = R"({"code":200,"data":{"hasMore":true,"comments":[{"commentId":1}]}})"}));
+        CHECK_FALSE(parse_comments({.error = "Network connection failed"}));
+    }
 }
 
 TEST_CASE("NetEase comment writes require business success and posting returns its assigned ID") {

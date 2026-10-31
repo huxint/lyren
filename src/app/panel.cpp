@@ -57,8 +57,7 @@ namespace lyren {
             auto &p = ui.painter();
             const auto &t = ui.theme();
             auto it = ui.interact(id, r);
-            float hot = ui.anim(id, it.hovered ? 1 : 0, 140);
-            float down = ui.anim(ui::sub_id(id, 0xd0), it.held ? 1 : 0, 90);
+            const auto [hot, down] = ui.feel(id, it, 140);
             Rect b = r.inset(down, down);
             p.rect(b, t.accent.with_alpha(0.1f + 0.07f * hot), b.h / 2);
             p.icon("corner-down-right", {b.x + C::gap, b.y + (b.h - C::small_icon) / 2, C::small_icon, C::small_icon}, t.accent);
@@ -207,11 +206,15 @@ namespace lyren {
                 p.rect(row.inset(2), t.hover.with_alpha(h), t.radius_s());
             }
             cover(ui, {row.x + 10, row.y + 9, 36, 36}, tr.cover, t.radius_s());
-            float tw = row.w - 58 - (hot ? 40 : 12);
+            float tw = row.w - 58 - (hot || cur ? 40 : 12);
             p.text(row.x + 58, row.y + 23, tr.title, {.size = t.fs(13), .color = cur ? t.accent : t.text}, tw);
             p.text(row.x + 58, row.y + 41, tr.artist, {.size = t.fs(12), .color = t.text_dim}, tw);
-            if (hot && ui.icon_button(remove_id, {row.right() - 38, row.y + 13, 28, 28}, "x", 14)) {
-                remove = i;
+            if (hot) {
+                if (ui.icon_button(remove_id, {row.right() - 38, row.y + 13, 28, 28}, "x", 14)) {
+                    remove = i;
+                }
+            } else if (cur) {
+                ui.equalizer(ui.id("playing"), {row.right() - 31, row.y + 20, 14, 14}, t.accent, playing());
             }
             if (ui.interact(row_id, row).double_clicked) {
                 play(queue_, i);

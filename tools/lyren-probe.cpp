@@ -526,7 +526,7 @@ static int qq_command(const std::vector<std::string> &args) {
             std::println("{}\nlevel {}, gain {:+.2f} dB, peak {:.3f}{}", r->url, r->level, r->gain, r->peak,
                          r->trial ? std::format(", trial clip only (from {} s)", r->trial_start) : "");
         } else if (cmd == "lyrics") {
-            auto r = co_await q.lyrics(Track{.source = Source::qq, .id = args.at(2)});
+            auto r = co_await q.lyrics(Track{.id = args.at(2), .source = Source::qq});
             if (!r) {
                 co_return fail(r.error());
             }
@@ -674,7 +674,7 @@ static int qq_command(const std::vector<std::string> &args) {
                 }
                 bool on = arg(4) == "on";
                 DislikeKind kind = static_cast<DislikeKind>(category - kinds.begin());
-                Dislike item{.source = Source::qq, .kind = kind, .id = arg(3), .name = arg(5)};
+                Dislike item{.id = arg(3), .name = arg(5), .source = Source::qq, .kind = kind};
                 if (on) {
                     uint64_t id = 0;
                     const auto parsed = std::from_chars(item.id.data(), item.id.data() + item.id.size(), id);

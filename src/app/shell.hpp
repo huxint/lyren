@@ -253,8 +253,15 @@ namespace lyren {
         int grid_view(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Card> &cards, bool round, double since, bool more, bool &near_end);
         bool card(ui::Ui &ui, ui::Id id, ui::Rect r, const Card &c, bool round);
         bool hero(ui::Ui &ui, ui::Id id, ui::Rect r, std::string_view big, std::string_view title, std::string_view subtitle, float hue, std::string_view icon = {});
+        // What stands in for a page's content while it loads: the shape of what is coming, or a spinner.
+        enum class Placeholder : uint8_t {
+            spinner,
+            rows,
+            cards,
+            faces
+        };
         // Loading, error and signed-out states of a page; true when one was drawn.
-        bool page_status(ui::Ui &ui, ui::Rect r, bool loading, const std::string &error, bool needs_login);
+        bool page_status(ui::Ui &ui, ui::Rect r, bool loading, const std::string &error, bool needs_login, Placeholder look = Placeholder::spinner);
         static float panel_width(Panel panel);
         void show_panel(Panel panel); // the same one again, or none, closes it
         // slot: the space beside the page, which grows as the panel slides in; stage: how far the stage is up.
@@ -273,6 +280,12 @@ namespace lyren {
         void lyrics_view(ui::Ui &ui, ui::Rect r, float centered);
         // The size of a heart that pops when its track has just been liked.
         float heart_size(ui::Ui &ui, const Track &t, float size) const;
+        // "Play all" and "Shuffle" from x; returns where the next button goes.
+        float play_buttons(ui::Ui &ui, float x, float y, std::vector<Track> &tracks);
+        // A page's tabs: picking one starts the slide of its content, which tab_enter applies to content and returns
+        // the fade of.
+        bool page_tabs(ui::Ui &ui, ui::Id id, ui::Rect r, std::span<const std::string_view> labels, int &selected);
+        float tab_enter(ui::Ui &ui, ui::Rect &content) const;
         // The buttons after "play all" and "shuffle" on album and playlist pages, from x.
         void list_actions(ui::Ui &ui, float x, float y);
         void account_modal(ui::Ui &ui, ui::Rect r);

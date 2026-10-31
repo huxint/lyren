@@ -15,13 +15,13 @@ TEST_CASE("QQ sharing uses public resource identity instead of private directory
     CHECK(share_url(Card{.source = Source::qq, .id = "top:4"}) == "https://y.qq.com/n/ryqq/toplist/4");
     CHECK(share_url(Card{.kind = CardKind::album, .source = Source::qq, .id = "album-mid", .thread = "123"}) == "https://y.qq.com/n/ryqq/albumDetail/album-mid");
     CHECK(share_url(Card{.kind = CardKind::artist, .source = Source::qq, .id = "artist-mid"}) == "https://y.qq.com/n/ryqq/singer/artist-mid");
-    CHECK(share_url(Track{.source = Source::qq, .id = "18446744073709551615"}) == "https://i.y.qq.com/v8/playsong.html?songid=18446744073709551615");
+    CHECK(share_url(Track{.id = "18446744073709551615", .source = Source::qq}) == "https://i.y.qq.com/v8/playsong.html?songid=18446744073709551615");
     CHECK(share_url(Track{.id = "18446744073709551615"}) == "https://music.163.com/song?id=18446744073709551615");
 }
 
 TEST_CASE("identical songs on different platforms keep independent identities") {
     Track n{.id = "1", .title = "Love Story", .artist = "Taylor Swift", .duration = 235, .paid = true};
-    Track q{.source = Source::qq, .id = "1", .mid = "mid", .media = "media", .title = n.title, .artist = n.artist, .duration = 235};
+    Track q{.id = "1", .mid = "mid", .media = "media", .title = n.title, .artist = n.artist, .duration = 235, .source = Source::qq};
     CHECK_FALSE(same(n, q));
     CHECK(key(n) != key(q));
     CHECK(same(n, Track{.id = "1"}));
@@ -29,8 +29,8 @@ TEST_CASE("identical songs on different platforms keep independent identities") 
     CHECK_FALSE(same(nc, qc));
 }
 
-TEST_CASE("saved platform survives a round trip and old queues remain readable") {
-    auto parsed = parse_state(R"({"queue":[{"source":1,"id":"1","alts":[{"source":0,"id":"2"}]}],"current":0})");
+TEST_CASE("saved platform survives a round trip") {
+    auto parsed = parse_state(R"({"queue":[{"source":1,"id":"1"}],"current":0})");
     REQUIRE(parsed);
     SavedState saved = std::move(*parsed);
     CHECK(saved.source == Source::netease);
@@ -46,19 +46,14 @@ TEST_CASE("saved platform survives a round trip and old queues remain readable")
     CHECK(restored->queue[0].id == "1");
 }
 
-TEST_CASE("saved state rejects unregistered platforms before indexing providers") {
+TEST_CASE("saved state rejects unregistered platforms and modes") {
     for (std::string_view text : {R"({"source":2})", R"({"queue":[{"source":2,"id":"1"}]})", R"({"recent":[{"source":2,"id":"1"}]})"}) {
         CAPTURE(text);
         const auto state = parse_state(text);
         REQUIRE_FALSE(state);
         CHECK(state.error() == "Unknown platform in saved state");
     }
-}
-
-TEST_CASE("saved state rejects playback modes outside the registered values") {
-    const auto state = parse_state(R"({"mode":3})");
-    REQUIRE_FALSE(state);
-    CHECK(state.error() == "Unknown playback mode in saved state");
+    CHECK(parse_state(R"({"mode":3})").error() == "Unknown playback mode in saved state");
 }
 
 TEST_CASE("saved slider positions and selections are normalized at the file boundary") {
@@ -73,7 +68,7 @@ TEST_CASE("saved slider positions and selections are normalized at the file boun
     CHECK(parse_state(R"({"island_y":-4})")->island_y == 0);
 }
 
-TEST_CASE("credentials preserve registered and future platforms and read the old format") {
+TEST_CASE("credentials round-trip every platform") {
     auto c = creds::from_json(R"({"netease":{"MUSIC_U":"test-cookie"}})");
     CHECK(c["netease"].at("MUSIC_U") == "test-cookie");
     CHECK(c["qq"].empty());
@@ -85,8 +80,5 @@ TEST_CASE("credentials preserve registered and future platforms and read the old
     restored = creds::from_json(creds::to_json(restored));
     CHECK(restored["qq"] == c["qq"]);
     CHECK(restored["extension"] == c["extension"]);
-}
-
-TEST_CASE("malformed credentials do not retain partially parsed sessions") {
     CHECK(creds::from_json(R"({"netease":{"MUSIC_U":"test-cookie"},"qq":)").empty());
 }

@@ -54,6 +54,8 @@ namespace lyren {
         void on_text_input(const wl::TextInputEvent &e);
         void note_input();
         void reload_config();
+        // Applies config_ after it replaced previous.
+        void config_updated(const Config &previous);
         void apply_config(bool initial);
         void load_text(const std::string &family);
         void toast(std::string message);

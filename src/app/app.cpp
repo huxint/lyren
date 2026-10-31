@@ -59,6 +59,12 @@ namespace lyren {
                (r ? XDG_TOPLEVEL_RESIZE_EDGE_RIGHT : 0);
     }
 
+    // What a frame puts on screen: an identical one need not be presented. Reused texture ids can carry new pixels
+    // without changing any primitive, so the textures' version is part of it.
+    static uint64_t frame_key(std::span<const gfx::Prim> prims, uint32_t w, uint32_t h, uint64_t textures) {
+        return std::hash<std::string_view>{}({reinterpret_cast<const char *>(prims.data()), prims.size_bytes()}) ^ (static_cast<uint64_t>(w) << 32 | h) ^ textures;
+    }
+
     App::App(Loop &loop, Bus &bus, ConfigFile config, std::vector<std::string> script)
     : loop_(loop),
       config_(std::move(config)),
@@ -93,17 +99,9 @@ namespace lyren {
                                    return toast(r.error());
                                }
                                log::info("config: {}.{} = {}", section, key, value);
-                               set_language(config_.config.interface.language);
-                               shell_.config_changed();
                                // Theme and font resources can only change after the current frame finishes.
                                loop_.defer([this, previous] {
-                                   if (previous.theme.font != config_.config.theme.font) {
-                                       load_text(config_.config.theme.font);
-                                   }
-                                   apply_config(false);
-                                   if (previous.gpu.device != config_.config.gpu.device) {
-                                       toast(std::string(tr("GPU changes take effect after restarting")));
-                                   }
+                                   config_updated(previous);
                                });
                            },
                        .desktop_changed =
@@ -259,15 +257,18 @@ namespace lyren {
             toast(describe_config_error(parsed.error()));
             return;
         }
-        Config old = config_.config;
-        config_.config = *parsed;
+        Config previous = std::exchange(config_.config, *parsed);
         log::info("config reloaded");
+        config_updated(previous);
+    }
+
+    void App::config_updated(const Config &previous) {
         shell_.config_changed();
-        if (parsed->theme.font != old.theme.font) {
-            load_text(parsed->theme.font);
+        if (previous.theme.font != config_.config.theme.font) {
+            load_text(config_.config.theme.font);
         }
         apply_config(false);
-        if (parsed->gpu.device != old.gpu.device) {
+        if (previous.gpu.device != config_.config.gpu.device) {
             toast(std::string(tr("GPU changes take effect after restarting")));
         }
     }
@@ -316,10 +317,8 @@ namespace lyren {
         }
         shaper_->end_frame();
         // Pointer motion over static areas rebuilds an identical frame; skip presenting it.
-        // Reused texture IDs can carry new pixels without changing any primitives.
         auto prims = painter_->prims();
-        uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char *>(prims.data()), prims.size_bytes()}) ^
-                        (static_cast<uint64_t>(window_->buffer_width()) << 32 | window_->buffer_height()) ^ renderer_.texture_version();
+        uint64_t hash = frame_key(prims, window_->buffer_width(), window_->buffer_height(), renderer_.texture_version());
         if (hash != frame_hash_ || window_->configure_pending()) {
             renderer_.draw(*target_, prims, {}, [this] {
                 window_->prepare_present();
@@ -539,8 +538,7 @@ namespace lyren {
         lyrics_->set_input(static_cast<int>(std::floor(input.x)), static_cast<int>(std::floor(input.y)), static_cast<int>(std::ceil(input.w)),
                            static_cast<int>(std::ceil(input.h)));
         auto prims = painter_->prims();
-        uint64_t hash = std::hash<std::string_view>{}({reinterpret_cast<const char *>(prims.data()), prims.size_bytes()}) ^
-                        (static_cast<uint64_t>(lyrics_->buffer_width()) << 32 | lyrics_->buffer_height()) ^ renderer_.texture_version();
+        uint64_t hash = frame_key(prims, lyrics_->buffer_width(), lyrics_->buffer_height(), renderer_.texture_version());
         if (hash != lyrics_hash_ || lyrics_->needs_commit()) {
             renderer_.draw(*lyrics_target_, prims, {}, [this] {
                 lyrics_->prepare_present();

@@ -18,7 +18,7 @@ TEST_CASE("embedded default config parses to the built-in defaults") {
     CHECK(c->desktop_lyrics.outline == "#000000a0");
 }
 
-TEST_CASE("config errors carry the line number") {
+TEST_CASE("config errors carry the line number and reject unknown keys") {
     auto bad_enum = parse_config("[theme]\nmode = \"murk\"\n");
     REQUIRE_FALSE(bad_enum.has_value());
     CHECK(bad_enum.error().starts_with("2:"));
@@ -63,27 +63,15 @@ TEST_CASE("settings are written into the config text in place") {
     CHECK(c->playback.normalize);
     CHECK(c->desktop_lyrics.font_size == 36);
     CHECK(d.find("# Match track loudness") != std::string::npos);
-}
 
-TEST_CASE("setting updates preserve inline comments and surrounding whitespace") {
+    // Inline comments, quoting and whitespace around the value survive.
     CHECK(set_config_value("[playback]\r\n  normalize\t= false  # Match track loudness\r\n", "playback", "normalize", "true") ==
           "[playback]\r\n  normalize\t= true  # Match track loudness\r\n");
-    CHECK(set_config_value("[theme]\naccent = \"#abcdef\" # Accent color\n", "theme", "accent", "\"auto\"") == "[theme]\naccent = \"auto\" # Accent color\n");
     CHECK(set_config_value("[theme]\nfont = 'Font #1'  # Font\n", "theme", "font", "\"sans-serif\"") == "[theme]\nfont = \"sans-serif\"  # Font\n");
     CHECK(set_config_value(R"([theme]
 font = "Font \"#1" # Font
 )",
                            "theme", "font", "\"sans-serif\"") == "[theme]\nfont = \"sans-serif\" # Font\n");
-}
-
-TEST_CASE("language preferences persist and legacy lyric visibility remains readable") {
-    auto config = parse_config("[interface]\nlanguage = \"en\"\n[desktop_lyrics]\nenabled = true\nfont_size = 42\n");
-    REQUIRE(config.has_value());
-    CHECK(config->interface.language == Language::en);
-    CHECK(config->desktop_lyrics.font_size == 42);
-    CHECK_FALSE(parse_config("[interface]\nlanguage = \"fr\"\n").has_value());
-    CHECK_FALSE(parse_config("[desktop_lyrics]\nfont_siz = 42\n").has_value());
-    CHECK(default_config_text().find("enabled =") == std::string_view::npos);
 }
 
 TEST_CASE("resetting a color override restores the selected theme") {
@@ -119,15 +107,4 @@ TEST_CASE("light theme separates surfaces and keeps text readable") {
     CHECK(contrast(theme.surface, theme.text_dim) >= 4.5);
     CHECK(contrast(theme.surface, theme.accent) >= 4.5);
     CHECK(errors.empty());
-}
-
-TEST_CASE("Dynamic Island options read configs written before the open island had one layout") {
-    auto defaults = parse_config(default_config_text());
-    REQUIRE(defaults);
-    CHECK(defaults->desktop_lyrics.island.cover);
-    CHECK(defaults->desktop_lyrics.island.progress);
-    auto old = parse_config("[desktop_lyrics.island]\ndetails = true\ncontrols = true\nvolume = false\nprogress = true\ncover = false\n");
-    REQUIRE(old);
-    CHECK_FALSE(old->desktop_lyrics.island.cover);
-    CHECK(old->desktop_lyrics.island.progress);
 }

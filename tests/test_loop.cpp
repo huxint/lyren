@@ -151,6 +151,10 @@ static Task<int> finish_later(Loop &loop, int value, Clock::duration delay, std:
     co_return value;
 }
 
+static Task<int> immediate(int value) {
+    co_return value;
+}
+
 TEST_CASE("both starts its tasks together and preserves result order") {
     Loop loop;
     std::vector<int> order;
@@ -162,16 +166,11 @@ TEST_CASE("both starts its tasks together and preserves result order") {
     loop.run();
     CHECK(order == (std::vector<int>{2, 1}));
     CHECK(out == std::pair{1, 2});
-}
-
-static Task<int> immediate(int value) {
-    co_return value;
-}
-
-TEST_CASE("both also joins tasks that complete before it suspends") {
-    std::pair<int, int> out;
-    spawn([](std::pair<int, int> *out) -> Task<void> {
-        *out = co_await both(immediate(3), immediate(4));
-    }(&out));
-    CHECK(out == std::pair{3, 4});
+    {
+        std::pair<int, int> out;
+        spawn([](std::pair<int, int> *out) -> Task<void> {
+            *out = co_await both(immediate(3), immediate(4));
+        }(&out));
+        CHECK(out == std::pair{3, 4});
+    }
 }
