@@ -58,6 +58,7 @@ namespace lyren {
         images_.prefetch(queue_);
         dl_x_ = saved.lyrics_x, dl_bottom_ = saved.lyrics_bottom, dl_locked_ = saved.lyrics_locked;
         island_x_ = saved.island_x, island_y_ = saved.island_y;
+        dl_snap_ = saved.lyrics_snap, island_snap_ = saved.island_snap;
         dl_enabled_ = saved.lyrics_enabled;
         dl_island_ = saved.lyrics_island;
         lyric_translation_ = saved.lyrics_translation;
@@ -188,6 +189,8 @@ namespace lyren {
                      .lyrics_bottom = dl_bottom_,
                      .island_x = island_x_,
                      .island_y = island_y_,
+                     .lyrics_snap = dl_snap_,
+                     .island_snap = island_snap_,
                      .lyrics_locked = dl_locked_,
                      .lyrics_enabled = dl_enabled_,
                      .lyrics_island = dl_island_,

@@ -384,29 +384,19 @@ namespace lyren {
         place(5);
         {
             group(lyren::tr("Floating lyrics"));
-            // The line as it shows on the desktop, over the blurred cover.
+            // Both rows as they appear on the desktop, including the transition between them.
             const float size = t.lyric_size, sub = std::round(size * 0.58f);
-            const Rect rr = row(std::max(112.f, std::round(size * 1.35f) + std::round(sub * 1.35f) + 44), true, false);
+            const bool translated = lyric_translation_ && std::ranges::any_of(lyrics_, [](const LyricLine &line) {
+                                        return !line.translation.empty();
+                                    });
+            const float row_height = std::round(size * 1.35f) + (translated ? std::round(sub * 1.35f) : 0) + 10;
+            const Rect rr = row(2 * row_height + 2 * std::round(size * 0.24f) + 20, true, false);
             const Rect wall = rr.inset(10);
             wallpaper(ui, wall, radius - 4);
             ui.push_clip(wall);
             {
                 UseTheme on_desktop(ui, *stage_);
-                const double now = timeline().to_song(position());
-                const int at_line = lyric_at(lyrics_, now + 0.2);
-                const LyricLine *line = at_line >= 0 ? &lyrics_[static_cast<size_t>(at_line)] : nullptr;
-                const std::string_view text = line ? std::string_view(line->text) : current() ? std::string_view(current()->title) : lyren::tr("Lyrics appear here");
-                const std::string_view below = line        ? (lyric_translation_ ? std::string_view(line->translation) : std::string_view{})
-                                               : current() ? std::string_view(current()->artist)
-                                                           : std::string_view{};
-                const float lh = std::round(size * 1.35f), line_top = wall.y + (wall.h - lh - (below.empty() ? 0 : sub * 1.35f)) / 2;
-                const ui::Color sung = t.lyric_sung.value_or(stage_->accent);
-                const bool timed = line && !line->words.empty();
-                floating_text(ui, wall.x + wall.w / 2, line_top + lh * 0.76f, text, timed ? line : nullptr, size, wall.w - 32, timed ? sung : t.lyric_text, t.lyric_text);
-                if (!below.empty()) {
-                    floating_text(ui, wall.x + wall.w / 2, line_top + lh + sub * 1.1f, below, nullptr, sub, wall.w - 32, t.lyric_text.with_alpha(0.85f), t.lyric_text);
-                }
-                lyric_frames(ui, at_line, timed);
+                floating(ui, wall, false);
             }
             ui.pop_clip();
             slider_row(

@@ -4,6 +4,7 @@
 
 #include "core/result.hpp"
 #include "media/types.hpp"
+#include "app/desktop_snap.hpp"
 
 namespace lyren {
 
@@ -22,6 +23,7 @@ namespace lyren {
         float lyrics_x = 0, lyrics_bottom = 48; // signed horizontal offset, nonnegative bottom margin; logical pixels
         // The island's offset from the centre of the screen and from its top edge; logical pixels.
         float island_x = 0, island_y = 10;
+        DesktopSnap lyrics_snap, island_snap;
         bool lyrics_locked = false;
         bool lyrics_enabled = false, lyrics_island = false, lyrics_translation = true;
     };

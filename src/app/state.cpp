@@ -29,6 +29,11 @@ namespace lyren {
         if (std::to_underlying(s.mode) > std::to_underlying(PlayMode::shuffle)) {
             return std::unexpected("Unknown playback mode in saved state");
         }
+        for (const auto snap : {s.lyrics_snap, s.island_snap}) {
+            if (std::to_underlying(snap.x) > std::to_underlying(DesktopAnchor::end) || std::to_underlying(snap.y) > std::to_underlying(DesktopAnchor::end)) {
+                return std::unexpected("Unknown desktop lyrics anchor in saved state");
+            }
+        }
         if (s.current < -1 || s.current >= static_cast<int>(s.queue.size())) {
             s.current = -1;
         }

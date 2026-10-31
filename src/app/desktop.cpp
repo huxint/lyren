@@ -17,13 +17,32 @@ namespace lyren {
 
     namespace {
         constexpr ui::Color white{1, 1, 1, 1}, ink{0.03f, 0.03f, 0.035f, 1};
-        constexpr float toolbar_height = 40, desktop_edge = 8, tau = 2 * std::numbers::pi_v<float>;
+        constexpr float toolbar_height = 40, tau = 2 * std::numbers::pi_v<float>;
         constexpr double lead = 0.2; // a line lights up a little early, with the voice rather than after it
 
-        Rect desktop_bounds(Rect panel, float width, float height) {
-            panel.x = std::clamp(panel.x, desktop_edge, std::max(desktop_edge, width - desktop_edge - panel.w));
-            panel.y = std::clamp(panel.y, desktop_edge, std::max(desktop_edge, height - desktop_edge - panel.h));
+        Rect desktop_bounds(Rect panel, float width, float height, DesktopSnap &snap, bool dragging) {
+            panel.x = desktop_axis(panel.x, panel.w, width, snap.x, dragging);
+            panel.y = desktop_axis(panel.y, panel.h, height, snap.y, dragging);
             return panel;
+        }
+
+        void desktop_guides(ui::Ui &ui, Rect panel, DesktopSnap snap, bool dragging) {
+            const float visible = ui.anim(ui.id("desktop-snap-guides"), dragging && (snap.x != DesktopAnchor::none || snap.y != DesktopAnchor::none) ? 1 : 0, 140);
+            if (visible <= 0) {
+                return;
+            }
+            auto &p = ui.painter();
+            const auto color = ui.theme().accent.with_alpha(visible * 0.45f);
+            auto coordinate = [](DesktopAnchor anchor, float extent) {
+                return anchor == DesktopAnchor::start ? desktop_edge : anchor == DesktopAnchor::center ? extent / 2 : extent - desktop_edge;
+            };
+            if (snap.x != DesktopAnchor::none) {
+                p.rect({coordinate(snap.x, ui.width) - 0.5f, desktop_edge, 1, ui.height - 2 * desktop_edge}, color);
+            }
+            if (snap.y != DesktopAnchor::none) {
+                p.rect({desktop_edge, coordinate(snap.y, ui.height) - 0.5f, ui.width - 2 * desktop_edge, 1}, color);
+            }
+            p.rect(panel.inset(-3), {}, 16, color.with_alpha(visible * 0.3f), 1);
         }
 
         float reveal(float value, float from, float to) {
@@ -81,7 +100,7 @@ namespace lyren {
 
     Rect Shell::desktop_lyrics(ui::Ui &ui, float width, float height) {
         if (!dl_island_) {
-            return floating(ui, width, height);
+            return floating(ui, {0, 0, width, height}, true);
         }
         // Move inside a fixed surface so dragging never changes the pointer's coordinate origin.
         if (island_moving_) {
@@ -122,28 +141,34 @@ namespace lyren {
         const size_t shown_lines = lyric_text ? std::min(lines.size(), size_t{2}) : 0;
         const float head_h = art ? 52.f : 40.f, lines_h = static_cast<float>(shown_lines) * 23;
         const float open_h = pad + head_h + 14 + lines_h + 16 + 14 + 12 + 40 + 16;
-        if (movable) {
-            // Reserve the open card's bounds so expanding it never pushes the controls off screen.
-            const float span = std::max(pill_w, open_w);
-            const Rect bounds = desktop_bounds({center - span / 2, top, span, open_h}, ui.width, ui.height);
-            center = bounds.x + span / 2, top = bounds.y;
-            island_x_ = center - ui.width / 2, island_y_ = top - desktop_edge;
-        }
-        const Rect pill{center - pill_w / 2, top, pill_w, pill_h};
-        const Rect card{center - open_w / 2, top, open_w, open_h};
-
         const float was = std::clamp(ui.spring_value(ui.id("island-open"), 0), 0.f, 1.f);
+        auto place = [&](float open, bool dragging) {
+            if (movable) {
+                const float w = std::lerp(pill_w, open_w, open), h = std::lerp(pill_h, open_h, open);
+                const Rect bounds = desktop_bounds({center - w / 2, top, w, h}, ui.width, ui.height, island_snap_, dragging);
+                center = bounds.x + w / 2, top = bounds.y;
+                island_x_ = center - ui.width / 2, island_y_ = top - desktop_edge;
+            }
+        };
+        place(was, island_moving_);
+        const Rect hit{center - std::lerp(pill_w, open_w, was) / 2, top, std::lerp(pill_w, open_w, was), std::lerp(pill_h, open_h, was)};
         // Pressing one of its buttons still counts as pointing at it, so it stays open for the click; a drag does not
         // open the island, it leaves it as it was when the drag started.
-        const bool pointed = island_moving_ ? was > 0.5f : (ui.pointing(mix(pill, card, was).inset(-2)) || island_dragging_);
+        const bool pointed = island_moving_ ? was > 0.5f : (ui.pointing(hit.inset(-2)) || island_dragging_);
         // It opens once the pointer rests on it, so passing over it on the way to something else leaves it be, and
         // closes a moment after the pointer leaves, so slipping past its edge does not.
         const float rest = ui.anim(ui.id("island-rest"), pointed ? 1 : 0, pointed ? 220 : 180, ease::linear);
         const bool opened = rest >= 1 || (rest > 0 && was > 0.5f);
         const float k = ui.spring(ui.id("island-open"), opened ? 1 : 0, 480, 0.08f);
         const float open = std::clamp(k, 0.f, 1.f);
+        place(k, false);
+        const Rect pill{center - pill_w / 2, top, pill_w, pill_h};
+        const Rect card{center - open_w / 2, top, open_w, open_h};
         const Rect panel = mix(pill, card, k);
         const float radius = std::lerp(pill_h / 2, 28.f, open);
+        if (movable) {
+            desktop_guides(ui, panel, island_snap_, island_moving_);
+        }
         p.shadow({panel.x, panel.y + 6, panel.w, panel.h}, radius, 22, {0, 0, 0, 0.28f + 0.1f * open});
         p.rect(panel, ink.with_alpha(0.97f), radius);
         p.rect(panel.inset(0.5f), {}, radius, white.with_alpha(0.05f), 1);
@@ -371,8 +396,8 @@ namespace lyren {
         return panel;
     }
 
-    void Shell::floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color,
-                              ui::Color rest) {
+    void Shell::floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color, ui::Color rest,
+                              float focus) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         // Long lines shrink to fit, down to 70%, before they are cut short.
@@ -388,7 +413,7 @@ namespace lyren {
             const double now = timeline().to_song(position());
             front = sung_x(p, *live, text, font, soft, now);
             if (t.motion > 0) {
-                fill_lyric_wave(lyric_lifts_, p.shape(live->text, {.size = font}), *live, text, font, now, 1);
+                fill_lyric_wave(lyric_lifts_, p.shape(live->text, {.size = font}), *live, text, font, now, focus);
             }
         }
         p.set_lifts(lyric_lifts_);
@@ -404,33 +429,125 @@ namespace lyren {
         p.clear_wipe();
     }
 
-    Rect Shell::floating(ui::Ui &ui, float width, float height) {
+    Rect Shell::floating(ui::Ui &ui, Rect area, bool movable) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Track *track = current();
         const double now = timeline().to_song(position());
-        const int at = lyric_at(lyrics_, now + lead);
+        // The waiting row anticipates the cue; promotion follows the actual start of the line.
+        const int at = lyric_at(lyrics_, now);
         const LyricLine *line = at >= 0 ? &lyrics_[static_cast<size_t>(at)] : nullptr;
         const std::string_view text = line ? std::string_view(line->text) : track ? std::string_view(track->title) : lyren::tr("Nothing playing");
-        const std::string_view below = line ? (lyric_translation_ ? std::string_view(line->translation) : std::string_view{}) : track ? track->artist : std::string_view{};
+        const std::string_view below = line && lyric_translation_ ? std::string_view(line->translation) : std::string_view{};
+        const size_t next = static_cast<size_t>(at + 1);
+        const LyricLine *following = next < lyrics_.size() ? &lyrics_[next] : nullptr;
+        const std::array<std::string_view, 2> texts{text, following ? std::string_view(following->text) : !line && track ? std::string_view(track->artist) : std::string_view{}};
+        const std::array<std::string_view, 2> subs{below, following && lyric_translation_ ? std::string_view(following->translation) : std::string_view{}};
         const bool timed = line && !line->words.empty();
-        const float change = show_line(ui, floating_line_, text, below, timed);
+        auto &c = floating_lines_;
+        if (at != c.line || texts[0] != c.shown[0].text || texts[1] != c.shown[1].text || subs[0] != c.shown[0].sub || subs[1] != c.shown[1].sub || timed != c.shown[0].timed) {
+            // Sequential lines carry the preview into the current row; jumps and replacements cross-fade.
+            c.advance = at >= 0 && at == c.line + 1 && c.shown[1].text == text;
+            c.from = c.pose;
+            c.prev = std::move(c.shown);
+            c.shown = {ShownLine{std::string(texts[0]), std::string(subs[0]), timed}, ShownLine{std::string(texts[1]), std::string(subs[1])}};
+            c.line = at, c.since = ui.now;
+            // A fast passage settles before the following cue, including with slower motion enabled.
+            c.duration = following && t.motion > 0 ? std::min(620.f, static_cast<float>((following->time - now) * 800 / t.motion)) : 620;
+        }
+        const float change = ui.progress(c.since, c.duration, ease::linear);
         const bool translated = std::ranges::any_of(lyrics_, [](const LyricLine &l) {
             return !l.translation.empty();
         });
 
-        const float size = t.lyric_size, sub = std::round(size * 0.58f), line_height = std::round(size * 1.35f);
-        const float max_width = width - 64;
-        const float text_width = std::max(p.measure(text, {.size = size}), p.measure(below, {.size = sub}));
-        const float panel_width = ui.spring(ui.id("floating-width"), std::clamp(std::min(text_width, max_width) + 64, 360.f, width - 2 * desktop_edge), 320);
-        const float panel_height = toolbar_height + line_height + std::round(size * 0.58f * 1.35f) + 8;
-        if (dl_dragging_) {
-            dl_x_ = ui.input().x - dl_grab_x_ - width / 2;
-            dl_bottom_ = height - (ui.input().y - dl_grab_y_) - panel_height;
+        const float size = t.lyric_size, sub = std::round(size * 0.58f), line_height = std::round(size * 1.35f), pad = std::round(size * 0.24f);
+        const float row_height = ui.spring(ui.id("floating-row-height"), line_height + (lyric_translation_ && translated ? std::round(sub * 1.35f) : 0) + 10, 320);
+        const float max_width = area.w - (movable ? 64 + 2 * desktop_edge : 32);
+        float text_width = 0;
+        for (size_t i = 0; i < texts.size(); ++i) {
+            text_width = std::max({text_width, p.measure(texts[i], {.size = size}), p.measure(subs[i], {.size = sub})});
+            if (change < 1) {
+                text_width = std::max({text_width, p.measure(c.prev[i].text, {.size = size}), p.measure(c.prev[i].sub, {.size = sub})});
+            }
         }
-        const Rect panel = desktop_bounds({width / 2 + dl_x_ - panel_width / 2, height - dl_bottom_ - panel_height, panel_width, panel_height}, width, height);
+        const float panel_width = movable ? ui.spring(ui.id("floating-width"), std::clamp(text_width + 64, 360.f, area.w - 2 * desktop_edge), 320) : area.w;
+        const float tools_height = movable ? toolbar_height : 0;
+        const float panel_height = tools_height + 2 * row_height + 2 * pad;
+        Rect panel{area.x, area.y + (area.h - panel_height) / 2, panel_width, panel_height};
+        if (movable) {
+            if (dl_dragging_) {
+                dl_x_ = ui.input().x - dl_grab_x_ - area.w / 2;
+                dl_bottom_ = area.h - (ui.input().y - dl_grab_y_) - panel_height;
+            }
+            panel = desktop_bounds({area.w / 2 + dl_x_ - panel_width / 2, area.h - dl_bottom_ - panel_height, panel_width, panel_height}, area.w, area.h, dl_snap_, dl_dragging_);
+            dl_x_ = panel.x + panel.w / 2 - area.w / 2, dl_bottom_ = area.h - panel.bottom();
+            desktop_guides(ui, panel, dl_snap_, dl_dragging_);
+        }
         const float center = panel.x + panel.w / 2;
-        dl_x_ = center - width / 2, dl_bottom_ = height - panel.bottom();
+        const ui::Color sung = t.lyric_sung.value_or(t.accent);
+        using Pose = FloatingLines::Pose;
+        // Let the last syllable settle, then leave the next line waiting through an instrumental gap.
+        float finished = 0;
+        if (timed) {
+            const double end = line->words.back().time() + line->words.back().duration();
+            finished = t.motion > 0 ? smooth01(static_cast<float>((now - end - 0.16) / (0.42 * t.motion))) : static_cast<float>(now >= end);
+        }
+        const double prepare = 0.65 * t.motion;
+        const float ready = following && prepare > 0 ? smooth01(1 - static_cast<float>((following->time - now) / prepare)) : 0;
+        const Pose singing{-0.16f * finished, 1 - finished, 1 - 0.04f * finished, 1 - finished};
+        const Pose waiting{1 - 0.3f * finished - 0.045f * ready, 0.48f + 0.16f * ready, 0.9f + 0.025f * ready, 0.18f * ready};
+        auto draw = [&](const ShownLine &shown, const LyricLine *live, Pose pose) {
+            if (pose.alpha <= 0) {
+                return;
+            }
+            Fade fade(p, pose.alpha);
+            const float top = panel.y + tools_height + pad + row_height * pose.y;
+            const float baseline = top + line_height * 0.76f;
+            p.set_zoom(pose.scale, center, baseline);
+            // Word offsets belong to the original lyric, not the saved copy used for fading out.
+            floating_text(ui, center, baseline, live ? std::string_view(live->text) : std::string_view(shown.text), live, size, max_width, shown.timed ? sung : t.lyric_text,
+                          t.lyric_text, pose.focus);
+            if (!shown.sub.empty()) {
+                floating_text(ui, center, top + line_height + sub * 1.1f, shown.sub, nullptr, sub, max_width, t.lyric_text.with_alpha(0.85f), t.lyric_text, 0);
+            }
+            p.set_zoom(1);
+        };
+        // Separate clocks give the departing line a head start and let the new preview arrive after it.
+        const float leave = ease::standard(std::min(change / 0.44f, 1.f));
+        const float enter = ease::standard(std::clamp((change - 0.06f) / 0.94f, 0.f, 1.f));
+        const float queued = ease::standard(std::clamp((change - 0.32f) / 0.68f, 0.f, 1.f));
+        auto depart = [&](Pose from) {
+            return from.mix({std::max(from.y, 0.f) - 0.16f, 0, from.scale * 0.96f, 0}, leave);
+        };
+        // Keep glyph sizing independent of the panel's width animation, especially for long lines.
+        ui.push_clip({area.x, panel.y + tools_height, area.w, panel.h - tools_height});
+        if (c.advance) {
+            if (change < 1) {
+                draw(c.prev[0], at > 0 ? &lyrics_[static_cast<size_t>(at - 1)] : nullptr, depart(c.from[0]));
+            }
+            c.pose[0] = c.from[1].mix(singing, enter);
+            c.pose[1] = Pose{1.16f, 0, 0.86f, 0}.mix(waiting, queued);
+        } else {
+            for (size_t i = 0; i < c.shown.size(); ++i) {
+                if (change < 1) {
+                    draw(c.prev[i], nullptr, depart(c.from[i]));
+                }
+                const Pose to = i == 0 ? singing : waiting;
+                c.pose[i] = Pose{to.y + 0.12f, 0, to.scale * 0.97f, 0}.mix(to, i == 0 ? enter : queued);
+            }
+        }
+        draw(c.shown[0], line, c.pose[0]);
+        draw(c.shown[1], following, c.pose[1]);
+        ui.pop_clip();
+        if (playing()) {
+            if ((timed && finished < 1) || (following && now >= following->time - prepare)) {
+                ui.keep_animating();
+            } else if (following) {
+                ui.wake(ui.now + following->time - prepare - now);
+            }
+        }
+
+        // Handle controls after drawing: skipping a track replaces the lyrics used above.
         auto button = [&](std::string_view name, Rect rect, std::string_view icon, bool on = false) {
             const auto id = ui.id(name);
             const auto it = ui.interact(id, rect);
@@ -446,7 +563,7 @@ namespace lyren {
 
         Rect input = panel;
         const Rect lock{center - 16, panel.y + 2, 32, 32};
-        if (dl_locked_) {
+        if (movable && dl_locked_) {
             // Locked, clicks fall through everywhere but the unlock button, which shows when pointed at.
             input = lock;
             Fade visible(p, ui.anim(ui.id("floating-unlock"), ui.pointing(lock) ? 1 : 0, 150));
@@ -455,7 +572,7 @@ namespace lyren {
                 dl_locked_ = false;
                 changed();
             }
-        } else {
+        } else if (movable) {
             const float visible = ui.anim(ui.id("floating-tools"), ui.pointing(panel) || dl_dragging_ ? 1 : 0, 180);
             if (visible > 0) {
                 // The toolbar: the transport, then translation, the island, locking and hiding.
@@ -511,24 +628,7 @@ namespace lyren {
             }
         }
 
-        const ui::Color sung = t.lyric_sung.value_or(t.accent);
-        auto draw = [&](const ShownLine &shown, const LyricLine *live, float dy, float alpha) {
-            Fade fade(p, alpha);
-            const float top = panel.y + toolbar_height + dy;
-            floating_text(ui, center, top + line_height * 0.76f, live && shown.timed ? std::string_view(live->text) : std::string_view(shown.text),
-                          live && shown.timed ? live : nullptr, size, max_width, shown.timed ? sung : t.lyric_text, t.lyric_text);
-            if (!shown.sub.empty()) {
-                floating_text(ui, center, top + line_height + sub * 1.1f, shown.sub, nullptr, sub, max_width, t.lyric_text.with_alpha(0.85f), t.lyric_text);
-            }
-        };
-        ui.push_clip({0, panel.y + toolbar_height - 2, width, panel.h - toolbar_height + 2});
-        if (change < 1) {
-            draw(floating_line_.prev, nullptr, -10 * change, 1 - change);
-        }
-        draw(floating_line_.shown, line, 10 * (1 - change), change);
-        ui.pop_clip();
-        lyric_frames(ui, at, timed);
-        return dl_dragging_ ? Rect{0, 0, width, height} : input;
+        return movable && dl_dragging_ ? area : input;
     }
 
 } // namespace lyren
