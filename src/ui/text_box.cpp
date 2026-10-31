@@ -313,13 +313,13 @@ namespace lyren::ui {
         return submitted;
     }
 
-    void Ui::text_area(Id id, Rect r, std::string &text, std::string_view placeholder) {
+    void Ui::text_area(Id id, Rect r, std::string &text, std::string_view placeholder, bool framed) {
         const Theme &t = *theme_;
         EditBox &box = edits_[id];
         box.edit.clamp(text);
         TextStyle st{.size = t.fs(13), .color = t.text};
         const float line_h = std::round(st.size * 1.55f);
-        Rect inner = r.inset(10);
+        Rect inner = framed ? r.inset(10) : r;
         auto it = interact(id, r);
         if (it.hovered) {
             cursor = wl::Cursor::text;
@@ -356,9 +356,10 @@ namespace lyren::ui {
         }
         focused = focus == id && !disabled;
         box.edit.clamp(text);
-        float f = anim(sub_id(id, 0xf0), focused ? 1 : 0, 120);
-        Color fill = t.text.with_alpha(0.05f);
-        p_->rect(r, fill, t.radius_s(), t.border.mix(t.accent, f), 1);
+        if (framed) {
+            float f = anim(sub_id(id, 0xf0), focused ? 1 : 0, 120);
+            p_->rect(r, t.text.with_alpha(0.05f), t.radius_s(), t.border.mix(t.accent, f), 1);
+        }
 
         const TextEdit &e = box.edit;
         std::string composed;

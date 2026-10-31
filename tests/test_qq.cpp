@@ -467,6 +467,27 @@ TEST_CASE("QQ comment identities like state and reply cursors retain their servi
     CHECK(replies->total == 22);
 }
 
+TEST_CASE("QQ comment pictures and stickers replace their markers in the text") {
+    auto page = qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"SubCode":0,"CommentList":{"HasMore":0,"Total":3,"Comments":[
+        {"CmId":"pic","Content":"晴天 [图片]","Pic":"https://music-file.y.qq.com/comment/a.jpg","PicSize":"1500x844","EmoPic":""},
+        {"CmId":"emo","Content":" [表情]","Pic":"","PicSize":"","EmoPic":"https://y.qq.com/emo/1.png"},
+        {"CmId":"text","Content":"[图片] 只是文字","Pic":"","PicSize":"bad"}
+    ]}}}})"});
+    REQUIRE(page);
+    REQUIRE(page->comments.size() == 3);
+    CHECK(page->comments[0].text == "晴天");
+    CHECK(page->comments[0].image == "https://music-file.y.qq.com/comment/a.jpg");
+    CHECK(page->comments[0].image_w == 1500);
+    CHECK(page->comments[0].image_h == 844);
+    CHECK_FALSE(page->comments[0].sticker);
+    CHECK(page->comments[1].text.empty());
+    CHECK(page->comments[1].image == "https://y.qq.com/emo/1.png");
+    CHECK(page->comments[1].sticker);
+    CHECK(page->comments[1].image_w == 0);
+    CHECK(page->comments[2].text == "[图片] 只是文字");
+    CHECK(page->comments[2].image.empty());
+}
+
 TEST_CASE("QQ comment business failures are distinct from final empty pages") {
     auto empty = qq::parse_comments({.body = R"({"req_0":{"code":0,"data":{"CommentList":{"HasMore":0,"Total":0,"Comments":[]}}}})"}, true);
     REQUIRE(empty);

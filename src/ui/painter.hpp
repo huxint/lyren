@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <optional>
@@ -97,6 +98,15 @@ namespace lyren::ui {
         void draw_deferred() {
             prims_.insert(prims_.end(), deferred_.begin(), deferred_.end());
             deferred_.clear();
+        }
+
+        // Where the next primitive goes, and moving the ones drawn since a mark above everything drawn after them: for
+        // a floating layer laid out before what it covers, so that it takes input first, and painted over it.
+        size_t mark() const {
+            return prims_.size();
+        }
+        void raise(size_t from, size_t to) {
+            std::rotate(prims_.begin() + static_cast<std::ptrdiff_t>(from), prims_.begin() + static_cast<std::ptrdiff_t>(to), prims_.end());
         }
 
         void push_clip(Rect r);

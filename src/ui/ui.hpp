@@ -240,8 +240,8 @@ namespace lyren::ui {
         bool icon_button(Id id, Rect r, std::string_view icon, float icon_size = 18, bool active = false);
         // Returns true when Enter is pressed.
         bool text_box(Id id, Rect r, std::string &text, std::string_view placeholder, std::string_view icon = {});
-        // Wrapped multiline editor. Enter always adds a line; it never submits.
-        void text_area(Id id, Rect r, std::string &text, std::string_view placeholder);
+        // Wrapped multiline editor. Enter never submits. Unframed editors use the parent's padding and focus ring.
+        void text_area(Id id, Rect r, std::string &text, std::string_view placeholder, bool framed = true);
         // Returns true while the user changes the value (0..1).
         bool slider(Id id, Rect r, float &value, SliderStyle style = {});
         bool tabs(Id id, Rect r, std::span<const std::string_view> labels, int &selected, TabStyle style = TabStyle::underline);
@@ -273,7 +273,8 @@ namespace lyren::ui {
         bool menu_open() const {
             return !menu_.empty();
         }
-        void open_modal(float w, float h, std::function<void(Ui &, Rect)> body);
+        // bare: no panel, padding or close button around the body, for a picture shown large.
+        void open_modal(float w, float h, std::function<void(Ui &, Rect)> body, bool bare = false);
         // A closing modal is still drawn while it fades out but no longer takes input.
         bool modal_open() const {
             return modal_ && modal_closed_ < 0;
@@ -358,6 +359,7 @@ namespace lyren::ui {
         std::function<void(Ui &, Rect)> modal_;
         float modal_w_ = 0, modal_h_ = 0;
         double modal_time_ = 0, modal_closed_ = -1;
+        bool modal_bare_ = false;
         std::vector<Toast> toasts_;
     };
 

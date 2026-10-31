@@ -12,8 +12,11 @@ namespace lyren::gfx {
         std::vector<uint8_t> px;
     };
 
-    // Decodes JPEG, PNG or WebP into a square of at most size×size: the centre is cropped, JPEGs are scaled while decoding.
+    // Decodes JPEG, PNG, WebP or GIF (its first frame) into a square of at most size×size: the centre is cropped, JPEGs are
+    // scaled while decoding.
     Image decode_square(std::span<const uint8_t> data, uint32_t size, std::string &error);
+    // The same, keeping the whole picture: its longer side is at most size.
+    Image decode_fit(std::span<const uint8_t> data, uint32_t size, std::string &error);
     // Area-averaged downscale.
     Image downscale(const Image &src, uint32_t w, uint32_t h);
     // Three box passes approximating a Gaussian, edges clamped.

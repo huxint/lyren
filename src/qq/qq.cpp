@@ -3,6 +3,7 @@
 #include <glaze/glaze.hpp>
 
 #include <array>
+#include <charconv>
 #include <ctime>
 #include <format>
 #include <iterator>
@@ -289,7 +290,7 @@ namespace lyren::qq {
             Str Nick, Content;
         };
         struct QComment {
-            Str Nick, Avatar, Content, SeqNo, CmId, RankScore;
+            Str Nick, Avatar, Content, SeqNo, CmId, RankScore, Pic, PicSize, EmoPic;
             int64_t PubTime = 0;
             int PraiseNum = 0, ReplyCnt = 0, IsPraised = 0, IsSelf = 0;
             Vec<QReplied> RepliedComments;
@@ -1552,6 +1553,21 @@ namespace lyren::qq {
                 m.user = c.Nick.value_or("");
                 m.avatar = c.Avatar.value_or("");
                 m.text = trimmed(c.Content);
+                // The text holds a marker where the sticker or picture goes; the picture is drawn instead.
+                for (auto [url, marker] : {std::pair{&c.EmoPic, std::string_view("[表情]")}, std::pair{&c.Pic, std::string_view("[图片]")}}) {
+                    if (url->value_or("").empty()) {
+                        continue;
+                    }
+                    m.image = **url;
+                    m.sticker = url == &c.EmoPic;
+                    if (size_t at = m.text.rfind(marker); at != std::string::npos) {
+                        m.text = trimmed(m.text.erase(at, marker.size()));
+                    }
+                }
+                if (std::string size = c.PicSize.value_or(""); !m.sticker && size.contains('x')) {
+                    std::from_chars(size.data(), size.data() + size.find('x'), m.image_w);
+                    std::from_chars(size.data() + size.find('x') + 1, size.data() + size.size(), m.image_h);
+                }
                 m.time = when(c.PubTime);
                 m.likes = c.PraiseNum;
                 m.id = *c.CmId;

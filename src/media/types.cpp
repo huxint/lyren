@@ -75,4 +75,16 @@ namespace lyren {
         return u;
     }
 
+    std::string picture_url(std::string_view url, int px) {
+        std::string u(url);
+        if (u.starts_with("http://")) {
+            u.insert(4, "s");
+        }
+        // A zero height keeps NetEase's aspect; QQ Music serves comment pictures only at their own size.
+        if (u.contains(".music.126.net/")) {
+            return std::format("{}?param={}x0", std::string_view(u).substr(0, u.find('?')), px);
+        }
+        return u;
+    }
+
 } // namespace lyren

@@ -243,7 +243,7 @@ namespace lyren::ncm {
         };
         struct NComment {
             std::optional<NCommentUser> user;
-            Str content, timeStr;
+            Str content, timeStr, contentPicUrl;
             uint64_t commentId = 0;
             int32_t likedCount = 0;
             std::optional<int32_t> replyCount;
@@ -1225,6 +1225,7 @@ namespace lyren::ncm {
                 m.liked = c.liked.value_or(false);
                 m.owned = c.owner.value_or(false);
                 m.replies = c.replyCount.value_or(0);
+                m.image = https(c.contentPicUrl.value_or(""));
                 if (c.beReplied && !c.beReplied->empty()) {
                     const NReplied &b = c.beReplied->front();
                     m.reply_user = b.user ? b.user->nickname.value_or("") : "";

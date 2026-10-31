@@ -3,6 +3,8 @@
 #include <nexus/pool.hpp>
 
 #include <algorithm>
+#include <array>
+#include <ranges>
 #include <exception>
 
 #include "core/log.hpp"
@@ -15,6 +17,8 @@ namespace lyren {
     static constexpr size_t budget = 24u << 20;
     static constexpr size_t max_entries = 512;
     static constexpr uint32_t blur_px = 48;
+    // Set in the key's variant for pictures that keep their aspect; the rest of it is the size tier.
+    static constexpr uint32_t whole = 1u << 31;
 
     struct Images::Loader {
         Loop &loop;
@@ -73,7 +77,7 @@ namespace lyren {
         }
         if (!e.ready && !e.failed && !e.request && e.queued < priority) {
             if (e.queued == Priority::none) {
-                e.px = key.variant ? key.variant : blur_px;
+                e.px = key.variant ? key.variant & ~whole : blur_px;
                 e.bytes = static_cast<size_t>(e.px) * e.px * 4;
                 bytes_ += e.bytes;
             }
@@ -95,34 +99,55 @@ namespace lyren {
         return e;
     }
 
-    const Images::Entry &Images::get(std::string_view url, uint32_t px, bool blurred) {
-        const CacheKey::View key{url, blurred ? 0 : px};
+    const Images::Entry *Images::other_tier(std::string_view url, uint32_t px, uint32_t flags, bool larger) {
+        constexpr std::array sizes{64u, 128u, 256u, 512u, 1024u};
+        auto pick = [&](uint32_t size) -> const Entry * {
+            if (larger ? size > px : size < px) {
+                if (auto it = entries_.find(CacheKey::View{url, size | flags}); it != entries_.end() && it->second.ready) {
+                    it->second.used = frame_;
+                    return &it->second;
+                }
+            }
+            return nullptr;
+        };
+        if (larger) {
+            for (uint32_t size : sizes) {
+                if (const Entry *e = pick(size)) {
+                    return e;
+                }
+            }
+        } else {
+            for (uint32_t size : sizes | std::views::reverse) {
+                if (const Entry *e = pick(size)) {
+                    return e;
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    const Images::Entry &Images::lookup(std::string_view url, uint32_t px, uint32_t flags, bool tiers) {
+        const CacheKey::View key{url, px | flags};
         if (auto it = entries_.find(key); it != entries_.end() && it->second.ready) {
             it->second.used = frame_;
             return it->second;
         }
-        if (!blurred) {
-            for (uint32_t size : {64u, 128u, 256u, 512u, 1024u}) {
-                if (size > px) {
-                    if (auto it = entries_.find(CacheKey::View{url, size}); it != entries_.end() && it->second.ready) {
-                        it->second.used = frame_;
-                        return it->second;
-                    }
-                }
-            }
+        if (const Entry *larger = tiers ? other_tier(url, px, flags, true) : nullptr) {
+            return *larger;
         }
         Cached &e = request(key, Priority::foreground);
-        if (!blurred) {
-            for (uint32_t size : {512u, 256u, 128u, 64u}) {
-                if (size < px) {
-                    if (auto it = entries_.find(CacheKey::View{url, size}); it != entries_.end() && it->second.ready) {
-                        it->second.used = frame_;
-                        return it->second;
-                    }
-                }
-            }
+        if (const Entry *smaller = tiers ? other_tier(url, px, flags, false) : nullptr) {
+            return *smaller;
         }
         return e;
+    }
+
+    const Images::Entry &Images::get(std::string_view url, uint32_t px, bool blurred) {
+        return blurred ? lookup(url, 0, 0, false) : lookup(url, px, 0, true);
+    }
+
+    const Images::Entry &Images::picture(std::string_view url, uint32_t px) {
+        return lookup(url, px, whole, true);
     }
 
     void Images::prefetch(std::string_view url, uint32_t px, bool blurred) {
@@ -160,6 +185,7 @@ namespace lyren {
         e.ready = true;
         e.ready_at = now_();
         e.px = img.w;
+        e.w = img.w, e.h = img.h;
         e.bytes = img.px.size();
         e.used = frame_;
         e.tex = renderer_.create_texture(img.w, img.h, VK_FORMAT_R8G8B8A8_UNORM, false);
@@ -189,17 +215,20 @@ namespace lyren {
             const uint64_t ticket = e.ticket = ++ticket_;
             ++in_flight_;
             background_in_flight_ += background;
-            std::string url = cover_url(key.text, static_cast<int>(key.variant ? key.variant : 128));
+            const uint32_t tier = key.variant & ~whole;
+            std::string url = key.variant & whole ? picture_url(key.text, static_cast<int>(tier)) : cover_url(key.text, static_cast<int>(key.variant ? tier : 128));
             e.request = http_.request({.url = std::move(url)}, [loader = loader_, key = std::move(key), ticket, background](net::Response r) mutable {
                 using namespace huxint::nexus;
                 auto submitted = loader->pool.execute(
                     background ? task_priority::low : task_priority::high, [loader, key = std::move(key), ticket, background, r = std::move(r)]() mutable noexcept {
                         gfx::Image img;
                         std::string error = std::move(r.error);
+                        const bool transient = !error.empty() || r.status >= 500;
                         float hue = -1, luma = 0;
                         const bool blurred = key.variant == 0;
                         if (error.empty() && r.status == 200) {
-                            img = gfx::decode_square({reinterpret_cast<const uint8_t *>(r.body.data()), r.body.size()}, blurred ? 96 : key.variant, error);
+                            const std::span<const uint8_t> body{reinterpret_cast<const uint8_t *>(r.body.data()), r.body.size()};
+                            img = key.variant & whole ? gfx::decode_fit(body, key.variant & ~whole, error) : gfx::decode_square(body, blurred ? 96 : key.variant, error);
                             if (img.w) {
                                 gfx::Image small = gfx::downscale(img, blur_px, blur_px);
                                 hue = gfx::dominant_hue(small);
@@ -212,9 +241,9 @@ namespace lyren {
                         } else if (error.empty()) {
                             error = "HTTP " + std::to_string(r.status);
                         }
-                        loader->loop.post([loader, key = std::move(key), ticket, background, img = std::move(img), hue, luma, error = std::move(error)] {
+                        loader->loop.post([loader, key = std::move(key), ticket, background, img = std::move(img), hue, luma, error = std::move(error), transient] {
                             if (loader->owner) {
-                                loader->owner->complete(key, ticket, background, img, hue, luma, error);
+                                loader->owner->complete(key, ticket, background, img, hue, luma, error, transient);
                             }
                         });
                     });
@@ -225,7 +254,7 @@ namespace lyren {
         }
     }
 
-    void Images::complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &img, float hue, float luma, const std::string &error) {
+    void Images::complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &img, float hue, float luma, const std::string &error, bool transient) {
         --in_flight_;
         background_in_flight_ -= background;
         auto it = entries_.find(key);
@@ -240,11 +269,25 @@ namespace lyren {
                 renderer_.upload(e.tex, 0, 0, img.w, img.h, img.px.data(), img.w * 4);
                 e.ready = true;
                 e.ready_at = now_();
+                e.w = img.w, e.h = img.h;
                 e.hue = hue;
                 e.luma = luma;
+                e.retries = 0;
+            } else if (transient && e.retries < 2) {
+                // A reset stream or a busy server usually serves the image a moment later; the next frame that wants
+                // it asks again.
+                e.failed = true;
+                e.ready_at = now_() + 0.8 * ++e.retries;
+                log::debug("cover {}: {}, retrying", key.text.substr(0, 80), error);
+                loop_.after(std::chrono::milliseconds(800 * e.retries), [loader = loader_] {
+                    if (loader->owner) {
+                        loader->owner->redraw_();
+                    }
+                });
             } else {
                 log::warn("cover {}: {}", key.text.substr(0, 80), error);
                 e.failed = true;
+                e.retries = 0;
                 e.ready_at = now_() + 30;
             }
             redraw_();

@@ -65,3 +65,33 @@ TEST_CASE("cover blur clamps edges and keeps colour channels independent") {
         CHECK(image.px == std::vector<uint8_t>{59, 64, 128, 255, 64, 64, 128, 255, 64, 64, 128, 255, 69, 64, 128, 255});
     }
 }
+
+TEST_CASE("GIF pictures decode their first frame with transparency, cropped as covers or whole") {
+    static constexpr uint8_t data[]{
+#embed "data/wide.gif"
+    };
+    std::string error;
+    Image whole = decode_fit(data, 64, error);
+    REQUIRE(error.empty());
+    CHECK(whole.w == 4);
+    CHECK(whole.h == 2);
+    CHECK(std::vector<uint8_t>(whole.px.begin(), whole.px.begin() + 4) == std::vector<uint8_t>{255, 0, 0, 255});
+    CHECK(std::vector<uint8_t>(whole.px.begin() + 12, whole.px.begin() + 16) == std::vector<uint8_t>{0, 0, 0, 0});
+
+    Image half = decode_fit(data, 2, error);
+    CHECK(error.empty());
+    CHECK(half.w == 2);
+    CHECK(half.h == 1);
+    CHECK(half.px == std::vector<uint8_t>{255, 0, 0, 255, 0, 0, 0, 0});
+
+    Image square = decode_square(data, 64, error);
+    CHECK(error.empty());
+    CHECK(square.w == 2);
+    CHECK(square.h == 2);
+    CHECK(std::vector<uint8_t>(square.px.begin(), square.px.begin() + 4) == std::vector<uint8_t>{255, 0, 0, 255});
+    CHECK(std::vector<uint8_t>(square.px.begin() + 4, square.px.begin() + 8) == std::vector<uint8_t>{0, 0, 0, 0});
+
+    Image truncated = decode_fit(std::span<const uint8_t>(data).first(10), 64, error);
+    CHECK(truncated.w == 0);
+    CHECK_FALSE(error.empty());
+}

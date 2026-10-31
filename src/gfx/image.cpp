@@ -1,5 +1,6 @@
 #include "gfx/image.hpp"
 
+#include <gif_lib.h>
 #include <png.h>
 #include <turbojpeg.h>
 #include <webp/demux.h>
@@ -24,18 +25,19 @@ namespace lyren::gfx {
         return out;
     }
 
-    static Image decode_jpeg(std::span<const uint8_t> data, uint32_t size, std::string &error) {
+    // size bounds the shorter side, or the longer one with whole.
+    static Image decode_jpeg(std::span<const uint8_t> data, uint32_t size, bool whole, std::string &error) {
         tjhandle tj = tj3Init(TJINIT_DECOMPRESS);
         Image img;
         if (tj3DecompressHeader(tj, data.data(), data.size()) == 0) {
             int w = tj3Get(tj, TJPARAM_JPEGWIDTH), h = tj3Get(tj, TJPARAM_JPEGHEIGHT);
             // The smallest DCT scaling that still covers the target.
-            int n = 0;
+            int n = 0, side = whole ? std::max(w, h) : std::min(w, h);
             tjscalingfactor *f = tj3GetScalingFactors(&n);
             tjscalingfactor best{1, 1};
             for (int i = 0; i < n; ++i) {
-                int sw = TJSCALED(std::min(w, h), f[i]);
-                if (sw >= static_cast<int>(size) && sw < TJSCALED(std::min(w, h), best)) {
+                int sw = TJSCALED(side, f[i]);
+                if (sw >= static_cast<int>(size) && sw < TJSCALED(side, best)) {
                     best = f[i];
                 }
             }
@@ -102,16 +104,81 @@ namespace lyren::gfx {
         return img;
     }
 
-    Image decode_square(std::span<const uint8_t> data, uint32_t size, std::string &error) {
+    // The first frame on the logical screen; what it leaves uncovered stays transparent.
+    static Image decode_gif(std::span<const uint8_t> data, std::string &error) {
+        struct Reader {
+            std::span<const uint8_t> data;
+            size_t at = 0;
+        } reader{data};
+        int code = 0;
+        GifFileType *gif = DGifOpen(
+            &reader,
+            [](GifFileType *g, GifByteType *out, int n) {
+                auto &r = *static_cast<Reader *>(g->UserData);
+                size_t take = std::min(static_cast<size_t>(n), r.data.size() - r.at);
+                std::copy_n(r.data.data() + r.at, take, out);
+                r.at += take;
+                return static_cast<int>(take);
+            },
+            &code);
+        Image img;
+        if (!gif) {
+            error = GifErrorString(code);
+            return img;
+        }
+        // A truncated file still has its first frame.
+        if (DGifSlurp(gif) == GIF_ERROR && gif->ImageCount == 0) {
+            error = GifErrorString(gif->Error);
+        } else if (gif->ImageCount > 0 && gif->SWidth > 0 && gif->SHeight > 0) {
+            const SavedImage &frame = gif->SavedImages[0];
+            const ColorMapObject *map = frame.ImageDesc.ColorMap ? frame.ImageDesc.ColorMap : gif->SColorMap;
+            GraphicsControlBlock gcb{.TransparentColor = NO_TRANSPARENT_COLOR};
+            DGifSavedExtensionToGCB(gif, 0, &gcb);
+            img = {static_cast<uint32_t>(gif->SWidth), static_cast<uint32_t>(gif->SHeight), {}};
+            img.px.resize(static_cast<size_t>(img.w) * img.h * 4);
+            const GifImageDesc &d = frame.ImageDesc;
+            for (int y = 0; map && y < d.Height; ++y) {
+                for (int x = 0; x < d.Width; ++x) {
+                    int sx = d.Left + x, sy = d.Top + y, index = frame.RasterBits[static_cast<size_t>(y) * d.Width + x];
+                    if (sx >= gif->SWidth || sy >= gif->SHeight || index == gcb.TransparentColor || index >= map->ColorCount) {
+                        continue;
+                    }
+                    uint8_t *o = &img.px[(static_cast<size_t>(sy) * img.w + sx) * 4];
+                    const GifColorType &c = map->Colors[index];
+                    o[0] = c.Red, o[1] = c.Green, o[2] = c.Blue, o[3] = 255;
+                }
+            }
+        } else {
+            error = "Empty GIF image";
+        }
+        DGifCloseFile(gif, &code);
+        return img;
+    }
+
+    static Image decode(std::span<const uint8_t> data, uint32_t size, bool whole, std::string &error) {
         bool png = data.size() > 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G';
         bool webp = data.size() >= 12 && std::equal(data.begin(), data.begin() + 4, "RIFF") && std::equal(data.begin() + 8, data.begin() + 12, "WEBP");
-        Image img = png ? decode_png(data, error) : webp ? decode_webp(data, error) : decode_jpeg(data, size, error);
+        bool gif = data.size() >= 6 && std::equal(data.begin(), data.begin() + 3, "GIF");
+        return png ? decode_png(data, error) : webp ? decode_webp(data, error) : gif ? decode_gif(data, error) : decode_jpeg(data, size, whole, error);
+    }
+
+    Image decode_square(std::span<const uint8_t> data, uint32_t size, std::string &error) {
+        Image img = decode(data, size, false, error);
         if (!img.w) {
             return img;
         }
         img = crop_square(std::move(img));
         if (img.w > size) {
             img = downscale(img, size, size);
+        }
+        return img;
+    }
+
+    Image decode_fit(std::span<const uint8_t> data, uint32_t size, std::string &error) {
+        Image img = decode(data, size, true, error);
+        if (img.w > size || img.h > size) {
+            float k = static_cast<float>(size) / static_cast<float>(std::max(img.w, img.h));
+            img = downscale(img, std::max(1u, static_cast<uint32_t>(std::lround(img.w * k))), std::max(1u, static_cast<uint32_t>(std::lround(img.h * k))));
         }
         return img;
     }

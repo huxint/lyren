@@ -63,6 +63,9 @@ namespace lyren {
 
     // A cover, avatar or playlist picture at the service's size closest to px.
     std::string cover_url(std::string_view url, int px);
+    // A picture whose whole frame matters, such as one attached to a comment, about px on its longer side when the
+    // service can scale it.
+    std::string picture_url(std::string_view url, int px);
     std::string share_url(const Track &track);
 
     enum class CardKind : uint8_t {
@@ -166,7 +169,10 @@ namespace lyren {
         std::string id;
         int replies = 0;
         bool liked = false;
-        bool owned = false; // the signed-in account can delete it
+        bool owned = false;           // the signed-in account can delete it
+        std::string image;            // an attached picture, or a sticker
+        int image_w = 0, image_h = 0; // its size when the service gives it
+        bool sticker = false;
     };
 
     struct CommentPage {

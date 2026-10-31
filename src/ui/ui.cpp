@@ -402,8 +402,9 @@ namespace lyren::ui {
         }
     }
 
-    void Ui::open_modal(float w, float h, std::function<void(Ui &, Rect)> body) {
+    void Ui::open_modal(float w, float h, std::function<void(Ui &, Rect)> body, bool bare) {
         modal_ = std::move(body);
+        modal_bare_ = bare;
         modal_w_ = w, modal_h_ = h, modal_time_ = now;
         modal_closed_ = -1;
         focus = 0;
@@ -435,13 +436,17 @@ namespace lyren::ui {
         Rect panel = center(all, spring(id("modal-w"), modal_w_, 300), spring(id("modal-h"), modal_h_, 300));
         panel = panel.inset((1 - shown) * 10);
         panel.y += (1 - shown) * 16;
-        p_->shadow({panel.x, panel.y + 8, panel.w, panel.h}, t.radius_l(), 48, t.shadow);
-        p_->rect(panel, t.elevated, t.radius_l(), t.border, 1);
-        if (icon_button(id("modal-close"), {panel.right() - 44, panel.y + 12, 32, 32}, "x", 18)) {
-            close_modal();
-        }
         auto body = modal_; // the body may replace the modal while it runs
-        body(*this, panel.inset(28, 24));
+        if (modal_bare_) {
+            body(*this, panel);
+        } else {
+            p_->shadow({panel.x, panel.y + 8, panel.w, panel.h}, t.radius_l(), 48, t.shadow);
+            p_->rect(panel, t.elevated, t.radius_l(), t.border, 1);
+            if (icon_button(id("modal-close"), {panel.right() - 44, panel.y + 12, 32, 32}, "x", 18)) {
+                close_modal();
+            }
+            body(*this, panel.inset(28, 24));
+        }
         interact(id("modal-panel"), panel);
         if (interact(id("modal-backdrop"), all).clicked) {
             close_modal();

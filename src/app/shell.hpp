@@ -194,7 +194,8 @@ namespace lyren {
         struct CommentDraft {
             std::string text;
             std::optional<Comment> reply;
-            bool sending = false, focus = false;
+            std::string insert; // text the editor takes at its caret on the next frame
+            bool sending = false, focus = false, expanded = false;
         };
         struct ReplyView {
             Comment root;
@@ -209,7 +210,7 @@ namespace lyren {
             std::string id, title, cover;
             bool follows = false;
             int tab = 0;
-            double time = -10;
+            double time = -10, opened = -10; // tab switched, subject changed
             uint64_t gen = 0;
             std::array<std::shared_ptr<Feed>, 2> feeds{std::make_shared<Feed>(), std::make_shared<Feed>()}; // hot, newest
             std::shared_ptr<ReplyView> replies;
@@ -280,8 +281,17 @@ namespace lyren {
         void desktop_mock(ui::Ui &ui, ui::Rect r, bool island);
         void wallpaper(ui::Ui &ui, ui::Rect r, float radius);
         void categories_modal(ui::Ui &ui, ui::Rect r);
-        // Lays out a comment at y, or only measures it; returns its height.
-        float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw);
+        // Lays out a comment at y, or only measures it; returns its height. featured: the top hot comment, set as a quote.
+        float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw, bool featured = false);
+        // The comments header over the subject's cover: the subject, its record and the tabs. Returns its height.
+        float comment_sleeve(ui::Ui &ui, ui::Rect r, bool compact);
+        void comment_picture(ui::Ui &ui, const Comment &c, ui::Rect r);
+        // A picture shown large over the window; aspect is width over height.
+        void show_picture(ui::Ui &ui, std::string url, float aspect);
+        // The comments are on the song that plays now.
+        bool thread_playing() const;
+        // The lyric line playing now, when the comments are on the song that is current.
+        const LyricLine *thread_lyric();
         void editor_modal(ui::Ui &ui, ui::Rect r, Card card);
         void picker_modal(ui::Ui &ui, ui::Rect r, Track t);
         void open_account(ui::Ui &ui);
@@ -604,6 +614,7 @@ namespace lyren {
         CacheMap<Like> comment_likes_;
         CacheMap<uint64_t> comment_deletes_;
         uint64_t comment_write_gen_ = 0;
+        std::pair<size_t, size_t> composer_layer_; // the comment composer's primitives, raised over the list
         std::string edit_name_;
         bool edit_hidden_ = false, edit_focus_ = false;
         Source edit_source_ = Source::netease;

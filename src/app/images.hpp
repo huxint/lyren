@@ -28,8 +28,9 @@ namespace lyren {
             float hue = -1;      // dominant hue, negative for colourless images
             float luma = 0;      // mean luminance (0..1)
             uint32_t px = 0;
-            size_t bytes = 0;  // pixel bytes, reserved until decoding completes
-            uint64_t used = 0; // last frame it was asked for
+            uint32_t w = 0, h = 0; // texture size; a picture keeps its aspect
+            size_t bytes = 0;      // pixel bytes, reserved until decoding completes
+            uint64_t used = 0;     // last frame it was asked for
         };
 
         // redraw is called when an image arrives; now gives the UI clock.
@@ -43,6 +44,8 @@ namespace lyren {
         // url is the original cover URL; resizing it for the service happens only when a download starts.
         // A cached size can stand in while a sharper image loads. blurred uses a separate, small background image.
         const Entry &get(std::string_view url, uint32_t px, bool blurred = false);
+        // A whole picture, not cropped, about px on its longer side (a tier, like covers).
+        const Entry &picture(std::string_view url, uint32_t px);
         // Best effort: queued pixels and entries must fit the cache budget.
         void prefetch(std::string_view url, uint32_t px, bool blurred = false);
         void prefetch(std::span<const Track> tracks);
@@ -61,12 +64,18 @@ namespace lyren {
             Priority queued = Priority::none;
             net::Http::Id request = 0;
             uint64_t ticket = 0;
+            uint8_t retries = 0; // quick retries spent on dropped connections and server errors
         };
         struct Loader;
         Cached &request(CacheKey::View key, Priority priority);
+        // The entry for the key, a sharper or else a softer tier standing in while it loads (with tiers).
+        const Entry &lookup(std::string_view url, uint32_t px, uint32_t flags, bool tiers);
+        // A sharper or a softer tier of the same image that is ready, or nullptr. flags mark pictures in the key.
+        const Entry *other_tier(std::string_view url, uint32_t px, uint32_t flags, bool larger);
         void erase(CacheMap<Cached>::iterator it);
         void pump();
-        void complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &image, float hue, float luma, const std::string &error);
+        // transient: the download failed in the network or on the server, not in the image itself.
+        void complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &image, float hue, float luma, const std::string &error, bool transient);
 
         Loop &loop_;
         net::Http &http_;

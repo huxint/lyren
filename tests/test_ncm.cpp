@@ -127,6 +127,20 @@ TEST_CASE("NetEase comments keep exact IDs, like state, replies and text") {
     CHECK(c.replies == 3);
     CHECK(c.reply_user == "原作者");
     CHECK(c.reply == "原文");
+    CHECK(c.image.empty());
+}
+
+TEST_CASE("NetEase comment pictures come over HTTPS without a known size") {
+    auto page = parse_comments({.body = R"({"code":200,"data":{"totalCount":1,"hasMore":false,"comments":[
+        {"commentId":7,"content":"看图","contentPicUrl":"http://p1.music.126.net/pic.jpg"},
+        {"commentId":8,"content":"没有图","contentPicUrl":null}
+    ]}})"});
+    REQUIRE(page);
+    REQUIRE(page->comments.size() == 2);
+    CHECK(page->comments[0].image == "https://p1.music.126.net/pic.jpg");
+    CHECK(page->comments[0].image_w == 0);
+    CHECK_FALSE(page->comments[0].sticker);
+    CHECK(page->comments[1].image.empty());
 }
 
 TEST_CASE("NetEase floor pagination uses the response timestamp and accepts nullable display fields") {

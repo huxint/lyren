@@ -11,3 +11,9 @@ ffmpeg -f lavfi -i "aevalsrc=exprs='0.3*sin(2*PI*(210+mod(t,7)*90)*t)*(0.5+0.5*s
 `cover.webp` is a lossless 4×2 RGBA image encoded with `WebPEncodeLosslessRGBA`. Its two outer columns are opaque magenta and cyan; the center square has pixels `(200, 100, 50, 128)`, `(20, 40, 80, 255)`, `(0, 0, 0, 0)` and `(100, 200, 60, 64)` in row order. It verifies centered cropping, premultiplied alpha, downscaling and no upscaling.
 
 `cover-animated.webp` packages that same image and a solid `(10, 40, 250, 255)` second frame with `WebPMuxPushFrame`, each lasting 100 ms with no blending or disposal. It verifies that animated covers decode the first canvas.
+
+`wide.gif` is a 4×2 GIF with one transparent palette entry: the left 2×2 square is opaque red, the right one transparent. It verifies GIF first-frame decoding with transparency, centered cropping of covers, and that whole pictures keep their aspect when scaled down.
+
+```sh
+magick -size 2x2 xc:'#ff0000' -size 2x2 xc:none +append wide.gif
+```

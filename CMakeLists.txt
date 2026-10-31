@@ -105,6 +105,7 @@ endif()
 
 # Reusable window, rendering and UI code; tests do not need the application shell.
 pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libwebp libwebpdemux)
+find_package(GIF REQUIRED)
 pkg_check_modules(QRENCODE REQUIRED IMPORTED_TARGET libqrencode)
 pkg_check_modules(SDBUS REQUIRED IMPORTED_TARGET libsystemd)
 add_library(
@@ -131,7 +132,7 @@ add_library(
     src/ui/text_box.cpp
     src/app/frames.cpp
     src/app/images.cpp)
-target_link_libraries(lyren_ui PUBLIC lyren_base PkgConfig::SYSLIBS vulkan_headers PRIVATE PkgConfig::UILIBS nanosvg nexus)
+target_link_libraries(lyren_ui PUBLIC lyren_base PkgConfig::SYSLIBS vulkan_headers PRIVATE PkgConfig::UILIBS GIF::GIF nanosvg nexus)
 
 add_library(
     lyren_lib STATIC
