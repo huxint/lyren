@@ -49,7 +49,7 @@ namespace lyren::gfx {
         VkDevice dev = ctx_.device;
         VkCommandPoolCreateInfo pci{
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = ctx_.queue_family};
-        VK_CHECK(vkCreateCommandPool(dev, &pci, nullptr, &pool_));
+        check(vkCreateCommandPool(dev, &pci, nullptr, &pool_));
 
         VkSamplerCreateInfo sci{.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                                 .magFilter = VK_FILTER_NEAREST,
@@ -57,9 +57,9 @@ namespace lyren::gfx {
                                 .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                 .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                 .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
-        VK_CHECK(vkCreateSampler(dev, &sci, nullptr, &nearest_));
+        check(vkCreateSampler(dev, &sci, nullptr, &nearest_));
         sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
-        VK_CHECK(vkCreateSampler(dev, &sci, nullptr, &linear_));
+        check(vkCreateSampler(dev, &sci, nullptr, &linear_));
 
         VkDescriptorBindingFlags bflags =
             VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
@@ -71,22 +71,22 @@ namespace lyren::gfx {
                                             .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
                                             .bindingCount = 1,
                                             .pBindings = &binding};
-        VK_CHECK(vkCreateDescriptorSetLayout(dev, &dli, nullptr, &set_layout_));
+        check(vkCreateDescriptorSetLayout(dev, &dli, nullptr, &set_layout_));
         VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, max_textures};
         VkDescriptorPoolCreateInfo dpi{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                        .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
                                        .maxSets = 1,
                                        .poolSizeCount = 1,
                                        .pPoolSizes = &size};
-        VK_CHECK(vkCreateDescriptorPool(dev, &dpi, nullptr, &desc_pool_));
+        check(vkCreateDescriptorPool(dev, &dpi, nullptr, &desc_pool_));
         VkDescriptorSetAllocateInfo dai{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = desc_pool_, .descriptorSetCount = 1, .pSetLayouts = &set_layout_};
-        VK_CHECK(vkAllocateDescriptorSets(dev, &dai, &set_));
+        check(vkAllocateDescriptorSets(dev, &dai, &set_));
 
         VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants)};
         VkPipelineLayoutCreateInfo pli{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &set_layout_, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr};
-        VK_CHECK(vkCreatePipelineLayout(dev, &pli, nullptr, &layout_));
+        check(vkCreatePipelineLayout(dev, &pli, nullptr, &layout_));
     }
 
     Renderer::~Renderer() {
@@ -132,7 +132,7 @@ namespace lyren::gfx {
         auto module = [&](const unsigned char *code, size_t size) {
             VkShaderModuleCreateInfo ci{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = reinterpret_cast<const uint32_t *>(code)};
             VkShaderModule m;
-            VK_CHECK(vkCreateShaderModule(dev, &ci, nullptr, &m));
+            check(vkCreateShaderModule(dev, &ci, nullptr, &m));
             return m;
         };
         VkShaderModule vs = module(vert_spv, sizeof vert_spv), fs = module(frag_spv, sizeof frag_spv);
@@ -172,7 +172,7 @@ namespace lyren::gfx {
                                         .pDynamicState = &ds,
                                         .layout = layout_};
         VkPipeline p;
-        VK_CHECK(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &p));
+        check(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &p));
         vkDestroyShaderModule(dev, vs, nullptr);
         vkDestroyShaderModule(dev, fs, nullptr);
         pipelines_.emplace_back(format, p);
@@ -182,17 +182,17 @@ namespace lyren::gfx {
     Target *Renderer::create_target(wl_display *display, wl_surface *surface) {
         auto *t = new Target;
         VkWaylandSurfaceCreateInfoKHR ci{.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR, .display = display, .surface = surface};
-        VK_CHECK(vkCreateWaylandSurfaceKHR(ctx_.instance, &ci, nullptr, &t->surface));
+        check(vkCreateWaylandSurfaceKHR(ctx_.instance, &ci, nullptr, &t->surface));
         VkBool32 supported = VK_FALSE;
         vkGetPhysicalDeviceSurfaceSupportKHR(ctx_.physical, ctx_.queue_family, t->surface, &supported);
         VkCommandBufferAllocateInfo ai{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool_, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
         for (auto &s : t->slots) {
-            VK_CHECK(vkAllocateCommandBuffers(ctx_.device, &ai, &s.cmd));
+            check(vkAllocateCommandBuffers(ctx_.device, &ai, &s.cmd));
             VkFenceCreateInfo fci{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT};
-            VK_CHECK(vkCreateFence(ctx_.device, &fci, nullptr, &s.fence));
+            check(vkCreateFence(ctx_.device, &fci, nullptr, &s.fence));
             VkSemaphoreCreateInfo sci{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-            VK_CHECK(vkCreateSemaphore(ctx_.device, &sci, nullptr, &s.acquired));
+            check(vkCreateSemaphore(ctx_.device, &sci, nullptr, &s.acquired));
         }
         targets_.push_back(t);
         return t;
@@ -288,7 +288,7 @@ namespace lyren::gfx {
             ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
         }
         VkSwapchainKHR swapchain;
-        VK_CHECK(vkCreateSwapchainKHR(dev, &ci, nullptr, &swapchain));
+        check(vkCreateSwapchainKHR(dev, &ci, nullptr, &swapchain));
         release_swapchain(t);
         if (t.swapchain) {
             vkDestroySwapchainKHR(dev, t.swapchain, nullptr);
@@ -306,9 +306,9 @@ namespace lyren::gfx {
                                       .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                       .format = t.format,
                                       .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-            VK_CHECK(vkCreateImageView(dev, &vci, nullptr, &t.views.emplace_back()));
+            check(vkCreateImageView(dev, &vci, nullptr, &t.views.emplace_back()));
             VkSemaphoreCreateInfo sci{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-            VK_CHECK(vkCreateSemaphore(dev, &sci, nullptr, &t.rendered.emplace_back()));
+            check(vkCreateSemaphore(dev, &sci, nullptr, &t.rendered.emplace_back()));
         }
         t.stale = false;
     }
@@ -326,7 +326,7 @@ namespace lyren::gfx {
         VkBufferCreateInfo bci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                .size = s.capacity * sizeof(Prim),
                                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT};
-        VK_CHECK(vkCreateBuffer(dev, &bci, nullptr, &s.prims));
+        check(vkCreateBuffer(dev, &bci, nullptr, &s.prims));
         VkMemoryRequirements req;
         vkGetBufferMemoryRequirements(dev, s.prims, &req);
         s.prims_mem = ctx_.allocate(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true);
@@ -340,7 +340,7 @@ namespace lyren::gfx {
         VkDevice dev = ctx_.device;
         auto &s = t.slots[t.slot];
         t.slot ^= 1;
-        VK_CHECK(vkWaitForFences(dev, 1, &s.fence, VK_TRUE, UINT64_MAX));
+        check(vkWaitForFences(dev, 1, &s.fence, VK_TRUE, UINT64_MAX));
         completed_ = std::max(completed_, s.serial);
         poll_completed();
 
@@ -354,13 +354,13 @@ namespace lyren::gfx {
                 t.stale = true;
                 continue;
             }
-            VK_CHECK(r);
+            check(r);
             if (r == VK_SUBOPTIMAL_KHR) {
                 t.stale = true;
             }
             break;
         }
-        VK_CHECK(vkResetFences(dev, 1, &s.fence));
+        check(vkResetFences(dev, 1, &s.fence));
 
         ensure_capacity(s, prims.size());
         std::memcpy(s.prims_map, prims.data(), prims.size_bytes());
@@ -399,7 +399,7 @@ namespace lyren::gfx {
         if (capture_ && capture_target_ == &t) {
             VkBufferCreateInfo bci{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = static_cast<VkDeviceSize>(t.width) * t.height * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-            VK_CHECK(vkCreateBuffer(dev, &bci, nullptr, &readback));
+            check(vkCreateBuffer(dev, &bci, nullptr, &readback));
             VkMemoryRequirements req;
             vkGetBufferMemoryRequirements(dev, readback, &req);
             readback_mem = ctx_.allocate(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -426,7 +426,7 @@ namespace lyren::gfx {
                          .pCommandBufferInfos = &cbi,
                          .signalSemaphoreInfoCount = 1,
                          .pSignalSemaphoreInfos = &signal};
-        VK_CHECK(vkQueueSubmit2(ctx_.queue, 1, &si, s.fence));
+        check(vkQueueSubmit2(ctx_.queue, 1, &si, s.fence));
         s.serial = ++submitted_;
         if (uploaded) {
             // The staging buffer now belongs to this submission.
@@ -448,10 +448,10 @@ namespace lyren::gfx {
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
             t.stale = true;
         } else {
-            VK_CHECK(r);
+            check(r);
         }
         if (readback) {
-            VK_CHECK(vkWaitForFences(dev, 1, &s.fence, VK_TRUE, UINT64_MAX));
+            check(vkWaitForFences(dev, 1, &s.fence, VK_TRUE, UINT64_MAX));
             void *map;
             vkMapMemory(dev, readback_mem, 0, VK_WHOLE_SIZE, 0, &map);
             auto *pixels = static_cast<uint8_t *>(map);
@@ -491,7 +491,7 @@ namespace lyren::gfx {
                               .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
                               .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-        VK_CHECK(vkCreateImage(dev, &ici, nullptr, &t.image));
+        check(vkCreateImage(dev, &ici, nullptr, &t.image));
         VkMemoryRequirements req;
         vkGetImageMemoryRequirements(dev, t.image, &req);
         t.memory = ctx_.allocate(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -501,7 +501,7 @@ namespace lyren::gfx {
                                   .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                   .format = format,
                                   .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-        VK_CHECK(vkCreateImageView(dev, &vci, nullptr, &t.view));
+        check(vkCreateImageView(dev, &vci, nullptr, &t.view));
         VkDescriptorImageInfo dii{smooth ? linear_ : nearest_, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet w{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                .dstSet = set_,
@@ -522,7 +522,7 @@ namespace lyren::gfx {
             size_t size = std::max({static_cast<size_t>(256) << 10, staging_.size * 2, offset + bytes});
             Staging grown;
             VkBufferCreateInfo bci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
-            VK_CHECK(vkCreateBuffer(ctx_.device, &bci, nullptr, &grown.buffer));
+            check(vkCreateBuffer(ctx_.device, &bci, nullptr, &grown.buffer));
             VkMemoryRequirements req;
             vkGetBufferMemoryRequirements(ctx_.device, grown.buffer, &req);
             grown.memory = ctx_.allocate(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);

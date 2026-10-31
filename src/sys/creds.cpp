@@ -103,30 +103,27 @@ namespace lyren::creds {
         while (!blob.empty() && std::isspace(static_cast<unsigned char>(blob.back()))) {
             blob.pop_back();
         }
-        auto r = co_await call(loop, "Decrypt", std::format(R"({{"name":"credentials","blob":"{}","scope":"user"}})", blob));
-        if (!r) {
-            co_return std::unexpected(r.error());
-        }
-        co_return encoding::unbase64(r->data.value_or(""));
+        co_return (co_await call(loop, "Decrypt", std::format(R"({{"name":"credentials","blob":"{}","scope":"user"}})", blob))).transform([](const Params &r) {
+            return encoding::unbase64(r.data.value_or(""));
+        });
     }
 
     Task<Result<void>> save(Loop &loop, std::string plaintext) {
-        auto r = co_await call(loop, "Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext)));
-        if (!r) {
-            co_return std::unexpected(r.error());
-        }
-        auto path = paths::state_dir() / "credentials", tmp = path;
-        tmp += ".tmp";
-        int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-        std::string blob = r->blob.value_or("") + "\n";
-        bool ok = fd >= 0 && write(fd, blob.data(), blob.size()) == static_cast<ssize_t>(blob.size()) && fsync(fd) == 0;
-        if (fd >= 0) {
-            close(fd);
-        }
-        if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
-            co_return std::unexpected(std::format("Could not save credentials: {}", std::strerror(errno)));
-        }
-        co_return Result<void>{};
+        co_return (co_await call(loop, "Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext))))
+            .and_then([](const Params &r) -> Result<void> {
+                auto path = paths::state_dir() / "credentials", tmp = path;
+                tmp += ".tmp";
+                int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+                std::string blob = r.blob.value_or("") + "\n";
+                bool ok = fd >= 0 && write(fd, blob.data(), blob.size()) == static_cast<ssize_t>(blob.size()) && fsync(fd) == 0;
+                if (fd >= 0) {
+                    close(fd);
+                }
+                if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
+                    return std::unexpected(std::format("Could not save credentials: {}", std::strerror(errno)));
+                }
+                return {};
+            });
     }
 
     std::string to_json(const Credentials &c) {

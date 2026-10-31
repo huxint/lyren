@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <source_location>
 #define VK_USE_PLATFORM_WAYLAND_KHR
 #include <vulkan/vulkan.h>
 
@@ -37,7 +38,6 @@ namespace lyren::gfx {
         std::atomic<unsigned> validation_errors_{0};
     };
 
-#define VK_CHECK(expr) ::lyren::gfx::check((expr), #expr)
-    void check(VkResult r, const char *what);
+    void check(VkResult r, std::source_location origin = std::source_location::current());
 
 } // namespace lyren::gfx

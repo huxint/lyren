@@ -174,6 +174,7 @@ if(BUILD_TESTING)
         lyren_tests
         tests/main.cpp
         tests/test_loop.cpp
+        tests/test_result.cpp
         tests/test_config.cpp
         tests/test_i18n.cpp
         tests/test_text.cpp

@@ -10,12 +10,11 @@
 
 namespace lyren::gfx {
 
-    void check(VkResult r, const char *what) {
-        if (r >= 0) {
-            return;
+    void check(VkResult r, std::source_location origin) {
+        if (r < 0) {
+            log::error("Vulkan call failed: VkResult {} at {}:{} ({})", static_cast<int>(r), origin.file_name(), origin.line(), origin.function_name());
+            std::abort();
         }
-        log::error("{} failed: VkResult {}", what, static_cast<int>(r));
-        std::abort();
     }
 
     static std::string read_line(const std::string &path) {
@@ -84,7 +83,7 @@ namespace lyren::gfx {
                                  .ppEnabledLayerNames = &layer,
                                  .enabledExtensionCount = static_cast<uint32_t>(exts.size()),
                                  .ppEnabledExtensionNames = exts.data()};
-        VK_CHECK(vkCreateInstance(&ici, nullptr, &instance));
+        check(vkCreateInstance(&ici, nullptr, &instance));
         if (validation) {
             VkDebugUtilsMessengerCreateInfoEXT mci{.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
                                                    .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
@@ -159,7 +158,7 @@ namespace lyren::gfx {
                                .pQueueCreateInfos = &qci,
                                .enabledExtensionCount = static_cast<uint32_t>(std::size(device_exts)),
                                .ppEnabledExtensionNames = device_exts.data()};
-        VK_CHECK(vkCreateDevice(physical, &dci, nullptr, &device));
+        check(vkCreateDevice(physical, &dci, nullptr, &device));
         vkGetDeviceQueue(device, queue_family, 0, &queue);
         log::info("GPU: {} ({}){}", device_name, driver_name, validation ? ", validation on" : "");
     }
@@ -190,7 +189,7 @@ namespace lyren::gfx {
                                 .allocationSize = req.size,
                                 .memoryTypeIndex = memory_type(req.memoryTypeBits, flags)};
         VkDeviceMemory mem;
-        VK_CHECK(vkAllocateMemory(device, &ai, nullptr, &mem));
+        check(vkAllocateMemory(device, &ai, nullptr, &mem));
         return mem;
     }
 
