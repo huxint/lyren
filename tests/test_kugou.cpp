@@ -1,7 +1,12 @@
 #include <doctest/doctest.h>
+#include <openssl/evp.h>
+
+#include <algorithm>
+#include <memory>
 
 #include "core/encoding.hpp"
 #include "kugou/kugou.hpp"
+#include "kugou/json.hpp"
 
 using namespace lyren;
 
@@ -34,6 +39,63 @@ TEST_CASE("KuGou signatures cover raw parameter values and the exact JSON bytes"
     CHECK(kugou::sign(cdn, {}, kugou::login_salt) == "625e27b2f8e2170abd8acefdad6d8d76");
 }
 
+TEST_CASE("KuGou device registration encrypts a persistent Linux identity") {
+    Loop loop;
+    net::Http http;
+    kugou::Client client(loop, http);
+    client.session = {{"mid", "00000000000000000000000000000001"}, {"userid", "42"}, {"token", "synthetic-token"}};
+    auto request = client.device_request("abc123");
+    REQUIRE(request);
+    CHECK(request->url.starts_with("https://userservice.kugou.com/risk/v3/r_register_dev?"));
+    CHECK(request->url.contains("mid=00000000000000000000000000000001"));
+    CHECK(request->url.contains("userid=42"));
+    CHECK(request->url.contains("part=1&platid=1"));
+    CHECK(std::ranges::contains(request->headers, std::string("Content-Type: application/x-www-form-urlencoded")));
+    REQUIRE(request->body);
+
+    // Independently derived with openssl: the ASCII halves of MD5("abc123") are the AES key and IV.
+    constexpr unsigned char key[] = "e99a18c428cb38d5", iv[] = "f260853678922e03";
+    const auto encrypted = encoding::unbase64(*request->body);
+    std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> aes(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
+    EVP_DecryptInit_ex(aes.get(), EVP_aes_128_cbc(), nullptr, key, iv);
+    std::string plain(encrypted.size() + 16, '\0');
+    int first = 0, last = 0;
+    auto *out = reinterpret_cast<unsigned char *>(plain.data());
+    REQUIRE(EVP_DecryptUpdate(aes.get(), out, &first, reinterpret_cast<const unsigned char *>(encrypted.data()), static_cast<int>(encrypted.size())) == 1);
+    REQUIRE(EVP_DecryptFinal_ex(aes.get(), out + first, &last) == 1);
+    plain.resize(static_cast<size_t>(first + last));
+    auto device = kugou::json::parse(plain);
+    REQUIRE(device);
+    CHECK(kugou::json::text(*device, "uuid") == client.get("mid"));
+    CHECK(kugou::json::text(*device, "brand") == "Linux");
+    CHECK(kugou::json::text(*device, "device") == "lyren");
+
+    client.session["dfid"] = "registered-device";
+    const auto query = client.common();
+    CHECK(query.at("dfid") == "registered-device");
+    CHECK(query.at("mid") == "00000000000000000000000000000001");
+    CHECK(std::ranges::contains(client.headers(query), std::string("dfid: registered-device")));
+}
+
+TEST_CASE("KuGou registration decrypts server replies and preserves verification failures") {
+    // Independent openssl AES-CBC fixtures; the second ciphertext happens to start with '{'.
+    const std::pair<std::string_view, std::string_view> fixtures[] = {
+        {"abc123", "Pd6Zkmhm5I0bk9TeAFcvYd9i0cW63lnDl0TxWbTMlAp734Mzbyh9JLs5dHBNSB7zBfCNxXd4UY6mYQnHOMc51Q=="},
+        {"000048", "ezgMYNA2Gs5tNLJDySBWDagf1DJflEFrqWX2wOWWW/k2YngHKC5i2OPeXF6K3VA2PAJ/BDw6ovaSqCsDyxrlmA=="},
+    };
+    for (const auto &[secret, encoded] : fixtures) {
+        const auto body = encoding::unbase64(encoded);
+        auto dfid = kugou::parse_device_response(body, secret);
+        REQUIRE(dfid);
+        CHECK(*dfid == "registered-device");
+        CHECK_FALSE(kugou::parse_device_response(body.substr(0, body.size() - 1), secret));
+    }
+    CHECK_FALSE(kugou::parse_device_response(R"({"status":1,"error_code":0,"data":{"dfid":"-"}})", "abc123"));
+    auto refused = kugou::parse_device_response(R"({"status":0,"error_code":20028,"error_msg":"请先完成手机验证"})", "abc123");
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error() == "请先完成手机验证");
+}
+
 TEST_CASE("KuGou search preserves large IDs and advances a short service page") {
     auto page = kugou::parse_search(R"({"error_code":0,"data":{"total":70,"lists":[{
         "FileHash":"abcdefabcdefabcdefabcdefabcdefab","Audioid":9007199254740993,"MixSongID":"9007199254740995",
@@ -55,6 +117,26 @@ TEST_CASE("KuGou search preserves large IDs and advances a short service page") 
     CHECK(page->tracks[0].paid);
     CHECK_FALSE(kugou::parse_search(R"({"error_code":20028,"data":{"total":0,"lists":[]}})", SearchKind::tracks, 0, 30));
     CHECK_FALSE(kugou::parse_search(R"({"error_code":0,"data":{"total":70,"lists":[]}})", SearchKind::tracks, 30, 30));
+}
+
+TEST_CASE("KuGou verification challenges are distinguished from request failures") {
+    const Language before = language();
+    for (auto selected : {Language::en, Language::zh}) {
+        const auto expected = selected == Language::en ? "KuGou Music requires security verification (20028)" : "酷狗音乐要求安全验证（20028）";
+        for (auto body : {R"({"status":0,"error_code":20028})", R"({"status":0,"errcode":"20028"})"}) {
+            set_language(selected);
+            auto account = kugou::json::response(body, true);
+            auto stream = kugou::parse_stream(body, false, "128");
+            set_language(before);
+            REQUIRE_FALSE(account);
+            CHECK(account.error() == expected);
+            REQUIRE_FALSE(stream);
+            CHECK(stream.error() == expected);
+        }
+    }
+    auto explained = kugou::json::response(R"({"status":0,"error_code":20028,"error_msg":"请先完成手机验证"})");
+    REQUIRE_FALSE(explained);
+    CHECK(explained.error() == "请先完成手机验证");
 }
 
 TEST_CASE("KuGou metadata preserves order and resolves retired hashes only in a unique single lookup") {

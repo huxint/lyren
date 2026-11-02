@@ -57,7 +57,7 @@ namespace lyren::kugou {
         Task<Result<std::vector<Track>>> metadata(std::vector<std::string> hashes);
         Task<Result<Batch>> song_page(std::string url, Params query, int offset, int limit, std::string album_id = {});
         Task<Result<std::vector<Card>>> account_playlists();
-        std::string qr_key_, qr_mid_;
+        std::string qr_key_;
         Clock::time_point qr_expires_{};
         uint64_t qr_gen_ = 0;
     };

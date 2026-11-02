@@ -216,6 +216,10 @@ namespace lyren::bodian {
         template <class T, glz::string_literal Key = "resultList">
         Result<Page<T, Key>> parse_page(const Reply &reply) {
             return parse<Page<T, Key>>(reply).and_then([](Page<T, Key> page) -> Result<Page<T, Key>> {
+                // Empty account collections and followed artists arrive as data: {}.
+                if (!page.total && !page.items) {
+                    page.total = 0;
+                }
                 if (!page.total || *page.total < 0 || (!page.items && *page.total != 0)) {
                     return std::unexpected("Could not parse server response");
                 }

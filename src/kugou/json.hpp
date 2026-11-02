@@ -3,10 +3,10 @@
 
 #include <charconv>
 #include <cmath>
-#include <format>
 #include <limits>
 #include <span>
 
+#include "core/i18n.hpp"
 #include "core/result.hpp"
 
 namespace lyren::kugou::json {
@@ -101,7 +101,8 @@ namespace lyren::kugou::json {
         if ((!code.is_null() && number(code, -1) != 0) || (account && status != 1) || (code.is_null() && status != 1)) {
             std::string message = text(first(*parsed, {"error_msg", "errmsg", "msg", "message"}));
             if (message.empty()) {
-                message = std::format("KuGou Music request failed ({})", code.is_null() ? status : number(code));
+                message = number(code) == 20028 ? std::string(tr("KuGou Music requires security verification (20028)"))
+                                                : trf("KuGou Music request failed ({})", code.is_null() ? status : number(code));
             }
             return std::unexpected(std::move(message));
         }

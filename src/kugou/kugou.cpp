@@ -5,7 +5,6 @@
 #include <cctype>
 #include <chrono>
 #include <format>
-#include <random>
 #include <unordered_set>
 
 #include "core/crypto.hpp"
@@ -364,14 +363,7 @@ namespace lyren::kugou {
     }
 
     Task<Result<void>> Kugou::initialize() {
-        if (client.get("mid").empty()) {
-            client.session["mid"] = crypto::random_hex(32);
-        }
-        if (client.get("stream_mid").empty()) {
-            std::mt19937_64 rng{std::random_device{}()};
-            client.session["stream_mid"] = std::to_string(rng());
-        }
-        co_return Result<void>{};
+        co_return co_await client.ensure_device();
     }
 
     Task<Result<Account>> Kugou::account() {
@@ -405,8 +397,10 @@ namespace lyren::kugou {
     Task<Result<QrCode>> Kugou::qr_start() {
         cancel_login();
         const auto generation = qr_gen_;
-        qr_mid_ = crypto::random_hex(32);
-        auto query = client.common(qr_mid_);
+        if (auto device = co_await client.ensure_device(); !device) {
+            co_return std::unexpected(device.error());
+        }
+        auto query = client.common();
         query.insert({{"type", "1"}, {"plat", "4"}, {"srcappid", "2919"}, {"qrcode_txt", "https://h5.kugou.com/apps/loginQRCode/html/index.html?appid=1005&"}});
         auto reply = co_await client.send(request("https://login-user.kugou.com/v2/qrcode", query, {}, login_salt, client.headers(query)), net::Retry::never);
         if (generation != qr_gen_) {
@@ -439,7 +433,7 @@ namespace lyren::kugou {
             co_return QrStatus{.state = QrState::expired};
         }
         const auto generation = qr_gen_;
-        auto query = client.common(qr_mid_);
+        auto query = client.common();
         query.insert({{"plat", "4"}, {"srcappid", "2919"}, {"qrcode", qr_key_}});
         auto reply = co_await client.send(request("https://login-user.kugou.com/v2/get_userinfo_qrcode", query, {}, login_salt, client.headers(query)));
         if (generation != qr_gen_) {
@@ -473,7 +467,6 @@ namespace lyren::kugou {
                 }
                 client.session["userid"] = std::move(uid);
                 client.session["token"] = std::move(token);
-                client.session["mid"] = qr_mid_;
                 client.session["nickname"] = status.nickname;
                 client.session["avatar"] = status.avatar;
                 ++client.session_gen;
@@ -530,7 +523,7 @@ namespace lyren::kugou {
                        {"appid", 1005},
                        {"clientver", 11451},
                        {"mid", client.get("mid")},
-                       {"dfid", "-"},
+                       {"dfid", client.get("dfid").empty() ? "-" : client.get("dfid")},
                        {"clienttime", milliseconds()},
                        {"key", std::string(android_salt)},
                        {"fields", "album_info,author_name,audio_info,ori_audio_name,base,songname,classification"}};
@@ -580,7 +573,10 @@ namespace lyren::kugou {
     }
 
     Task<Result<Stream>> Kugou::stream(Track track, Quality quality) {
-        auto query = client.common(client.get("stream_mid"));
+        if (auto device = co_await client.ensure_device(); !device) {
+            co_return std::unexpected(device.error());
+        }
+        auto query = client.common();
         if (logged_in()) {
             query.insert({{"userid", client.get("userid")}, {"token", client.get("token")}});
         }
@@ -643,7 +639,7 @@ namespace lyren::kugou {
         std::string url = "https://gateway.kugou.com/v5/url";
         std::string_view router = "trackercdn.kugou.com";
         if (logged_in()) {
-            auto auth_query = client.common(client.get("stream_mid"));
+            auto auth_query = client.common();
             auth_query.insert({{"userid", client.get("userid")}, {"token", client.get("token")}, {"module_id", "51"}});
             auto user_reply =
                 co_await client.send(request("http://gateway.kugou.com/v1/user_verify", auth_query, {}, android_salt, client.headers(auth_query, "trackercdngz.kugou.com")));
@@ -814,6 +810,9 @@ namespace lyren::kugou {
             if (!logged_in()) {
                 co_return std::unexpected("Sign in to KuGou Music and try again");
             }
+            if (auto device = co_await client.ensure_device(); !device) {
+                co_return std::unexpected(device.error());
+            }
             std::vector<std::string> hashes;
             std::unordered_set<std::string> seen_pages;
             int received = 0, total = -1;
@@ -840,15 +839,21 @@ namespace lyren::kugou {
                 }
                 const auto &data = get(*parsed, "data");
                 const auto &rows = first(data, {"info", "list"});
-                auto batch = hashes_in(rows);
-                if (!batch) {
-                    co_return std::unexpected(batch.error());
-                }
                 const int current_total = count(first(data, {"count", "total"}), -1);
                 if (page == 1) {
                     total = current_total;
                 }
-                if (total != current_total || (!batch->empty() && !seen_pages.insert(page_key(*batch)).second)) {
+                if (total != current_total) {
+                    co_return std::unexpected("KuGou Music playlist changed while loading; refresh it");
+                }
+                if (total == 0 && rows.is_null()) {
+                    break;
+                }
+                auto batch = hashes_in(rows);
+                if (!batch) {
+                    co_return std::unexpected(batch.error());
+                }
+                if (!batch->empty() && !seen_pages.insert(page_key(*batch)).second) {
                     co_return std::unexpected("KuGou Music playlist changed while loading; refresh it");
                 }
                 received += static_cast<int>(rows.size());
@@ -1165,6 +1170,9 @@ namespace lyren::kugou {
     Task<Result<std::vector<Card>>> Kugou::account_playlists() {
         if (!logged_in()) {
             co_return std::unexpected("Sign in to KuGou Music and try again");
+        }
+        if (auto device = co_await client.ensure_device(); !device) {
+            co_return std::unexpected(device.error());
         }
         std::vector<Card> result;
         std::unordered_set<std::string> ids;

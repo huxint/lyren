@@ -302,6 +302,52 @@ TEST_CASE("Bodian mixed collections keep resource kinds and playlist sources") {
     CHECK(requests[3].starts_with("GET /service/collect/4/list?userId=42&fromUid=42&pn=1&rn=100&"));
 }
 
+TEST_CASE("Bodian empty collections preserve liked and created playlists") {
+    test::Server server([](std::string_view request) {
+        if (request.starts_with("GET /service/playlist/fond?")) {
+            return test::ok(R"({"code":200,"data":{"id":8,"name":"喜欢"}})");
+        }
+        if (request.starts_with("GET /service/playlist/userCreate?")) {
+            return test::ok(R"({"code":200,"data":{"playLists":[{"id":9,"name":"自建"}]}})");
+        }
+        return test::ok(R"({"code":200,"data":{}})");
+    });
+    Loop loop;
+    net::Http http;
+    bodian::Bodian provider(loop, http, server.url() + '/');
+    provider.session() = {{"uid", "42"}, {"token", "session"}, {"devid", "device"}};
+    auto library = run(loop, provider.user_playlists("42"));
+    REQUIRE(library);
+    CHECK(library->first.id == "5:8");
+    REQUIRE(library->second.size() == 1);
+    CHECK(library->second.front().id == "5:9");
+    CHECK(library->second.front().owned);
+    auto albums = run(loop, provider.collected_albums());
+    REQUIRE(albums);
+    CHECK(albums->empty());
+    auto artists = run(loop, provider.followed_artists());
+    REQUIRE(artists);
+    CHECK(artists->empty());
+}
+
+TEST_CASE("Bodian collections still reject incomplete nonempty pages") {
+    std::string data;
+    SUBCASE("items without a total") {
+        data = R"({"playLists":[{"id":10,"name":"收藏"}]})";
+    }
+    SUBCASE("a nonzero total without items") {
+        data = R"({"total":1})";
+    }
+    test::Server server([&](std::string_view) {
+        return test::ok("{\"code\":200,\"data\":" + data + '}');
+    });
+    Loop loop;
+    net::Http http;
+    bodian::Bodian provider(loop, http, server.url() + '/');
+    provider.session() = {{"uid", "42"}, {"token", "session"}, {"devid", "device"}};
+    CHECK_FALSE(run(loop, provider.collected_playlists()));
+}
+
 TEST_CASE("Bodian playlist edits preserve metadata and never replay an uncertain write") {
     std::vector<std::string> requests;
     Result<void> result;

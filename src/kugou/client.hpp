@@ -15,6 +15,7 @@ namespace lyren::kugou {
 
     std::string sign(const Params &query, std::string_view body, std::string_view salt);
     net::Request request(std::string url, const Params &query = {}, std::optional<std::string> body = {}, std::string_view salt = {}, std::vector<std::string> headers = {});
+    Result<std::string> parse_device_response(std::string_view body, std::string_view secret);
 
     class Client {
     public:
@@ -28,8 +29,10 @@ namespace lyren::kugou {
 
         const std::string &get(std::string_view name) const;
         bool logged_in() const;
-        Params common(std::string_view device = {}) const;
+        Params common() const;
         std::vector<std::string> headers(const Params &query, std::string_view router = {}) const;
+        Result<net::Request> device_request(std::string_view secret) const;
+        Task<Result<void>> ensure_device();
         Task<Result<std::string>> send(net::Request req, net::Retry retry = net::Retry::network);
 
     private:
