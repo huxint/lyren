@@ -197,6 +197,21 @@ TEST_CASE("cookie sessions preserve domain and path scopes across separate reque
     CHECK_FALSE(login.body.contains("p_skey="));
 }
 
+TEST_CASE("imported Cookie jars retain scope, expiry and signing header order") {
+    auto jar = net::CookieJar::from_netscape("# Netscape HTTP Cookie File\n"
+                                             ".example.test\tTRUE\t/\tFALSE\t0\tcommon\tshared\n"
+                                             "#HttpOnly_api.example.test\tFALSE\t/luna\tTRUE\t0\tsessionid\tprivate\n"
+                                             "api.example.test\tFALSE\t/\tFALSE\t1\texpired\told\n"
+                                             "unrelated.test\tFALSE\t/\tFALSE\t0\tforeign\tsecret\n"
+                                             "invalid cookie line\n");
+    CHECK(jar.header("api.example.test", "/luna/pc/me") == "sessionid=private; common=shared");
+    CHECK(jar.header("api.example.test", "/luna/pc/me", false) == "common=shared");
+    CHECK(jar.header("api.example.test", "/lunatic") == "common=shared");
+    CHECK(jar.header("other.example.test", "/luna") == "common=shared");
+    const auto restored = net::CookieJar::from_netscape(jar.netscape());
+    CHECK(restored.header("api.example.test", "/luna/pc/me") == jar.header("api.example.test", "/luna/pc/me"));
+}
+
 TEST_CASE("chunked audio downloads expose the exact bytes and final size") {
     std::string body(4097, '\0');
     for (size_t i = 0; i < body.size(); ++i) {

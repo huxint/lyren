@@ -461,7 +461,7 @@ namespace lyren {
             ui.focus = field;
         }
         bool submit = ui.text_box(field, {r.x, r.y + 52, r.w, 38}, edit_name_, lyren::tr("Playlist name"));
-        if (create) {
+        if (create && provider(edit_source_).capabilities.private_playlists) {
             float y = r.y + 110;
             ui.label({r.x, y, r.w - 60, 20}, lyren::tr("Private playlist"), {.size = t.fs(14), .color = t.text});
             ui.label({r.x, y + 22, r.w - 60, 18}, lyren::tr("Only you can see it"), {.size = t.fs(12), .color = t.text_dim});

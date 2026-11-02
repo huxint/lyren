@@ -719,15 +719,17 @@ namespace lyren::qq {
             }
             const int end = offset + static_cast<int>(out.cards.size());
             out.total = d.HasMore && !out.cards.empty() ? std::max(d.FromLimit, end + 1) : end;
+            out.next_offset = d.HasMore && !out.cards.empty() ? offset + 50 : -1;
             return out;
         });
     }
 
-    Result<Batch> parse_category_playlists(const Reply &reply) {
+    Result<Batch> parse_category_playlists(const Reply &reply, int offset) {
         return parse_data<QCategoryPlaylists>(reply).and_then([&](auto d) -> Result<Batch> {
             Batch out;
             if (d.content) {
                 out.total = d.content->total_cnt;
+                out.next_offset = offset + 50 < out.total ? offset + 50 : -1;
                 if (d.content->v_item) {
                     out.cards.reserve(d.content->v_item->size());
                     for (const auto &item : *d.content->v_item) {
@@ -787,12 +789,12 @@ namespace lyren::qq {
         });
     }
 
-    Result<Batch> parse_new_albums(const Reply &reply) {
+    Result<Batch> parse_new_albums(const Reply &reply, int offset) {
         return parse_data<QNewAlbums>(reply).and_then([&](auto d) -> Result<Batch> {
             if (!d.albums) {
                 return std::unexpected("QQ Music returned no album list");
             }
-            Batch out{.total = d.total};
+            Batch out{.total = d.total, .next_offset = !d.albums->empty() && offset + 20 < d.total ? offset + 20 : -1};
             for (const auto &album : *d.albums) {
                 if (!album.mid || album.mid->empty()) {
                     return std::unexpected("QQ Music returned incomplete album details");
@@ -867,6 +869,27 @@ namespace lyren::qq {
     : client(loop, http),
       loop_(loop),
       http_(http) {
+        capabilities = {.toplists = true,
+                        .square = true,
+                        .radio = true,
+                        .radio_dislike = true,
+                        .similar = true,
+                        .artist_intro = true,
+                        .library = true,
+                        .likes = true,
+                        .playlist_edit = true,
+                        .playlist_order = true,
+                        .private_playlists = true,
+                        .collect_playlists = true,
+                        .collect_albums = true,
+                        .follow_artists = true,
+                        .comments = {true, true, true},
+                        .comment_sort = true,
+                        .comment_replies = true,
+                        .comment_likes = true,
+                        .comment_post = true,
+                        .comment_delete = true,
+                        .qr_login = true};
         client.refresh_session = [this](bool force) {
             return renew(force);
         };
@@ -911,7 +934,8 @@ namespace lyren::qq {
     }
 
     Task<Result<Batch>> Qq::new_albums(std::string area, int offset) {
-        co_return parse_new_albums(co_await client.call({{"newalbum.NewAlbumServer", "get_new_album_info", std::format(R"({{"area":{},"start":{},"num":20}})", area, offset)}}));
+        co_return parse_new_albums(co_await client.call({{"newalbum.NewAlbumServer", "get_new_album_info", std::format(R"({{"area":{},"start":{},"num":20}})", area, offset)}}),
+                                   offset);
     }
 
     Task<Result<Categories>> Qq::categories() {
@@ -926,7 +950,8 @@ namespace lyren::qq {
         }
         co_return parse_category_playlists(
             co_await client.call({{"playlist.PlayListCategoryServer", "get_category_content",
-                                   std::format(R"({{"caller":"0","category_id":{},"page":{},"use_page":1,"size":{}}})", category, offset / page_size, page_size)}}));
+                                   std::format(R"({{"caller":"0","category_id":{},"page":{},"use_page":1,"size":{}}})", category, offset / page_size, page_size)}}),
+            offset);
     }
 
     Task<Result<std::vector<Track>>> Qq::similar(std::string id) {
@@ -1297,7 +1322,7 @@ namespace lyren::qq {
         co_return parse_data<QSongList>(
             co_await client.call({{"music.musichallSong.SongListInter", "GetSingerSongList", std::format(R"({{"singerMid":"{}","begin":{},"num":100,"order":1}})", mid, offset)}}))
             .transform([&](auto d) -> Batch {
-                return Batch{.tracks = tracks_of(d.songList), .total = d.totalNum};
+                return Batch{.tracks = tracks_of(d.songList), .total = d.totalNum, .next_offset = offset + 100 < d.totalNum ? offset + 100 : -1};
             });
     }
 
@@ -1306,6 +1331,7 @@ namespace lyren::qq {
             co_await client.call({{"music.musichallAlbum.AlbumListServer", "GetAlbumList", std::format(R"({{"singerMid":"{}","order":0,"begin":{},"num":30}})", mid, offset)}}))
             .transform([&](auto d) -> Batch {
                 Batch out{.total = d.total};
+                out.next_offset = offset + 30 < d.total ? offset + 30 : -1;
                 if (d.albumList) {
                     for (const auto &a : *d.albumList) {
                         out.cards.push_back(album_card(a.albumMid.value_or(""), a.albumName.value_or(""), a.publishDate.value_or(""), a.totalNum));
@@ -1485,7 +1511,7 @@ namespace lyren::qq {
         });
     }
 
-    Task<Result<std::string>> Qq::post_comment(Subject subject, std::string id, std::string content, std::string reply) {
+    Task<Result<std::string>> Qq::post_comment(Subject subject, std::string id, std::string content, std::string reply, std::string) {
         int biz = subject == Subject::song ? 1 : subject == Subject::album ? 2 : 3;
         if (id.starts_with(top_prefix)) {
             biz = 4, id = id.substr(top_prefix.size());
@@ -1946,7 +1972,7 @@ namespace lyren::qq {
     }
 
     Task<void> Qq::logout() {
-        cancel_qr();
+        cancel_login();
         ++client.session_gen;
         renewal_.reset();
         renew_after_ = {};

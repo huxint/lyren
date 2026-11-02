@@ -1,7 +1,9 @@
 #include <fdk-aac/aacdecoder_lib.h>
+#include <openssl/evp.h>
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <vector>
 
 #include "audio/decoder.hpp"
@@ -76,12 +78,22 @@ namespace lyren::audio {
             }
         }
 
+        struct Encryption {
+            // Keep the compact on-wire table and one index per sample; no allocation per IV or subsample.
+            std::vector<uint8_t> entries;
+            std::vector<uint32_t> offsets;
+            uint32_t scheme = 0;
+            uint8_t iv_size = 0;
+            bool subsamples = false;
+        };
+
         struct Track {
             std::vector<uint8_t> asc; // AudioSpecificConfig
             uint32_t codec = 0, timescale = 0;
             uint64_t duration = 0;
             std::vector<uint32_t> sizes;
             std::vector<uint64_t> offsets;
+            std::optional<Encryption> encryption;
         };
 
         // The AudioSpecificConfig sits in esds: ES_Descriptor(3) > DecoderConfigDescriptor(4) > DecoderSpecificInfo(5).
@@ -129,12 +141,16 @@ namespace lyren::audio {
             }
         }
 
-        void parse_stsd(const std::vector<uint8_t> &buf, size_t b, size_t e, Track &t) {
+        bool parse_stsd(const std::vector<uint8_t> &buf, size_t b, size_t e, Track &t) {
+            bool valid = false;
             each_box(buf, b + 8, e, [&](uint32_t type, size_t body, size_t end) {
                 if (t.codec) {
                     return;
                 }
                 t.codec = type;
+                if (type == fourcc("enca")) {
+                    t.encryption.emplace();
+                }
                 Cursor c{buf, body, end};
                 c.skip(8);
                 uint32_t version = c.u16();
@@ -147,27 +163,87 @@ namespace lyren::audio {
                 if (c.bad) {
                     return;
                 }
-                auto find_esds = [&](this auto &self, size_t from, size_t to) -> void {
+                valid = true;
+                auto children = [&](this auto &self, size_t from, size_t to) -> void {
                     each_box(buf, from, to, [&](uint32_t child, size_t cb, size_t ce) {
+                        Cursor c{buf, cb, ce};
                         if (child == fourcc("esds")) {
-                            parse_esds({buf, cb, ce}, t);
-                        } else if (child == fourcc("wave")) {
-                            self(cb, ce); // QuickTime wraps esds in wave
+                            parse_esds(c, t);
+                        } else if (child == fourcc("wave") || child == fourcc("sinf") || child == fourcc("schi")) {
+                            self(cb, ce);
+                        } else if (t.encryption) {
+                            auto &enc = *t.encryption;
+                            if (child == fourcc("frma")) {
+                                t.codec = c.u32();
+                            } else if (child == fourcc("schm")) {
+                                c.skip(4);
+                                enc.scheme = c.u32();
+                            } else if (child == fourcc("tenc")) {
+                                uint32_t version = c.u8();
+                                c.skip(4); // flags and reserved byte
+                                uint32_t pattern = c.u8(), protected_sample = c.u8();
+                                enc.iv_size = static_cast<uint8_t>(c.u8());
+                                c.skip(16); // default KID; the selected stream already supplies its key
+                                valid &= version <= 1 && !pattern && protected_sample == 1;
+                            }
                         }
+                        valid &= !c.bad;
                     });
                 };
-                find_esds(c.at, end);
+                children(c.at, end);
+                if (t.encryption) {
+                    const auto &enc = *t.encryption;
+                    valid &= enc.scheme == fourcc("cenc") && (enc.iv_size == 8 || enc.iv_size == 16);
+                }
             });
+            return valid;
+        }
+
+        bool parse_senc(Cursor c, Track &t) {
+            auto &enc = *t.encryption;
+            uint32_t flags = c.u32(), count = c.u32();
+            if (c.bad || (flags & ~2u) || count != t.sizes.size()) {
+                return false;
+            }
+            enc.subsamples = flags & 2;
+            const size_t begin = c.at;
+            enc.offsets.reserve(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                enc.offsets.push_back(static_cast<uint32_t>(c.at - begin));
+                c.skip(enc.iv_size);
+                if (enc.subsamples) {
+                    uint32_t n = c.u16();
+                    uint64_t bytes = 0;
+                    for (uint32_t j = 0; j < n && !c.bad; ++j) {
+                        bytes += c.u16();
+                        bytes += c.u32();
+                    }
+                    if (n && bytes != t.sizes[i]) {
+                        return false;
+                    }
+                }
+                if (c.bad) {
+                    return false;
+                }
+            }
+            if (c.at != c.end) {
+                return false;
+            }
+            enc.entries.assign(c.buf.begin() + static_cast<ptrdiff_t>(begin), c.buf.begin() + static_cast<ptrdiff_t>(c.end));
+            return true;
         }
 
         bool parse_stbl(const std::vector<uint8_t> &buf, size_t b, size_t e, Track &t) {
             std::vector<std::pair<uint32_t, uint32_t>> stsc; // first chunk (1-based), samples per chunk
             std::vector<uint64_t> chunks;
+            size_t senc_begin = 0, senc_end = 0;
             bool bad = false;
             each_box(buf, b, e, [&](uint32_t type, size_t body, size_t end) {
                 Cursor c{buf, body, end};
                 if (type == fourcc("stsd")) {
-                    parse_stsd(buf, body, end, t);
+                    bad |= !parse_stsd(buf, body, end, t);
+                } else if (type == fourcc("senc")) {
+                    senc_begin = body, senc_end = end;
                 } else if (type == fourcc("stsc")) {
                     c.skip(4);
                     for (uint32_t n = c.u32(); n-- && !c.bad;) {
@@ -220,8 +296,7 @@ namespace lyren::audio {
                     off += t.sizes[s];
                 }
             }
-            t.sizes.resize(t.offsets.size());
-            return true;
+            return s == t.sizes.size() && (!t.encryption || (senc_end && parse_senc({buf, senc_begin, senc_end}, t)));
         }
 
         // First sound track of the moov box.
@@ -272,9 +347,17 @@ namespace lyren::audio {
                 if (h_) {
                     aacDecoder_Close(h_);
                 }
+                EVP_CIPHER_CTX_free(cipher_);
             }
 
-            bool open() {
+            bool open(const std::optional<crypto::Aes128Key> &key) {
+                packet_.reserve(std::ranges::max(t_.sizes));
+                if (t_.encryption) {
+                    cipher_ = EVP_CIPHER_CTX_new();
+                    if (!cipher_ || EVP_DecryptInit_ex(cipher_, EVP_aes_128_ctr(), nullptr, key->data(), nullptr) != 1) {
+                        return false;
+                    }
+                }
                 if (!reset()) {
                     return false;
                 }
@@ -344,6 +427,9 @@ namespace lyren::audio {
                     if (!s_.read_exact(t_.offsets[next_], packet_.data(), packet_.size())) {
                         return false;
                     }
+                    if (cipher_ && !decrypt(next_)) {
+                        return false;
+                    }
                     ++next_;
                     UCHAR *p = packet_.data();
                     UINT size = static_cast<UINT>(packet_.size()), valid = size;
@@ -353,6 +439,43 @@ namespace lyren::audio {
                     }
                 }
                 return false;
+            }
+
+            bool decrypt(size_t sample) {
+                const auto &enc = *t_.encryption;
+                const auto *entry = enc.entries.data() + enc.offsets[sample];
+                std::array<unsigned char, 16> iv{};
+                std::copy_n(entry, enc.iv_size, iv.data());
+                entry += enc.iv_size;
+                if (EVP_DecryptInit_ex(cipher_, nullptr, nullptr, nullptr, iv.data()) != 1) {
+                    return false;
+                }
+                auto crypt = [&](uint8_t *bytes, size_t size) {
+                    int written;
+                    return EVP_DecryptUpdate(cipher_, bytes, &written, bytes, static_cast<int>(size)) == 1;
+                };
+                // The table was checked against sample sizes once, while opening the external file.
+                auto be = [&](size_t n) {
+                    uint32_t value = 0;
+                    while (n--) {
+                        value = value << 8 | *entry++;
+                    }
+                    return value;
+                };
+                uint32_t count = enc.subsamples ? be(2) : 0;
+                if (!count) {
+                    return crypt(packet_.data(), packet_.size());
+                }
+                auto *at = packet_.data();
+                for (uint32_t i = 0; i < count; ++i) {
+                    at += be(2);
+                    uint32_t encrypted = be(4);
+                    if (!crypt(at, encrypted)) {
+                        return false;
+                    }
+                    at += encrypted;
+                }
+                return true;
             }
 
             // Converts the decoded frame to float in the stream's channel layout.
@@ -370,6 +493,7 @@ namespace lyren::audio {
             Spool &s_;
             Track t_;
             HANDLE_AACDECODER h_ = nullptr;
+            EVP_CIPHER_CTX *cipher_ = nullptr;
             std::vector<uint8_t> packet_;
             std::vector<INT_PCM> pcm_ = std::vector<INT_PCM>(2048 * 8);
             std::vector<float> buf_;
@@ -379,7 +503,7 @@ namespace lyren::audio {
 
     } // namespace
 
-    std::unique_ptr<Decoder> open_mp4(Spool &spool, std::string &error) {
+    std::unique_ptr<Decoder> open_mp4(Spool &spool, std::string &error, std::optional<crypto::Aes128Key> key) {
         // Top-level boxes; moov may come after mdat, which costs one extra range request.
         uint64_t at = 0, size = spool.size();
         std::vector<uint8_t> moov;
@@ -430,8 +554,18 @@ namespace lyren::audio {
             error = "fragmented mp4 is not supported";
             return nullptr;
         }
+        if (t.encryption && !key) {
+            error = "encrypted mp4 requires a stream key";
+            return nullptr;
+        }
+        for (size_t i = 0; i < t.sizes.size(); ++i) {
+            if (t.sizes[i] > std::numeric_limits<int>::max() || t.offsets[i] > size || t.sizes[i] > size - t.offsets[i]) {
+                error = "mp4 sample exceeds the file bounds";
+                return nullptr;
+            }
+        }
         auto d = std::make_unique<Aac>(spool, std::move(t));
-        return d->open() ? std::move(d) : nullptr;
+        return d->open(key) ? std::move(d) : nullptr;
     }
 
 } // namespace lyren::audio

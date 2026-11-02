@@ -7,7 +7,7 @@
 
 namespace lyren {
 
-    // A page of a listing arrived; an empty one ends it, whatever the total said.
+    // Keep the service's continuation independent of the number of visible rows.
     void Shell::arrived(Results &res, Result<Batch> r) {
         res.loading = false;
         if (!r) {
@@ -20,15 +20,19 @@ namespace lyren {
         res.loaded = true;
         images_.prefetch(r->tracks);
         images_.prefetch(r->cards);
-        bool empty = r->tracks.empty() && r->cards.empty();
+        res.next_offset = r->next_offset;
         res.tracks.append_range(std::views::as_rvalue(r->tracks));
         res.cards.append_range(std::views::as_rvalue(r->cards));
-        res.total = empty ? static_cast<int>(res.size()) : std::max(r->total, static_cast<int>(res.size()));
+        res.total = res.more() ? std::max(r->total, static_cast<int>(res.size())) : static_cast<int>(res.size());
     }
 
-    Task<void> Shell::load_cards(Results &res, Task<Result<std::vector<Card>>> request) {
+    Task<void> Shell::load_cards(Source source, Results &res, Task<Result<std::vector<Card>>> request) {
+        const auto gen = library(source).account_gen;
         res.loading = true;
         auto result = co_await std::move(request);
+        if (gen != library(source).account_gen) {
+            co_return;
+        }
         Results fresh;
         arrived(fresh, std::move(result).transform([](std::vector<Card> cards) {
             return Batch{.cards = std::move(cards)};
@@ -128,7 +132,7 @@ namespace lyren {
     }
 
     void Shell::load_results(int tab, bool retry) {
-        SearchResults &res = results_[static_cast<size_t>(active_)][tab];
+        Results &res = results_[static_cast<size_t>(active_)][tab];
         if (res.loading || (!retry && (!res.more() || !res.error.empty()))) {
             return;
         }
@@ -138,14 +142,12 @@ namespace lyren {
     }
 
     Task<void> Shell::fetch_results(uint64_t gen, int tab, Source source, std::string query, int offset) {
+        const auto account_gen = library(source).account_gen;
         auto r = co_await provider(source).search(query, static_cast<SearchKind>(tab), offset, tab == 0 ? 30 : 40);
-        if (gen != search_gen_) {
+        if (gen != search_gen_ || account_gen != library(source).account_gen) {
             co_return;
         }
-        SearchResults &res = results_[static_cast<size_t>(source)][tab];
-        if (r) {
-            res.next_offset = r->tracks.empty() && r->cards.empty() ? -1 : r->next_offset;
-        }
+        Results &res = results_[static_cast<size_t>(source)][tab];
         arrived(res, std::move(r));
         if (!res.more()) {
             res.total = static_cast<int>(res.size());
@@ -154,30 +156,34 @@ namespace lyren {
     }
 
     Task<void> Shell::warm_pages(Source source) {
-        // Current-page work starts first. Warm only small, reusable listings, not every playlist's tracks.
-        co_await lyren::sleep{loop_, source == active_ ? 200ms : 800ms};
+        // Visible work starts first; unvisited platforms must not fill the image budget at startup.
+        co_await lyren::sleep{loop_, 200ms};
+        if (source != active_) {
+            co_return;
+        }
         auto &lib = library(source);
+        const auto &p = provider(source);
         if (!lib.recommended.loaded && !lib.recommended.loading) {
-            co_await load_cards(library(source).recommended, provider(source).recommended_playlists());
+            co_await load_cards(source, library(source).recommended, provider(source).recommended_playlists());
         }
-        if (!lib.toplists.loaded && !lib.toplists.loading) {
-            co_await load_cards(library(source).toplists, provider(source).toplists());
+        if (source == active_ && p.capabilities.toplists && !lib.toplists.loaded && !lib.toplists.loading) {
+            co_await load_cards(source, library(source).toplists, provider(source).toplists());
         }
-        if (!lib.square.loaded && !lib.square.loading) {
+        if (source == active_ && p.capabilities.square && !lib.square.loaded && !lib.square.loading) {
             lib.square.loading = true;
             co_await fetch_square(source, lib.square_gen, lib.category.id, 0);
         }
-        if (lib.categories.groups.empty() && !lib.categories_loading) {
+        if (source == active_ && p.capabilities.square && lib.categories.groups.empty() && !lib.categories_loading) {
             co_await load_categories(source);
         }
         for (int tab = 0; tab < 2; ++tab) {
             auto &res = lib.releases[tab];
-            if (!res.loaded && !res.loading) {
+            if (source == active_ && !p.release_categories[tab].empty() && !res.loaded && !res.loading) {
                 res.loading = true;
                 co_await fetch_releases(source, tab, lib.release_gen[tab], provider(source).release_categories[tab][lib.release_category[tab]].id, 0);
             }
         }
-        if (provider(source).logged_in() && !lib.collection[0].loaded && !lib.collection[0].loading) {
+        if (source == active_ && supports(Page::collection, source) && p.logged_in() && !lib.collection[0].loaded && !lib.collection[0].loading) {
             co_await load_collection(source);
         }
     }
@@ -191,7 +197,7 @@ namespace lyren {
         bool listed = page == Page::daily || page == Page::radar || page == Page::cloud || page == Page::liked || page == Page::playlist || page == Page::album ||
                       page == Page::similar || (page == Page::recent && lib.recent_tab == 1 && signed_in());
         if (listed && !route_.list && !(needs_login(page) && !signed_in())) {
-            if (page == Page::liked && lib.liked.id.empty()) {
+            if (page == Page::liked && !lib.playlists_loaded) {
                 return;
             }
             route_.list = std::make_shared<List>();
@@ -202,10 +208,10 @@ namespace lyren {
             spawn(load_artist(route_.artist, route_.card));
         }
         if (page == Page::recommend && !lib.recommended.loaded && !lib.recommended.loading) {
-            spawn(load_cards(library(active_).recommended, provider(active_).recommended_playlists()));
+            spawn(load_cards(active_, library(active_).recommended, provider(active_).recommended_playlists()));
         }
         if (page == Page::toplist && !lib.toplists.loaded && !lib.toplists.loading) {
-            spawn(load_cards(library(active_).toplists, provider(active_).toplists()));
+            spawn(load_cards(active_, library(active_).toplists, provider(active_).toplists()));
         }
         if (page == Page::square) {
             if (lib.categories.groups.empty() && !lib.categories_loading) {
@@ -253,7 +259,9 @@ namespace lyren {
                 r = std::unexpected(a.error());
             }
         } else if (page == Page::liked) {
-            r = co_await provider(card).tracks(library(card.source).liked);
+            if (!lib.liked.id.empty()) {
+                r = co_await provider(card).tracks(lib.liked);
+            }
         } else if (page == Page::daily) {
             r = co_await provider(card).features.daily.songs();
         } else if (page == Page::radar) {
@@ -320,7 +328,7 @@ namespace lyren {
         }
         res.loading = true;
         res.error.clear();
-        spawn(fetch_artist(route_.artist, route_.card, tab, static_cast<int>(res.size())));
+        spawn(fetch_artist(route_.artist, route_.card, tab, res.next_offset));
     }
 
     Task<void> Shell::fetch_artist(std::shared_ptr<ArtistPage> page, Card card, int tab, int offset) {
@@ -328,6 +336,7 @@ namespace lyren {
             auto r = co_await provider(card).artist_intro(card.id);
             page->intro.loading = false;
             page->intro.loaded = true;
+            page->intro.next_offset = -1;
             page->intro.since = now_();
             if (r) {
                 page->sections = std::move(*r);
@@ -377,7 +386,7 @@ namespace lyren {
         }
         lib.square.loading = true;
         lib.square.error.clear();
-        spawn(fetch_square(active_, lib.square_gen, lib.category.id, static_cast<int>(lib.square.cards.size())));
+        spawn(fetch_square(active_, lib.square_gen, lib.category.id, lib.square.next_offset));
     }
 
     Task<void> Shell::fetch_square(Source source, uint64_t gen, std::string category, int offset) {
@@ -400,7 +409,7 @@ namespace lyren {
         res.loading = true;
         res.error.clear();
         const auto &category = provider().release_categories[tab][lib.release_category[tab]];
-        spawn(fetch_releases(active_, tab, lib.release_gen[tab], category.id, static_cast<int>(res.size())));
+        spawn(fetch_releases(active_, tab, lib.release_gen[tab], category.id, res.next_offset));
     }
 
     void Shell::set_release_category(ui::Ui &ui, int category) {
@@ -440,7 +449,16 @@ namespace lyren {
             c.loading = true;
         }
         auto &p = provider(source);
-        auto [albums, artists] = co_await both(p.collected_albums(), p.followed_artists());
+        auto collect = [](Provider &provider, bool artists) -> Task<Result<std::vector<Card>>> {
+            if (artists && provider.capabilities.follow_artists) {
+                co_return co_await provider.followed_artists();
+            }
+            if (!artists && provider.capabilities.collect_albums) {
+                co_return co_await provider.collected_albums();
+            }
+            co_return std::vector<Card>{};
+        };
+        auto [albums, artists] = co_await both(collect(p, false), collect(p, true));
         if (gen != lib.collection_gen) {
             co_return;
         }

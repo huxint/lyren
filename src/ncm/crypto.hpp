@@ -2,10 +2,12 @@
 #include <string>
 #include <string_view>
 
+#include "core/crypto.hpp"
+
 namespace lyren::ncm {
 
-    std::string md5_hex(std::string_view s);
-    std::string random_hex(size_t digits, bool upper = false);
+    using crypto::md5_hex;
+    using crypto::random_hex;
 
     // eapi: url is the /api/... path, text the JSON body. Returns the params form field.
     std::string eapi(std::string_view url, std::string_view text);

@@ -58,7 +58,7 @@ namespace lyren::audio {
         }
     }
 
-    void Player::open(std::shared_ptr<Spool> spool, bool play) {
+    void Player::open(std::shared_ptr<Spool> spool, bool play, std::optional<crypto::Aes128Key> key) {
         // Closing wakes the decoder thread if it is waiting for the old track's bytes.
         if (spool_) {
             spool_->close();
@@ -72,7 +72,7 @@ namespace lyren::audio {
         codec_ = {};
         error_.clear();
         out_.set_active(false);
-        push({.kind = Cmd::open, .gen = gen_, .spool = spool_});
+        push({.kind = Cmd::open, .gen = gen_, .spool = spool_, .key = key});
         changed();
     }
 
@@ -189,7 +189,7 @@ namespace lyren::audio {
                     dec.reset(), done = true;
                     spool = std::move(c.spool), gen = c.gen;
                     std::string error;
-                    dec = open_decoder(*spool, error);
+                    dec = open_decoder(*spool, error, c.key);
                     if (!dec) {
                         fail(gen, std::move(error));
                         continue;

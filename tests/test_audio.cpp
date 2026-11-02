@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -127,6 +129,55 @@ TEST_CASE("MP4 constant-size sample tables decode every AAC packet") {
     CHECK(decoder->format == Format{22050, 2});
     CHECK(decoder->length == 32 * 1024);
     CHECK(decode_all(*decoder).size() == 32 * 1024 * 2);
+}
+
+TEST_CASE("CENC AAC decrypts per sample and seeks on the original audio timeline") {
+    const lyren::crypto::Aes128Key key{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
+    std::string error;
+    auto plain = Spool::file(LYREN_TEST_DATA "/tone.m4a");
+    auto reference = open_decoder(*plain, error);
+    REQUIRE_MESSAGE(reference, error);
+    const auto samples = decode_all(*reference);
+    for (const char *file : {"cenc.m4a", "cenc-subsamples.m4a"}) {
+        CAPTURE(file);
+        auto spool = Spool::file(std::string(LYREN_TEST_DATA "/") + file);
+        CHECK_FALSE(open_decoder(*spool, error));
+        CHECK(error == "encrypted mp4 requires a stream key");
+        error.clear();
+        auto decoder = open_decoder(*spool, error, key);
+        REQUIRE_MESSAGE(decoder, error);
+        CHECK(decoder->format == reference->format);
+        const auto actual = decode_all(*decoder);
+        REQUIRE(actual.size() == samples.size());
+        CHECK(max_diff(actual.data(), samples.data(), actual.size()) == 0);
+        for (uint64_t target : {11025ull, 3000ull, 0ull}) {
+            CAPTURE(target);
+            REQUIRE(decoder->seek(target));
+            std::vector<float> output(2048 * decoder->format.channels);
+            REQUIRE(decoder->read(output.data(), 2048) == 2048);
+            CHECK(max_diff(output.data(), samples.data() + target * decoder->format.channels, output.size()) < 1e-4f);
+        }
+    }
+}
+
+TEST_CASE("CENC sample descriptions cannot decrypt beyond a packet boundary") {
+    std::ifstream input(LYREN_TEST_DATA "/cenc-subsamples.m4a", std::ios::binary);
+    std::string bytes{std::istreambuf_iterator<char>(input), {}};
+    const auto senc = bytes.find("senc");
+    REQUIRE(senc != bytes.npos);
+    // First sample: FullBox/count, 16-byte IV, subsample count, clear size, encrypted size.
+    bytes.replace(senc + 4 + 8 + 16 + 2 + 2, 4, 4, '\xff');
+    auto close_file = [](FILE *stream) {
+        std::fclose(stream);
+    };
+    std::unique_ptr<FILE, decltype(close_file)> file(std::tmpfile(), close_file);
+    REQUIRE(file);
+    REQUIRE(std::fwrite(bytes.data(), 1, bytes.size(), file.get()) == bytes.size());
+    REQUIRE(std::fflush(file.get()) == 0);
+    auto spool = Spool::file("/proc/self/fd/" + std::to_string(fileno(file.get())));
+    std::string error;
+    CHECK_FALSE(open_decoder(*spool, error, lyren::crypto::Aes128Key{}));
+    CHECK_FALSE(error.empty());
 }
 
 TEST_CASE("MP3 seeks before a frame index is built retain the exact sample timeline") {

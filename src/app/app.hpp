@@ -10,6 +10,9 @@
 #include "audio/player.hpp"
 #include "ncm/netease.hpp"
 #include "qq/qq.hpp"
+#include "qishui/qishui.hpp"
+#include "kugou/kugou.hpp"
+#include "bodian/bodian.hpp"
 #include "net/http.hpp"
 #include "core/loop.hpp"
 #include "sys/bus.hpp"
@@ -82,6 +85,9 @@ namespace lyren {
         audio::Player player_;
         ncm::Netease ncm_;
         qq::Qq qq_;
+        qishui::Qishui qishui_;
+        kugou::Kugou kugou_;
+        bodian::Bodian bodian_;
         Images images_;
         Shell shell_;
 

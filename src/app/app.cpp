@@ -78,6 +78,9 @@ namespace lyren {
       player_(loop, http_),
       ncm_(loop, http_),
       qq_(loop, http_),
+      qishui_(loop, http_),
+      kugou_(loop, http_),
+      bodian_(loop, http_),
       images_(
           loop, http_, renderer_,
           [this] {
@@ -89,7 +92,7 @@ namespace lyren {
       shell_(ShellDeps{.loop = loop,
                        .http = http_,
                        .player = player_,
-                       .providers = {&ncm_, &qq_},
+                       .providers = {ncm_, qq_, qishui_, kugou_, bodian_},
                        .images = images_,
                        .config = config_.config,
                        .set_setting =

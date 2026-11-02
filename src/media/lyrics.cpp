@@ -7,6 +7,9 @@
 #include <charconv>
 #include <cmath>
 #include <optional>
+#include <format>
+
+#include "core/encoding.hpp"
 
 namespace lyren {
 
@@ -18,6 +21,13 @@ namespace lyren {
         struct CreditLine {
             double t = 0;
             std::optional<std::vector<Credit>> c;
+        };
+        struct KrcTranslation {
+            int type = 0;
+            std::vector<std::vector<std::string>> lyricContent;
+        };
+        struct KrcLanguage {
+            std::vector<KrcTranslation> content;
         };
 
         std::string_view trim(std::string_view s) {
@@ -320,6 +330,53 @@ namespace lyren {
         }
         add_translation(lines, parse_lrc(translation));
         return lines;
+    }
+
+    std::vector<LyricLine> parse_krc(std::string_view text) {
+        std::string yrc;
+        yrc.reserve(text.size());
+        KrcLanguage language;
+        std::vector<uint32_t> starts;
+        while (!text.empty()) {
+            auto line = next_line(text);
+            if (line.starts_with("[language:") && line.ends_with(']')) {
+                const auto decoded = encoding::unbase64(line.substr(10, line.size() - 11));
+                static_cast<void>(glz::read<glz::opts{.error_on_unknown_keys = false}>(language, decoded));
+                continue;
+            }
+            const auto head = timing(line, '[', ']');
+            if (!head) {
+                continue;
+            }
+            starts.push_back(head->first);
+            yrc += std::format("[{},{}]", head->first, head->second);
+            while (!line.empty()) {
+                if (const auto word = timing(line, '<', '>')) {
+                    if (word->first <= UINT32_MAX - head->first) {
+                        yrc += std::format("({},{},0)", head->first + word->first, word->second);
+                    }
+                    continue;
+                }
+                const auto next = line.find('<', 1);
+                yrc += line.substr(0, next);
+                line = next == line.npos ? std::string_view{} : line.substr(next);
+            }
+            yrc += '\n';
+        }
+        std::string translation;
+        for (const auto &entry : language.content) {
+            if (entry.type != 1) {
+                continue;
+            }
+            for (size_t i = 0; i < std::min(starts.size(), entry.lyricContent.size()); ++i) {
+                translation += std::format("[{}:{:02}.{:03}]", starts[i] / 60000, starts[i] / 1000 % 60, starts[i] % 1000);
+                for (const auto &word : entry.lyricContent[i]) {
+                    translation += word;
+                }
+                translation += '\n';
+            }
+        }
+        return parse_lyrics({}, translation, yrc);
     }
 
     std::vector<LyricLine> parse_qrc(std::string_view qrc, std::string_view translation) {

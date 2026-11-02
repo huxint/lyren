@@ -305,7 +305,7 @@ namespace lyren {
         last_pos_ = at;
         apply_gain();
         listen_started_ = player_.played_seconds();
-        player_.open(std::move(spool), want_play_);
+        player_.open(std::move(spool), want_play_, s.decrypt_key);
         if (at > 0) {
             seek(at);
         }

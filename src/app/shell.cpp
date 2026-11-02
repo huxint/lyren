@@ -74,7 +74,7 @@ namespace lyren {
                 const auto &lib = library(source);
                 if (!provider(source).logged_in() && (lib.account || lib.preference_gen != 0)) {
                     if (lib.account) {
-                        notify(std::format("{}: {}", lyren::tr(platform(source).name), lyren::tr("Session expired; scan again to sign in")), "user", true);
+                        notify(std::format("{}: {}", lyren::tr(platform(source).name), lyren::tr("Session expired; sign in again")), "user", true);
                     }
                     reset_account(source);
                     if (source == active_) {
@@ -259,8 +259,21 @@ namespace lyren {
     }
 
     bool Shell::supports(Page page, Source source) const {
-        const auto &features = provider(source).features;
+        const auto &p = provider(source);
+        const auto &features = p.features;
         switch (page) {
+            case Page::toplist:
+                return p.capabilities.toplists;
+            case Page::square:
+                return p.capabilities.square;
+            case Page::fm:
+                return p.capabilities.radio;
+            case Page::liked:
+                return p.capabilities.likes;
+            case Page::collection:
+                return p.capabilities.collect_albums || p.capabilities.follow_artists;
+            case Page::releases:
+                return !p.release_categories[0].empty() || !p.release_categories[1].empty();
             case Page::daily:
                 return bool(features.daily.songs);
             case Page::radar:
@@ -282,9 +295,13 @@ namespace lyren {
         if (route_.page == Page::search || route_.page == Page::settings) {
             tab_dir_ = source > active_ ? 1 : -1;
             active_ = route_.card.source = source;
+            if (!provider().capabilities.search[search_tab_]) {
+                search_tab_ = 0;
+            }
             selected_ = -1;
             tab_time_ = ui.now;
             ensure_route_data();
+            spawn(warm_pages(source));
             changed();
             ui.redraw();
             return;
@@ -348,8 +365,12 @@ namespace lyren {
 
     void Shell::enter(ui::Ui &ui, Route route, int direction) {
         route_ = std::move(route);
-        if (active_ != route_.card.source) {
+        const bool platform_changed = active_ != route_.card.source;
+        if (platform_changed) {
             active_ = route_.card.source;
+            if (!provider().capabilities.search[search_tab_]) {
+                search_tab_ = 0;
+            }
             changed();
             for (const char *id : {"recommend", "toplists", "square", "sidebar", "collection-albums", "collection-artists", "release-songs", "release-albums"}) {
                 ui.scroll_to(ui.id(id), 0);
@@ -384,6 +405,9 @@ namespace lyren {
             route_.list.reset();
         }
         ensure_route_data();
+        if (platform_changed) {
+            spawn(warm_pages(active_));
+        }
     }
 
     bool Shell::needs_login(Page p) {
@@ -504,8 +528,8 @@ namespace lyren {
             ui.toast(std::move(m.text), std::move(m.icon), m.error);
         }
         toasts_.clear();
-        // Closing the account dialog stops the QR polling.
-        if (qr_active_ && !ui.modal_open()) {
+        // A closed account dialog cannot install a late login response.
+        if ((qr_active_ || account_importing_) && !ui.modal_open()) {
             cancel_login();
         }
 
@@ -527,7 +551,7 @@ namespace lyren {
         ui::cut_right(area, 8);
         // On the stage the comments follow the music, loaded ahead so they open at once, unless the panel is showing
         // others.
-        if (const Track *tr = current(); tr && np_open_ && !(panel_ == Panel::comments && !thread_.follows) &&
+        if (const Track *tr = current(); tr && provider(*tr).capabilities.comments[0] && np_open_ && !(panel_ == Panel::comments && !thread_.follows) &&
                                          !(thread_.follows && thread_.subject == Subject::song && thread_.id == tr->id && thread_.source == tr->source)) {
             set_thread(ui, tr->source, Subject::song, tr->id, tr->title + " · " + tr->artist, tr->cover, true);
         }
@@ -612,7 +636,9 @@ namespace lyren {
                         } else if (route_.page == Page::recent) {
                             route_.card.subtitle = lyren::trf("{} songs · From all your devices", list.tracks.size());
                         }
-                        list_page(ui, r, list.tracks, list.loading, list.error, std::max(list.since, tab_time_));
+                        const auto &library_error = library().library_error;
+                        const bool library_failed = route_.page == Page::liked && !route_.list && !library_error.empty();
+                        list_page(ui, r, list.tracks, list.loading && !library_failed, library_failed ? library_error : list.error, std::max(list.since, tab_time_));
                         break;
                     }
                 }
@@ -802,7 +828,7 @@ namespace lyren {
         if (signed_in() && labels > 0.5f) {
             Fade fade(p, labels);
             float y = r.y + item_y(lists) - head_h - off;
-            if (ui.icon_button(ui.id("new-playlist"), {r.right() - 46, y + 8, 26, 26}, "plus", 15)) {
+            if (provider().capabilities.playlist_edit && ui.icon_button(ui.id("new-playlist"), {r.right() - 46, y + 8, 26, 26}, "plus", 15)) {
                 open_editor(ui);
             }
         }
@@ -987,7 +1013,7 @@ namespace lyren {
             const float x = desktop.x + 8 * (1 - shown);
             const bool following = thread_.follows && thread_.subject == Subject::song && thread_.id == tr->id && thread_.source == tr->source;
             const bool on = panel_ == Panel::comments && following;
-            if (ui.icon_button(ui.id("comments"), {x - 40, cy - 16, 32, 32}, "message-square", 17, on)) {
+            if (provider(*tr).capabilities.comments[0] && ui.icon_button(ui.id("comments"), {x - 40, cy - 16, 32, 32}, "message-square", 17, on)) {
                 if (on) {
                     show_panel(Panel::none);
                 } else {

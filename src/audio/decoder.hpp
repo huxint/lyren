@@ -2,8 +2,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+
+#include "core/crypto.hpp"
 
 namespace lyren::audio {
 
@@ -27,11 +30,11 @@ namespace lyren::audio {
     };
 
     // Picks the decoder by the file's magic bytes. Blocks while the header downloads.
-    std::unique_ptr<Decoder> open_decoder(Spool &spool, std::string &error);
+    std::unique_ptr<Decoder> open_decoder(Spool &spool, std::string &error, std::optional<crypto::Aes128Key> key = {});
 
     std::unique_ptr<Decoder> open_mp3(Spool &spool);
     std::unique_ptr<Decoder> open_flac(Spool &spool);
     std::unique_ptr<Decoder> open_vorbis(Spool &spool);
-    std::unique_ptr<Decoder> open_mp4(Spool &spool, std::string &error);
+    std::unique_ptr<Decoder> open_mp4(Spool &spool, std::string &error, std::optional<crypto::Aes128Key> key = {});
 
 } // namespace lyren::audio

@@ -7,7 +7,7 @@
 
 namespace lyren::audio {
 
-    std::unique_ptr<Decoder> open_decoder(Spool &spool, std::string &error) {
+    std::unique_ptr<Decoder> open_decoder(Spool &spool, std::string &error, std::optional<crypto::Aes128Key> key) {
         std::array<char, 12> h;
         uint64_t at = 0;
         if (!spool.read_exact(0, h.data(), h.size())) {
@@ -32,7 +32,7 @@ namespace lyren::audio {
         } else if (header.starts_with("OggS")) {
             d = open_vorbis(spool);
         } else if (header.substr(4).starts_with("ftyp")) {
-            d = open_mp4(spool, error);
+            d = open_mp4(spool, error, key);
         } else if (at || (static_cast<uint8_t>(h[0]) == 0xff && (h[1] & 0xe0) == 0xe0 && (h[1] & 0x06))) {
             d = open_mp3(spool);
         } else {

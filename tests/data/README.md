@@ -1,5 +1,13 @@
 `fixed.m4a` repeats the first AAC packet from `tone.m4a` 32 times. Its MP4 sample table stores a single nonzero `stsz.sample_size` and a sample count of 32, with no per-sample size array. The chunk offsets, timing tables and durations describe 32 × 1024 stereo frames at 22050 Hz. This covers the constant-size table form independently of the variable-size table in `tone.m4a`.
 
+`cenc.m4a` contains the unchanged AAC packets from `tone.m4a`, encrypted independently by FFmpeg with CENC AES-128-CTR and 8-byte per-sample IVs:
+
+```sh
+ffmpeg -i tone.m4a -c copy -encryption_scheme cenc-aes-ctr -encryption_key 00112233445566778899aabbccddeeff -encryption_kid ffeeddccbbaa99887766554433221100 cenc.m4a
+```
+
+`cenc-subsamples.m4a` uses the same AAC packets and test key. Each sample has a 16-byte IV (`0x102030405060708090a0b0c0fffffffc + sample_index * 0x100000000`) and two subsamples: 7 clear / 17 encrypted bytes, then 5 clear / all remaining encrypted bytes. The encrypted pieces were concatenated, encrypted with `openssl enc -aes-128-ctr`, and restored around the clear bytes. This exercises CTR carry, partial-block continuation across subsamples, and clear regions that do not consume keystream. Both files must decode to the same PCM as the original and preserve forward/backward seeks. These generated tones and keys contain no platform media or credentials.
+
 `seek-vbr.mp3` is a generated 24-second stereo frequency sweep at 22050 Hz, encoded with LAME variable bitrate. It exercises seeks on a fresh decoder, before an accurate frame index exists. Approximate Xing-table seeks report the requested time while returning different audio samples.
 
 Generation command:

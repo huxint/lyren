@@ -12,7 +12,7 @@ namespace lyren::ncm {
 
     Result<PlaylistPage> parse_user_playlists(const Reply &reply, std::string_view uid);
     Result<std::vector<Track>> parse_new_songs(const Reply &reply);
-    Result<Batch> parse_new_albums(const Reply &reply);
+    Result<Batch> parse_new_albums(const Reply &reply, int offset = 0);
     Result<void> parse_playlist_write(const Reply &reply);
     Result<CommentPage> parse_comments(const Reply &reply, bool replies = false);
     Result<void> parse_comment_write(const Reply &reply);
@@ -32,7 +32,7 @@ namespace lyren::ncm {
             client.on_cookies = std::move(changed);
         }
         Task<Result<void>> initialize() override;
-        void cancel_qr() override {
+        void cancel_login() override {
             qr_key_.clear();
         }
 
@@ -95,7 +95,7 @@ namespace lyren::ncm {
         Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) override;
         Task<Result<CommentPage>> comment_replies(Subject subject, std::string id, std::string root, int page, std::string cursor) override;
         Task<Result<void>> like_comment(Subject subject, std::string id, std::string comment, bool on) override;
-        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {}) override;
+        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {}, std::string root = {}) override;
         Task<Result<void>> delete_comment(Subject subject, std::string id, std::string comment) override;
 
         // Listening reports: start puts the song in the account's recent plays, play counts it in the listening ranking.

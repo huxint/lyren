@@ -36,24 +36,57 @@ TEST_CASE("saved platform survives a round trip") {
     CHECK(saved.source == Source::netease);
     REQUIRE(saved.queue.size() == 1);
     CHECK(saved.queue[0].source == Source::qq);
-    saved.source = Source::qq;
-    std::string json;
-    REQUIRE_FALSE(glz::write_json(saved, json));
-    auto restored = parse_state(json);
-    REQUIRE(restored);
-    CHECK(restored->source == Source::qq);
-    CHECK(restored->queue[0].source == Source::qq);
-    CHECK(restored->queue[0].id == "1");
+    for (const auto &entry : platforms) {
+        CAPTURE(entry.id);
+        saved.source = entry.source;
+        saved.queue[0].source = entry.source;
+        std::string json;
+        REQUIRE_FALSE(glz::write_json(saved, json));
+        auto restored = parse_state(json);
+        REQUIRE(restored);
+        CHECK(restored->source == entry.source);
+        CHECK(restored->queue[0].source == entry.source);
+        CHECK(restored->queue[0].id == "1");
+    }
 }
 
 TEST_CASE("saved state rejects unregistered platforms and modes") {
-    for (std::string_view text : {R"({"source":2})", R"({"queue":[{"source":2,"id":"1"}]})", R"({"recent":[{"source":2,"id":"1"}]})"}) {
+    for (std::string_view text : {R"({"source":5})", R"({"queue":[{"source":5,"id":"1"}]})", R"({"recent":[{"source":5,"id":"1"}]})"}) {
         CAPTURE(text);
         const auto state = parse_state(text);
         REQUIRE_FALSE(state);
         CHECK(state.error() == "Unknown platform in saved state");
     }
     CHECK(parse_state(R"({"mode":3})").error() == "Unknown playback mode in saved state");
+}
+
+TEST_CASE("sharing preserves platform resource namespaces") {
+    CHECK(share_url(Track{.id = "18446744073709551615", .source = Source::qishui}) == "https://www.qishui.com/track/18446744073709551615");
+    CHECK(share_url(Card{.source = Source::qishui, .id = "123"}) == "https://www.qishui.com/playlist/123");
+    CHECK(share_url(Card{.kind = CardKind::album, .source = Source::qishui, .id = "123"}) == "https://www.qishui.com/share/album?album_id=123");
+    CHECK(share_url(Card{.source = Source::qishui, .id = "top:123"}).empty());
+    CHECK(share_url(Card{.source = Source::kugou, .id = "123"}) == "https://www.kugou.com/yy/special/single/123.html");
+    CHECK(share_url(Card{.source = Source::kugou, .id = "account:123"}).empty());
+    CHECK(share_url(Card{.source = Source::kugou, .id = "top:123"}).empty());
+    CHECK(share_url(Track{.id = "123", .source = Source::bodian}) == "https://h5app.kuwo.cn/m/bodian/playMusic.html?uid=-1&musicId=123&opusId=");
+    CHECK(share_url(Card{.source = Source::bodian, .id = "13:123"}) == "https://h5app.kuwo.cn/m/bodian/collection.html?uid=-1&playlistId=123&source=13");
+    CHECK(share_url(Card{.kind = CardKind::album, .source = Source::bodian, .id = "123"}) == "https://h5app.kuwo.cn/m/bodian/album.html?uid=-1&albumid=123");
+    CHECK(share_url(Card{.source = Source::bodian, .id = "module:123"}).empty());
+    CHECK(share_url(Card{.source = Source::bodian, .id = "ai:123:mix"}).empty());
+}
+
+TEST_CASE("Image URLs expand size templates and encode spaces across provider CDNs") {
+    constexpr std::string_view url = "http://imge.kugou.com/mcommon/{size}/20241219/20241219164209670219.png";
+    CHECK(cover_url(url, 96) == "https://imge.kugou.com/mcommon/150/20241219/20241219164209670219.png");
+    CHECK(cover_url(url, 192) == "https://imge.kugou.com/mcommon/240/20241219/20241219164209670219.png");
+    CHECK(cover_url(url, 640) == "https://imge.kugou.com/mcommon/480/20241219/20241219164209670219.png");
+    CHECK(picture_url(url, 320) == cover_url(url, 320));
+    CHECK(cover_url("http://c1.kgimg.com/stdmusic/{size}/20170105/20170105105545786343.jpg", 128) == "https://c1.kgimg.com/stdmusic/150/20170105/20170105105545786343.jpg");
+    CHECK(cover_url("https://imge.kugou.com/mcommon/480/image.png?token=keep", 96) == "https://imge.kugou.com/mcommon/480/image.png?token=keep");
+    CHECK(cover_url("https://p3-luna.douyinpic.com/img/cover~tplv-x-resize:{size}:{size}.png", 128) == "https://p3-luna.douyinpic.com/img/cover~tplv-x-resize:150:150.png");
+    CHECK(cover_url("https://p3-luna.douyinpic.com/img/ies-music/团体 (1).jpg~tplv-b829550vbb-resize:{size}:{size}.png", 128) ==
+          "https://p3-luna.douyinpic.com/img/ies-music/团体%20(1).jpg~tplv-b829550vbb-resize:150:150.png");
+    CHECK(picture_url("https://images.example/a%20b c.jpg?token=a+b%2Fc", 320) == "https://images.example/a%20b%20c.jpg?token=a+b%2Fc");
 }
 
 TEST_CASE("saved slider positions and selections are normalized at the file boundary") {

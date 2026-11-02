@@ -73,6 +73,7 @@ add_library(
     src/core/loop.cpp
     src/core/utf8.cpp
     src/core/encoding.cpp
+    src/core/crypto.cpp
     src/sys/paths.cpp
     src/sys/config.cpp
     src/sys/creds.cpp
@@ -93,8 +94,17 @@ add_library(
     src/qq/auth.cpp
     src/qq/client.cpp
     src/qq/qq.cpp
+    src/qishui/client.cpp
+    src/qishui/qishui.cpp
+    src/qishui/media.cpp
+    src/kugou/client.cpp
+    src/kugou/kugou.cpp
+    src/kugou/lyrics.cpp
+    src/bodian/client.cpp
+    src/bodian/bodian.cpp
     src/app/state.cpp
     src/media/types.cpp
+    src/media/provider.cpp
     src/media/lyrics.cpp)
 target_include_directories(lyren_base PUBLIC src)
 target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA PRIVATE glaze)
@@ -149,7 +159,7 @@ add_library(
     src/app/stage.cpp
     src/app/panel.cpp
     src/app/desktop.cpp)
-target_link_libraries(lyren_lib PUBLIC lyren_ui PkgConfig::SDBUS PRIVATE PkgConfig::QRENCODE)
+target_link_libraries(lyren_lib PUBLIC lyren_ui PkgConfig::SDBUS glaze PRIVATE PkgConfig::QRENCODE)
 add_wayland_protocols(
     lyren_ui
     ${WP_DIR}/stable/xdg-shell/xdg-shell.xml
@@ -185,6 +195,9 @@ if(BUILD_TESTING)
         tests/test_http.cpp
         tests/test_ncm.cpp
         tests/test_qq.cpp
+        tests/test_kugou.cpp
+        tests/test_bodian.cpp
+        tests/test_qishui.cpp
         tests/test_provider.cpp
         tests/test_timeline.cpp
         tests/test_lyrics.cpp

@@ -2,17 +2,75 @@
 #include "core/i18n.hpp"
 
 #include <format>
+#include <utility>
 
 namespace lyren {
 
+    namespace {
+        std::string image_url(std::string_view url, int px) {
+            std::string result(url);
+            if (result.starts_with("http://")) {
+                result.insert(4, "s");
+            }
+            // The same image template is served by several CDN domains (kugou.com, kgimg.com, ...).
+            const std::string_view size = px <= 150 ? "150" : px <= 240 ? "240" : "480";
+            for (auto at = result.find("{size}"); at != result.npos; at = result.find("{size}", at + size.size())) {
+                result.replace(at, 6, size);
+            }
+            for (auto at = result.find(' '); at != result.npos; at = result.find(' ', at + 3)) {
+                result.replace(at, 1, "%20");
+            }
+            return result;
+        }
+    } // namespace
+
     std::string share_url(const Track &track) {
-        return track.source == Source::qq ? "https://i.y.qq.com/v8/playsong.html?songid=" + track.id : "https://music.163.com/song?id=" + track.id;
+        switch (track.source) {
+            case Source::netease:
+                return "https://music.163.com/song?id=" + track.id;
+            case Source::qq:
+                return "https://i.y.qq.com/v8/playsong.html?songid=" + track.id;
+            case Source::qishui:
+                return "https://www.qishui.com/track/" + track.id;
+            case Source::bodian:
+                return "https://h5app.kuwo.cn/m/bodian/playMusic.html?uid=-1&musicId=" + track.id + "&opusId=";
+            case Source::kugou:
+                return {};
+        }
+        std::unreachable();
     }
 
     std::string share_url(const Card &card) {
         if (card.source == Source::netease) {
             constexpr std::array paths = {"playlist", "album", "artist"};
             return std::format("https://music.163.com/{}?id={}", paths[static_cast<size_t>(card.kind)], card.id);
+        }
+        if (card.source == Source::qishui) {
+            if (card.kind == CardKind::album) {
+                return "https://www.qishui.com/share/album?album_id=" + card.id;
+            }
+            return card.kind == CardKind::playlist && !card.id.starts_with("top:") ? "https://www.qishui.com/playlist/" + card.id : "";
+        }
+        if (card.source == Source::kugou) {
+            return card.kind == CardKind::playlist && !card.id.contains(':') ? "https://www.kugou.com/yy/special/single/" + card.id + ".html" : "";
+        }
+        if (card.source == Source::bodian) {
+            constexpr std::string_view base = "https://h5app.kuwo.cn/m/bodian/";
+            if (card.kind == CardKind::album) {
+                return std::format("{}album.html?uid=-1&albumid={}", base, card.id);
+            }
+            if (card.kind == CardKind::artist) {
+                return std::format("{}singer.html?uid=-1&singerId={}", base, card.id);
+            }
+            std::string_view id = card.id, source = "4";
+            if (auto colon = id.find(':'); colon != id.npos) {
+                source = id.substr(0, colon);
+                id.remove_prefix(colon + 1);
+                if (source != "4" && source != "5" && source != "13") {
+                    return {};
+                }
+            }
+            return std::format("{}collection.html?uid=-1&playlistId={}&source={}", base, id, source);
         }
         std::string_view id = card.id;
         std::string_view path;
@@ -48,10 +106,7 @@ namespace lyren {
         if (url.empty()) {
             return {};
         }
-        std::string u(url);
-        if (u.starts_with("http://")) {
-            u.insert(4, "s");
-        }
+        std::string u = image_url(url, px);
         // NetEase scales any image; some covers carry their own thumbnail and watermark parameters, the plain one is enough.
         if (u.contains(".music.126.net/")) {
             return std::format("{}?param={}y{}", std::string_view(u).substr(0, u.find('?')), px, px);
@@ -76,10 +131,7 @@ namespace lyren {
     }
 
     std::string picture_url(std::string_view url, int px) {
-        std::string u(url);
-        if (u.starts_with("http://")) {
-            u.insert(4, "s");
-        }
+        std::string u = image_url(url, px);
         // A zero height keeps NetEase's aspect; QQ Music serves comment pictures only at their own size.
         if (u.contains(".music.126.net/")) {
             return std::format("{}?param={}x0", std::string_view(u).substr(0, u.find('?')), px);

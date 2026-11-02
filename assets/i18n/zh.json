@@ -347,6 +347,21 @@
   "Heartbeat": "心动模式",
   "Time": "时长",
   "Album": "专辑",
-  "Session expired; scan again to sign in": "登录已失效，请重新扫码",
-  "QQ Music session changed; retry the action": "QQ 音乐账号已切换，请重新操作"
+  "Session expired; sign in again": "登录已失效，请重新登录",
+  "QQ Music session changed; retry the action": "QQ 音乐账号已切换，请重新操作",
+  "Qishui Music": "汽水音乐",
+  "Qishui": "汽水",
+  "Kugou Music": "酷狗音乐",
+  "Kugou": "酷狗",
+  "Bodian Music": "波点音乐",
+  "Bodian": "波点",
+  "Connect your Qishui Music session": "连接汽水音乐账号",
+  "Scan with the Kugou Music app": "请使用酷狗音乐 App 扫码",
+  "Scan with the Bodian Music app": "请使用波点音乐 App 扫码",
+  "Connect account": "连接账号",
+  "Connect": "连接",
+  "Paste your Qishui connection settings": "粘贴汽水音乐连接配置",
+  "Use your signing service and account Cookie": "使用你的签名服务与账号 Cookie",
+  "Connection settings saved": "连接配置已保存",
+  "For You": "为你推荐"
 }

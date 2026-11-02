@@ -20,19 +20,6 @@ namespace lyren::ncm {
     static constexpr char modulus[] = "e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ecbda9"
                                       "2557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe4875d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7";
 
-    std::string md5_hex(std::string_view s) {
-        std::array<unsigned char, 16> d;
-        unsigned n = 0;
-        EVP_Digest(s.data(), s.size(), d.data(), &n, EVP_md5(), nullptr);
-        return encoding::hex({reinterpret_cast<const char *>(d.data()), n});
-    }
-
-    std::string random_hex(size_t digits, bool upper) {
-        std::string b((digits + 1) / 2, '\0');
-        RAND_bytes(reinterpret_cast<unsigned char *>(b.data()), static_cast<int>(b.size()));
-        return encoding::hex(b, upper).substr(0, digits);
-    }
-
     static std::string aes(const EVP_CIPHER *cipher, std::string_view data, const char *key, const char *ivec) {
         std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> c(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
         EVP_EncryptInit_ex(c.get(), cipher, nullptr, reinterpret_cast<const unsigned char *>(key), reinterpret_cast<const unsigned char *>(ivec));

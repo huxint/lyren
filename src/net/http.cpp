@@ -13,25 +13,25 @@
 
 namespace lyren::net {
 
-    std::string CookieJar::get(std::string_view name, std::string_view host, std::string_view path) const {
-        std::string_view value;
-        size_t domain_size = 0, path_size = 0;
-        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        for (std::string_view entry : entries_) {
+    namespace {
+
+        using CookieFields = std::array<std::string_view, 7>;
+
+        CookieFields cookie_fields(std::string_view entry) {
             if (entry.starts_with("#HttpOnly_")) {
                 entry.remove_prefix(10);
             }
-            // CURLINFO_COOKIELIST supplies seven tab-separated Netscape cookie fields.
-            std::array<std::string_view, 7> fields;
+            CookieFields fields;
             for (size_t i = 0; i < 6; ++i) {
                 auto tab = entry.find('\t');
                 fields[i] = entry.substr(0, tab);
                 entry.remove_prefix(tab + 1);
             }
             fields.back() = entry;
-            if (fields[5] != name) {
-                continue;
-            }
+            return fields;
+        }
+
+        bool matches(const CookieFields &fields, std::string_view host, std::string_view path, bool secure, int64_t now) {
             auto domain = fields[0], cookie_path = fields[2];
             domain.remove_prefix(domain.starts_with('.'));
             if (host.size() < domain.size() ||
@@ -40,20 +40,95 @@ namespace lyren::net {
                                         return std::tolower(a) == std::tolower(b);
                                     }) ||
                 (host.size() != domain.size() && (fields[1] != "TRUE" || host[host.size() - domain.size() - 1] != '.'))) {
-                continue;
+                return false;
             }
             if (!path.starts_with(cookie_path) || (path.size() != cookie_path.size() && !cookie_path.ends_with('/') && path[cookie_path.size()] != '/')) {
-                continue;
+                return false;
             }
             int64_t expires = 0;
             std::from_chars(fields[4].data(), fields[4].data() + fields[4].size(), expires);
-            if (expires && expires <= now) {
-                continue;
+            return (!expires || expires > now) && (secure || fields[3] != "TRUE");
+        }
+
+    } // namespace
+
+    CookieJar CookieJar::from_netscape(std::string_view text) {
+        CURL *curl = curl_easy_init();
+        curl_easy_setopt(curl, CURLOPT_COOKIEFILE, "");
+        while (!text.empty()) {
+            size_t end = std::min(text.find('\n'), text.size());
+            std::string line(text.substr(0, end));
+            curl_easy_setopt(curl, CURLOPT_COOKIELIST, line.c_str());
+            text.remove_prefix(std::min(end + 1, text.size()));
+        }
+        curl_slist *cookies = nullptr;
+        curl_easy_getinfo(curl, CURLINFO_COOKIELIST, &cookies);
+        CookieJar jar;
+        for (auto *entry = cookies; entry; entry = entry->next) {
+            jar.entries_.emplace_back(entry->data);
+        }
+        curl_slist_free_all(cookies);
+        curl_easy_cleanup(curl);
+        return jar;
+    }
+
+    std::string CookieJar::netscape() const {
+        std::string text;
+        size_t size = 0;
+        for (const auto &entry : entries_) {
+            size += entry.size() + 1;
+        }
+        text.reserve(size);
+        for (const auto &entry : entries_) {
+            text += entry;
+            text += '\n';
+        }
+        return text;
+    }
+
+    std::string CookieJar::header(std::string_view host, std::string_view path, bool secure) const {
+        struct Cookie {
+            std::string_view name, value;
+            size_t path_size;
+        };
+        std::vector<Cookie> cookies;
+        cookies.reserve(entries_.size());
+        size_t size = 0;
+        const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        for (const auto &entry : entries_) {
+            auto fields = cookie_fields(entry);
+            if (matches(fields, host, path, secure, now)) {
+                cookies.push_back({fields[5], fields[6], fields[2].size()});
+                size += fields[5].size() + fields[6].size() + 3;
             }
-            if (cookie_path.size() > path_size || (cookie_path.size() == path_size && domain.size() >= domain_size)) {
+        }
+        std::stable_sort(cookies.begin(), cookies.end(), [](const auto &a, const auto &b) {
+            return a.path_size > b.path_size;
+        });
+        std::string header;
+        header.reserve(size);
+        for (const auto &cookie : cookies) {
+            if (!header.empty()) {
+                header += "; ";
+            }
+            header += cookie.name;
+            header += '=';
+            header += cookie.value;
+        }
+        return header;
+    }
+
+    std::string CookieJar::get(std::string_view name, std::string_view host, std::string_view path) const {
+        std::string_view value;
+        size_t domain_size = 0, path_size = 0;
+        const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        for (const auto &entry : entries_) {
+            auto fields = cookie_fields(entry);
+            if (fields[5] == name && matches(fields, host, path, true, now) &&
+                (fields[2].size() > path_size || (fields[2].size() == path_size && fields[0].size() >= domain_size))) {
                 value = fields[6];
-                domain_size = domain.size();
-                path_size = cookie_path.size();
+                domain_size = fields[0].size();
+                path_size = fields[2].size();
             }
         }
         return std::string(value);
@@ -97,6 +172,7 @@ namespace lyren::net {
         if (line.starts_with("HTTP/")) {
             t->offset = t->total = 0;
             t->resp.location.clear();
+            t->resp.verification = Verification::none;
         } else if (t->done && has_key(line, "set-cookie:")) {
             line.remove_prefix(11);
             while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
@@ -115,6 +191,11 @@ namespace lyren::net {
                 line.remove_suffix(1);
             }
             t->resp.location = line;
+        } else if (t->done && (has_key(line, "bdturing-verify:") || has_key(line, "x-tt-verify-passport-decision:"))) {
+            auto value = line.substr(line.find(':') + 1);
+            if (value.find_first_not_of(" \t\r\n") != value.npos) {
+                t->resp.verification = has_key(line, "bdturing-verify:") ? Verification::captcha : Verification::passport;
+            }
         } else if (has_key(line, "content-range:")) {
             // content-range: bytes FROM-TO/TOTAL
             auto b = line.find("bytes ");
@@ -230,7 +311,10 @@ namespace lyren::net {
             curl_easy_setopt(t->easy, CURLOPT_POSTFIELDSIZE, static_cast<long>(t->post.size()));
             curl_easy_setopt(t->easy, CURLOPT_POSTFIELDS, t->post.c_str());
         }
-        log::debug("http: {} {}", req.body ? "POST" : "GET", req.url.substr(0, req.url.find('?')));
+        if (!req.method.empty()) {
+            curl_easy_setopt(t->easy, CURLOPT_CUSTOMREQUEST, req.method.c_str());
+        }
+        log::debug("http: {} {}", req.method.empty() ? (req.body ? "POST" : "GET") : req.method, req.url.substr(0, req.url.find('?')));
         return add(std::move(t), {});
     }
 

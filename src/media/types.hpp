@@ -2,16 +2,22 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "core/crypto.hpp"
+
 namespace lyren {
 
-    // Stable persisted identifiers: [netease, qq], also the indices into platforms.
+    // Stable persisted identifiers, also the indices into platforms. Append new platforms.
     enum class Source : uint8_t {
         netease,
-        qq
+        qq,
+        qishui,
+        kugou,
+        bodian
     };
 
     // Stable state-file values: list = 0, one = 1, shuffle = 2.
@@ -29,6 +35,9 @@ namespace lyren {
     inline constexpr std::array platforms{
         Platform{Source::netease, "netease", "NetEase Music", "NetEase", "Scan with the NetEase Music app"},
         Platform{Source::qq, "qq", "QQ Music", "QQ Music", "Scan with QQ, then confirm QQ Music sign-in"},
+        Platform{Source::qishui, "qishui", "Qishui Music", "Qishui", "Connect your Qishui Music session"},
+        Platform{Source::kugou, "kugou", "Kugou Music", "Kugou", "Scan with the Kugou Music app"},
+        Platform{Source::bodian, "bodian", "Bodian Music", "Bodian", "Scan with the Bodian Music app"},
     };
 
     inline const Platform &platform(Source source) {
@@ -183,12 +192,13 @@ namespace lyren {
 
     struct Stream {
         std::string url;
-        std::string level;                           // the quality the server granted
-        double trial_start = 0;                      // nonnegative finite song seconds (QQ's RS02 file: always 0)
-        double highlight_from = 0, highlight_to = 0; // the service's chorus window in the song, s; empty when the end is not after the start
-        float gain = 0;                              // finite loudness correction, dB
-        float peak = 0;                              // nonnegative finite sample peak, 0 when unknown
-        bool trial = false;                          // only a preview clip is playable
+        std::string level;                            // the quality the server granted
+        double trial_start = 0;                       // nonnegative finite song seconds (QQ's RS02 file: always 0)
+        double highlight_from = 0, highlight_to = 0;  // the service's chorus window in the song, s; empty when the end is not after the start
+        float gain = 0;                               // finite loudness correction, dB
+        float peak = 0;                               // nonnegative finite sample peak, 0 when unknown
+        std::optional<crypto::Aes128Key> decrypt_key; // CENC AES-128-CTR; absent for clear media
+        bool trial = false;                           // only a preview clip is playable
     };
 
     struct Account {

@@ -18,6 +18,9 @@ namespace lyren::net {
     // A libcurl cookie snapshot, preserving domain, path and expiry across requests.
     class CookieJar {
     public:
+        static CookieJar from_netscape(std::string_view text);
+        std::string netscape() const;
+        std::string header(std::string_view host, std::string_view path = "/", bool secure = true) const;
         std::string get(std::string_view name, std::string_view host, std::string_view path = "/") const;
 
     private:
@@ -32,13 +35,20 @@ namespace lyren::net {
         std::chrono::milliseconds delay{0}; // start later, for retries
     };
 
-    // A whole-body request: POST when body is set. Responses are decompressed (br, zstd, gzip).
+    // A whole-body request; an empty method selects POST with a body, GET without one.
     struct Request {
         std::string url;
         std::optional<std::string> body;
         std::vector<std::string> headers;
         bool follow_redirects = true;
         std::optional<CookieJar> cookie_jar;
+        std::string method;
+    };
+
+    enum class Verification : uint8_t {
+        none,
+        captcha,
+        passport
     };
 
     struct Response {
@@ -48,6 +58,7 @@ namespace lyren::net {
         std::string location;             // the final response's redirect target
         std::string url;                  // the final response's URL
         CookieJar cookie_jar;
+        Verification verification = Verification::none;
     };
 
     // Called on the network thread; keep them short.

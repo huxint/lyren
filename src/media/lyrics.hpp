@@ -32,6 +32,8 @@ namespace lyren {
     // QQ Music QRC once decoded: plain text or an XML wrapper whose LyricContent holds "[start,duration]word(start,duration)word…" lines
     // (ms, the word before its timing) among LRC tags. The translation is LRC, matched by timestamp like above.
     std::vector<LyricLine> parse_qrc(std::string_view qrc, std::string_view translation = {});
+    // Uncompressed KRC: relative <offset,duration,0> word timing and an optional Base64 translation payload.
+    std::vector<LyricLine> parse_krc(std::string_view text);
 
     // Index of the line playing at t, or -1 before the first.
     int lyric_at(const std::vector<LyricLine> &lines, double t);

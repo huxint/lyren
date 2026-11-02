@@ -37,8 +37,8 @@ namespace lyren {
         }
         if (source == active_) {
             ensure_route_data();
+            spawn(warm_pages(source));
         }
-        spawn(warm_pages(source));
         if (provider(source).logged_in()) {
             co_await load_library(source);
         }
@@ -71,11 +71,13 @@ namespace lyren {
         }
         Library &lib = library(source);
         uint64_t gen = ++lib.gen;
+        lib.library_error.clear();
         auto a = co_await p.account();
         if (gen != lib.gen) {
             co_return;
         }
         if (!a) {
+            lib.library_error = a.error();
             notify(a.error(), "user", true);
             if (!p.logged_in()) {
                 save_credentials();
@@ -98,29 +100,35 @@ namespace lyren {
         if (p.features.daily.playlists) {
             spawn(load_daily_lists(source));
         }
-        uint64_t revision = lib.preference_gen;
-        auto pl = co_await p.user_playlists(a->id);
-        if (gen != lib.gen) {
-            co_return;
+        if (p.capabilities.library) {
+            uint64_t revision = lib.preference_gen;
+            auto pl = co_await p.user_playlists(a->id);
+            if (gen != lib.gen) {
+                co_return;
+            }
+            if (pl) {
+                lib.liked = std::move(pl->first);
+                lib.playlists = std::move(pl->second);
+                lib.playlists_loaded = true;
+                reconcile_preferences(source, Preference::playlist, revision);
+                images_.prefetch(lib.playlists);
+            } else {
+                lib.library_error = pl.error();
+                notify(pl.error(), "list-music", true);
+            }
         }
-        if (pl) {
-            lib.liked = std::move(pl->first);
-            lib.playlists = std::move(pl->second);
-            reconcile_preferences(source, Preference::playlist, revision);
-            images_.prefetch(lib.playlists);
-        } else {
-            notify(pl.error(), "list-music", true);
-        }
-        revision = lib.preference_gen;
-        auto ids = co_await p.liked_ids(a->id);
-        if (gen != lib.gen) {
-            co_return;
-        }
-        if (ids) {
-            lib.liked_ids = {ids->begin(), ids->end()};
-            reconcile_preferences(source, Preference::song, revision);
-        } else {
-            notify(ids.error(), "heart", true);
+        if (p.capabilities.likes) {
+            uint64_t revision = lib.preference_gen;
+            auto ids = co_await p.liked_ids(a->id);
+            if (gen != lib.gen) {
+                co_return;
+            }
+            if (ids) {
+                lib.liked_ids = {ids->begin(), ids->end()};
+                reconcile_preferences(source, Preference::song, revision);
+            } else {
+                notify(ids.error(), "heart", true);
+            }
         }
         // A page that waited for the login loads now.
         if (source == active_) {
@@ -132,11 +140,57 @@ namespace lyren {
         redraw_();
     }
 
+    void Shell::start_login(ui::Ui &ui, Source source) {
+        login_step_ = static_cast<int>(source);
+        login_time_ = ui.now;
+        qr_error_.clear();
+        account_config_.clear();
+        account_importing_ = false;
+        if (provider(source).capabilities.qr_login) {
+            spawn(qr_login());
+        }
+    }
+
+    Task<void> Shell::import_login(Source source) {
+        uint64_t gen = ++qr_gen_;
+        account_importing_ = true;
+        qr_error_.clear();
+        auto result = co_await provider(source).import_session(account_config_);
+        if (gen != qr_gen_) {
+            co_return;
+        }
+        account_importing_ = false;
+        if (!result) {
+            qr_error_ = result.error();
+            co_return redraw_();
+        }
+        can_save_creds_ = true;
+        reset_account(source);
+        save_credentials();
+        co_await load_library(source);
+        if (gen != qr_gen_) {
+            co_return;
+        }
+        account_config_.clear();
+        login_step_ = -1;
+        login_time_ = now_();
+        if (library(source).account) {
+            notify(lyren::trf("Signed in as {}", library(source).account->name), "circle-check");
+        } else {
+            notify(std::string(lyren::tr("Connection settings saved")), "circle-check");
+        }
+        if (source == active_) {
+            ensure_route_data();
+        }
+        spawn(warm_pages(source));
+        redraw_();
+    }
+
     Task<void> Shell::qr_login() {
         uint64_t gen = ++qr_gen_;
         Source source = static_cast<Source>(login_step_);
         qr_active_ = true;
-        provider(source).cancel_qr();
+        provider(source).cancel_login();
         qr_.clear();
         qr_image_ = false;
         images_.erase("qr");
@@ -207,7 +261,9 @@ namespace lyren {
 
     void Shell::cancel_login() {
         ++qr_gen_;
-        provider(static_cast<Source>(login_step_)).cancel_qr();
+        provider(static_cast<Source>(login_step_)).cancel_login();
+        account_config_.clear();
+        account_importing_ = false;
         qr_active_ = false;
         images_.erase("qr");
         qr_image_ = false;
@@ -221,12 +277,23 @@ namespace lyren {
         lib.preference_gen = 0;
         lib.preferences = {};
         lib.account.reset();
+        results_[static_cast<size_t>(source)] = {};
+        lib.recommended = {};
+        lib.toplists = {};
+        lib.square = {};
+        ++lib.square_gen;
+        lib.releases = {};
+        for (auto &gen : lib.release_gen) {
+            ++gen;
+        }
         clear_comment_writes(source);
         if (thread_.source == source) {
             thread_.draft = std::make_shared<CommentDraft>();
             thread_.replies.reset();
         }
         lib.playlists.clear();
+        lib.playlists_loaded = false;
+        lib.library_error.clear();
         lib.liked_ids.clear();
         lib.liked = {};
         lib.daily_lists.clear();
@@ -274,7 +341,7 @@ namespace lyren {
 
     void Shell::open_account(ui::Ui &ui) {
         login_step_ = -1;
-        ui.open_modal(420, 186 + 72 * static_cast<float>(platforms.size()), [this](ui::Ui &u, Rect body) {
+        ui.open_modal(460, std::min(540.f, ui.height - 40), [this](ui::Ui &u, Rect body) {
             account_modal(u, body);
         });
     }
@@ -288,12 +355,14 @@ namespace lyren {
         r.x += (1 - in) * 32 * (login_step_ >= 0 ? 1 : -1);
 
         if (login_step_ < 0) {
-            ui.resize_modal(420, 186 + 72 * static_cast<float>(platforms.size()));
+            ui.resize_modal(460, std::min(540.f, ui.height - 40));
             ui.label({r.x, r.y, r.w, 30}, lyren::tr("Accounts"), {.size = t.fs(20), .color = t.text});
             ui.label({r.x, r.y + 32, r.w, 20}, lyren::tr("Sign in to each platform to see its music"), {.size = t.fs(12), .color = t.text_dim});
+            Rect viewport{r.x, r.y + 68, r.w, r.h - 98};
+            float offset = ui.begin_scroll(ui.id("accounts-list"), viewport, 72 * static_cast<float>(platforms.size()));
             for (size_t i = 0; i < platforms.size(); ++i) {
                 const auto &entry = platforms[i];
-                Rect row{r.x, r.y + 76 + static_cast<float>(i) * 72, r.w, 64};
+                Rect row{r.x, viewport.y + static_cast<float>(i) * 72 - offset, r.w, 64};
                 p.rect(row, t.text.with_alpha(0.04f), t.radius);
                 Rect avatar{row.x + 14, row.y + 12, 40, 40};
                 const auto &account = library(entry.source).account;
@@ -311,27 +380,58 @@ namespace lyren {
                 ui.label({avatar.right() + 14, row.y + 34, 180, 18}, status, {.size = t.fs(12), .color = signed_in ? t.accent : t.text_dim});
                 ui::Id id = ui.id(entry.id);
                 const bool in = provider(entry.source).logged_in();
-                const float bw = button_width(ui, in ? lyren::tr("Sign out") : lyren::tr("Scan to sign in"), true);
+                const bool qr = provider(entry.source).capabilities.qr_login;
+                auto label = lyren::tr(in ? "Sign out" : qr ? "Scan to sign in" : "Connect account");
+                const float bw = button_width(ui, label, true);
                 Rect b{row.right() - 14 - bw, row.y + 15, bw, 34};
+                ui.disabled = account_importing_;
                 if (in) {
                     if (ui.button(id, b, lyren::tr("Sign out"), ui::ButtonKind::ghost, "log-out")) {
                         spawn(logout(entry.source));
                     }
-                } else if (ui.button(id, b, lyren::tr("Scan to sign in"), ui::ButtonKind::secondary, "qr-code")) {
-                    login_step_ = static_cast<int>(entry.source);
-                    login_time_ = ui.now;
-                    spawn(qr_login());
+                } else if (ui.button(id, b, label, ui::ButtonKind::secondary, qr ? "qr-code" : "link")) {
+                    start_login(ui, entry.source);
                 }
+                ui.disabled = false;
             }
+            ui.end_scroll();
             ui.label({r.x, r.bottom() - 18, r.w, 18}, lyren::tr("Sign-ins are encrypted on this device"), {.size = t.fs(12), .color = t.text_dim});
             return;
         }
 
-        ui.resize_modal(400, 540);
+        Source source = static_cast<Source>(login_step_);
+        const bool imported = provider(source).capabilities.session_import;
+        ui.resize_modal(imported ? 520 : 400, std::min(imported ? 500.f : 540.f, ui.height - 40));
         if (ui.icon_button(ui.id("login-back"), {r.x - 8, r.y - 2, 32, 32}, "arrow-left", 18)) {
             cancel_login();
             login_step_ = -1;
             login_time_ = ui.now;
+            return;
+        }
+        if (imported) {
+            ui.label({r.x + 32, r.y, r.w - 64, 30}, lyren::tr("Connect account"), {.size = t.fs(20), .color = t.text});
+            ui.label({r.x, r.y + 42, r.w, 20}, lyren::tr("Paste your Qishui connection settings"), {.size = t.fs(14), .color = t.text});
+            ui.label({r.x, r.y + 68, r.w, 20}, lyren::tr("Use your signing service and account Cookie"), {.size = t.fs(12), .color = t.text_dim});
+            ui.disabled = account_importing_;
+            ui.text_area(ui.id("account-config"), {r.x, r.y + 102, r.w, r.h - 214}, account_config_, R"({"signer_url":"http://127.0.0.1:8000","cookie":"…"})");
+            ui.disabled = false;
+            float y = r.bottom() - 100;
+            for (const auto &line : p.wrap_lines(qr_error_, t.fs(12), r.w)) {
+                ui.label({r.x, y, r.w, 18}, line, {.size = t.fs(12), .color = t.danger});
+                y += 18;
+                if (y > r.bottom() - 56) {
+                    break;
+                }
+            }
+            ui.label({r.x, r.bottom() - 34, r.w - 110, 20}, lyren::tr("Sign-ins are encrypted on this device"), {.size = t.fs(12), .color = t.text_dim});
+            ui.disabled = account_importing_ || account_config_.empty();
+            if (ui.button(ui.id("account-connect"), {r.right() - 100, r.bottom() - 40, 100, 36}, lyren::tr("Connect"), ui::ButtonKind::primary, "link")) {
+                spawn(import_login(source));
+            }
+            ui.disabled = false;
+            if (account_importing_) {
+                ui.spinner({r.right() - 130, r.bottom() - 30, 16, 16}, t.accent, 2);
+            }
             return;
         }
         ui.label({r.x + 32, r.y, r.w - 64, 30}, lyren::tr("Scan to sign in"), {.size = t.fs(20), .color = t.text});

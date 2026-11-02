@@ -36,9 +36,9 @@ namespace lyren::audio {
 
         std::move_only_function<void()> on_change; // state, duration, volume or error changed
 
-        void open(std::shared_ptr<Spool> spool, bool play = true);
-        void open_url(std::string url, bool play = true) {
-            open(Spool::url(http_, std::move(url)), play);
+        void open(std::shared_ptr<Spool> spool, bool play = true, std::optional<crypto::Aes128Key> key = {});
+        void open_url(std::string url, bool play = true, std::optional<crypto::Aes128Key> key = {}) {
+            open(Spool::url(http_, std::move(url)), play, key);
         }
         void open_file(const std::string &path, bool play = true) {
             open(Spool::file(path), play);
@@ -97,6 +97,7 @@ namespace lyren::audio {
             std::shared_ptr<Spool> spool;
             double seconds = 0;
             uint64_t seq = 0;
+            std::optional<crypto::Aes128Key> key;
         };
         void push(Cmd c);
         void run();

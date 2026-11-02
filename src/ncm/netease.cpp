@@ -429,6 +429,27 @@ namespace lyren::ncm {
 
     Netease::Netease(Loop &loop, net::Http &http)
     : client(loop, http) {
+        capabilities = {.toplists = true,
+                        .square = true,
+                        .radio = true,
+                        .radio_dislike = true,
+                        .similar = true,
+                        .artist_intro = true,
+                        .library = true,
+                        .likes = true,
+                        .playlist_edit = true,
+                        .playlist_order = true,
+                        .private_playlists = true,
+                        .collect_playlists = true,
+                        .collect_albums = true,
+                        .follow_artists = true,
+                        .comments = {true, true, true},
+                        .comment_sort = true,
+                        .comment_replies = true,
+                        .comment_likes = true,
+                        .comment_post = true,
+                        .comment_delete = true,
+                        .qr_login = true};
         features.daily.songs = [this] {
             return daily();
         };
@@ -696,12 +717,12 @@ namespace lyren::ncm {
         });
     }
 
-    Result<Batch> parse_new_albums(const Reply &reply) {
+    Result<Batch> parse_new_albums(const Reply &reply, int offset) {
         return parse<NewAlbumsReply>(reply).and_then([&](auto r) -> Result<Batch> {
             if (!r.albums) {
                 return std::unexpected("NetEase Music returned no new albums");
             }
-            Batch out{.total = r.total};
+            Batch out{.total = r.total, .next_offset = !r.albums->empty() && offset + 20 < r.total ? offset + 20 : -1};
             for (const auto &a : *r.albums) {
                 out.cards.push_back(album_card(a));
             }
@@ -715,7 +736,7 @@ namespace lyren::ncm {
 
     Task<Result<Batch>> Netease::new_albums(std::string area, int offset) {
         co_return parse_new_albums(
-            co_await client.call("/api/album/new", std::format(R"("area":{},"limit":20,"offset":{},"total":true)", glz::write_json(area).value(), offset), Api::weapi));
+            co_await client.call("/api/album/new", std::format(R"("area":{},"limit":20,"offset":{},"total":true)", glz::write_json(area).value(), offset), Api::weapi), offset);
     }
 
     Task<Result<std::vector<Track>>> Netease::daily() {
@@ -900,7 +921,7 @@ namespace lyren::ncm {
                                  std::format(R"("cat":{},"order":"hot","limit":50,"offset":{},"total":true)", glz::write_json(glz::escape_bytes_t{category}).value(), offset),
                                  Api::weapi))
             .transform([&](auto r) -> Batch {
-                Batch out{.total = static_cast<int>(r.total)};
+                Batch out{.total = static_cast<int>(r.total), .next_offset = offset + 50 < r.total ? offset + 50 : -1};
                 if (r.playlists) {
                     for (const auto &p : *r.playlists) {
                         out.cards.push_back(listed_playlist(p));
@@ -938,7 +959,7 @@ namespace lyren::ncm {
         co_return parse<ArtistSongsReply>(
             co_await client.call("/api/v1/artist/songs", std::format(R"("id":{},"private_cloud":"true","work_type":1,"order":"hot","offset":{},"limit":100)", id, offset)))
             .transform([&](auto r) -> Batch {
-                return Batch{.tracks = tracks_of(r.songs), .total = static_cast<int>(r.total)};
+                return Batch{.tracks = tracks_of(r.songs), .total = static_cast<int>(r.total), .next_offset = offset + 100 < r.total ? offset + 100 : -1};
             });
     }
 
@@ -946,6 +967,7 @@ namespace lyren::ncm {
         co_return parse<ArtistAlbumsReply>(co_await client.call("/api/artist/albums/" + id, std::format(R"("limit":30,"offset":{},"total":true)", offset), Api::weapi))
             .transform([&](auto r) -> Batch {
                 Batch out{.total = r.artist ? static_cast<int>(r.artist->albumSize) : 0};
+                out.next_offset = offset + 30 < out.total ? offset + 30 : -1;
                 if (r.hotAlbums) {
                     for (const auto &a : *r.hotAlbums) {
                         out.cards.push_back(album_card(a));
@@ -1213,7 +1235,7 @@ namespace lyren::ncm {
         });
     }
 
-    Task<Result<std::string>> Netease::post_comment(Subject subject, std::string id, std::string content, std::string reply) {
+    Task<Result<std::string>> Netease::post_comment(Subject subject, std::string id, std::string content, std::string reply, std::string) {
         std::string fields = std::format(R"("threadId":"{}","content":{})", comment_thread(subject, id), glz::write_json(glz::escape_bytes_t{content}).value());
         if (!reply.empty()) {
             fields += std::format(R"(,"commentId":"{}")", reply);

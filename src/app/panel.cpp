@@ -312,7 +312,7 @@ namespace lyren {
         if (page == 1 || r->total > 0) {
             f.total = r->total;
         }
-        f.more = r->more && !r->comments.empty();
+        f.more = r->more;
         f.cursor = std::move(r->cursor);
         settle_likes(thread_.source, r->comments);
         f.comments.insert(f.comments.end(), std::make_move_iterator(r->comments.begin()), std::make_move_iterator(r->comments.end()));
@@ -363,7 +363,7 @@ namespace lyren {
         if (page == 1 || r->total > 0) {
             feed->total = r->total;
         }
-        feed->more = r->more && !r->comments.empty();
+        feed->more = r->more;
         feed->cursor = std::move(r->cursor);
         settle_likes(thread_.source, r->comments);
         feed->comments.insert(feed->comments.end(), std::make_move_iterator(r->comments.begin()), std::make_move_iterator(r->comments.end()));
@@ -456,7 +456,7 @@ namespace lyren {
         spawn([](Shell *self, Source source, Subject subject, std::string resource, std::shared_ptr<CommentDraft> thread_draft, std::shared_ptr<ReplyView> view,
                  std::optional<Comment> target) -> Task<void> {
             auto &draft = view ? *view->draft : *thread_draft;
-            auto r = co_await self->provider(source).post_comment(subject, std::move(resource), draft.text, target ? target->id : "");
+            auto r = co_await self->provider(source).post_comment(subject, std::move(resource), draft.text, target ? target->id : "", view ? view->root.id : "");
             draft.sending = false;
             // The thread draft changes only when the resource or account changes.
             if (self->thread_.draft != thread_draft) {
@@ -478,7 +478,7 @@ namespace lyren {
                 if (!view && target) {
                     self->open_replies(std::move(*target));
                 } else if (!view) {
-                    self->thread_.tab = 1;
+                    self->thread_.tab = self->provider(source).capabilities.comment_sort ? 1 : 0;
                     self->thread_.time = self->now_();
                 }
                 self->thread_.reset_scroll = true;
@@ -558,6 +558,10 @@ namespace lyren {
     // A round button resting over the comments; it opens into the card it writes in, the button staying in its corner
     // as the card's send button. Laid out before the list so it takes input first, raised over it once the list is drawn.
     float Shell::comment_composer(ui::Ui &ui, Rect r) {
+        if (!provider(thread_.source).capabilities.comment_post) {
+            composer_layer_ = {};
+            return 0;
+        }
         using C = CommentStyle;
         auto &p = ui.painter();
         const auto &t = ui.theme();
@@ -772,9 +776,7 @@ namespace lyren {
         if (post.clicked) {
             if (!signed_in) {
                 open_account(ui);
-                login_step_ = static_cast<int>(thread_.source);
-                login_time_ = ui.now;
-                spawn(qr_login());
+                start_login(ui, thread_.source);
             } else if (!editing) {
                 draft->expanded = draft->focus = true;
             } else {
@@ -852,10 +854,11 @@ namespace lyren {
         }
 
         // Two sides of the record: the loved and the latest, a short bar gliding under the one playing.
-        const std::array<std::string_view, 2> labels = {lyren::tr("Popular"), lyren::tr("Newest")};
+        const bool sortable = provider(thread_.source).capabilities.comment_sort;
+        const std::array<std::string_view, 2> labels = {lyren::tr(sortable ? "Popular" : "Comments"), lyren::tr("Newest")};
         const TextStyle tab_style{.size = t.fs(14)};
         float x = bar.x, centre = 0;
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < (sortable ? 2 : 1); ++i) {
             float lw = p.measure(labels[static_cast<size_t>(i)], tab_style);
             Rect cell{x, bar.y, lw, bar.h};
             auto it = ui.interact(ui.id(i ? "comment-tab-new" : "comment-tab-hot"), cell.inset(-10, 0));
@@ -936,6 +939,13 @@ namespace lyren {
             header_h = comment_sleeve(ui, r, compact);
         }
         Feed &f = reply ? *reply->feed : *thread_.feeds[thread_.tab];
+        if (f.comments.empty() && f.more && !f.loading && f.error.empty()) {
+            if (reply) {
+                load_replies(reply);
+            } else {
+                load_comments(thread_.tab);
+            }
+        }
         Rect view{r.x, r.y + header_h, r.w, r.h - header_h};
         float composer_h = comment_composer(ui, view);
 
@@ -961,7 +971,7 @@ namespace lyren {
                 ui.pop_clip();
             } else {
                 // Heights are kept, the wrapped lines are not: they would point into comments that move as more arrive.
-                const bool featured = !reply && thread_.tab == 0;
+                const bool featured = !reply && thread_.tab == 0 && provider(thread_.source).capabilities.comment_sort;
                 float size = t.fs(C::body);
                 if (f.heights_w != w || f.heights_size != size) {
                     f.heights.clear(), f.heights_w = w, f.heights_size = size;
@@ -1130,7 +1140,8 @@ namespace lyren {
 
         auto mine = comment_likes_.find(comment_key(source, c.id));
         bool liked = mine != comment_likes_.end() ? mine->second.liked : c.liked;
-        bool owned = c.owned && provider(source).logged_in();
+        const auto &caps = provider(source).capabilities;
+        bool owned = c.owned && caps.comment_delete && provider(source).logged_in();
         int count = mine != comment_likes_.end() ? mine->second.likes : c.likes;
         std::string n = count > 0 ? short_count(count) : "";
         ui.push_id(ui.id(key(source, c.id)));
@@ -1150,7 +1161,7 @@ namespace lyren {
         float pop = ui.spring(ui.id("comment-like-pop"), liked ? 1 : 0, 320, 0.45f);
         float like_w = comment_action_width(ui, n);
         Rect like = featured ? Rect{x + w - pad - like_w, action_y, like_w, action_h} : Rect{x + w - like_w, ident_y, like_w, name_h};
-        ui.disabled = mine != comment_likes_.end() && mine->second.pending;
+        ui.disabled = !caps.comment_likes || (mine != comment_likes_.end() && mine->second.pending);
         {
             Fade dim(p, ui.disabled ? 0.4f : 1.f);
             if (comment_action(ui, ui.id("comment-like"), like, n, liked ? "thumbs-up-fill" : "thumbs-up", liked ? t.accent : t.text_dim,
@@ -1189,7 +1200,7 @@ namespace lyren {
         // Answering it, and the thread already under it.
         std::string_view reply_label = lyren::tr("Reply");
         Rect reply_button{tx, action_y, comment_action_width(ui, reply_label), action_h};
-        {
+        if (caps.comment_post) {
             auto draft = thread_.replies ? thread_.replies->draft : thread_.draft;
             ui.disabled = draft->sending;
             if (comment_action(ui, ui.id("comment-reply"), reply_button, reply_label, "message-circle", t.text_dim)) {
@@ -1211,7 +1222,7 @@ namespace lyren {
             ui.disabled = false;
             end = bin.x - C::small_gap;
         }
-        if (c.replies > 0) {
+        if (caps.comment_replies && c.replies > 0) {
             std::string label = lyren::trf("{} replies", c.replies);
             float cw = std::min(thread_chip_width(ui, label), end - reply_button.right() - C::padding);
             if (cw > C::small_icon * 3 && thread_chip(ui, ui.id("comment-replies"), {reply_button.right() + C::padding, action_y + (action_h - 26) / 2, cw, 26}, label)) {

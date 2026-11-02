@@ -31,3 +31,11 @@ Release / RelWithDebInfo 默认启用 LTO。`LYREN_NATIVE=ON` 按本机 CPU 生�
 内存测量应固定构建参数、窗口尺寸、平台、页面数据和缓存状态，记录 `/proc/<pid>/status` 与 `/proc/<pid>/smaps_rollup`。空闲 CPU 测量在动画和下载结束后读取进程计数；图形验证层的额外开销单独记录。
 
 功能验证通过 CTest 执行。图形测试使用私有 Wayland / Vulkan 会话和独立的数据目录；测试参数见[构建说明](../README.md)。
+
+## CENC 解码
+
+媒体边界将 AES-128 密钥解析为固定 16 字节值。解码器保存采样加密表和偏移，复用加密上下文并逐采样原地解密。
+
+MP4 打开阶段校验采样边界并预留压缩包容量。支持 8/16 字节 IV、明文/密文子段和跨块计数；实时音频回调不执行解密。
+
+[测试数据](../tests/data/README.md)包含同源明文及 CENC AAC 文件，用于验证 PCM 一致性和前后跳转。

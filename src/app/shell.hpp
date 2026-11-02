@@ -99,18 +99,13 @@ namespace lyren {
             std::vector<Track> tracks;
             std::vector<Card> cards;
             int total = 0;
+            int next_offset = 0;
             bool loading = false, loaded = false;
             std::string error;
             double since = -10;
             size_t size() const {
                 return tracks.size() + cards.size();
             }
-            bool more() const {
-                return !loaded || static_cast<int>(size()) < total;
-            }
-        };
-        struct SearchResults : Results {
-            int next_offset = 0;
             bool more() const {
                 return next_offset >= 0;
             }
@@ -152,8 +147,8 @@ namespace lyren {
             int release_tab = 0;
             std::vector<Track> recent, fm;
             int fm_pos = 0, recent_tab = 0;
-            bool fm_loading = false;
-            std::string fm_error;
+            bool fm_loading = false, playlists_loaded = false;
+            std::string fm_error, library_error;
             Categories categories;
             bool categories_loading = false;
             Category category;
@@ -284,7 +279,7 @@ namespace lyren {
         float play_buttons(ui::Ui &ui, float x, float y, std::vector<Track> &tracks);
         // A page's tabs: picking one starts the slide of its content, which tab_enter applies to content and returns
         // the fade of.
-        bool page_tabs(ui::Ui &ui, ui::Id id, ui::Rect r, std::span<const std::string_view> labels, int &selected);
+        bool page_tabs(ui::Ui &ui, ui::Id id, ui::Rect r, std::span<const std::string_view> labels, int &selected, std::span<const bool> enabled = {});
         float tab_enter(ui::Ui &ui, ui::Rect &content) const;
         // The buttons after "play all" and "shuffle" on album and playlist pages, from x.
         void list_actions(ui::Ui &ui, float x, float y);
@@ -403,7 +398,7 @@ namespace lyren {
         }
         bool playing() const;
         Provider &provider(Source source) const {
-            return *providers_[static_cast<size_t>(source)];
+            return providers_[static_cast<size_t>(source)].get();
         }
         Provider &provider() const {
             return provider(active_);
@@ -429,7 +424,7 @@ namespace lyren {
         Task<void> startup();
         Task<void> initialize_platform(Source source);
         Task<void> load_library(Source source);
-        Task<void> load_cards(Results &res, Task<Result<std::vector<Card>>> request);
+        Task<void> load_cards(Source source, Results &res, Task<Result<std::vector<Card>>> request);
         Task<void> load_daily_lists(Source source);
         Task<void> load_fm(Source source);
         Task<void> load_dislikes(Source source, DislikeKind kind);
@@ -437,6 +432,8 @@ namespace lyren {
         void refresh_recent();
         void next_fm();
         Task<void> qr_login();
+        void start_login(ui::Ui &ui, Source source);
+        Task<void> import_login(Source source);
         void cancel_login();
         Task<void> logout(Source source);
         void save_credentials();
@@ -499,7 +496,7 @@ namespace lyren {
         // Search.
         std::string query_, searched_;
         int search_tab_ = 0;
-        std::array<std::array<SearchResults, 4>, platforms.size()> results_;
+        std::array<std::array<Results, 4>, platforms.size()> results_;
         uint64_t search_gen_ = 0;
         int selected_ = -1;
 
@@ -627,7 +624,7 @@ namespace lyren {
         float bar_cover_px_ = 64;
 
         // Account modal.
-        int login_step_ = -1; // -1 account list, otherwise the service being scanned
+        int login_step_ = -1; // -1 account list, otherwise the service being connected
         double login_time_ = -10;
         uint64_t qr_gen_ = 0;
         bool qr_active_ = false;
@@ -636,6 +633,8 @@ namespace lyren {
         bool qr_image_ = false;
         std::optional<QrStatus> qr_status_;
         std::string qr_error_;
+        std::string account_config_;
+        bool account_importing_ = false;
 
         // Comments panel and the playlist editor.
         Thread thread_;

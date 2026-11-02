@@ -167,13 +167,13 @@ namespace lyren {
                 Fade more(p, detail);
                 std::string text = std::format("{} · {:.1f} kHz", player_.codec(), player_.format().rate / 1000.0);
                 if (!stream_level_.empty()) {
-                    std::string_view level = stream_level_ == "standard"   ? "128 kbps"
-                                             : stream_level_ == "higher"   ? "192 kbps"
-                                             : stream_level_ == "exhigh"   ? "320 kbps"
-                                             : stream_level_ == "lossless" ? lyren::tr("Lossless")
-                                             : stream_level_ == "hires"    ? "Hi-Res"
-                                             : stream_level_ == "aac96"    ? "AAC 96 kbps"
-                                                                           : stream_level_;
+                    std::string_view level = stream_level_ == "standard" || stream_level_ == "medium"  ? lyren::tr("Standard")
+                                             : stream_level_ == "higher"                               ? lyren::tr("High")
+                                             : stream_level_ == "exhigh" || stream_level_ == "highest" ? lyren::tr("Very high")
+                                             : stream_level_ == "lossless"                             ? lyren::tr("Lossless")
+                                             : stream_level_ == "hires" || stream_level_ == "hi_res"   ? "Hi-Res"
+                                             : stream_level_ == "aac96"                                ? "AAC 96 kbps"
+                                                                                                       : stream_level_;
                     text = std::string(level) + " · " + text;
                 }
                 if (trial_) {
@@ -183,6 +183,9 @@ namespace lyren {
                 line(cap.x, y + cap.gap + 24 * k, text, t.fs(12) * k, t.fs(12), t.text_dim.with_alpha(0.7f), cap.w);
             }
             // The heart follows the title.
+            if (!provider(track).capabilities.likes) {
+                return;
+            }
             bool like = liked(track);
             float hs = heart_size(ui, track, std::lerp(17.f, 20.f, f));
             Rect hr{cap.x + std::min(tw + 10, cap.w - 34), y - 0.35f * cap.title - 16, 32, 32};

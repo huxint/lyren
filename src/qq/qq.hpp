@@ -21,12 +21,12 @@ namespace lyren::qq {
     Result<FavoritePlaylistsPage> parse_favorite_playlists(const Reply &reply);
     Result<Categories> parse_categories(const Reply &reply);
     Result<Batch> parse_square(const Reply &reply, int offset);
-    Result<Batch> parse_category_playlists(const Reply &reply);
+    Result<Batch> parse_category_playlists(const Reply &reply, int offset = 0);
     Result<std::vector<Track>> parse_similar(const Reply &reply);
     Result<std::vector<Track>> parse_radio(const Reply &reply);
     Result<std::vector<Track>> parse_radar(const Reply &reply);
     Result<std::vector<Track>> parse_new_songs(const Reply &reply);
-    Result<Batch> parse_new_albums(const Reply &reply);
+    Result<Batch> parse_new_albums(const Reply &reply, int offset = 0);
     Result<Batch> parse_search(const Reply &reply, SearchKind kind, int limit);
     Result<void> parse_playlist_write(const Reply &reply);
     Result<void> parse_playlist_order_write(const Reply &reply);
@@ -85,7 +85,7 @@ namespace lyren::qq {
         Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) override;
         Task<Result<CommentPage>> comment_replies(Subject subject, std::string id, std::string root, int page, std::string cursor) override;
         Task<Result<void>> like_comment(Subject subject, std::string resource, std::string id, bool on) override;
-        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {}) override;
+        Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {}, std::string root = {}) override;
         Task<Result<void>> delete_comment(Subject subject, std::string resource, std::string id) override;
 
         Task<Result<std::pair<Card, std::vector<Card>>>> user_playlists(std::string uid) override;
@@ -111,7 +111,7 @@ namespace lyren::qq {
         Task<Result<Account>> account() override;
         Task<void> logout() override;
         Task<Result<void>> renew(bool force = true);
-        void cancel_qr() override {
+        void cancel_login() override {
             ++qr_gen_;
         }
 
