@@ -1,5 +1,7 @@
 #include "app/shell.hpp"
 
+#include <linux/input-event-codes.h>
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -258,7 +260,7 @@ namespace lyren {
         if (selected == before) {
             return false;
         }
-        selected_ = -1;
+        reset_selection();
         tab_time_ = ui.now;
         tab_dir_ = selected > before ? 1 : -1;
         return true;
@@ -811,7 +813,7 @@ namespace lyren {
             if (ui.button(ui.id("search-refresh"), {body.right() - w, r.y + 100, w, 36}, label, ui::ButtonKind::secondary, "refresh-cw")) {
                 if (shown.error.empty()) {
                     shown = {};
-                    selected_ = -1;
+                    reset_selection();
                     ui.scroll_to(scroll, 0);
                 }
                 load_results(search_tab_, true);
@@ -972,25 +974,104 @@ namespace lyren {
             }
             return;
         }
+        if (!list_error.empty()) {
+            Rect retry = ui::cut_top(body, 40).inset(12, 0);
+            const float w = button_width(ui, lyren::tr("Retry"), true);
+            ui.label({retry.x, retry.y, retry.w - w - 12, 32}, lyren::tr(list_error), {.size = t.fs(12), .color = t.danger});
+            if (ui.button(ui.id("list-retry"), {retry.right() - w, retry.y, w, 32}, lyren::tr("Retry"), ui::ButtonKind::secondary, "refresh-cw")) {
+                spawn(load_list(route_.list, route_.page, route_.card));
+                if (route_.card.owned) {
+                    spawn(load_library(route_.card.source));
+                }
+            }
+        }
         track_list(ui, body, ui.id("tracks"), tracks, std::max(page_time_ + 0.06, since));
     }
 
     bool Shell::track_list(ui::Ui &ui, Rect r, ui::Id id, std::vector<Track> &tracks, double since) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
+        if (selection_list_ != &tracks) {
+            reset_selection();
+            selection_list_ = &tracks;
+        }
         constexpr float row_h = 56;
         Rect head = ui::cut_top(r, 34);
         Columns c = columns(head);
         TextStyle hs{.size = t.fs(12), .color = t.text_dim};
-        ui.label(c.index, "#", hs, Align::center);
+        if (choosing_) {
+            const bool all = chosen_.size() == tracks.size() && !tracks.empty();
+            if (ui.icon_button(ui.id("select-all"), ui::center(c.index, 30, 30), all ? "square-check" : chosen_.empty() ? "square" : "square-minus", 18, !chosen_.empty())) {
+                chosen_.clear();
+                if (!all) {
+                    for (const auto &track : tracks) {
+                        chosen_.insert(track.id);
+                    }
+                }
+            }
+        } else {
+            ui.label(c.index, "#", hs, Align::center);
+        }
         ui.label(c.title, lyren::tr("Title"), hs);
         if (c.album.w > 0) {
             ui.label(c.album, lyren::tr("Album"), hs);
         }
         const bool ordering = route_.page == Page::playlist && route_.list && &tracks == &route_.list->tracks && route_.list->ordering;
-        ui.label(c.duration, lyren::tr(ordering ? "Order" : "Time"), hs, Align::right);
+        if (provider().capabilities.playlist_edit && !ordering && !tracks.empty()) {
+            const auto label = lyren::tr(choosing_ ? "Done selecting" : "Select songs");
+            const float w = button_width(ui, label, false);
+            if (ui.button(ui.id("select-songs"), {head.right() - w - 12, head.y, w, 28}, label, ui::ButtonKind::ghost)) {
+                if (choosing_) {
+                    reset_selection();
+                    selection_list_ = &tracks;
+                } else {
+                    choosing_ = true;
+                    if (selected_ >= 0) {
+                        chosen_.insert(tracks[static_cast<size_t>(selected_)].id);
+                        selection_anchor_ = selected_;
+                    }
+                }
+            }
+        } else {
+            ui.label(c.duration, lyren::tr(ordering ? "Order" : "Time"), hs, Align::right);
+        }
         p.rect({head.x + 12, head.bottom() - 1, head.w - 24, 1}, t.border);
         ui::cut_top(r, 4);
+
+        if (choosing_) {
+            Rect bar = ui::cut_top(r, 44).inset(12, 0);
+            const bool removable = route_.page == Page::playlist && route_.card.owned && route_.list && &tracks == &route_.list->tracks;
+            float right = bar.right();
+            if (removable) {
+                const bool busy = library().playlist_writes.contains(route_.card.id);
+                const auto label = lyren::tr(busy ? "Saving..." : "Remove");
+                const float w = button_width(ui, label, true);
+                ui.disabled = chosen_.empty() || busy;
+                bool remove;
+                {
+                    Fade dim(p, ui.disabled ? 0.4f : 1.f);
+                    remove = ui.button(ui.id("remove-selected"), {right - w, bar.y + 4, w, 32}, label, ui::ButtonKind::secondary, "list-minus");
+                }
+                ui.disabled = false;
+                if (remove) {
+                    remove_from_playlist(route_.list, route_.card, chosen_tracks(tracks));
+                }
+                right -= w + 12;
+            }
+            const auto label = lyren::tr("Add to playlist");
+            const float w = button_width(ui, label, true);
+            ui.disabled = chosen_.empty();
+            bool add;
+            {
+                Fade dim(p, ui.disabled ? 0.4f : 1.f);
+                add = ui.button(ui.id("add-selected"), {right - w, bar.y + 4, w, 32}, label, ui::ButtonKind::secondary, "folder-plus");
+            }
+            ui.disabled = false;
+            if (add) {
+                open_picker(ui, chosen_tracks(tracks));
+            }
+            ui.label({bar.x, bar.y, right - w - bar.x - 12, 40}, lyren::trf("{} selected", chosen_.size()), hs);
+        }
 
         float off = ui.begin_scroll(id, r, static_cast<float>(tracks.size()) * row_h + 8);
         // One row past the bottom keeps its place, so it slides in with the rest when a row above it goes.
@@ -1023,15 +1104,23 @@ namespace lyren {
         bool hot = ui.hovering(r) || ui.is_active(row_id);
         bool now_playing = is_current(tr);
         float h = ui.anim(row_id, hot ? 1 : 0, 140);
-        float s = ui.anim(ui::sub_id(row_id, 0x5e), selected_ == i ? 1 : 0, 200);
+        const bool selected = choosing_ ? chosen_.contains(tr.id) : selected_ == i;
+        float s = ui.anim(ui::sub_id(row_id, 0x5e), selected ? 1 : 0, 200);
         Rect bg = r.inset(4, 2);
         if (h > 0 || s > 0) {
-            p.rect(bg, t.text.with_alpha(0.06f * h + 0.05f * s), t.radius_s());
+            p.rect(bg, (choosing_ ? t.accent : t.text).with_alpha(0.06f * h + 0.05f * s), t.radius_s());
         }
 
         Columns c = columns(r);
         TextStyle num{.size = t.fs(13), .color = t.text_dim, .features = text::tabular_nums};
-        if (hot) {
+        const bool picking =
+            choosing_ || (provider(tr).capabilities.playlist_edit &&
+                          ((ui.input().mods & (wl::mod_ctrl | wl::mod_shift)) || std::ranges::any_of(ui.input().actions, [&](const ui::PointerAction &action) {
+                               return action.press && action.button == BTN_LEFT && r.contains(action.x, action.y) && (action.mods & (wl::mod_ctrl | wl::mod_shift));
+                           })));
+        if (picking) {
+            p.icon(chosen_.contains(tr.id) ? "square-check" : "square", ui::center(c.index, 18, 18), chosen_.contains(tr.id) ? t.accent : t.text_dim);
+        } else if (hot) {
             if (ui.icon_button(ui.id("play"), ui::center(c.index, 30, 30), now_playing && playing() ? "pause-fill" : "play-fill", 14)) {
                 if (now_playing) {
                     toggle_play();
@@ -1058,7 +1147,8 @@ namespace lyren {
         const bool ordering = route_.page == Page::playlist && route_.list && &tracks == &route_.list->tracks && route_.list->ordering;
         if (ordering) {
             auto move = [&](std::string_view id, Rect cell, std::string_view icon, int to) {
-                ui.disabled = route_.list->saving_order || route_.list->loading || to < 0 || to >= static_cast<int>(tracks.size());
+                ui.disabled = route_.list->saving_order || route_.list->loading || !route_.list->error.empty() || library().playlist_writes.contains(route_.card.id) || to < 0 ||
+                              to >= static_cast<int>(tracks.size());
                 bool clicked;
                 {
                     Fade dim(p, ui.disabled ? 0.3f : 1.f);
@@ -1086,16 +1176,25 @@ namespace lyren {
         // Disabled ordering buttons still own their cells; a repeated click must not reach the row's play action.
         Rect row = r;
         if (ordering) {
-            row.w = c.like.x - r.x;
+            row.w = c.like.x - row.x;
         }
         auto it = ui.interact(row_id, row);
         if (it.pressed) {
-            selected_ = i;
+            if (picking) {
+                choose_track(tracks, i, it.mods & wl::mod_shift);
+            } else {
+                selected_ = i;
+            }
         }
-        if (it.double_clicked) {
+        if (it.double_clicked && !picking) {
             play(tracks, i);
         }
         if (it.right_clicked) {
+            if (choosing_ && !chosen_.contains(tr.id)) {
+                chosen_.clear();
+                chosen_.insert(tr.id);
+                selection_anchor_ = i;
+            }
             selected_ = i;
             track_menu(ui, it.px, it.py, tracks, i);
         }
@@ -1145,7 +1244,7 @@ namespace lyren {
             const float tabs_w = button_width(ui, tabs[0], false) + button_width(ui, tabs[1], false);
             if (provider().features.recent_plays && signed_in() && ui.tabs(ui.id("recent-tabs"), {x, y, tabs_w, 40}, tabs, library().recent_tab, ui::TabStyle::pill)) {
                 tab_time_ = ui.now;
-                selected_ = -1;
+                reset_selection();
                 ui.scroll_to(ui.id("tracks"), 0);
                 ensure_route_data();
             }
@@ -1163,6 +1262,9 @@ namespace lyren {
                 open_comments(ui, c.source, Subject::playlist, c.thread.empty() ? c.id : c.thread, c.title, c.cover);
             }
             if (c.owned && provider(c).capabilities.playlist_edit && square("playlist-more", "ellipsis")) {
+                if (library(c.source).playlist_writes.contains(c.id)) {
+                    return notify(std::string(lyren::tr("The playlist is still saving")), "list-music");
+                }
                 std::vector<ui::MenuItem> items;
                 if (provider(c).capabilities.playlist_order && route_.list && !route_.list->loading) {
                     items.push_back({"list-ordered", std::string(lyren::tr(route_.list->ordering ? "Done reordering" : "Reorder songs")), [this, c, list = route_.list] {
@@ -1170,6 +1272,7 @@ namespace lyren {
                                              return notify(lyren::trf("Sign in to {} to reorder this playlist", lyren::tr(platform(c.source).name)), "user");
                                          }
                                          list->ordering = !list->ordering;
+                                         reset_selection();
                                          if (list->ordering) {
                                              notify(std::string(lyren::tr("Use the arrows to move songs")), "list-ordered");
                                          }
@@ -1178,6 +1281,7 @@ namespace lyren {
                 if (route_.list && !route_.list->loading && !route_.list->saving_order) {
                     items.push_back({"refresh-cw", std::string(lyren::tr("Refresh")), [this, c, list = route_.list] {
                                          spawn(load_list(list, Page::playlist, c));
+                                         spawn(load_library(c.source));
                                      }});
                 }
                 if (auto link = share_url(c); !link.empty()) {
@@ -1204,6 +1308,25 @@ namespace lyren {
         bool like = liked(tr);
         auto *list = &tracks;
         const auto &caps = provider(tr).capabilities;
+        if (choosing_ && chosen_.size() > 1) {
+            auto selected = chosen_tracks(tracks);
+            std::vector<ui::MenuItem> items{{"play", std::string(lyren::tr("Play selected")),
+                                             [this, selected] {
+                                                 play(selected, 0);
+                                             }},
+                                            {"folder-plus", std::string(lyren::tr("Add to playlist")), [this, &ui, selected] {
+                                                 open_picker(ui, selected);
+                                             }}};
+            if (route_.page == Page::playlist && route_.card.owned && caps.playlist_edit && route_.list && list == &route_.list->tracks) {
+                items.push_back({"list-minus", std::string(lyren::tr("Remove from playlist")),
+                                 [this, l = route_.list, c = route_.card, selected] {
+                                     remove_from_playlist(l, c, selected);
+                                 },
+                                 true});
+            }
+            ui.open_menu(x, y, std::move(items));
+            return;
+        }
         std::vector<ui::MenuItem> items{{"play", std::string(lyren::tr("Play")),
                                          [this, list, i] {
                                              play(*list, i);
@@ -1250,12 +1373,7 @@ namespace lyren {
         }
         if (caps.playlist_edit) {
             items.push_back({"folder-plus", std::string(lyren::tr("Add to playlist")), [this, &ui, tr] {
-                                 if (!provider(tr).logged_in()) {
-                                     return ui.toast(lyren::trf("Sign in to {} to add songs to a playlist", lyren::tr(platform(tr.source).name)), "folder-plus");
-                                 }
-                                 ui.open_modal(420, 480, [this, tr](ui::Ui &u, Rect r) {
-                                     picker_modal(u, r, tr);
-                                 });
+                                 open_picker(ui, {tr});
                              }});
         }
         items.push_back({"copy", std::string(lyren::tr("Copy title and artist")), [&ui, tr] {
@@ -1283,7 +1401,7 @@ namespace lyren {
         if (route_.page == Page::playlist && route_.card.owned && caps.playlist_edit && listed) {
             items.push_back({"list-minus", std::string(lyren::tr("Remove from playlist")),
                              [this, l = route_.list, c = route_.card, tr] {
-                                 remove_from_playlist(l, c, tr);
+                                 remove_from_playlist(l, c, {tr});
                              },
                              true});
         }

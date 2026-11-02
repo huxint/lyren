@@ -61,7 +61,8 @@ namespace lyren::bodian {
         Task<Result<Card>> create_playlist(std::string name, bool hidden) override;
         Task<Result<void>> rename_playlist(std::string id, std::string name) override;
         Task<Result<void>> delete_playlist(std::string id) override;
-        Task<Result<void>> edit_playlist(std::string id, Track track, bool add) override;
+        using Provider::edit_playlist;
+        Task<Result<void>> edit_playlist(std::string id, std::vector<Track> tracks, bool add) override;
 
         Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) override;
         Task<Result<CommentPage>> comment_replies(Subject subject, std::string id, std::string root, int page, std::string cursor) override;

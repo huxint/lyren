@@ -172,6 +172,41 @@ TEST_CASE("Qishui search uses group cursors and playlist writes retain string ID
     CHECK(writes == 1);
 }
 
+TEST_CASE("Qishui playlist batches sign all media and never replay a lost response") {
+    bool add = true, lost = false;
+    SUBCASE("append") {}
+    SUBCASE("remove") {
+        add = false;
+    }
+    SUBCASE("lost response") {
+        lost = true;
+    }
+    std::atomic<int> writes = 0;
+    test::Server api([&](std::string_view request) {
+        CHECK(request.starts_with(add ? "POST /luna/pc/me/playlist/media/append?" : "POST /luna/pc/me/playlist/media/delete?"));
+        auto value = json(body(request));
+        CHECK(qishui::string(qishui::field(value, "playlist_id")) == "9007199254740995");
+        auto media = qishui::array(qishui::field(value, "media"));
+        REQUIRE(media.size() == 2);
+        CHECK(qishui::field(media[0], "id").is_string());
+        CHECK(qishui::string(qishui::field(media[0], "id")) == "9007199254740993");
+        CHECK(qishui::string(qishui::field(media[1], "id")) == "18446744073709551615");
+        CHECK(qishui::string(qishui::field(media[0], "type")) == "track");
+        CHECK(qishui::string(qishui::field(media[1], "type")) == "track");
+        ++writes;
+        return lost ? std::string{} : test::ok(R"({"status_info":{"status_msg":""}})");
+    });
+    Context c(api.url());
+    c.check_signature = [&](const Json &value) {
+        auto payload = json(qishui::string(qishui::field(value, "body")));
+        CHECK(qishui::array(qishui::field(payload, "media")).size() == 2);
+    };
+    std::vector<Track> tracks{{.id = "9007199254740993", .source = Source::qishui}, {.id = "18446744073709551615", .source = Source::qishui}};
+    auto result = run(c.loop, c.service.edit_playlist("9007199254740995", std::move(tracks), add));
+    CHECK(result.has_value() == !lost);
+    CHECK(writes == 1);
+}
+
 TEST_CASE("Qishui comment replies keep their root and uncertain writes are not repeated") {
     std::atomic<int> actions = 0;
     test::Server api([&](std::string_view request) {

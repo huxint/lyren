@@ -146,6 +146,7 @@ namespace lyren::ui {
                     continue;
                 }
                 a.consumed = consumed_ = true;
+                it.mods = a.mods;
                 if (a.button == BTN_LEFT) {
                     it.pressed = true;
                     it.double_clicked |= a.double_click;

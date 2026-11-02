@@ -298,7 +298,7 @@ namespace lyren {
             if (!provider().capabilities.search[search_tab_]) {
                 search_tab_ = 0;
             }
-            selected_ = -1;
+            reset_selection();
             tab_time_ = ui.now;
             ensure_route_data();
             spawn(warm_pages(source));
@@ -378,7 +378,7 @@ namespace lyren {
         }
         page_time_ = ui.now;
         page_dir_ = direction;
-        selected_ = -1;
+        reset_selection();
         for (const char *id : {"tracks", "artist-songs", "artist-albums", "artist-intro"}) {
             ui.scroll_to(ui.id(id), 0);
         }
@@ -700,6 +700,18 @@ namespace lyren {
                 show_panel(Panel::none);
             } else if (k->keysym == XKB_KEY_Escape && np_open_ && !ui.menu_open()) {
                 show_stage(false);
+            } else if (k->keysym == XKB_KEY_Escape && choosing_ && !ui.menu_open()) {
+                reset_selection();
+            } else if (ctrl && (k->keysym == XKB_KEY_a || k->keysym == XKB_KEY_A) && selection_list_ && !ui.focus && !ui.menu_open() && !np_open_ &&
+                       provider().capabilities.playlist_edit) {
+                if (route_.page == Page::playlist && route_.list) {
+                    route_.list->ordering = false;
+                }
+                choosing_ = true;
+                chosen_.clear();
+                for (const auto &track : *selection_list_) {
+                    chosen_.insert(track.id);
+                }
             } else if (ctrl && (k->keysym == XKB_KEY_f || k->keysym == XKB_KEY_F)) {
                 ui.focus = ui.id("search");
             } else if (ctrl && k->keysym == XKB_KEY_Right) {
@@ -828,7 +840,14 @@ namespace lyren {
         if (signed_in() && labels > 0.5f) {
             Fade fade(p, labels);
             float y = r.y + item_y(lists) - head_h - off;
-            if (provider().capabilities.playlist_edit && ui.icon_button(ui.id("new-playlist"), {r.right() - 46, y + 8, 26, 26}, "plus", 15)) {
+            ui.disabled = library().playlist_writes.contains("") || !library().account;
+            bool create;
+            {
+                Fade dim(p, ui.disabled ? 0.4f : 1.f);
+                create = provider().capabilities.playlist_edit && ui.icon_button(ui.id("new-playlist"), {r.right() - 46, y + 8, 26, 26}, "plus", 15);
+            }
+            ui.disabled = false;
+            if (create) {
                 open_editor(ui);
             }
         }

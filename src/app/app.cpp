@@ -567,7 +567,7 @@ namespace lyren {
                 in.inside = in.left_down = false;
                 break;
             case wl::PointerEvent::press:
-                in.actions.push_back({e.x, e.y, e.button, true});
+                in.actions.push_back({.x = e.x, .y = e.y, .button = e.button, .press = true, .mods = display_.input->mods()});
                 if (e.button == BTN_LEFT) {
                     in.left_down = true;
                 }
@@ -576,7 +576,7 @@ namespace lyren {
                 if (e.button == BTN_LEFT) {
                     in.left_down = false;
                 }
-                in.actions.push_back({e.x, e.y, e.button, false});
+                in.actions.push_back({.x = e.x, .y = e.y, .button = e.button, .press = false, .mods = display_.input->mods()});
                 break;
             case wl::PointerEvent::scroll:
                 return;
@@ -611,7 +611,7 @@ namespace lyren {
                 bool dbl = e.button == last_press_button_ && e.time - last_press_time_ < 400 && std::abs(x - last_press_x_) < 4 && std::abs(y - last_press_y_) < 4;
                 last_press_time_ = dbl ? 0 : e.time, last_press_button_ = e.button;
                 last_press_x_ = x, last_press_y_ = y;
-                input_.actions.push_back({x, y, e.button, true, dbl});
+                input_.actions.push_back({.x = x, .y = y, .button = e.button, .press = true, .double_click = dbl, .mods = display_.input->mods()});
                 if (e.button == BTN_LEFT) {
                     input_.left_down = true;
                 }
@@ -621,7 +621,7 @@ namespace lyren {
                 if (e.button == BTN_LEFT) {
                     input_.left_down = false;
                 }
-                input_.actions.push_back({x, y, e.button, false});
+                input_.actions.push_back({.x = x, .y = y, .button = e.button, .press = false, .mods = display_.input->mods()});
                 break;
             case wl::PointerEvent::scroll:
                 input_.scroll_x += e.dx, input_.scroll_y += e.dy;
@@ -698,12 +698,18 @@ namespace lyren {
                 log::warn("script line {}: desktop lyrics are off", i);
                 continue;
             }
-            auto pointer = [&](wl::PointerEvent e) {
+            auto pointer = [&](wl::PointerEvent e, uint32_t mods = 0) {
+                auto &frame = to_lyrics ? lyrics_input_ : input_;
+                const size_t before = frame.actions.size();
                 if (to_lyrics) {
-                    return on_lyrics_pointer(e);
+                    on_lyrics_pointer(e);
+                } else {
+                    e.x += m, e.y += m;
+                    on_pointer(e);
                 }
-                e.x += m, e.y += m;
-                on_pointer(e);
+                if (frame.actions.size() != before) {
+                    frame.actions.back().mods = mods;
+                }
             };
             if (cmd == "wait") {
                 int n = 0;
@@ -718,18 +724,19 @@ namespace lyren {
             if (cmd == "move" || cmd == "click" || cmd == "press" || cmd == "release") {
                 args >> x >> y >> how;
             }
+            const uint32_t pointer_mods = (how.contains("ctrl") ? wl::mod_ctrl : 0) | (how.contains("shift") ? wl::mod_shift : 0);
             if (cmd == "move") {
                 pointer({.type = wl::PointerEvent::motion, .x = x, .y = y, .time = ms()});
             } else if (cmd == "click") {
                 uint32_t button = how == "right" ? BTN_RIGHT : how == "back" ? BTN_SIDE : BTN_LEFT;
                 pointer({.type = wl::PointerEvent::motion, .x = x, .y = y, .time = ms()});
                 for (int k = how == "double" ? 2 : 1; k > 0; --k) {
-                    pointer({.type = wl::PointerEvent::press, .x = x, .y = y, .button = button, .time = ms()});
-                    pointer({.type = wl::PointerEvent::release, .x = x, .y = y, .button = button, .time = ms()});
+                    pointer({.type = wl::PointerEvent::press, .x = x, .y = y, .button = button, .time = ms()}, pointer_mods);
+                    pointer({.type = wl::PointerEvent::release, .x = x, .y = y, .button = button, .time = ms()}, pointer_mods);
                 }
             } else if (cmd == "press" || cmd == "release") {
                 pointer({.type = wl::PointerEvent::motion, .x = x, .y = y, .time = ms()});
-                pointer({.type = cmd == "press" ? wl::PointerEvent::press : wl::PointerEvent::release, .x = x, .y = y, .button = BTN_LEFT, .time = ms()});
+                pointer({.type = cmd == "press" ? wl::PointerEvent::press : wl::PointerEvent::release, .x = x, .y = y, .button = BTN_LEFT, .time = ms()}, pointer_mods);
             } else if (cmd == "scroll") {
                 float dy = 0;
                 args >> dy >> how;

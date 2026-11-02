@@ -1101,15 +1101,20 @@ namespace lyren::ncm {
         co_return done(co_await client.call("/api/playlist/remove", std::format(R"("ids":"[{}]")", id), Api::weapi, net::Retry::never));
     }
 
-    Task<Result<void>> Netease::edit_playlist(std::string id, Track t, bool add) {
-        std::string track = std::move(t.id);
+    Task<Result<void>> Netease::edit_playlist(std::string id, std::vector<Track> tracks, bool add) {
+        std::vector<std::string> ids;
+        ids.reserve(tracks.size());
+        for (auto &track : tracks) {
+            ids.push_back(std::move(track.id));
+        }
         auto fields = [&](std::string_view ids) {
             return std::format(R"("op":"{}","pid":"{}","trackIds":{},"imme":"true")", add ? "add" : "del", id, glz::write_json(ids).value());
         };
-        Reply r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}"])", track)), Api::eapi, net::Retry::never);
+        Reply r = co_await client.call("/api/playlist/manipulate/tracks", fields(glz::write_json(ids).value()), Api::eapi, net::Retry::never);
         // The server sometimes answers 512 for a single id; listing it twice goes through.
-        if (r.code == 512) {
-            r = co_await client.call("/api/playlist/manipulate/tracks", fields(std::format(R"(["{}","{}"])", track, track)), Api::eapi, net::Retry::never);
+        if (r.code == 512 && ids.size() == 1) {
+            ids.push_back(ids.front());
+            r = co_await client.call("/api/playlist/manipulate/tracks", fields(glz::write_json(ids).value()), Api::eapi, net::Retry::never);
         }
         if (r.code == 502 && add) {
             co_return std::unexpected("This song is already in the playlist");

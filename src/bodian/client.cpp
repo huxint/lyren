@@ -166,6 +166,9 @@ namespace lyren::bodian {
         auto req = request(std::move(call), now);
         const bool read = req.method == "GET" || (req.method.empty() && !req.body);
         auto reply = response(co_await net::fetch_retry(loop_, http_, std::move(req), read ? net::Retry::network : net::Retry::never));
+        if (token != get("token")) {
+            co_return Reply{.error = "Bodian Music session changed; retry the action"};
+        }
         if (reply.code == 11012 && !token.empty() && token == get("token")) {
             clear_login();
         }

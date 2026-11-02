@@ -59,6 +59,59 @@ TEST_CASE("Bodian signs form-encoded query and the exact GET body") {
     CHECK(bodian::form_encode("晴天 ~&+*") == "%E6%99%B4%E5%A4%A9+%7E%26%2B*");
 }
 
+TEST_CASE("Bodian playlist batches retain numeric IDs and never replay a lost write") {
+    bool add = true, lost = false;
+    SUBCASE("append") {}
+    SUBCASE("remove") {
+        add = false;
+    }
+    SUBCASE("lost response") {
+        lost = true;
+    }
+    std::atomic<int> writes = 0;
+    test::Server server([&](std::string_view request) {
+        CHECK(request.starts_with(add ? "POST /service/playlist/music?" : "POST /service/playlist/music/delete?"));
+        CHECK(body(request) == R"({"playListId":9007199254740995,"musicIdList":[9007199254740993,18446744073709551615]})");
+        ++writes;
+        return lost ? std::string{} : test::ok(R"({"code":200,"data":{}})");
+    });
+    Loop loop;
+    net::Http http;
+    bodian::Bodian provider(loop, http, server.url() + '/');
+    provider.session() = {{"uid", "42"}, {"token", "session"}, {"devid", "device"}};
+    std::vector<Track> tracks{{.id = "9007199254740993", .source = Source::bodian}, {.id = "18446744073709551615", .source = Source::bodian}};
+    auto result = run(loop, provider.edit_playlist("5:9007199254740995", std::move(tracks), add));
+    CHECK(result.has_value() == !lost);
+    CHECK(writes == 1);
+}
+
+TEST_CASE("Bodian an old playlist read cannot trigger a write under a new account") {
+    std::atomic<int> reads = 0, writes = 0;
+    test::Server server([&](std::string_view request) {
+        if (request.starts_with("GET /service/playlist/info/9?")) {
+            ++reads;
+            std::this_thread::sleep_for(30ms);
+            return test::ok(R"({"code":200,"data":{"id":9,"name":"old","description":"keep","pic":"cover","categoryList":[]}})");
+        }
+        ++writes;
+        return test::ok(R"({"code":200,"data":{}})");
+    });
+    Loop loop;
+    net::Http http;
+    bodian::Bodian provider(loop, http, server.url() + '/');
+    provider.session() = {{"uid", "42"}, {"token", "old-session"}, {"devid", "device"}};
+    loop.after(10ms, [&] {
+        provider.session()["uid"] = "43";
+        provider.session()["token"] = "new-session";
+    });
+    auto result = run(loop, provider.rename_playlist("5:9", "new name"));
+    REQUIRE_FALSE(result);
+    CHECK(result.error() == "Bodian Music session changed; retry the action");
+    CHECK(reads == 1);
+    CHECK(writes == 0);
+    CHECK(provider.session().at("token") == "new-session");
+}
+
 TEST_CASE("Bodian keeps large resource IDs and server page boundaries") {
     auto search = bodian::parse_search(reply(R"({"total":45,"resultList":[{"id":9007199254740993,"name":"晴天","duration":269,"artists":[{"id":336,"name":"周杰伦"}]}]})"),
                                        SearchKind::tracks, 0, 30);
@@ -250,13 +303,14 @@ TEST_CASE("Bodian expires only the rejected account session") {
     });
     auto account = run(loop, provider.account());
     REQUIRE_FALSE(account);
-    CHECK(account.error().contains("11012"));
     CHECK(provider.session().at("devid") == "device");
     CHECK(provider.logged_in() == replace_session);
     CHECK(changes == (replace_session ? 0 : 1));
     if (replace_session) {
+        CHECK(account.error() == "Bodian Music session changed; retry the action");
         CHECK(provider.session().at("token") == "new-session");
     } else {
+        CHECK(account.error().contains("11012"));
         CHECK_FALSE(provider.session().contains("nickname"));
     }
 }

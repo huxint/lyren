@@ -62,6 +62,7 @@ namespace lyren::ui {
         bool press;
         bool double_click = false;
         bool consumed = false;
+        uint32_t mods = 0;
     };
 
     // Everything that happened since the previous frame, in window geometry coordinates.
@@ -131,6 +132,7 @@ namespace lyren::ui {
         bool double_clicked = false;
         bool right_clicked = false;
         float px = 0, py = 0; // pointer (or the right-click) position
+        uint32_t mods = 0;    // modifiers when the press happened
     };
 
     // How a pressable surface responds: hot eases in under the pointer; down follows a press held over it on a

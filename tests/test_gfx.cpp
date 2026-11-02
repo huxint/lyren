@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 #include <png.h>
+#include <linux/input-event-codes.h>
 
 #include <algorithm>
 #include <array>
@@ -42,6 +43,30 @@ namespace {
     };
 
 } // namespace
+
+TEST_CASE("pointer chords keep press modifiers after keys are released before a frame") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    text::Fonts fonts("sans-serif");
+    text::Shaper shaper(fonts);
+    text::Atlas atlas(g.renderer, fonts);
+    ui::Painter painter(atlas, shaper, fonts);
+    ui::Theme theme;
+    for (uint32_t mods : {wl::mod_ctrl, wl::mod_shift, wl::mod_ctrl | wl::mod_shift}) {
+        ui::Ui ui;
+        ui::FrameInput input{.x = 20, .y = 20, .inside = true};
+        input.actions.push_back({.x = 20, .y = 20, .button = BTN_LEFT, .press = true, .mods = mods});
+        input.actions.push_back({.x = 20, .y = 20, .button = BTN_LEFT, .press = false});
+        painter.begin(1, 0, 0);
+        ui.begin(painter, theme, 100, 100, 1, input);
+        auto press = ui.interact(ui.id("row"), {0, 0, 80, 40});
+        CHECK(press.pressed);
+        CHECK(press.clicked);
+        CHECK(press.mods == mods);
+        CHECK(input.mods == 0);
+        ui.end();
+    }
+}
 
 TEST_CASE("scroll motion requests paced animation frames after consuming input") {
     gfx::select_driver(GpuChoice::integrated);
@@ -297,6 +322,11 @@ TEST_CASE("stationary cover preloads settle under cache pressure and visible req
             }
             g.loop.cancel(idle);
             idle = g.loop.after(100ms, [&] {
+                for (int i = first; i < first + visible; ++i) {
+                    if (!images.get(covers[i], side).ready) {
+                        return;
+                    }
+                }
                 settled = true;
                 g.loop.quit();
             });

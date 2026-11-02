@@ -177,7 +177,10 @@ namespace lyren::ncm {
 
         const std::string login = get("MUSIC_U");
         auto res = co_await net::fetch_retry(loop_, http_, std::move(req), retry);
-        if (!res.cookies.empty() && login == get("MUSIC_U")) {
+        if (login != get("MUSIC_U")) {
+            co_return Reply{.error = "NetEase Music session changed; retry the action"};
+        }
+        if (!res.cookies.empty()) {
             auto before = cookies;
             for (auto &c : res.cookies) {
                 apply_set_cookie(c);

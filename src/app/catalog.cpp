@@ -118,6 +118,7 @@ namespace lyren {
         if (query_.empty()) {
             return;
         }
+        reset_selection();
         searched_ = query_;
         ++search_gen_;
         results_ = {};
@@ -280,6 +281,9 @@ namespace lyren {
         }
         list->loading = false;
         if (r) {
+            if (selection_list_ == &list->tracks) {
+                reset_selection();
+            }
             list->tracks = std::move(*r);
             if (page == Page::liked) {
                 lib.liked_ids.clear();

@@ -16,7 +16,7 @@
 
 // --debug     debug logging
 // --script F  replay synthetic input from F, one command per line (window geometry coordinates):
-//             wait MS | move X Y | click X Y [right|double|back] | press X Y | release X Y | scroll DY [wheel]
+//             wait MS | move X Y | click X Y [right|double|back|ctrl|shift] | press X Y | release X Y | scroll DY [wheel]
 //             key [ctrl+][shift+][alt+]KEYSYM | commit TEXT | preedit TEXT (input method) | shot FILE.png (next frame)
 //             exec SHELL-COMMAND | quit; "lyrics move|click|press|release|shot …" targets the desktop lyrics
 int main(int argc, char **argv) {

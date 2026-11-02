@@ -102,19 +102,18 @@ namespace lyren {
         }
         if (p.capabilities.library) {
             uint64_t revision = lib.preference_gen;
+            uint64_t playlist_gen = ++lib.playlist_gen;
             auto pl = co_await p.user_playlists(a->id);
             if (gen != lib.gen) {
                 co_return;
             }
-            if (pl) {
-                lib.liked = std::move(pl->first);
-                lib.playlists = std::move(pl->second);
-                lib.playlists_loaded = true;
-                reconcile_preferences(source, Preference::playlist, revision);
-                images_.prefetch(lib.playlists);
-            } else {
-                lib.library_error = pl.error();
-                notify(pl.error(), "list-music", true);
+            if (playlist_gen == lib.playlist_gen) {
+                if (pl) {
+                    apply_playlists(source, std::move(*pl), revision);
+                } else {
+                    lib.library_error = pl.error();
+                    notify(pl.error(), "list-music", true);
+                }
             }
         }
         if (p.capabilities.likes) {
@@ -271,9 +270,14 @@ namespace lyren {
 
     void Shell::reset_account(Source source) {
         auto &lib = library(source);
+        if (source == active_) {
+            reset_selection();
+        }
         ++lib.gen;
         ++lib.collection_gen;
         ++lib.account_gen;
+        ++lib.playlist_gen;
+        lib.playlist_writes.clear();
         lib.preference_gen = 0;
         lib.preferences = {};
         lib.account.reset();

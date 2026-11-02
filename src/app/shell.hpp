@@ -134,8 +134,9 @@ namespace lyren {
         // Each platform keeps its own account, cached pages and pagination state.
         struct Library {
             std::optional<Account> account;
-            uint64_t gen = 0, account_gen = 0, preference_gen = 0;
+            uint64_t gen = 0, account_gen = 0, preference_gen = 0, playlist_gen = 0;
             std::array<StringMap<PreferenceEdit>, 4> preferences;
+            std::unordered_set<std::string> playlist_writes;
             std::vector<Card> playlists, daily_lists;
             double daily_since = -10;
             Card liked;
@@ -301,7 +302,8 @@ namespace lyren {
         // The lyric line playing now, when the comments are on the song that is current.
         const LyricLine *thread_lyric();
         void editor_modal(ui::Ui &ui, ui::Rect r, Card card);
-        void picker_modal(ui::Ui &ui, ui::Rect r, Track t);
+        void picker_modal(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks);
+        void open_picker(ui::Ui &ui, std::vector<Track> tracks);
         void open_account(ui::Ui &ui);
         // Opens the comments on something in the panel. follows: the current song's, which the stage keeps up with.
         void open_comments(ui::Ui &ui, Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows = false);
@@ -310,7 +312,7 @@ namespace lyren {
         // Leaving the stage closes the comments it opened.
         void show_stage(bool open);
         // A new playlist when card is empty, otherwise a rename.
-        void open_editor(ui::Ui &ui, Card card = {}, std::optional<Track> track = {});
+        void open_editor(ui::Ui &ui, Card card = {}, std::vector<Track> tracks = {});
         void confirm_delete(ui::Ui &ui, Card card);
         void handle_keys(ui::Ui &ui);
 
@@ -424,6 +426,8 @@ namespace lyren {
         Task<void> startup();
         Task<void> initialize_platform(Source source);
         Task<void> load_library(Source source);
+        void apply_playlists(Source source, std::pair<Card, std::vector<Card>> playlists, uint64_t revision);
+        Task<bool> refresh_playlists(Source source, uint64_t account_gen);
         Task<void> load_cards(Source source, Results &res, Task<Result<std::vector<Card>>> request);
         Task<void> load_daily_lists(Source source);
         Task<void> load_fm(Source source);
@@ -452,12 +456,20 @@ namespace lyren {
         void toggle_follow(std::shared_ptr<ArtistPage> page, Card artist);
         void toggle_collect(std::shared_ptr<List> list, Card album);
         void toggle_collect_playlist(Card playlist);
-        void add_to_playlist(Track t, Card playlist);
-        void remove_from_playlist(std::shared_ptr<List> list, Card playlist, Track t);
+        bool begin_playlist_write(const Card &playlist);
+        void finish_playlist_write(const Card &playlist);
+        Task<void> create_playlist(Source source, std::string name, bool hidden, std::vector<Track> tracks);
+        Task<void> rename_playlist(Card playlist, std::string name);
+        Task<void> delete_playlist(Card playlist);
+        void add_to_playlist(std::vector<Track> tracks, Card playlist);
+        void remove_from_playlist(std::shared_ptr<List> list, Card playlist, std::vector<Track> tracks);
+        Task<void> write_playlist_tracks(std::shared_ptr<List> list, Card playlist, std::vector<Track> tracks, bool add);
+        void apply_playlist_tracks(std::shared_ptr<List> list, const Card &playlist, std::vector<Track> tracks);
+        std::vector<Track> chosen_tracks(const std::vector<Track> &tracks) const;
+        void choose_track(const std::vector<Track> &tracks, int i, bool range);
+        void reset_selection();
         void move_playlist_track(std::shared_ptr<List> list, Card playlist, int from, int to);
         void link_menu(ui::Ui &ui, float x, float y, const Card &card);
-        void recount(const Card &playlist, int delta); // the sidebar's track count
-        void retitle(const Card &playlist, const std::string &title);
         void set_category(ui::Ui &ui, Category category);
         void notify(std::string text, std::string icon = "info", bool error = false);
         void changed(); // persisted state changed
@@ -499,6 +511,10 @@ namespace lyren {
         std::array<std::array<Results, 4>, platforms.size()> results_;
         uint64_t search_gen_ = 0;
         int selected_ = -1;
+        bool choosing_ = false;
+        int selection_anchor_ = -1;
+        const std::vector<Track> *selection_list_ = nullptr;
+        std::unordered_set<std::string> chosen_;
 
         // Playback.
         std::vector<Track> queue_;
@@ -646,7 +662,7 @@ namespace lyren {
         std::string edit_name_;
         bool edit_hidden_ = false, edit_focus_ = false;
         Source edit_source_ = Source::netease;
-        std::optional<Track> edit_track_;
+        std::vector<Track> edit_tracks_;
 
         // Settings page: where each section starts, the tab it is gliding to and the one on show, and the layout: the
         // cards' heights as last drawn, the columns, where the headings, cards and title were drawn, and the move

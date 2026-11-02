@@ -1106,8 +1106,12 @@ namespace lyren::qishui {
         co_return co_await write("/luna/pc/me/playlist/delete", Json{{"playlist_ids", Json::array_t{Json(std::move(id))}}});
     }
 
-    Task<Result<void>> Qishui::edit_playlist(std::string id, Track track, bool add) {
-        co_return co_await write(std::string("/luna/pc/me/playlist/media/") + (add ? "append" : "delete"), Json{{"playlist_id", id}, {"media", media(std::move(track.id))}});
+    Task<Result<void>> Qishui::edit_playlist(std::string id, std::vector<Track> tracks, bool add) {
+        Json items = Json::array_t{};
+        for (auto &track : tracks) {
+            items.get_array().push_back(Json{{"id", std::move(track.id)}, {"type", "track"}});
+        }
+        co_return co_await write(std::string("/luna/pc/me/playlist/media/") + (add ? "append" : "delete"), Json{{"playlist_id", id}, {"media", items}});
     }
 
     Task<Result<void>> Qishui::reorder_playlist(std::string id, std::vector<Track> tracks) {

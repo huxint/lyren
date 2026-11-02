@@ -1601,11 +1601,14 @@ namespace lyren::qq {
         co_return co_await edit_playlist("dir:201", std::move(track), on);
     }
 
-    Task<Result<void>> Qq::edit_playlist(std::string id, Track t, bool add) {
+    Task<Result<void>> Qq::edit_playlist(std::string id, std::vector<Track> tracks, bool add) {
+        std::string param = std::format(R"({{"dirId":{},"bFmtUtf8":true,"v_songInfo":[)", id.substr(4));
+        for (size_t i = 0; i < tracks.size(); ++i) {
+            std::format_to(std::back_inserter(param), R"({}{{"songId":{},"songType":{}}})", i ? "," : "", tracks[i].id, tracks[i].type);
+        }
+        param += "]}";
         // These write endpoints otherwise return Chinese messages in GBK, which is not valid UTF-8 JSON.
-        co_return written(co_await client.call({{"music.musicasset.PlaylistDetailWrite", add ? "AddSonglist" : "DelSonglist",
-                                                 std::format(R"({{"dirId":{},"bFmtUtf8":true,"v_songInfo":[{{"songId":{},"songType":{}}}]}})", id.substr(4), t.id, t.type)}},
-                                               Comm::app, net::Retry::never))
+        co_return written(co_await client.call({{"music.musicasset.PlaylistDetailWrite", add ? "AddSonglist" : "DelSonglist", std::move(param)}}, Comm::app, net::Retry::never))
             .transform([](const auto &) {});
     }
 

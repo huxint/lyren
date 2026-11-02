@@ -109,7 +109,9 @@ namespace lyren {
         virtual Task<Result<Card>> create_playlist(std::string name, bool hidden);
         virtual Task<Result<void>> rename_playlist(std::string id, std::string name);
         virtual Task<Result<void>> delete_playlist(std::string id);
-        virtual Task<Result<void>> edit_playlist(std::string id, Track track, bool add);
+        Task<Result<void>> edit_playlist(std::string id, Track track, bool add);
+        // One request batch: up to 100 tracks from this platform.
+        virtual Task<Result<void>> edit_playlist(std::string id, std::vector<Track> tracks, bool add);
         virtual Task<Result<void>> reorder_playlist(std::string id, std::vector<Track> tracks);
 
         virtual bool logged_in() const = 0;

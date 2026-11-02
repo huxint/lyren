@@ -1242,12 +1242,19 @@ namespace lyren::bodian {
         });
     }
 
-    Task<Result<void>> Bodian::edit_playlist(std::string id, Track track, bool add) {
-        co_return co_await and_then(playlist_id(id), [this, track = std::move(track), add](PlaylistId id) -> Task<Result<void>> {
-            co_return co_await and_then(id_number(track.id), [this, id, add](uint64_t track) -> Task<Result<void>> {
-                auto body = glz::write_json(glz::obj{"playListId", id.id, "musicIdList", std::array{track}}).value();
-                co_return write_result(co_await client.call({.path = add ? "service/playlist/music" : "service/playlist/music/delete", .body = std::move(body), .sign = true}));
-            });
+    Task<Result<void>> Bodian::edit_playlist(std::string id, std::vector<Track> tracks, bool add) {
+        co_return co_await and_then(playlist_id(id), [this, tracks = std::move(tracks), add](PlaylistId id) -> Task<Result<void>> {
+            std::vector<uint64_t> songs;
+            songs.reserve(tracks.size());
+            for (const auto &track : tracks) {
+                auto song = id_number(track.id);
+                if (!song) {
+                    co_return std::unexpected(song.error());
+                }
+                songs.push_back(*song);
+            }
+            auto body = glz::write_json(glz::obj{"playListId", id.id, "musicIdList", songs}).value();
+            co_return write_result(co_await client.call({.path = add ? "service/playlist/music" : "service/playlist/music/delete", .body = std::move(body), .sign = true}));
         });
     }
 
