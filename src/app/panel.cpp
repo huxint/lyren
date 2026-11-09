@@ -85,16 +85,6 @@ namespace lyren {
             return aspect >= mw / mh ? Rect{0, 0, mw, std::round(mw / aspect)} : Rect{0, 0, std::round(mh * aspect), mh};
         }
 
-        // The part of an image of aspect `image` that fills a frame of aspect `frame`, centred.
-        ui::Rect cover_uv(float image, float frame) {
-            if (image > frame) {
-                float u = frame / image;
-                return {(1 - u) / 2, 0, u, 1};
-            }
-            float v = image / frame;
-            return {0, (1 - v) / 2, 1, v};
-        }
-
         // A record in its own colours, grooves catching the light at angle (radians).
         void vinyl(ui::Painter &p, Rect disc, ui::Color label, float angle) {
             float r = disc.w / 2;
@@ -800,7 +790,7 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const float art = compact ? 44 : C::art;
-        const bool record = thread_.subject != Subject::playlist;
+        const bool record = thread_.subject == Subject::song || thread_.subject == Subject::album;
         Rect sleeve{r.x + C::inset, r.y + C::padding, art, art};
         const float slide = record ? art * 0.46f * ui.progress(thread_.opened, 900, ui::ease::emphasized) : 0;
         const float tab_h = 36;
@@ -835,7 +825,8 @@ namespace lyren {
             vinyl(p, disc, label, angle);
         }
         p.shadow({sleeve.x, sleeve.y + 3, art, art}, t.radius_s(), 12, t.shadow.with_alpha(0.6f));
-        cover(ui, sleeve, thread_.cover, t.radius_s(), thread_.subject == Subject::song ? "music" : thread_.subject == Subject::album ? "disc-album" : "list-music");
+        static constexpr std::array placeholders = {"music", "disc-album", "list-music", "message-square"};
+        cover(ui, sleeve, thread_.cover, t.radius_s(), placeholders[static_cast<size_t>(thread_.subject)]);
 
         Rect close{r.right() - C::inset - C::control + 6, r.y + C::padding - 4, C::control, C::control};
         const float tx = sleeve.right() + slide + 14, tw = close.x - tx - C::gap;
@@ -1143,7 +1134,7 @@ namespace lyren {
         const auto &caps = provider(source).capabilities;
         bool owned = c.owned && caps.comment_delete && provider(source).logged_in();
         int count = mine != comment_likes_.end() ? mine->second.likes : c.likes;
-        std::string n = count > 0 ? short_count(count) : "";
+        std::string n = count > 0 ? short_number(count) : "";
         ui.push_id(ui.id(key(source, c.id)));
         if (featured) {
             // The top comment, set as a pull quote on a card tinted by the record.
@@ -1170,14 +1161,34 @@ namespace lyren {
             }
         }
         ui.disabled = false;
+        const float name_w = std::min(p.measure(c.user, {.size = t.fs(C::name)}) + 1, featured ? tw - 24 - C::gap * 2 - 80 : like.x - tx - C::gap);
         if (featured) {
             cover(ui, {tx, author_y + 1, 24, 24}, c.avatar, 12, "user");
-            float nw = std::min(p.measure(c.user, {.size = t.fs(C::name)}), tw - 24 - C::gap * 2 - 80);
-            ui.label({tx + 24 + C::gap, author_y, nw + 1, 26}, c.user, {.size = t.fs(C::name), .color = t.text});
-            ui.label({tx + 24 + C::gap * 2 + nw, author_y + 1, tw, 26}, c.time, {.size = t.fs(C::time), .color = t.text_dim});
+            ui.label({tx + 24 + C::gap, author_y, name_w, 26}, c.user, {.size = t.fs(C::name), .color = t.text});
+            ui.label({tx + 24 + C::gap * 2 + name_w, author_y + 1, tw, 26}, c.time, {.size = t.fs(C::time), .color = t.text_dim});
         } else {
-            ui.label({tx, ident_y, like.x - tx - C::gap, name_h}, c.user, {.size = t.fs(C::name), .color = t.text.mix(t.text_dim, 0.25f)});
+            ui.label({tx, ident_y, name_w, name_h}, c.user, {.size = t.fs(C::name), .color = t.text.mix(t.text_dim, 0.25f)});
             ui.label({tx, ident_y + name_h, tw, time_h}, c.time, {.size = t.fs(C::time), .color = t.text_dim});
+        }
+        // The author's picture and name open their page, where the service names them.
+        if (!c.user_id.empty() && provider(source).capabilities.profiles) {
+            const Rect face = featured ? Rect{tx, author_y + 1, 24, 24} : Rect{x, ident_y, C::avatar, C::avatar};
+            const Rect who = featured ? Rect{face.x, author_y, 24 + C::gap + name_w, 26} : Rect{x, ident_y, tx - x + name_w, name_h};
+            auto it = ui.interact(ui.id("comment-author"), who);
+            if (!featured) {
+                // The picture below the name row takes clicks too.
+                auto pic = ui.interact(ui.id("comment-face"), face);
+                it.clicked |= pic.clicked, it.hovered |= pic.hovered;
+            }
+            const float hot = ui.anim(ui.id("comment-author"), it.hovered ? 1 : 0, 140);
+            if (hot > 0) {
+                const float nx = featured ? tx + 24 + C::gap : tx, ny = featured ? author_y + 21 : ident_y + name_h - 2;
+                p.rect({nx, ny, name_w, 1}, t.text.with_alpha(0.45f * hot));
+                ui.cursor = wl::Cursor::pointer;
+            }
+            if (it.clicked) {
+                open_profile(ui, source, c.user_id, c.user, c.avatar, face);
+            }
         }
         float ly = body_y;
         for (auto line : lines) {

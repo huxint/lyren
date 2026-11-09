@@ -16,15 +16,18 @@ namespace lyren {
 
     // Only expose actions supported by the platform's protocol.
     struct Capabilities {
-        std::array<bool, 4> search{true, true, true, true};
+        std::array<bool, 5> search{true, true, true, true}; // tracks, albums, artists, playlists, users
         bool toplists = false, square = false, radio = false, radio_dislike = false;
         bool similar = false, artist_intro = false;
         bool library = false, likes = false;
         bool playlist_edit = false, playlist_order = false, private_playlists = false;
         bool collect_playlists = false, collect_albums = false, follow_artists = false;
-        std::array<bool, 3> comments{}; // song, album, playlist
+        std::array<bool, 4> comments{}; // song, album, playlist, post
         bool comment_sort = false, comment_replies = false, comment_likes = false, comment_post = false, comment_delete = false;
         bool qr_login = false, session_import = false;
+        // Listener pages: other people's (the signed-in account's own page needs none of these), follow lists,
+        // following people, posts and writing them, the listening ranking, and other people's playlists.
+        bool profiles = false, people = false, follow_users = false, posts = false, post_write = false, ranking = false, profile_playlists = false;
     };
 
     // Platform-specific features. Shared capabilities belong to Provider's virtual interface.
@@ -113,6 +116,22 @@ namespace lyren {
         // One request batch: up to 100 tracks from this platform.
         virtual Task<Result<void>> edit_playlist(std::string id, std::vector<Track> tracks, bool add);
         virtual Task<Result<void>> reorder_playlist(std::string id, std::vector<Track> tracks);
+
+        // Listener pages. uid is the service's user ID; the signed-in account's own is Account::id.
+        virtual Task<Result<Profile>> profile(std::string uid);
+        // Whom they follow, or their fans; cursor is what the page before returned, empty for the first.
+        virtual Task<Result<PeoplePage>> people(std::string uid, bool fans, std::string cursor);
+        virtual Task<Result<void>> follow_user(std::string uid, bool on);
+        virtual Task<Result<PostPage>> posts(std::string uid, std::string cursor);
+        // Posts by the people the signed-in account follows.
+        virtual Task<Result<PostPage>> feed(std::string cursor);
+        virtual Task<Result<void>> like_post(Post post, bool on);
+        virtual Task<Result<void>> delete_post(std::string id);
+        // A new post with words and, optionally, a song it shares.
+        virtual Task<Result<void>> share(std::string text, std::optional<Track> track);
+        virtual Task<Result<void>> forward(Post post, std::string text);
+        // all_time: since the account began, otherwise the last week.
+        virtual Task<Result<Ranking>> ranking(std::string uid, bool all_time);
 
         virtual bool logged_in() const = 0;
         // A URL to encode or the login service's PNG.

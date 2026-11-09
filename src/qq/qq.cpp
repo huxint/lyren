@@ -291,7 +291,7 @@ namespace lyren::qq {
             Str Nick, Content;
         };
         struct QComment {
-            Str Nick, Avatar, Content, SeqNo, CmId, RankScore, Pic, PicSize, EmoPic;
+            Str Nick, Avatar, Content, SeqNo, CmId, RankScore, Pic, PicSize, EmoPic, EncryptUin;
             int64_t PubTime = 0;
             int PraiseNum = 0, ReplyCnt = 0, IsPraised = 0, IsSelf = 0;
             Vec<QReplied> RepliedComments;
@@ -350,6 +350,17 @@ namespace lyren::qq {
         };
         struct QAlbumFavorites {
             Vec<QAlbumFavorite> v_list;
+        };
+        // Someone in a follow list, named by the encrypted account ID that profile requests take.
+        struct QRelationUser {
+            Str EncUin, Name, Desc, AvatarUrl;
+            int FanNum = 0;
+            bool IsFollow = false, BeFollowed = false;
+        };
+        struct QRelations {
+            Vec<QRelationUser> List;
+            int Total = 0;
+            bool HasMore = false;
         };
         struct QFollowSinger {
             Str SingerMid, SingerName, SingerPic;
@@ -889,7 +900,9 @@ namespace lyren::qq {
                         .comment_likes = true,
                         .comment_post = true,
                         .comment_delete = true,
-                        .qr_login = true};
+                        .qr_login = true,
+                        .profiles = true,
+                        .people = true};
         client.refresh_session = [this](bool force) {
             return renew(force);
         };
@@ -1049,6 +1062,8 @@ namespace lyren::qq {
                                                  .collectable = true});
                         }
                     }
+                    break;
+                case SearchKind::users:
                     break;
             }
             return out;
@@ -1419,6 +1434,7 @@ namespace lyren::qq {
                     Comment &m = out.comments.emplace_back();
                     m.user = c.Nick.value_or("");
                     m.avatar = c.Avatar.value_or("");
+                    m.user_id = c.EncryptUin.value_or("");
                     m.text = trimmed(c.Content);
                     // The text holds a marker where the sticker or picture goes; the picture is drawn instead.
                     for (auto [url, marker] : {std::pair{&c.EmoPic, std::string_view("[表情]")}, std::pair{&c.Pic, std::string_view("[图片]")}}) {
@@ -1705,6 +1721,50 @@ namespace lyren::qq {
                                                  std::format(R"({{"opertype":{},"source":0,"encrypt_singerid":1,"userinfo":{{"usertype":1,"userid":"{}"}}}})", on ? 0 : 1, mid)}},
                                                Comm::app, net::Retry::never))
             .transform([](const auto &) {});
+    }
+
+    Result<PeoplePage> parse_people(const Reply &reply, int from) {
+        return parse_data<QRelations>(reply).and_then([&](auto d) -> Result<PeoplePage> {
+            PeoplePage out{.total = d.Total};
+            if (!d.List) {
+                return out;
+            }
+            for (const auto &u : *d.List) {
+                if (u.EncUin.value_or("").empty()) {
+                    return std::unexpected("QQ Music returned a listener without an ID");
+                }
+                out.people.push_back({.id = *u.EncUin,
+                                      .name = u.Name.value_or(""),
+                                      .avatar = u.AvatarUrl.value_or(""),
+                                      .signature = u.Desc.value_or(""),
+                                      .fans = u.FanNum,
+                                      .followed = u.IsFollow,
+                                      .follows_me = u.BeFollowed});
+            }
+            out.more = d.HasMore && !d.List->empty();
+            if (out.more) {
+                out.cursor = std::to_string(from + static_cast<int>(d.List->size()));
+            }
+            return out;
+        });
+    }
+
+    Task<Result<Profile>> Qq::profile(std::string uid) {
+        // Another listener's page has no head the app can read: their name and picture come from where they were found.
+        if (uid != client.get("musicid")) {
+            co_return Profile{.id = std::move(uid)};
+        }
+        co_return (co_await account()).transform([](Account a) {
+            return Profile{.id = std::move(a.id), .name = std::move(a.name), .avatar = std::move(a.avatar)};
+        });
+    }
+
+    Task<Result<PeoplePage>> Qq::people(std::string uid, bool fans, std::string cursor) {
+        const int from = cursor.empty() ? 0 : std::stoi(cursor);
+        // The signed-in account's own lists take no host; anyone else is named by the encrypted ID.
+        std::string host = uid == client.get("musicid") ? "" : std::format(R"(,"HostUin":{})", glz::write_json(uid).value());
+        co_return parse_people(
+            co_await client.call({{"music.concern.RelationList", fans ? "GetFansList" : "GetFollowUserList", std::format(R"({{"From":{},"Size":30{}}})", from, host)}}), from);
     }
 
     Task<Result<std::vector<Card>>> Qq::followed_artists() {

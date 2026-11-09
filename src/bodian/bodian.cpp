@@ -553,6 +553,8 @@ namespace lyren::bodian {
                 return search_page<Playlist>(reply, offset, limit, [](Playlist p) {
                     return playlist_card(std::move(p));
                 });
+            case SearchKind::users:
+                break;
         }
         std::unreachable();
     }

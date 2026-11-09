@@ -111,7 +111,7 @@ namespace lyren {
     }
 
     ui::Id Shell::search_scroll_id(ui::Ui &ui, Source source, int tab) {
-        return ui::sub_id(ui.id("search-results"), static_cast<uint64_t>(source) * 4 + static_cast<uint64_t>(tab));
+        return ui::sub_id(ui.id("search-results"), static_cast<uint64_t>(source) * 5 + static_cast<uint64_t>(tab));
     }
 
     void Shell::search(ui::Ui &ui) {
@@ -124,7 +124,7 @@ namespace lyren {
         results_ = {};
         search_tab_ = 0;
         for (const auto &entry : platforms) {
-            for (int tab = 0; tab < 4; ++tab) {
+            for (int tab = 0; tab < 5; ++tab) {
                 ui.scroll_to(search_scroll_id(ui, entry.source, tab), 0);
             }
         }
@@ -207,6 +207,15 @@ namespace lyren {
         if (page == Page::artist && !route_.artist) {
             route_.artist = std::make_shared<ArtistPage>();
             spawn(load_artist(route_.artist, route_.card));
+        }
+        if (page == Page::profile && !route_.profile && !(route_.card.owned && !signed_in())) {
+            route_.profile = std::make_shared<ProfilePage>();
+            route_.profile->since = now_();
+            route_.profile->origin = std::exchange(profile_from_, {});
+            spawn(load_profile(route_.profile, route_.card));
+        }
+        if (page == Page::moments && signed_in() && !lib.feed) {
+            lib.feed = std::make_shared<PostList>();
         }
         if (page == Page::recommend && !lib.recommended.loaded && !lib.recommended.loading) {
             spawn(load_cards(active_, library(active_).recommended, provider(active_).recommended_playlists()));

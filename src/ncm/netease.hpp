@@ -17,6 +17,12 @@ namespace lyren::ncm {
     Result<CommentPage> parse_comments(const Reply &reply, bool replies = false);
     Result<void> parse_comment_write(const Reply &reply);
     Result<std::string> parse_comment_post(const Reply &reply);
+    Result<Profile> parse_profile(const Reply &reply);
+    // offset: where the page asked for starts.
+    Result<PeoplePage> parse_people(const Reply &reply, bool fans, int offset);
+    Result<PostPage> parse_posts(const Reply &reply);
+    Result<Ranking> parse_ranking(const Reply &reply, bool all_time);
+    Result<void> parse_social_write(const Reply &reply);
 
     // NetEase Cloud Music. Endpoints and their encodings follow api-enhanced's module/*.js.
     class Netease : public Provider {
@@ -98,6 +104,17 @@ namespace lyren::ncm {
         Task<Result<void>> like_comment(Subject subject, std::string id, std::string comment, bool on) override;
         Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {}, std::string root = {}) override;
         Task<Result<void>> delete_comment(Subject subject, std::string id, std::string comment) override;
+
+        Task<Result<Profile>> profile(std::string uid) override;
+        Task<Result<PeoplePage>> people(std::string uid, bool fans, std::string cursor) override;
+        Task<Result<void>> follow_user(std::string uid, bool on) override;
+        Task<Result<PostPage>> posts(std::string uid, std::string cursor) override;
+        Task<Result<PostPage>> feed(std::string cursor) override;
+        Task<Result<void>> like_post(Post post, bool on) override;
+        Task<Result<void>> delete_post(std::string id) override;
+        Task<Result<void>> share(std::string text, std::optional<Track> track) override;
+        Task<Result<void>> forward(Post post, std::string text) override;
+        Task<Result<Ranking>> ranking(std::string uid, bool all_time) override;
 
         // Listening reports: start puts the song in the account's recent plays, play counts it in the listening ranking.
         Task<void> report_start(std::string id, std::string source);

@@ -55,6 +55,8 @@ namespace lyren {
             }
         } else if (kind == Preference::playlist) {
             place(lib.playlists, edit.card, on);
+        } else if (kind == Preference::user) {
+            // Follow buttons and counts read the edit itself.
         } else {
             auto &collection = lib.collection[kind == Preference::artist ? 1 : 0];
             if (collection.loaded) {
@@ -98,6 +100,9 @@ namespace lyren {
                     break;
                 case Preference::playlist:
                     result = co_await provider(source).collect_playlist(edit.card.id, on);
+                    break;
+                case Preference::user:
+                    result = co_await provider(source).follow_user(edit.card.id, on);
                     break;
             }
             if (account_gen != lib.account_gen) {

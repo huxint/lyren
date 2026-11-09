@@ -3,10 +3,12 @@
 
 #include <glaze/glaze.hpp>
 
+#include <algorithm>
 #include <array>
 #include <format>
 #include <iterator>
 #include <map>
+#include <tuple>
 
 #include "core/log.hpp"
 #include "core/result_task.hpp"
@@ -64,12 +66,21 @@ namespace lyren::ncm {
             int32_t musicSize = 0, albumSize = 0;
         };
 
+        // A listener as lists, searches and posts describe them.
+        struct NUser {
+            uint64_t userId = 0;
+            Str nickname, avatarUrl, signature;
+            std::optional<int32_t> followeds;
+            std::optional<bool> followed, mutual;
+        };
+
         struct SearchResult {
             std::optional<std::vector<NSong>> songs;
             std::optional<std::vector<NAlbumInfo>> albums;
             std::optional<std::vector<NArtistInfo>> artists;
             std::optional<std::vector<NPlaylist>> playlists;
-            int32_t songCount = 0, albumCount = 0, artistCount = 0, playlistCount = 0;
+            std::optional<std::vector<NUser>> userprofiles;
+            int32_t songCount = 0, albumCount = 0, artistCount = 0, playlistCount = 0, userprofileCount = 0;
         };
         struct SearchReply {
             std::optional<SearchResult> result;
@@ -236,6 +247,7 @@ namespace lyren::ncm {
             std::optional<NPlaylist> playlist;
         };
         struct NCommentUser {
+            uint64_t userId = 0;
             Str nickname, avatarUrl;
         };
         struct NReplied {
@@ -270,6 +282,72 @@ namespace lyren::ncm {
         };
         struct AccountReply {
             std::optional<NProfile> profile;
+        };
+
+        struct NUserProfile {
+            uint64_t userId = 0;
+            Str nickname, avatarUrl, backgroundUrl, signature;
+            int32_t follows = 0, followeds = 0, eventCount = 0, playlistCount = 0, vipType = 0, province = 0;
+            std::optional<bool> followed, followMe;
+        };
+        struct UserDetailReply {
+            int32_t level = 0, listenSongs = 0, createDays = -1;
+            std::optional<bool> peopleCanSeeMyPlayRecord;
+            std::optional<NUserProfile> profile;
+        };
+        struct FollowsReply {
+            int code = 0;
+            Str message, msg;
+            std::optional<std::vector<NUser>> follow, followeds;
+            std::optional<bool> more;
+            std::optional<int32_t> size;
+        };
+
+        struct NPic {
+            Str originUrl, pcRectangleUrl, rectangleUrl;
+            int32_t width = 0, height = 0;
+        };
+        struct NResourceInfo {
+            Str name;
+        };
+        struct NCommentThread {
+            std::optional<NResourceInfo> resourceInfo;
+        };
+        struct NEventInfo {
+            std::optional<bool> liked;
+            int32_t likedCount = 0, commentCount = 0, shareCount = 0;
+            std::optional<NCommentThread> commentThread;
+        };
+        // A post. Its body is JSON in a string; a forwarded one is an object inside that body.
+        struct NEvent {
+            uint64_t id = 0;
+            int32_t type = 0;
+            int64_t eventTime = 0;
+            std::optional<NUser> user;
+            Str json, threadId;
+            std::optional<std::vector<NPic>> pics;
+            std::optional<NEventInfo> info;
+            std::optional<bool> owner;
+        };
+        struct NEventBody {
+            Str msg;
+            std::optional<NSong> song;
+            std::optional<NPlaylist> playlist;
+            std::optional<NAlbumInfo> album;
+            std::optional<NEvent> event;
+        };
+        struct EventsReply {
+            std::optional<std::vector<NEvent>> events, event;
+            std::optional<bool> more;
+            int64_t lasttime = -1;
+        };
+
+        struct NRanked {
+            int32_t playCount = 0, score = 0;
+            std::optional<NSong> song;
+        };
+        struct RankingReply {
+            std::optional<std::vector<NRanked>> weekData, allData;
         };
 
         constexpr glz::opts lax{.error_on_unknown_keys = false};
@@ -411,8 +489,112 @@ namespace lyren::ncm {
         }
 
         std::string comment_thread(Subject subject, std::string_view id) {
-            static constexpr std::array prefixes = {"R_SO_4_", "R_AL_3_", "A_PL_0_"};
+            static constexpr std::array prefixes = {"R_SO_4_", "R_AL_3_", "A_PL_0_", "A_EV_2_"};
             return std::string(prefixes[static_cast<size_t>(subject)]) + std::string(id);
+        }
+
+        Person person(const NUser &u) {
+            return {.id = std::to_string(u.userId),
+                    .name = u.nickname.value_or(""),
+                    .avatar = https(u.avatarUrl.value_or("")),
+                    .signature = trimmed(u.signature),
+                    .fans = u.followeds.value_or(-1),
+                    .followed = u.followed.value_or(false),
+                    .follows_me = u.mutual.value_or(false)};
+        }
+
+        // Province codes of user profiles (GB/T 2260), in both languages.
+        std::string province(int code) {
+            static constexpr std::array<std::tuple<int, std::string_view, std::string_view>, 34> names{{
+                {110000, "Beijing", "北京"},
+                {120000, "Tianjin", "天津"},
+                {130000, "Hebei", "河北"},
+                {140000, "Shanxi", "山西"},
+                {150000, "Inner Mongolia", "内蒙古"},
+                {210000, "Liaoning", "辽宁"},
+                {220000, "Jilin", "吉林"},
+                {230000, "Heilongjiang", "黑龙江"},
+                {310000, "Shanghai", "上海"},
+                {320000, "Jiangsu", "江苏"},
+                {330000, "Zhejiang", "浙江"},
+                {340000, "Anhui", "安徽"},
+                {350000, "Fujian", "福建"},
+                {360000, "Jiangxi", "江西"},
+                {370000, "Shandong", "山东"},
+                {410000, "Henan", "河南"},
+                {420000, "Hubei", "湖北"},
+                {430000, "Hunan", "湖南"},
+                {440000, "Guangdong", "广东"},
+                {450000, "Guangxi", "广西"},
+                {460000, "Hainan", "海南"},
+                {500000, "Chongqing", "重庆"},
+                {510000, "Sichuan", "四川"},
+                {520000, "Guizhou", "贵州"},
+                {530000, "Yunnan", "云南"},
+                {540000, "Tibet", "西藏"},
+                {610000, "Shaanxi", "陕西"},
+                {620000, "Gansu", "甘肃"},
+                {630000, "Qinghai", "青海"},
+                {640000, "Ningxia", "宁夏"},
+                {650000, "Xinjiang", "新疆"},
+                {710000, "Taiwan", "台湾"},
+                {810000, "Hong Kong", "香港"},
+                {820000, "Macao", "澳门"},
+            }};
+            auto it = std::ranges::find(names, code, [](const auto &n) {
+                return std::get<0>(n);
+            });
+            return it == names.end() ? "" : std::string(language() == Language::zh ? std::get<2>(*it) : std::get<1>(*it));
+        }
+
+        // Writes succeed only with code 200; the client lets a few other codes through for the callers that read them.
+        Result<void> written(const Reply &reply) {
+            return parse<WriteReply>(reply).and_then([&](auto r) -> Result<void> {
+                if (r.code != 200) {
+                    std::string message = r.message.value_or(r.msg.value_or(""));
+                    return std::unexpected(message.empty() ? lyren::trf("NetEase Music refused the request ({})", r.code) : std::move(message));
+                }
+                return {};
+            });
+        }
+
+        Post post(const NEvent &e, bool nested = false) {
+            Post out{.id = std::to_string(e.id), .time = e.eventTime, .owned = e.owner.value_or(false)};
+            if (e.user) {
+                out.author = person(*e.user);
+            }
+            constexpr std::string_view prefix = "A_EV_2_";
+            out.thread = e.threadId && e.threadId->starts_with(prefix) ? e.threadId->substr(prefix.size()) : out.id + "_" + out.author.id;
+            if (e.info) {
+                out.liked = e.info->liked.value_or(false);
+                out.likes = e.info->likedCount, out.comments = e.info->commentCount, out.forwards = e.info->shareCount;
+            }
+            if (e.pics) {
+                for (const auto &pic : *e.pics) {
+                    if (auto url = https(pic.originUrl.value_or("")); !url.empty()) {
+                        out.pictures.push_back({std::move(url), pic.width, pic.height});
+                    }
+                }
+            }
+            NEventBody body;
+            if (e.json && !glz::read<lax>(body, *e.json)) {
+                out.text = trimmed(body.msg);
+                if (body.song) {
+                    out.track = track(*body.song);
+                } else if (body.playlist) {
+                    out.card = listed_playlist(*body.playlist);
+                } else if (body.album) {
+                    out.card = album_card(*body.album);
+                }
+                if (body.event && !nested) {
+                    out.forwarded.push_back(post(*body.event, true));
+                }
+            }
+            // Videos, programmes and the like: the service's own words for what is shared.
+            if (!out.track && !out.card && out.forwarded.empty() && e.type != 35 && e.info && e.info->commentThread && e.info->commentThread->resourceInfo) {
+                out.resource = trimmed(e.info->commentThread->resourceInfo->name);
+            }
+            return out;
         }
 
         Result<CommentsReply> comment_response(const Reply &reply) {
@@ -443,13 +625,21 @@ namespace lyren::ncm {
                         .collect_playlists = true,
                         .collect_albums = true,
                         .follow_artists = true,
-                        .comments = {true, true, true},
+                        .comments = {true, true, true, true},
                         .comment_sort = true,
                         .comment_replies = true,
                         .comment_likes = true,
                         .comment_post = true,
                         .comment_delete = true,
-                        .qr_login = true};
+                        .qr_login = true,
+                        .profiles = true,
+                        .people = true,
+                        .follow_users = true,
+                        .posts = true,
+                        .post_write = true,
+                        .ranking = true,
+                        .profile_playlists = true};
+        capabilities.search[4] = true;
         features.daily.songs = [this] {
             return daily();
         };
@@ -484,7 +674,7 @@ namespace lyren::ncm {
     }
 
     Task<Result<Batch>> Netease::search(std::string query, SearchKind kind, int offset, int limit) {
-        static constexpr std::array types = {1, 10, 100, 1000};
+        static constexpr std::array types = {1, 10, 100, 1000, 1002};
         co_return parse<SearchReply>(
             co_await client.call("/api/cloudsearch/pc", std::format(R"("s":{},"type":{},"limit":{},"offset":{},"total":true)", glz::write_json(glz::escape_bytes_t{query}).value(),
                                                                     types[static_cast<int>(kind)], limit, offset)))
@@ -527,6 +717,14 @@ namespace lyren::ncm {
                             }
                         }
                         page.total = static_cast<int>(res.playlistCount);
+                        break;
+                    case SearchKind::users:
+                        if (res.userprofiles) {
+                            for (const auto &u : *res.userprofiles) {
+                                page.cards.push_back(user_card(person(u)));
+                            }
+                        }
+                        page.total = static_cast<int>(res.userprofileCount);
                         break;
                 }
                 if (offset + limit < page.total) {
@@ -1189,6 +1387,7 @@ namespace lyren::ncm {
                     m.id = std::to_string(c.commentId);
                     if (c.user) {
                         m.user = c.user->nickname.value_or(""), m.avatar = https(c.user->avatarUrl.value_or(""));
+                        m.user_id = c.user->userId ? std::to_string(c.user->userId) : "";
                     }
                     m.text = trimmed(c.content);
                     m.time = c.timeStr.value_or("");
@@ -1252,6 +1451,150 @@ namespace lyren::ncm {
     Task<Result<void>> Netease::delete_comment(Subject subject, std::string id, std::string comment) {
         co_return parse_comment_write(co_await client.call("/api/resource/comments/delete",
                                                            std::format(R"("threadId":"{}","commentId":"{}")", comment_thread(subject, id), comment), Api::eapi, net::Retry::never));
+    }
+
+    Result<Profile> parse_profile(const Reply &reply) {
+        return parse<UserDetailReply>(reply).and_then([&](auto r) -> Result<Profile> {
+            if (!r.profile || !r.profile->userId) {
+                return std::unexpected("NetEase Music returned no such listener");
+            }
+            const NUserProfile &u = *r.profile;
+            return Profile{.id = std::to_string(u.userId),
+                           .name = u.nickname.value_or(""),
+                           .avatar = https(u.avatarUrl.value_or("")),
+                           .background = https(u.backgroundUrl.value_or("")),
+                           .signature = trimmed(u.signature),
+                           .location = province(u.province),
+                           .level = r.level,
+                           .follows = u.follows,
+                           .fans = u.followeds,
+                           .posts = u.eventCount,
+                           .playlists = u.playlistCount,
+                           .listened = r.listenSongs,
+                           .days = r.createDays,
+                           .vip = u.vipType > 0,
+                           .followed = u.followed.value_or(false),
+                           .follows_me = u.followMe.value_or(false)};
+        });
+    }
+
+    Result<PeoplePage> parse_people(const Reply &reply, bool fans, int offset) {
+        return parse<FollowsReply>(reply).and_then([&](auto r) -> Result<PeoplePage> {
+            const auto &list = fans ? r.followeds : r.follow;
+            if (!list) {
+                // A hidden list comes back with the service's reason.
+                std::string message = r.message.value_or(r.msg.value_or(""));
+                return std::unexpected(message.empty() ? "NetEase Music returned no follow list" : std::move(message));
+            }
+            PeoplePage out{.total = fans && r.size ? *r.size : -1, .more = r.more.value_or(false) && !list->empty()};
+            for (const auto &u : *list) {
+                out.people.push_back(person(u));
+            }
+            if (out.more) {
+                out.cursor = std::to_string(offset + static_cast<int>(list->size()));
+            }
+            return out;
+        });
+    }
+
+    Result<PostPage> parse_posts(const Reply &reply) {
+        return parse<EventsReply>(reply).and_then([&](auto r) -> Result<PostPage> {
+            const auto &list = r.events ? r.events : r.event;
+            if (!list) {
+                return std::unexpected("NetEase Music returned no posts");
+            }
+            PostPage out{.more = r.more.value_or(false) && !list->empty()};
+            for (const auto &e : *list) {
+                if (e.id) {
+                    out.posts.push_back(post(e));
+                }
+            }
+            if (out.more) {
+                if (r.lasttime < 0) {
+                    return std::unexpected("NetEase Music returned no post pagination cursor");
+                }
+                out.cursor = std::to_string(r.lasttime);
+            }
+            return out;
+        });
+    }
+
+    Result<Ranking> parse_ranking(const Reply &reply, bool all_time) {
+        if (reply.code == -2) {
+            return std::unexpected("This listening ranking is private");
+        }
+        return parse<RankingReply>(reply).and_then([&](auto r) -> Result<Ranking> {
+            const auto &list = all_time ? r.allData : r.weekData;
+            if (!list) {
+                return std::unexpected("NetEase Music returned no listening ranking");
+            }
+            Ranking out;
+            for (const auto &entry : *list) {
+                if (entry.song) {
+                    out.tracks.push_back(track(*entry.song));
+                    out.plays.push_back(entry.playCount);
+                    out.scores.push_back(std::clamp(entry.score, 0, 100));
+                }
+            }
+            return out;
+        });
+    }
+
+    Result<void> parse_social_write(const Reply &reply) {
+        return written(reply);
+    }
+
+    Task<Result<Profile>> Netease::profile(std::string uid) {
+        co_return parse_profile(co_await client.call("/api/v1/user/detail/" + uid, "", Api::weapi));
+    }
+
+    Task<Result<PeoplePage>> Netease::people(std::string uid, bool fans, std::string cursor) {
+        const int offset = cursor.empty() ? 0 : std::stoi(cursor);
+        if (fans) {
+            co_return parse_people(
+                co_await client.call("/api/user/getfolloweds/" + uid, std::format(R"("userId":{},"time":"0","limit":30,"offset":{},"getcounts":"true")", uid, offset)), true,
+                offset);
+        }
+        co_return parse_people(co_await client.call("/api/user/getfollows/" + uid, std::format(R"("offset":{},"limit":30,"order":true)", offset), Api::weapi), false, offset);
+    }
+
+    Task<Result<void>> Netease::follow_user(std::string uid, bool on) {
+        co_return written(co_await client.call(std::format("/api/user/{}/{}", on ? "follow" : "delfollow", uid), "", Api::weapi, net::Retry::never));
+    }
+
+    Task<Result<PostPage>> Netease::posts(std::string uid, std::string cursor) {
+        co_return parse_posts(co_await client.call("/api/event/get/" + uid, std::format(R"("getcounts":true,"time":{},"limit":20,"total":false)", cursor.empty() ? "-1" : cursor)));
+    }
+
+    Task<Result<PostPage>> Netease::feed(std::string cursor) {
+        co_return parse_posts(co_await client.call("/api/v1/event/get", std::format(R"("pagesize":20,"lasttime":{})", cursor.empty() ? "-1" : cursor), Api::weapi));
+    }
+
+    Task<Result<void>> Netease::like_post(Post post, bool on) {
+        co_return written(co_await client.call(on ? "/api/resource/like" : "/api/resource/unlike", std::format(R"("threadId":"{}")", comment_thread(Subject::post, post.thread)),
+                                               Api::weapi, net::Retry::never));
+    }
+
+    Task<Result<void>> Netease::delete_post(std::string id) {
+        co_return written(co_await client.call("/api/event/delete", std::format(R"("id":{})", glz::write_json(id).value()), Api::weapi, net::Retry::never));
+    }
+
+    Task<Result<void>> Netease::share(std::string text, std::optional<Track> track) {
+        co_return written(co_await client.call(
+            "/api/share/friends/resource",
+            std::format(R"("type":"{}","msg":{},"id":"{}")", track ? "song" : "noresource", glz::write_json(glz::escape_bytes_t{text}).value(), track ? track->id : ""), Api::weapi,
+            net::Retry::never));
+    }
+
+    Task<Result<void>> Netease::forward(Post post, std::string text) {
+        co_return written(co_await client.call("/api/event/forward",
+                                               std::format(R"("forwards":{},"id":{},"eventUserId":{})", glz::write_json(glz::escape_bytes_t{text}).value(),
+                                                           glz::write_json(post.id).value(), glz::write_json(post.author.id).value()),
+                                               Api::weapi, net::Retry::never));
+    }
+
+    Task<Result<Ranking>> Netease::ranking(std::string uid, bool all_time) {
+        co_return parse_ranking(co_await client.call("/api/v1/play/record", std::format(R"("uid":{},"type":{})", uid, all_time ? 0 : 1), Api::weapi), all_time);
     }
 
     // As api-enhanced's scrobble: every value is a string, and the play record always ends with "playend" (the server

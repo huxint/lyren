@@ -41,6 +41,9 @@ namespace lyren {
     }
 
     std::string share_url(const Card &card) {
+        if (card.kind == CardKind::user) {
+            return card.source == Source::netease ? "https://music.163.com/user/home?id=" + card.id : "";
+        }
         if (card.source == Source::netease) {
             constexpr std::array paths = {"playlist", "album", "artist"};
             return std::format("https://music.163.com/{}?id={}", paths[static_cast<size_t>(card.kind)], card.id);
@@ -90,16 +93,26 @@ namespace lyren {
             case CardKind::artist:
                 path = "singer";
                 break;
+            case CardKind::user:
+                break;
         }
-        return id.empty() ? "" : std::format("https://y.qq.com/n/ryqq/{}/{}", path, id);
+        return id.empty() || path.empty() ? "" : std::format("https://y.qq.com/n/ryqq/{}/{}", path, id);
     }
 
     std::string card_subtitle(const Card &card) {
         if (card.count_kind == Card::Count::none) {
             return card.subtitle;
         }
-        std::string count = trf(card.count_kind == Card::Count::songs ? "{} songs" : "{} albums", card.count);
+        static constexpr std::array formats = {"", "{} songs", "{} albums", "{} fans"};
+        std::string count = trf(formats[static_cast<size_t>(card.count_kind)], card.count_kind == Card::Count::fans ? short_number(card.count) : std::to_string(card.count));
         return card.subtitle.empty() ? count : count + " · " + card.subtitle;
+    }
+
+    std::string short_number(int n) {
+        if (language() == Language::zh) {
+            return n >= 10000 ? trf("{:.1f}w", n / 1e4) : std::to_string(n);
+        }
+        return n >= 1000 ? std::format("{:.1f}k", n / 1e3) : std::to_string(n);
     }
 
     std::string cover_url(std::string_view url, int px) {

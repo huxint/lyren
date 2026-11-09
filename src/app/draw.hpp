@@ -2,11 +2,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <ctime>
 #include <format>
 #include <string>
 #include <utility>
 
 #include "core/i18n.hpp"
+#include "core/utf8.hpp"
 #include "media/lyrics.hpp"
 #include "media/types.hpp"
 #include "ui/ui.hpp"
@@ -59,6 +62,16 @@ namespace lyren {
         return t * t * t * (t * (6 * t - 15) + 10);
     }
 
+    // The part of an image of aspect `image` that fills a frame of aspect `frame`, centred.
+    inline ui::Rect cover_uv(float image, float frame) {
+        if (image > frame) {
+            float u = frame / image;
+            return {(1 - u) / 2, 0, u, 1};
+        }
+        float v = image / frame;
+        return {0, (1 - v) / 2, 1, v};
+    }
+
     inline ui::Rect mix(ui::Rect a, ui::Rect b, float k) {
         return {std::lerp(a.x, b.x, k), std::lerp(a.y, b.y, k), std::lerp(a.w, b.w, k), std::lerp(a.h, b.h, k)};
     }
@@ -101,12 +114,73 @@ namespace lyren {
         }
     }
 
-    // Counts as "1.2k", or "1.2万" in Chinese.
-    inline std::string short_count(int n) {
-        if (language() == Language::zh) {
-            return n >= 10000 ? trf("{:.1f}w", n / 1e4) : std::to_string(n);
+    // When a post was made, as near as matters: the time today, the day this year, the date before that.
+    inline std::string post_time(int64_t ms) {
+        if (ms <= 0) {
+            return {};
         }
-        return n >= 1000 ? std::format("{:.1f}k", n / 1e3) : std::to_string(n);
+        const std::time_t at = static_cast<std::time_t>(ms / 1000), now = std::time(nullptr);
+        std::tm a, n;
+        localtime_r(&at, &a);
+        localtime_r(&now, &n);
+        if (a.tm_year == n.tm_year && a.tm_yday == n.tm_yday) {
+            return trf("Today {:02}:{:02}", a.tm_hour, a.tm_min);
+        }
+        if (a.tm_year == n.tm_year && a.tm_yday + 1 == n.tm_yday) {
+            return trf("Yesterday {:02}:{:02}", a.tm_hour, a.tm_min);
+        }
+        if (a.tm_year == n.tm_year) {
+            return trf("{}/{} {:02}:{:02}", a.tm_mon + 1, a.tm_mday, a.tm_hour, a.tm_min);
+        }
+        return trf("{0}/{1}/{2}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
+    }
+
+    // Topics (#…#) and mentions (@…), as byte ranges of s.
+    inline std::vector<std::pair<size_t, size_t>> highlights(std::string_view s) {
+        std::vector<std::pair<size_t, size_t>> out;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == '#') {
+                const size_t end = s.find('#', i + 1);
+                if (end != s.npos && end - i > 1 && end - i <= 96 && s.substr(i, end - i).find('\n') == s.npos) {
+                    out.emplace_back(i, end + 1);
+                    i = end;
+                }
+            } else if (s[i] == '@') {
+                // A name runs to a space or a punctuation mark, ASCII or full-width.
+                size_t end = i + 1;
+                while (end < s.size() && !std::strchr(" \t\n:,.!?@", s[end]) && !s.substr(end).starts_with("\xef\xbc") && !s.substr(end).starts_with("\xe3\x80")) {
+                    end = utf8::next(s, end);
+                }
+                if (end > i + 1) {
+                    out.emplace_back(i, end);
+                    i = end - 1;
+                }
+            }
+        }
+        return out;
+    }
+
+    // One wrapped line of s, from offset, the marked parts in mark.
+    inline void rich_line(ui::Painter &p, float x, float baseline, std::string_view s, std::string_view line, const std::vector<std::pair<size_t, size_t>> &marks,
+                          ui::TextStyle style, ui::Color mark) {
+        const auto from = static_cast<size_t>(line.data() - s.data()), to = from + line.size();
+        size_t at = from;
+        for (auto [a, b] : marks) {
+            if (b <= at || a >= to) {
+                continue;
+            }
+            a = std::max(a, at), b = std::min(b, to);
+            if (a > at) {
+                x += p.text(x, baseline, s.substr(at, a - at), style);
+            }
+            ui::TextStyle lit = style;
+            lit.color = mark;
+            x += p.text(x, baseline, s.substr(a, b - a), lit);
+            at = b;
+        }
+        if (at < to) {
+            p.text(x, baseline, s.substr(at, to - at), style);
+        }
     }
 
     // With thousands separators: 12,345.

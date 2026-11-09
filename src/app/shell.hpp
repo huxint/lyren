@@ -82,7 +82,9 @@ namespace lyren {
             album,
             artist,
             similar,
-            search
+            search,
+            profile,
+            moments
         };
         // Tracks behind a page, loaded when it is entered.
         struct List {
@@ -122,7 +124,8 @@ namespace lyren {
             song,
             artist,
             album,
-            playlist
+            playlist,
+            user
         };
         // One writer per resource. Further clicks change the desired value while the current request finishes.
         struct PreferenceEdit {
@@ -131,11 +134,21 @@ namespace lyren {
             Track track;
             Card card;
         };
+        // Posts a page at a time: someone's timeline or the feed. Heights are laid out for heights_w.
+        struct PostList {
+            std::vector<Post> posts;
+            std::vector<float> heights;
+            float heights_w = 0, heights_size = 0;
+            bool more = true, loading = false;
+            std::string cursor, error;
+            double since = -10;
+            uint64_t gen = 0;
+        };
         // Each platform keeps its own account, cached pages and pagination state.
         struct Library {
             std::optional<Account> account;
             uint64_t gen = 0, account_gen = 0, preference_gen = 0, playlist_gen = 0;
-            std::array<StringMap<PreferenceEdit>, 4> preferences;
+            std::array<StringMap<PreferenceEdit>, 5> preferences;
             std::unordered_set<std::string> playlist_writes;
             std::vector<Card> playlists, daily_lists;
             double daily_since = -10;
@@ -161,6 +174,7 @@ namespace lyren {
             uint64_t collection_gen = 0;
             std::array<std::shared_ptr<DislikeList>, 3> dislikes;
             int dislike_tab = 0;
+            std::shared_ptr<PostList> feed; // posts by the people the account follows
         };
         // An artist's page: the head, songs and albums a page at a time, the introduction (intro holds only its status).
         struct ArtistPage {
@@ -171,11 +185,53 @@ namespace lyren {
             Results songs, albums, intro;
             std::vector<std::pair<std::string, std::string>> sections;
         };
+        struct PeopleList {
+            std::vector<Person> people;
+            int total = -1;
+            bool more = true, loading = false;
+            std::string cursor, error;
+            double since = -10;
+            uint64_t gen = 0;
+        };
+        struct RankingList {
+            Ranking ranking;
+            bool loading = false, loaded = false;
+            std::string error;
+            double since = -10;
+        };
+        // What a listener's page opens into from its board of tiles.
+        enum class ProfileView : uint8_t {
+            board,
+            posts,
+            ranking,
+            follows,
+            fans,
+            playlists,
+            feed
+        };
+        // A listener's page: their head and record, the board of tiles, and the view a tile opened into.
+        struct ProfilePage {
+            std::optional<Profile> info;
+            bool loading = false;
+            std::string error;
+            ProfileView view = ProfileView::board, shown = ProfileView::posts; // shown: the view drawn while it closes
+            std::array<ui::Rect, 7> tiles{};                                   // where the board last drew each view's tile
+            int ranking_tab = 0;                                               // the week or all time
+            std::array<PeopleList, 2> people;                                  // follows, fans
+            std::shared_ptr<PostList> posts = std::make_shared<PostList>();
+            std::array<RankingList, 2> rankings;
+            Results playlists;
+            int created = 0; // how many of the playlists they made; the rest they saved
+            ui::Rect origin; // the picture the page was opened from, which flies to the record's label
+            double since = -10, view_time = -10;
+            float narrow_h = 0; // the scrolling column's height in narrow windows, as last laid out
+        };
         struct Route {
             Page page;
             Card card; // what a playlist-like page shows
             std::shared_ptr<List> list;
             std::shared_ptr<ArtistPage> artist;
+            std::shared_ptr<ProfilePage> profile;
         };
         // The comments dialog, hot and newest comments a page at a time.
         struct Feed {
@@ -290,6 +346,63 @@ namespace lyren {
         void desktop_mock(ui::Ui &ui, ui::Rect r, bool island);
         void wallpaper(ui::Ui &ui, ui::Rect r, float radius);
         void categories_modal(ui::Ui &ui, ui::Rect r);
+        // Listener pages: the page over the window, their record and head, the board of tiles and the views they open.
+        void profile_page(ui::Ui &ui, ui::Rect r);
+        void profile_backdrop(ui::Ui &ui, ui::Rect r, const Profile &who, float in);
+        // The record: their most played songs as grooves around their picture. aside: how far it has rolled to the edge
+        // to make room for a view, where a click brings it back.
+        void profile_record(ui::Ui &ui, ui::Rect disc, ProfilePage &page, const Profile &who, float in, float aside);
+        // Their name, words and actions beside or under the record.
+        void profile_head(ui::Ui &ui, ui::Rect r, ProfilePage &page, const Profile &who, bool self, bool centered);
+        // The tiles fill r's height (fill) or stand at a fixed height; returns the height they take.
+        float profile_board(ui::Ui &ui, ui::Rect r, ProfilePage &page, const Profile &who, bool self, bool fill);
+        // A tile's glass and heading; returns the room for its content. id 0: a tile that opens nothing.
+        ui::Rect profile_tile(ui::Ui &ui, ui::Id id, ui::Rect r, std::string_view icon, std::string_view title, std::string_view note, bool &clicked);
+        void profile_view(ui::Ui &ui, ui::Rect r, ProfilePage &page, ProfileView view, const Profile &who, bool self);
+        void people_view(ui::Ui &ui, ui::Rect r, ProfilePage &page, bool self);
+        void ranking_view(ui::Ui &ui, ui::Rect r, ProfilePage &page);
+        void playlists_view(ui::Ui &ui, ui::Rect r, ProfilePage &page, bool self);
+        void person_card(ui::Ui &ui, ui::Rect r, Source source, const Person &person);
+        void follow_button(ui::Ui &ui, ui::Id id, ui::Rect r, Source source, const Person &person);
+        static float follow_button_width(ui::Ui &ui);
+        void open_profile_view(ui::Ui &ui, ProfilePage &page, ProfileView view);
+        // The fans shown for someone, counting a follow the user has just made or taken back.
+        int shown_fans(Source source, const Profile &who) const;
+        int people_count(const ProfilePage &page, Source source, const Profile &who, bool fans) const;
+        // from: the picture clicked, which the record's label grows out of.
+        void open_profile(ui::Ui &ui, Source source, std::string id, std::string name, std::string avatar, ui::Rect from = {});
+        void open_own_profile(ui::Ui &ui, ui::Rect from = {});
+        bool own_profile(const Card &card) const;
+        bool listening_tile(const Card &card) const;
+        std::vector<ProfileView> profile_tiles(const Card &card) const;
+        Task<void> load_profile(std::shared_ptr<ProfilePage> page, Card card);
+        void load_people(std::shared_ptr<ProfilePage> page, Card card, int tab);
+        Task<void> fetch_people(std::shared_ptr<ProfilePage> page, Card card, int tab, uint64_t gen);
+        void load_ranking(std::shared_ptr<ProfilePage> page, Card card, int tab);
+        Task<void> fetch_ranking(std::shared_ptr<ProfilePage> page, Card card, int tab);
+        Task<void> load_profile_playlists(std::shared_ptr<ProfilePage> page, Card card);
+        void toggle_follow_user(Source source, const Person &person);
+        bool following(Source source, const Person &person) const;
+
+        // Posts: the feed page, a list of posts, one post, and writing, liking, forwarding and deleting them.
+        void moments_page(ui::Ui &ui, ui::Rect r);
+        // byline: posts name their authors (the feed); a listener's own timeline does not need to.
+        void post_list(ui::Ui &ui, ui::Rect r, ui::Id id, std::shared_ptr<PostList> list, Source source, const std::string &author, bool byline, double since);
+        float post_card(ui::Ui &ui, Source source, const Post &post, float x, float y, float w, bool draw, bool byline);
+        // The song, playlist, pictures or forwarded post a post carries; returns the height used.
+        float post_attachments(ui::Ui &ui, Source source, const Post &post, float x, float y, float w, bool draw);
+        void load_posts(std::shared_ptr<PostList> list, Source source, std::string author);
+        Task<void> fetch_posts(std::shared_ptr<PostList> list, Source source, std::string author, uint64_t gen);
+        void refresh_own_posts(Source source);
+        void toggle_post_like(Source source, const Post &post);
+        void confirm_post_delete(ui::Ui &ui, Source source, Post post);
+        void open_composer(ui::Ui &ui, Source source, std::optional<Track> track = {}, std::optional<Post> forward = {});
+        void composer_modal(ui::Ui &ui, ui::Rect r);
+        float composer_height();
+        Task<void> send_post();
+        // Starts a song right away after the one playing, keeping the rest of the queue.
+        void play_now(Track track);
+
         // Lays out a comment at y, or only measures it; returns its height. featured: the top hot comment, set as a quote.
         float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw, bool featured = false);
         // The comments header over the subject's cover: the subject, its record and the tabs. Returns its height.
@@ -508,7 +621,7 @@ namespace lyren {
         // Search.
         std::string query_, searched_;
         int search_tab_ = 0;
-        std::array<std::array<Results, 4>, platforms.size()> results_;
+        std::array<std::array<Results, 5>, platforms.size()> results_;
         uint64_t search_gen_ = 0;
         int selected_ = -1;
         bool choosing_ = false;
@@ -651,6 +764,21 @@ namespace lyren {
         std::string qr_error_;
         std::string account_config_;
         bool account_importing_ = false;
+
+        // Listener pages and posts: likes and deletions the user made, the post being written, and how far records
+        // have turned while music played.
+        CacheMap<Like> post_likes_;
+        CacheMap<uint64_t> post_deletes_;
+        uint64_t post_write_gen_ = 0;
+        struct PostDraft {
+            Source source = Source::netease;
+            std::string text;
+            std::optional<Track> track;
+            std::optional<Post> forward;
+            bool sending = false, focus = false;
+        } post_draft_;
+        double record_turn_ = 0, record_last_ = 0;
+        ui::Rect profile_from_; // the picture a profile is being opened from
 
         // Comments panel and the playlist editor.
         Thread thread_;

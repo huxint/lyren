@@ -158,6 +158,8 @@ add_library(
     src/app/settings.cpp
     src/app/stage.cpp
     src/app/panel.cpp
+    src/app/profile.cpp
+    src/app/posts.cpp
     src/app/desktop.cpp)
 target_link_libraries(lyren_lib PUBLIC lyren_ui PkgConfig::SDBUS glaze PRIVATE PkgConfig::QRENCODE)
 add_wayland_protocols(

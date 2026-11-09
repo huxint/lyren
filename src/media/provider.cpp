@@ -112,6 +112,36 @@ namespace lyren {
     Task<Result<void>> Provider::reorder_playlist(std::string, std::vector<Track>) {
         return unavailable<void>();
     }
+    Task<Result<Profile>> Provider::profile(std::string) {
+        return unavailable<Profile>();
+    }
+    Task<Result<PeoplePage>> Provider::people(std::string, bool, std::string) {
+        return unavailable<PeoplePage>();
+    }
+    Task<Result<void>> Provider::follow_user(std::string, bool) {
+        return unavailable<void>();
+    }
+    Task<Result<PostPage>> Provider::posts(std::string, std::string) {
+        return unavailable<PostPage>();
+    }
+    Task<Result<PostPage>> Provider::feed(std::string) {
+        return unavailable<PostPage>();
+    }
+    Task<Result<void>> Provider::like_post(Post, bool) {
+        return unavailable<void>();
+    }
+    Task<Result<void>> Provider::delete_post(std::string) {
+        return unavailable<void>();
+    }
+    Task<Result<void>> Provider::share(std::string, std::optional<Track>) {
+        return unavailable<void>();
+    }
+    Task<Result<void>> Provider::forward(Post, std::string) {
+        return unavailable<void>();
+    }
+    Task<Result<Ranking>> Provider::ranking(std::string, bool) {
+        return unavailable<Ranking>();
+    }
     Task<Result<QrCode>> Provider::qr_start() {
         return unavailable<QrCode>();
     }

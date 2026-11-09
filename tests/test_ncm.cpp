@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include "core/i18n.hpp"
 #include "ncm/crypto.hpp"
 #include "ncm/netease.hpp"
 
@@ -106,7 +107,7 @@ TEST_CASE("NetEase playlist writes preserve refusals instead of reporting succes
 
 TEST_CASE("NetEase comment pages keep exact IDs, pictures, cursors and failures") {
     auto page = parse_comments({.body = R"({"code":200,"data":{"totalCount":45,"hasMore":true,"cursor":"normalHot#20","comments":[
-        {"commentId":9007199254740993,"user":{"nickname":"听众","avatarUrl":"http://example.com/avatar.jpg"},
+        {"commentId":9007199254740993,"user":{"userId":9007199254740995,"nickname":"听众","avatarUrl":"http://example.com/avatar.jpg"},
          "content":" 第一行\n第二行 🎵 ","timeStr":"昨天23:18","likedCount":12,"liked":true,"owner":true,"replyCount":3,
          "beReplied":[{"user":{"nickname":"原作者"},"content":" 原文 "}]}
     ]}})"});
@@ -118,6 +119,7 @@ TEST_CASE("NetEase comment pages keep exact IDs, pictures, cursors and failures"
     const auto &c = page->comments.front();
     CHECK(c.id == "9007199254740993");
     CHECK(c.user == "听众");
+    CHECK(c.user_id == "9007199254740995");
     CHECK(c.avatar == "https://example.com/avatar.jpg");
     CHECK(c.text == "第一行\n第二行 🎵");
     CHECK(c.time == "昨天23:18");
@@ -182,4 +184,218 @@ TEST_CASE("NetEase comment writes require business success and posting returns i
     CHECK_FALSE(parse_comment_post({.body = R"({"code":200,"comment":null})"}));
     CHECK_FALSE(parse_comment_post({.body = R"({"code":200,"comment":{}})"}));
     CHECK_FALSE(parse_comment_post({.error = "Network connection failed"}));
+}
+
+TEST_CASE("NetEase listener pages keep counts, relations and the province in either language") {
+    const Reply reply{.body = R"({"code":200,"level":9,"listenSongs":12345,"createDays":3001,"peopleCanSeeMyPlayRecord":true,"profile":{
+        "userId":9007199254740993,"nickname":"听众","avatarUrl":"http://p1.music.126.net/a.jpg","backgroundUrl":"https://p1.music.126.net/b.jpg",
+        "signature":"\n 签名 \n","follows":12,"followeds":34567,"eventCount":8,"playlistCount":5,"vipType":11,"province":440000,
+        "followed":true,"followMe":false}})"};
+    const auto before = lyren::language();
+    lyren::set_language(lyren::Language::en);
+    auto profile = parse_profile(reply);
+    REQUIRE(profile);
+    CHECK(profile->id == "9007199254740993");
+    CHECK(profile->name == "听众");
+    CHECK(profile->avatar == "https://p1.music.126.net/a.jpg");
+    CHECK(profile->background == "https://p1.music.126.net/b.jpg");
+    CHECK(profile->signature == "签名");
+    CHECK(profile->location == "Guangdong");
+    CHECK(profile->level == 9);
+    CHECK(profile->follows == 12);
+    CHECK(profile->fans == 34567);
+    CHECK(profile->posts == 8);
+    CHECK(profile->playlists == 5);
+    CHECK(profile->listened == 12345);
+    CHECK(profile->days == 3001);
+    CHECK(profile->vip);
+    CHECK(profile->followed);
+    CHECK_FALSE(profile->follows_me);
+    lyren::set_language(lyren::Language::zh);
+    CHECK(parse_profile(reply)->location == "广东");
+    lyren::set_language(before);
+
+    auto plain = parse_profile({.body = R"({"code":200,"level":0,"profile":{"userId":1,"nickname":"新人","province":999999}})"});
+    REQUIRE(plain);
+    CHECK(plain->location.empty());
+    CHECK(plain->signature.empty());
+    CHECK(plain->days == -1);
+    CHECK_FALSE(plain->vip);
+    CHECK_FALSE(plain->followed);
+    CHECK_FALSE(parse_profile({.body = R"({"code":404,"profile":null})"}));
+    CHECK_FALSE(parse_profile({.body = R"({"code":200,"profile":{"userId":0}})"}));
+    CHECK_FALSE(parse_profile({.error = "Network connection failed"}));
+}
+
+TEST_CASE("NetEase follow lists page by offset and only fans carry a total") {
+    auto follows = parse_people({.body = R"({"code":200,"more":true,"follow":[
+        {"userId":9007199254740993,"nickname":"甲","avatarUrl":"http://p1.music.126.net/1.jpg","signature":" 你好 ","followeds":10,"followed":true,"mutual":true},
+        {"userId":2,"nickname":"乙"}]})"},
+                                false, 20);
+    REQUIRE(follows);
+    CHECK(follows->total == -1);
+    CHECK(follows->more);
+    CHECK(follows->cursor == "22");
+    REQUIRE(follows->people.size() == 2);
+    const auto &first = follows->people[0];
+    CHECK(first.id == "9007199254740993");
+    CHECK(first.name == "甲");
+    CHECK(first.avatar == "https://p1.music.126.net/1.jpg");
+    CHECK(first.signature == "你好");
+    CHECK(first.fans == 10);
+    CHECK(first.followed);
+    CHECK(first.follows_me);
+    CHECK(follows->people[1].fans == -1);
+    CHECK_FALSE(follows->people[1].followed);
+    CHECK_FALSE(follows->people[1].follows_me);
+
+    auto fans = parse_people({.body = R"({"code":200,"more":false,"size":3,"followeds":[{"userId":3,"nickname":"丙"}]})"}, true, 0);
+    REQUIRE(fans);
+    CHECK(fans->total == 3);
+    CHECK_FALSE(fans->more);
+    CHECK(fans->cursor.empty());
+    REQUIRE(fans->people.size() == 1);
+    CHECK(fans->people[0].id == "3");
+
+    // An empty page ends the list whatever the service says.
+    auto end = parse_people({.body = R"({"code":200,"more":true,"follow":[]})"}, false, 40);
+    REQUIRE(end);
+    CHECK_FALSE(end->more);
+    CHECK(end->cursor.empty());
+    CHECK_FALSE(parse_people({.body = R"({"code":200,"followeds":[]})"}, false, 0));
+    CHECK_FALSE(parse_people({.body = R"({"code":200,"follow":[]})"}, true, 0));
+    CHECK_FALSE(parse_people({.error = "Network connection failed"}, true, 0));
+}
+
+TEST_CASE("NetEase posts carry their song, playlist, pictures and forwarded post") {
+    // Each post's body is JSON in a string; a forwarded post's body is a string inside that one.
+    auto page = parse_posts(
+        {.body =
+             R"({"code": 200, "more": true, "lasttime": 1700000000000, "events": [{"id": 9007199254740993, "type": 18, "eventTime": 1700000000123, "user": {"userId": 7, "nickname": "作者", "avatarUrl": "http://p1.music.126.net/u.jpg"}, "json": "{\"msg\": \"\\n#每日一听# 好听 @朋友 \", \"song\": {\"id\": 186016, \"name\": \"晴天\", \"artists\": [{\"id\": 6452, \"name\": \"周杰伦\"}], \"album\": {\"id\": 18905, \"name\": \"叶惠美\", \"picUrl\": \"http://p1.music.126.net/c.jpg\"}, \"duration\": 269000}}", "threadId": "A_EV_2_9007199254740993_7", "owner": true, "pics": [], "info": {"liked": true, "likedCount": 5, "commentCount": 2, "shareCount": 1, "commentThread": {"resourceInfo": {"name": "晴天"}}}},
+        {"id": 2, "type": 13, "eventTime": 1, "user": {"userId": 8, "nickname": "乙"}, "json": "{\"msg\": \"\", \"playlist\": {\"id\": 3778678, \"name\": \"热歌榜\", \"coverImgUrl\": \"http://p1.music.126.net/p.jpg\", \"trackCount\": 200, \"creator\": {\"nickname\": \"网易云音乐\", \"userId\": 1}}}", "info": {"likedCount": 0}},
+        {"id": 3, "type": 35, "eventTime": 2, "user": {"userId": 9, "nickname": "丙"}, "json": "{\"msg\": \"看图\"}", "pics": [{"originUrl": "http://p1.music.126.net/o.jpg", "width": 1080, "height": 1440}, {"originUrl": null, "width": 0, "height": 0}], "info": {"commentThread": {"resourceInfo": {"name": "看图"}}}},
+        {"id": 4, "type": 22, "eventTime": 3, "user": {"userId": 10, "nickname": "丁"}, "json": "{\"msg\": \"转发\", \"event\": {\"id\": 5, \"type\": 18, \"eventTime\": 0, \"user\": {\"userId\": 11, \"nickname\": \"原作者\"}, \"json\": \"{\\\"msg\\\": \\\"原文\\\", \\\"song\\\": {\\\"id\\\": 1, \\\"name\\\": \\\"歌\\\"}}\"}}"},
+        {"id": 6, "type": 21, "eventTime": 4, "user": {"userId": 12, "nickname": "戊"}, "json": "{\"msg\": \"\"}", "info": {"commentThread": {"resourceInfo": {"name": " 一段视频 "}}}},
+        {"id": 7, "type": 35, "eventTime": 5, "user": {"userId": 13, "nickname": "己"}, "json": "not json"},
+        {"id": 0, "type": 18}]})"});
+    REQUIRE(page);
+    CHECK(page->more);
+    CHECK(page->cursor == "1700000000000");
+    REQUIRE(page->posts.size() == 6);
+
+    const auto &song = page->posts[0];
+    CHECK(song.id == "9007199254740993");
+    CHECK(song.thread == "9007199254740993_7");
+    CHECK(song.author.id == "7");
+    CHECK(song.author.name == "作者");
+    CHECK(song.author.avatar == "https://p1.music.126.net/u.jpg");
+    CHECK(song.text == "#每日一听# 好听 @朋友");
+    CHECK(song.time == 1700000000123);
+    REQUIRE(song.track);
+    CHECK(song.track->id == "186016");
+    CHECK(song.track->title == "晴天");
+    CHECK(song.track->artist == "周杰伦");
+    CHECK(song.track->cover == "https://p1.music.126.net/c.jpg");
+    CHECK_FALSE(song.card);
+    CHECK(song.resource.empty());
+    CHECK(song.liked);
+    CHECK(song.likes == 5);
+    CHECK(song.comments == 2);
+    CHECK(song.forwards == 1);
+    CHECK(song.owned);
+
+    const auto &playlist = page->posts[1];
+    CHECK(playlist.thread == "2_8");
+    CHECK(playlist.text.empty());
+    REQUIRE(playlist.card);
+    CHECK(playlist.card->kind == lyren::CardKind::playlist);
+    CHECK(playlist.card->id == "3778678");
+    CHECK(playlist.card->title == "热歌榜");
+    CHECK(playlist.card->subtitle == "网易云音乐");
+    CHECK(playlist.card->cover == "https://p1.music.126.net/p.jpg");
+    CHECK(playlist.card->count == 200);
+    CHECK_FALSE(playlist.liked);
+    CHECK_FALSE(playlist.owned);
+
+    const auto &pictures = page->posts[2];
+    CHECK(pictures.text == "看图");
+    REQUIRE(pictures.pictures.size() == 1);
+    CHECK(pictures.pictures[0].url == "https://p1.music.126.net/o.jpg");
+    CHECK(pictures.pictures[0].w == 1080);
+    CHECK(pictures.pictures[0].h == 1440);
+    CHECK(pictures.resource.empty());
+
+    const auto &forward = page->posts[3];
+    CHECK(forward.text == "转发");
+    CHECK(forward.resource.empty());
+    REQUIRE(forward.forwarded.size() == 1);
+    const auto &original = forward.forwarded[0];
+    CHECK(original.id == "5");
+    CHECK(original.thread == "5_11");
+    CHECK(original.author.name == "原作者");
+    CHECK(original.text == "原文");
+    REQUIRE(original.track);
+    CHECK(original.track->title == "歌");
+    CHECK(original.forwarded.empty());
+
+    CHECK(page->posts[4].resource == "一段视频");
+    CHECK(page->posts[5].text.empty());
+    CHECK_FALSE(page->posts[5].track);
+
+    // The feed lists its posts under another key.
+    auto feed = parse_posts({.body = R"({"code":200,"more":false,"lasttime":-1,"event":[{"id":1,"type":35,"json":"{\"msg\":\"hi\"}"}]})"});
+    REQUIRE(feed);
+    CHECK_FALSE(feed->more);
+    CHECK(feed->cursor.empty());
+    REQUIRE(feed->posts.size() == 1);
+    CHECK(feed->posts[0].text == "hi");
+    auto end = parse_posts({.body = R"({"code":200,"more":true,"lasttime":5,"events":[]})"});
+    REQUIRE(end);
+    CHECK_FALSE(end->more);
+    CHECK_FALSE(parse_posts({.body = R"({"code":200,"more":true,"events":[{"id":1}]})"}));
+    CHECK_FALSE(parse_posts({.body = R"({"code":200})"}));
+    CHECK_FALSE(parse_posts({.error = "Network connection failed"}));
+}
+
+TEST_CASE("NetEase listening rankings keep plays and scores, and report privacy") {
+    const Reply reply{.body = R"({"code":200,"weekData":[
+        {"playCount":12,"score":100,"song":{"id":1,"name":"甲","ar":[{"id":2,"name":"歌手"}],"al":{"id":3,"name":"专辑","picUrl":"http://p1.music.126.net/a.jpg"},"dt":200000}},
+        {"playCount":0,"score":150,"song":{"id":4,"name":"乙"}},
+        {"playCount":3,"score":-5,"song":{"id":5,"name":"丙"}},
+        {"playCount":9,"score":50}]})"};
+    auto week = parse_ranking(reply, false);
+    REQUIRE(week);
+    REQUIRE(week->tracks.size() == 3);
+    CHECK(week->tracks[0].id == "1");
+    CHECK(week->tracks[0].artist == "歌手");
+    CHECK(week->tracks[0].cover == "https://p1.music.126.net/a.jpg");
+    CHECK(week->tracks[0].duration == 200);
+    CHECK(week->plays == std::vector<int>{12, 0, 3});
+    CHECK(week->scores == std::vector<int>{100, 100, 0});
+    CHECK_FALSE(parse_ranking(reply, true));
+    auto all = parse_ranking({.body = R"({"code":200,"allData":[]})"}, true);
+    REQUIRE(all);
+    CHECK(all->tracks.empty());
+    auto hidden = parse_ranking({.code = -2, .body = R"({"code":-2})", .error = "无权限访问"}, false);
+    REQUIRE_FALSE(hidden);
+    CHECK(hidden.error() == "This listening ranking is private");
+    CHECK_FALSE(parse_ranking({.error = "Network connection failed"}, true));
+}
+
+TEST_CASE("NetEase social writes succeed only with code 200 and keep the service's words") {
+    CHECK(parse_social_write({.body = R"({"code":200})"}));
+    auto busy = parse_social_write({.body = R"({"code":400,"message":"操作太频繁"})"});
+    REQUIRE_FALSE(busy);
+    CHECK(busy.error() == "操作太频繁");
+    auto self = parse_social_write({.body = R"({"code":502,"msg":"不能关注自己"})"});
+    REQUIRE_FALSE(self);
+    CHECK(self.error() == "不能关注自己");
+    const auto before = lyren::language();
+    lyren::set_language(lyren::Language::en);
+    auto bare = parse_social_write({.body = R"({"code":201})"});
+    REQUIRE_FALSE(bare);
+    CHECK(bare.error() == "NetEase Music refused the request (201)");
+    lyren::set_language(before);
+    CHECK_FALSE(parse_social_write({.body = "{}"}));
+    CHECK_FALSE(parse_social_write({.error = "Network connection failed"}));
 }

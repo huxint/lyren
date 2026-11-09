@@ -282,6 +282,8 @@ namespace lyren {
                 return bool(features.cloud);
             case Page::dislikes:
                 return bool(features.exclusions.list);
+            case Page::moments:
+                return p.capabilities.posts;
             default:
                 return true;
         }
@@ -307,7 +309,7 @@ namespace lyren {
             return;
         }
         Page page = route_.page;
-        if (page == Page::playlist || page == Page::album || page == Page::artist || page == Page::similar || !supports(page, source)) {
+        if (page == Page::playlist || page == Page::album || page == Page::artist || page == Page::similar || page == Page::profile || !supports(page, source)) {
             page = Page::recommend;
         }
         open(ui, page, {.source = source});
@@ -330,6 +332,7 @@ namespace lyren {
             Route &old = history_[history_.size() - 9];
             old.list.reset();
             old.artist.reset();
+            old.profile.reset();
         }
         Card target = card;
         if (page == Page::playlist) {
@@ -346,13 +349,21 @@ namespace lyren {
     }
 
     void Shell::open(ui::Ui &ui, const Card &card) {
+        if (card.kind == CardKind::user) {
+            return open_profile(ui, card.source, card.id, card.title, card.cover);
+        }
         open(ui, card.kind == CardKind::album ? Page::album : card.kind == CardKind::artist ? Page::artist : Page::playlist, card);
     }
 
-    // Back closes the now-playing view first.
+    // Back closes the now-playing view first, then a view open on a listener's page.
     void Shell::back(ui::Ui &ui) {
         if (np_open_) {
             show_stage(false);
+            return;
+        }
+        if (route_.page == Page::profile && route_.profile && route_.profile->view != ProfileView::board && profile_tiles(route_.card).size() > 1) {
+            route_.profile->view = ProfileView::board;
+            ui.redraw();
             return;
         }
         if (history_.empty()) {
@@ -411,7 +422,7 @@ namespace lyren {
     }
 
     bool Shell::needs_login(Page p) {
-        return p == Page::daily || p == Page::fm || p == Page::liked || p == Page::cloud || p == Page::collection || p == Page::dislikes;
+        return p == Page::daily || p == Page::fm || p == Page::liked || p == Page::cloud || p == Page::collection || p == Page::dislikes || p == Page::moments;
     }
 
     void Shell::cover(ui::Ui &ui, Rect r, const std::string &url, float radius, std::string_view placeholder) {
@@ -446,7 +457,8 @@ namespace lyren {
         Rect r = bar;
         Rect nav = ui::cut_left(r, 40);
         {
-            Fade fade(ui.painter(), ui.anim(ui.id("back-a"), history_.empty() && !np_open_ ? 0.3f : 1.f, 200));
+            const bool view_open = route_.page == Page::profile && route_.profile && route_.profile->view != ProfileView::board;
+            Fade fade(ui.painter(), ui.anim(ui.id("back-a"), history_.empty() && !np_open_ && !view_open ? 0.3f : 1.f, 200));
             if (ui.icon_button(ui.id("back"), ui::center(nav, 32, 32), "chevron-left", 20)) {
                 back(ui);
             }
@@ -487,14 +499,23 @@ namespace lyren {
         const auto &profile = library().account;
         if (profile) {
             // Signed in: the avatar replaces the icon.
+            // Signed in: the avatar replaces the icon and opens the user's own page; a right click manages the accounts.
             Rect a = ui::center(account, 28, 28);
             auto it = ui.interact(ui.id("account"), a.inset(-2));
             float hot = ui.anim(ui.id("account"), it.hovered ? 1 : 0, 150);
-            if (hot > 0) {
-                ui.painter().rect(a.inset(-3), ui.theme().text.with_alpha(0.12f * hot), 17);
+            const bool here = route_.page == Page::profile && own_profile(route_.card);
+            if (hot > 0 || here) {
+                ui.painter().rect(a.inset(-3), (here ? t.accent : ui.theme().text).with_alpha(here ? 0.5f : 0.12f * hot), 17);
             }
             cover(ui, a, profile->avatar, 14, "user");
             if (it.clicked) {
+                if (here) {
+                    open_account(ui);
+                } else {
+                    open_own_profile(ui, a);
+                }
+            }
+            if (it.right_clicked) {
                 open_account(ui);
             }
         } else if (ui.icon_button(ui.id("account"), ui::center(account, 32, 32), "user", 18)) {
@@ -546,7 +567,9 @@ namespace lyren {
         } else if (area.w > 912) {
             compact_ = false;
         }
-        float side_w = ui.spring(ui.id("side-w"), compact_ ? 72 : 220, 320);
+        // A listener's page takes the whole width; the sidebar folds away under it.
+        const bool immersive = route_.page == Page::profile && route_.profile;
+        float side_w = ui.spring(ui.id("side-w"), immersive ? 8 : compact_ ? 72 : 220, 320);
         Rect side = ui::cut_left(area, side_w);
         ui::cut_right(area, 8);
         // On the stage the comments follow the music, loaded ahead so they open at once, unless the panel is showing
@@ -561,7 +584,15 @@ namespace lyren {
 
         // The now-playing stage comes up over the whole window; once it covers it the sidebar and page are not drawn.
         float np = stage(ui);
-        if (!(np_open_ && np >= 1)) {
+        if (!(np_open_ && np >= 1) && immersive) {
+            profile_page(ui, area);
+            if (side.w > 12) {
+                ui.push_clip(side);
+                Fade fold(p, std::clamp((side.w - 12) / 60, 0.f, 1.f));
+                sidebar(ui, side);
+                ui.pop_clip();
+            }
+        } else if (!(np_open_ && np >= 1)) {
             // Content panel with a wash of the page's colour; the page slides in from the side it was reached from.
             if (!t.dark) {
                 p.shadow({area.x, area.y + 1, area.w, area.h}, t.radius_l(), 10, t.shadow.with_alpha(0.45f));
@@ -575,7 +606,7 @@ namespace lyren {
                 hue = cover_hue(route_.artist->info->avatar, 148 * p.scale());
             }
             ui::Color tint = hue >= 0 ? hsl(hue, 0.55f, 0.5f) : t.accent;
-            if (route_.page != Page::search && route_.page != Page::settings) {
+            if (route_.page != Page::search && route_.page != Page::settings && route_.page != Page::moments) {
                 p.gradient({area.x, area.y, area.w, 320}, tint.with_alpha((t.dark ? 0.16f : 0.09f) * enter), tint.with_alpha(0), t.radius_l());
             }
             ui.push_clip(area);
@@ -614,6 +645,12 @@ namespace lyren {
                         break;
                     case Page::search:
                         search_page(ui, r);
+                        break;
+                    case Page::moments:
+                        moments_page(ui, r);
+                        break;
+                    case Page::profile:
+                        page_status(ui, r, true, "", false);
                         break;
                     case Page::settings:
                         settings_page(ui, r);
@@ -700,6 +737,8 @@ namespace lyren {
                 show_panel(Panel::none);
             } else if (k->keysym == XKB_KEY_Escape && np_open_ && !ui.menu_open()) {
                 show_stage(false);
+            } else if (k->keysym == XKB_KEY_Escape && route_.page == Page::profile && route_.profile && route_.profile->view != ProfileView::board && !ui.menu_open()) {
+                back(ui);
             } else if (k->keysym == XKB_KEY_Escape && choosing_ && !ui.menu_open()) {
                 reset_selection();
             } else if (ctrl && (k->keysym == XKB_KEY_a || k->keysym == XKB_KEY_A) && selection_list_ && !ui.focus && !ui.menu_open() && !np_open_ &&
@@ -743,6 +782,8 @@ namespace lyren {
                                                  {Page::toplist, "list-ordered", lyren::tr("Charts")},
                                                  {Page::square, "layout-grid", lyren::tr("Browse")},
                                                  {Page::fm, "radio", lyren::tr(provider().radio_title)},
+                                                 {Page::profile, "user", lyren::tr("My profile")},
+                                                 {Page::moments, "messages-square", lyren::tr("Moments")},
                                                  {Page::liked, "heart", lyren::tr("Liked songs")},
                                                  {Page::recent, "history", lyren::tr("Recently played")},
                                                  {Page::cloud, "cloud", lyren::tr("My cloud")},
@@ -853,7 +894,11 @@ namespace lyren {
         }
         for (size_t k = 0; k < nav.size(); ++k) {
             if (item(ui.id(nav[k].icon), k, nav[k].label, nav[k].icon, nullptr)) {
-                open(ui, nav[k].page);
+                if (nav[k].page == Page::profile) {
+                    open_own_profile(ui);
+                } else {
+                    open(ui, nav[k].page);
+                }
             }
         }
         ui.push_id(ui.id("playlists"));

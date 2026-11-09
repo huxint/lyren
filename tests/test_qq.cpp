@@ -418,7 +418,7 @@ TEST_CASE("QQ dislike pages keep opaque IDs and fail visibly") {
 
 TEST_CASE("QQ comment pages keep service identities, pictures and failures") {
     const qq::Reply reply{.body = R"({"req_0":{"code":0,"data":{"SubCode":0,"CommentList":{"HasMore":1,"Total":22,"Comments":[
-        {"CmId":"1!opaque-id","SeqNo":"18446744073709551615","RankScore":"9007199254740993",
+        {"CmId":"1!opaque-id","SeqNo":"18446744073709551615","RankScore":"9007199254740993","EncryptUin":"owcANKcs7wCF7n**",
          "Nick":"作者","Content":"正文","PubTime":1700000000,"PraiseNum":12,"ReplyCnt":3,"IsPraised":1,"IsSelf":1,
          "RepliedComments":[{"Nick":"原作者","Content":"被回复的正文"}]}
     ]}}}})"};
@@ -426,6 +426,7 @@ TEST_CASE("QQ comment pages keep service identities, pictures and failures") {
     REQUIRE(main);
     REQUIRE(main->comments.size() == 1);
     CHECK(main->comments[0].id == "1!opaque-id");
+    CHECK(main->comments[0].user_id == "owcANKcs7wCF7n**");
     CHECK(main->comments[0].liked);
     CHECK(main->comments[0].owned);
     CHECK(main->comments[0].likes == 12);
@@ -484,4 +485,32 @@ TEST_CASE("QQ comment errors follow the selected language and retain the service
     REQUIRE_FALSE(chinese);
     CHECK(english.error() == "QQ Music comment operation failed (37)");
     CHECK(chinese.error() == "QQ 音乐评论操作失败(37)");
+}
+
+TEST_CASE("QQ follow lists keep encrypted IDs and page by position") {
+    auto page = qq::parse_people({.body = R"({"req_0":{"code":0,"data":{"Msg":"","Total":31,"FromLimit":2000,"HasMore":true,"LastPos":"opaque","List":[
+        {"MID":"","EncUin":"owcANKcs7wCF7n**","Name":"听众","Desc":"签名","AvatarUrl":"http://thirdqq.qlogo.cn/g?b=sdk&s=140","FanNum":5,
+         "IsFollow":true,"BeFollowed":false,"OtherInfo":{},"Time":1534514881}]}}})"},
+                                 30);
+    REQUIRE(page);
+    CHECK(page->total == 31);
+    CHECK(page->more);
+    CHECK(page->cursor == "31");
+    REQUIRE(page->people.size() == 1);
+    const auto &person = page->people[0];
+    CHECK(person.id == "owcANKcs7wCF7n**");
+    CHECK(person.name == "听众");
+    CHECK(person.signature == "签名");
+    CHECK(person.avatar == "http://thirdqq.qlogo.cn/g?b=sdk&s=140");
+    CHECK(person.fans == 5);
+    CHECK(person.followed);
+    CHECK_FALSE(person.follows_me);
+
+    auto empty = qq::parse_people({.body = R"({"req_0":{"code":0,"data":{"Total":0,"HasMore":true,"List":null}}})"}, 0);
+    REQUIRE(empty);
+    CHECK(empty->people.empty());
+    CHECK_FALSE(empty->more);
+    CHECK_FALSE(qq::parse_people({.body = R"({"req_0":{"code":0,"data":{"List":[{"Name":"no ID"}]}}})"}, 0));
+    CHECK_FALSE(qq::parse_people({.body = R"({"req_0":{"code":2001}})"}, 0));
+    CHECK_FALSE(qq::parse_people({.error = "Network connection failed"}, 0));
 }

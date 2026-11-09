@@ -42,6 +42,8 @@ namespace lyren::qq {
 
     Result<DislikesPage> parse_dislikes(const Reply &reply, DislikeKind kind);
     Result<void> parse_dislike_write(const Reply &reply);
+    // from: where the page asked for starts.
+    Result<PeoplePage> parse_people(const Reply &reply, int from);
 
     // QQ Music, after docs/qqmusic-api.md. Albums and artists go by their mids, playlists by their public ids, songs by
     // their numeric ids with the mids alongside (Track::mid, Track::media).
@@ -110,6 +112,8 @@ namespace lyren::qq {
         Task<Result<QrCode>> qr_start() override;
         Task<Result<QrStatus>> qr_poll() override;
         Task<Result<Account>> account() override;
+        Task<Result<Profile>> profile(std::string uid) override;
+        Task<Result<PeoplePage>> people(std::string uid, bool fans, std::string cursor) override;
         Task<void> logout() override;
         Task<Result<void>> renew(bool force = true);
         void cancel_login() override {

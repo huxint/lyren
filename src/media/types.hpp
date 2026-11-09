@@ -80,15 +80,17 @@ namespace lyren {
     enum class CardKind : uint8_t {
         playlist,
         album,
-        artist
+        artist,
+        user // a listener; opens their profile
     };
 
-    // An album, artist or playlist tile.
+    // An album, artist, playlist or listener tile.
     struct Card {
         enum class Count : uint8_t {
             none,
             songs,
-            albums
+            albums,
+            fans
         };
         CardKind kind = CardKind::playlist;
         Source source = Source::netease;
@@ -102,6 +104,8 @@ namespace lyren {
     };
 
     std::string card_subtitle(const Card &card);
+    // Counts as "1.2k", or "1.2万" in Chinese.
+    std::string short_number(int n);
     std::string share_url(const Card &card);
 
     inline bool same(const Card &a, const Card &b) {
@@ -115,7 +119,8 @@ namespace lyren {
         tracks,
         albums,
         artists,
-        playlists
+        playlists,
+        users
     };
 
     // One page of a longer listing: search results, an artist's songs or albums, the playlist square.
@@ -168,11 +173,13 @@ namespace lyren {
     enum class Subject : uint8_t {
         song,
         album,
-        playlist
+        playlist,
+        post
     };
 
     struct Comment {
         std::string id;
+        std::string user_id;                  // the author's profile, when the service names it
         std::string user, avatar, text, time; // time as the service words it
         std::string reply_user, reply;        // the comment this one answers
         std::string image;                    // an attached picture, or a sticker
@@ -203,6 +210,76 @@ namespace lyren {
 
     struct Account {
         std::string id, name, avatar;
+    };
+
+    // A listener's page head. Counts are negative when the service does not tell them.
+    struct Profile {
+        std::string id, name, avatar, background, signature, location;
+        int level = -1, follows = -1, fans = -1, posts = -1, playlists = -1;
+        int listened = -1; // songs played in all
+        int days = -1;     // since the account was made
+        bool vip = false;
+        bool followed = false;   // the signed-in account follows them
+        bool follows_me = false; // they follow the signed-in account
+    };
+
+    // Someone in a follow list.
+    struct Person {
+        std::string id, name, avatar, signature;
+        int fans = -1;
+        bool followed = false, follows_me = false; // as seen from the signed-in account
+    };
+
+    // A listener as a tile: their avatar, name and fans.
+    inline Card user_card(const Person &p, Source source = Source::netease) {
+        return {.kind = CardKind::user,
+                .source = source,
+                .id = p.id,
+                .title = p.name,
+                .subtitle = p.signature,
+                .cover = p.avatar,
+                .count = std::max(p.fans, 0),
+                .count_kind = p.fans >= 0 ? Card::Count::fans : Card::Count::none};
+    }
+
+    struct PeoplePage {
+        std::vector<Person> people;
+        int total = -1;
+        bool more = false;
+        std::string cursor; // where the next page starts
+    };
+
+    struct Picture {
+        std::string url;
+        int w = 0, h = 0;
+    };
+
+    // A post on a listener's timeline: words, pictures and what it shares.
+    struct Post {
+        std::string id;
+        std::string thread; // its comment thread
+        Person author;
+        std::string text;
+        int64_t time = 0; // ms since the epoch
+        std::optional<Track> track;
+        std::optional<Card> card; // a shared playlist or album
+        std::vector<Picture> pictures;
+        std::vector<Post> forwarded; // the post this one passes on
+        std::string resource;        // what it shares when the app cannot show it, as the service words it
+        int likes = 0, comments = 0, forwards = 0;
+        bool liked = false, owned = false;
+    };
+
+    struct PostPage {
+        std::vector<Post> posts;
+        bool more = false;
+        std::string cursor;
+    };
+
+    // The songs someone plays most, with how often.
+    struct Ranking {
+        std::vector<Track> tracks;
+        std::vector<int> plays, scores; // scores 0..100, the top song 100
     };
 
     enum class QrState : uint8_t {

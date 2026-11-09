@@ -219,7 +219,7 @@ namespace lyren {
         }
         if (!error.empty()) {
             p.icon("cloud-off", {c.x + (c.w - 28) / 2, c.y + 20, 28, 28}, t.text_dim);
-            ui.label({c.x, c.y + 64, c.w, 20}, error, {.size = t.fs(13), .color = t.text_dim}, Align::center);
+            ui.label({c.x, c.y + 64, c.w, 20}, lyren::tr(error), {.size = t.fs(13), .color = t.text_dim}, Align::center);
             return true;
         }
         return false;
@@ -243,8 +243,8 @@ namespace lyren {
 
     bool Shell::page_tabs(ui::Ui &ui, ui::Id id, Rect r, std::span<const std::string_view> labels, int &selected, std::span<const bool> enabled) {
         const int before = selected;
-        std::inplace_vector<std::string_view, 4> visible;
-        std::inplace_vector<int, 4> indices;
+        std::inplace_vector<std::string_view, 8> visible;
+        std::inplace_vector<int, 8> indices;
         int tab = 0;
         for (size_t i = 0; i < labels.size(); ++i) {
             if (enabled.empty() || enabled[i]) {
@@ -798,7 +798,7 @@ namespace lyren {
 
     void Shell::search_page(ui::Ui &ui, Rect r) {
         Rect body = r.inset(32, 0);
-        const std::array<std::string_view, 4> tabs = {lyren::tr("Tracks"), lyren::tr("Albums"), lyren::tr("Artists"), lyren::tr("Playlists")};
+        const std::array<std::string_view, 5> tabs = {lyren::tr("Tracks"), lyren::tr("Albums"), lyren::tr("Artists"), lyren::tr("Playlists"), lyren::tr("Users")};
         float tabs_w = body.w - button_width(ui, lyren::tr("Refresh"), true) - 16;
         if (page_tabs(ui, ui.id("search-tabs"), {body.x, r.y + 100, tabs_w, 36}, tabs, search_tab_, provider().capabilities.search)) {
             ensure_route_data();
@@ -819,7 +819,7 @@ namespace lyren {
                 load_results(search_tab_, true);
             }
         }
-        const std::array kinds = {lyren::tr("songs"), lyren::tr("albums"), lyren::tr("artists"), lyren::tr("playlists")};
+        const std::array kinds = {lyren::tr("songs"), lyren::tr("albums"), lyren::tr("artists"), lyren::tr("playlists"), lyren::tr("users")};
         page_title(ui, body, r.y + 28, '"' + searched_ + '"',
                    shown.loaded ? lyren::trf("{}{} {} found", shown.more() ? lyren::tr("About ") : "", shown.total, kinds[search_tab_])
                                 : lyren::trf("Searching {}", lyren::tr(platform(active_).short_name)));
@@ -835,7 +835,7 @@ namespace lyren {
         if (empty && shown.loaded && !shown.more() && error.empty()) {
             error = lyren::tr("No results found");
         }
-        const std::array looks{Placeholder::rows, Placeholder::cards, Placeholder::faces, Placeholder::cards};
+        const std::array looks{Placeholder::rows, Placeholder::cards, Placeholder::faces, Placeholder::cards, Placeholder::faces};
         if (empty && page_status(ui, search_tab_ ? content.inset(12, 12) : content, shown.loading, error, false, looks[static_cast<size_t>(search_tab_)])) {
             return;
         }
@@ -849,7 +849,7 @@ namespace lyren {
             return;
         }
         bool near_end;
-        int i = grid_view(ui, content, scroll, shown.cards, search_tab_ == 2, since, shown.loading, near_end);
+        int i = grid_view(ui, content, scroll, shown.cards, search_tab_ == 2 || search_tab_ == 4, since, shown.loading, near_end);
         if (near_end) {
             load_results(search_tab_);
         }
@@ -1363,6 +1363,11 @@ namespace lyren {
         if (caps.comments[0]) {
             items.push_back({"message-square", std::string(lyren::tr("Comments")), [this, &ui, tr] {
                                  open_comments(ui, tr.source, Subject::song, tr.id, tr.title + " · " + tr.artist, tr.cover);
+                             }});
+        }
+        if (caps.post_write) {
+            items.push_back({"square-pen", std::string(lyren::tr("Share in a post")), [this, &ui, tr] {
+                                 open_composer(ui, tr.source, tr);
                              }});
         }
         items.push_back({});

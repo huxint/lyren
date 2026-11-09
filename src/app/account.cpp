@@ -305,6 +305,13 @@ namespace lyren {
         lib.fm_pos = 0;
         lib.fm_loading = false;
         lib.dislikes = {};
+        lib.feed.reset();
+        std::erase_if(post_likes_, [&](const auto &like) {
+            return like.first.variant == static_cast<uint32_t>(source);
+        });
+        std::erase_if(post_deletes_, [&](const auto &entry) {
+            return entry.first.variant == static_cast<uint32_t>(source);
+        });
         if (fm_source_ == source) {
             fm_playing_ = false;
         }
@@ -318,6 +325,7 @@ namespace lyren {
             if (route.card.source == source) {
                 route.list.reset();
                 route.artist.reset();
+                route.profile.reset();
                 if (route.card.owned) {
                     route = {Page::recommend, {.source = source}};
                 }
