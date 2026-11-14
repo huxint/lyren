@@ -1,0 +1,18 @@
+{
+  "nonce": "1234567890123456",
+  "signature": "YZ01MIMDRo+7b2uqYRYz6oYvnzRnRyWOZ8At2hlncT4=",
+  "registration": {
+    "code": 200,
+    "data": {
+      "timestamp": "1700000000123",
+      "signature": "YZ01MIMDRo+7b2uqYRYz6oYvnzRnRyWOZ8At2hlncT4=",
+      "encryptedData": "Zl6uYwh9eqd1eYl5OpQdls7Z8dU55lGeZb79cEp44uavWK3PYj6f8JyFf5T8wMYVhGr+DBkcJE1zvsUt2OupzurLSwbyCJJ6GNBsQ61tduUcjABTOA2jq5px6rtEDiSbXLTbEL6nIU87qJkhoa6bZA=="
+    }
+  },
+  "plaintext": "{\"code\":200,\"data\":[{\"url\":\"https://example.invalid/audio.flac\",\"level\":\"lossless\"}]}",
+  "response": "3MUrMBPptmwDj44CflgOzmYdJXjzncI3AwWXV18NxiF0KlAwvOx6wbET8uTuQ+/gYnzHwVUnFMjpa5GZCc81kPCf8ybIWuNjrS+/ZN6plZDXSiVXKmTCoSW5RHo44nuj",
+  "gzip_response": "4IKwDwghzGcRUfczN44K5EIe29Lh9o6HYHfGVtapw/FemNT+LD0hBt1LX4CE2BMSlYvg8R0SuJlA/I09NlDqMi3xG6J8fAEWfBbbRb5Sew30WYaLmJJAfPp8x6AV2CuJPt1kZXgTU2gBYzhqKqTTQw==",
+  "invalid_gzip": "+1+GF5L6t1ubpnbIK65yIw==",
+  "server_private_key": "XasIfmJKikt54X+Lg4AO5m87sSkmGLb9HC+LJ/+I4Os=",
+  "transport_key": "qx1aQw9rsEo/Aegd3XK9kW1c5ZEkisEocUgG1/j7G4Q="
+}

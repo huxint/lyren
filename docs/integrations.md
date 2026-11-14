@@ -17,6 +17,8 @@
 
 搜索、资料库和分页状态按平台独立保存。搜索使用接口返回的下一页位置；列表显示条数不用于推导服务端游标。QQ 音乐的请求参数和响应结构见 [QQ 音乐接口规范](qqmusic-api.md)。
 
+网易云的 `/api/song/enhance/player/url/v1` 使用 XEAPI：先向 `/api/bsr/sk/get` 获取并校验签名公钥，再通过 X25519/HKDF 和 AES-GCM 协商请求密钥，向 `interface3.music.163.com/xeapi/` 发送加密请求。响应解密后支持 gzip。公钥保存在当前客户端内存中，每个请求使用独立的临时密钥；账号 Cookie 和实际授予的音质、试听范围仍由服务端决定。
+
 ## 汽水、酷狗与波点音乐
 
 | 功能 | 汽水 | 酷狗 | 波点 |
@@ -86,7 +88,7 @@
 `Provider` 通过 `profiles`、`people`、`follow_users`、`posts`、`post_write`、`ranking`、`profile_playlists` 声明能力，主页只显示平台支持的板块。没有 `profiles` 的平台仍可打开当前账号的主页，名称和头像取自账号资料。
 
 - 网易云资料读取 `/api/v1/user/detail/{uid}`，用户搜索使用 cloudsearch 类型 `1002`。关注列表 `/api/user/getfollows/{uid}` 用 `offset` 翻页，公开的列表不需要登录，对方隐藏时返回 `code:400` 和 `用户隐私无权限查看`；粉丝列表 `/api/user/getfolloweds/{uid}` 需要登录，另外返回 `size` 作为总数。列表读取失败且未登录时，界面提示登录。
-- 听歌排行 `/api/v1/play/record` 的 `type` 为 `1` 表示最近一周，`0` 表示所有时间；`code:-2` 表示对方未公开。最近一周为空时显示所有时间。
+- 听歌排行 `/api/v1/play/record` 的 `type` 为 `1` 表示最近一周，`0` 表示所有时间；`code:-2` 表示对方未公开，界面显示隐私状态，日志记录为调试信息。主页先读取最近一周，成功且为空时再读取所有时间；切换时间范围时按需加载。
 - 个人动态 `/api/event/get/{uid}` 返回 `events`，关注动态 `/api/v1/event/get` 返回 `event`，两者都用 `lasttime` 继续翻页。动态正文是字符串形式的 JSON；转发的原动态位于正文的 `event` 字段，其 `json` 同样是字符串。评论线程为 `A_EV_2_{动态 ID}_{作者 ID}`。
 - 关注、点赞、发表、转发和删除要求业务码为 `200`，其余返回码按失败处理并显示服务端说明。点赞和关注先更新界面，失败后恢复；写请求不自动重放。
 - QQ 音乐的关系列表使用 `music.concern.RelationList`，他人主页附带 `HostUin`（`EncUin`）。主页头部接口不可用，他人的名称和头像来自打开主页时的来源卡片。

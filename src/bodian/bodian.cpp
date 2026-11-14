@@ -597,6 +597,7 @@ namespace lyren::bodian {
                 std::string_view remaining = line.text;
                 std::string plain;
                 std::vector<LyricWord> words;
+                bool zero_tags = false, timed_tags = false;
                 while (!remaining.empty()) {
                     const auto at = remaining.find('<');
                     plain += remaining.substr(0, at);
@@ -620,6 +621,8 @@ namespace lyren::bodian {
                         remaining.remove_prefix(1);
                         continue;
                     }
+                    zero_tags |= a == 0 && b == 0;
+                    timed_tags |= a != 0 || b != 0;
                     remaining.remove_prefix(end + 1);
                     auto next = remaining.find('<');
                     auto word = remaining.substr(0, next);
@@ -635,22 +638,21 @@ namespace lyren::bodian {
                     }
                     remaining = next == remaining.npos ? std::string_view{} : remaining.substr(next);
                 }
+                // All-zero word tags mark the translation after its original. Its timestamp can be the
+                // next original's start, so a timestamp join would attach it to the wrong sentence.
+                if (zero_tags && !timed_tags) {
+                    if (!out.empty() && plain.find_first_not_of(" \t") != plain.npos && plain != out.back().text) {
+                        out.back().translation = std::move(plain);
+                    }
+                    continue;
+                }
                 line.text = std::move(plain);
                 line.words = std::move(words);
                 if (line.text.empty()) {
                     continue;
                 }
                 std::ranges::stable_sort(line.words, {}, &LyricWord::start_ms);
-                if (!out.empty() && out.back().time == line.time && out.back().words.empty() != line.words.empty()) {
-                    if (line.words.empty()) {
-                        out.back().translation = std::move(line.text);
-                    } else {
-                        line.translation = std::move(out.back().text);
-                        out.back() = std::move(line);
-                    }
-                } else {
-                    out.push_back(std::move(line));
-                }
+                out.push_back(std::move(line));
             }
             return out;
         });

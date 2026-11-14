@@ -208,8 +208,8 @@ TEST_CASE("Bodian playback checks rights before requesting a supported audio for
     }
 }
 
-TEST_CASE("Bodian word lyrics decode octal coefficients and identify translations by timing") {
-    const std::string text = "[kuwo:127]\n[00:10.000]<0,0>译文\n[00:10.000]<1120,-1120>晴<2400,160>天\n[00:12.000]<1120,-1120>你好\n";
+TEST_CASE("Bodian word lyrics decode octal coefficients and pair the following translation") {
+    const std::string text = "[kuwo:127]\n[00:10.000]<1120,-1120>晴<2400,160>天\n[00:12.000]<0,0>译文\n[00:12.000]<1120,-1120>你好\n";
     auto lines = bodian::parse_lyric(reply("{\"content\":\"" + encoding::base64(text) + "\"}"));
     REQUIRE(lines);
     REQUIRE(lines->size() == 2);
@@ -226,6 +226,27 @@ TEST_CASE("Bodian word lyrics decode octal coefficients and identify translation
     auto empty = bodian::parse_lyric(reply(R"({"content":""})"));
     REQUIRE(empty);
     CHECK(empty->empty());
+}
+
+TEST_CASE("Bodian translations at the next line's timestamp stay with their own original") {
+    const std::string text = "[kuwo:127]\n"
+                             "[00:10.000]<1120,-1120>First line\n"
+                             "[00:12.000]<0,0>第一句译文\n"
+                             "[00:12.000]<1120,-1120>Second line\n"
+                             "[00:14.000]<0,0>第二句译文\n"
+                             "[00:14.000]<1120,-1120>未翻译的一句\n"
+                             "[00:16.000]<0,0> <0,0> <0,0>\n"
+                             "[00:16.000]<1120,-1120>Last line\n"
+                             "[00:16.000]<0,0>最后一句译文\n";
+    const auto lines = bodian::parse_lyric(reply("{\"content\":\"" + encoding::base64(text) + "\"}"));
+    REQUIRE(lines);
+    REQUIRE(lines->size() == 4);
+    CHECK((*lines)[0].text == "First line");
+    CHECK((*lines)[0].translation == "第一句译文");
+    CHECK((*lines)[1].text == "Second line");
+    CHECK((*lines)[1].translation == "第二句译文");
+    CHECK((*lines)[2].translation.empty());
+    CHECK((*lines)[3].translation == "最后一句译文");
 }
 
 TEST_CASE("Bodian QR exchange persists only a complete current login") {

@@ -35,15 +35,18 @@ namespace lyren::text {
 
     class Fonts {
     public:
-        // Resolves the family's fallback chain with fontconfig, then shuts fontconfig down.
+        // Regular, medium and semibold. A family that lacks a weight falls back to the nearest it has.
+        static constexpr int weights = 3;
+
+        // Resolves the family's fallback chain for each weight with fontconfig, then shuts fontconfig down.
         explicit Fonts(const std::string &family);
         ~Fonts();
         Fonts(const Fonts &) = delete;
         Fonts &operator=(const Fonts &) = delete;
 
-        // First face in the chain that covers cp (0 when none does). emoji: cp is shown as an emoji, which the colour
-        // face takes when it covers it.
-        uint16_t face_for(char32_t cp, bool emoji = false) const;
+        // First face in the weight's chain that covers cp (the family's own face when none does). emoji: cp is shown
+        // as an emoji, which the colour face takes when it covers it.
+        uint16_t face_for(char32_t cp, bool emoji = false, int weight = 0) const;
         // Opens the face on first use.
         Face &face(uint16_t i);
         // Drops the mapped font pages from this process's RSS; they stay in the page cache.
@@ -52,8 +55,9 @@ namespace lyren::text {
     private:
         void open(Face &f);
         FT_Library ft_ = nullptr;
-        std::vector<Face> faces_;
-        int color_ = -1; // the colour emoji face
+        std::vector<Face> faces_;                           // every face once; the regular family's own comes first
+        std::array<std::vector<uint16_t>, weights> chains_; // fallback order per weight
+        int color_ = -1;                                    // the colour emoji face
     };
 
 } // namespace lyren::text

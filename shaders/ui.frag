@@ -109,6 +109,17 @@ void main() {
             y -= amp * envelope * sin(s);
             slope = amp * (derivative * sin(s) + envelope * k * cos(s));
         }
+        // A pluck: a bump around radii.x, radii.z wide and radii.y high, which the caller swings and lets die away.
+        // The stroke stays pinned at both ends.
+        if (p.radii.y != 0.0) {
+            float u = (x - p.rect.x - p.radii.x) / p.radii.z;
+            vec2 t = clamp(vec2(x - x0, x1 - x) / (2.0 * p.radii.z), 0.0, 1.0);
+            vec2 e = t * t * (3.0 - 2.0 * t), de = 3.0 * t * (1.0 - t) / p.radii.z;
+            float pin = e.x * e.y, derivative = de.x * e.y - e.x * de.y;
+            float bump = p.radii.y * exp(-u * u);
+            y -= bump * pin;
+            slope += bump * (derivative - 2.0 * u * pin / p.radii.z);
+        }
         float d = x != v_pos.x ? length(v_pos - vec2(x, y)) : abs(v_pos.y - y) / sqrt(1.0 + slope * slope);
         float played = clamp(at - v_pos.x + 0.5, 0.0, 1.0);
         o = mix(p.color2, p.color, played) * clamp(0.5 - (d - th * 0.5), 0.0, 1.0);

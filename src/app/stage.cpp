@@ -24,13 +24,13 @@ namespace lyren {
     };
 
     static NowPlayingLayout now_playing_layout(Rect r, bool wide) {
-        Rect body = r.inset(56, 44);
+        Rect body = r.inset(56, 36);
         if (!wide) {
             return {{body.x, body.y + 4, 64, 64}, {body.x, body.y + 96, body.w, body.h - 96}};
         }
         Rect left = ui::cut_left(body, std::round(body.w * 0.42f));
         ui::cut_left(body, 40);
-        float cs = std::floor(std::min({left.w - 20, left.h - 120, 420.f}));
+        float cs = std::floor(std::min({left.w - 20, left.h - 132, 400.f}));
         return {{left.x + (left.w - cs) / 2, left.y + (left.h - cs - 110) / 2, cs, cs}, body};
     }
 
@@ -48,14 +48,14 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         Rect left{player.x, player.y, std::min(330.f, std::round(player.w * 0.3f)), player.h};
-        Rect small{left.x + 16, left.y + 14, 56, 56};
+        Rect small{left.x + 20, left.y + player_string_h + (player_h - player_string_h - 44) / 2, 44, 44};
         bar_cover_px_ = small.w * p.scale();
         const Track *tr = current();
         if (!tr) {
             if (np == 0) {
                 p.rect(small, t.text.with_alpha(0.06f), t.radius_s());
                 p.icon("music", ui::center(small, 22, 22), t.text_dim);
-                ui.label({small.right() + 14, left.y, left.w - 100, left.h}, lyren::tr("Nothing playing"), {.size = t.fs(13), .color = t.text_dim});
+                ui.label({small.right() + 12, small.y, left.w - 88, small.h}, lyren::tr("Nothing playing"), {.size = t.fs(13), .color = t.text_dim});
             }
             return;
         }
@@ -64,17 +64,20 @@ namespace lyren {
         // the cover is small.
         NowPlayingLayout wl = now_playing_layout(page, true), nl = now_playing_layout(page, false);
         Rect body = page.inset(56, 44);
+        const float presence = t.motion > 0 ? ui.spring(ui.id("cover-presence"), playing() ? 1.f : 0.f, 520) : 1.f;
+        const float resting = 0.96f + 0.04f * presence;
+        wl.cover = ui::center(wl.cover, wl.cover.w * resting, wl.cover.h * resting);
         Rect vc = mix(nl.cover, wl.cover, wide);
         float under = smooth01((vc.w - nl.cover.w) / (std::min(160.f, wl.cover.w) - nl.cover.w));
         Caption beside{vc.right() + 20, vc.y + 22, t.fs(20), t.fs(13), 24, body.right() - vc.right() - 20};
-        Caption below{vc.x, vc.bottom() + 46, t.fs(22), t.fs(14), 26, vc.w};
+        Caption below{vc.x, vc.bottom() + 44, t.fs(26), t.fs(14), 28, vc.w};
         Caption view = mix(beside, below, under);
         view.x = std::lerp(beside.x, below.x, smooth01((under - 0.4f) / 0.6f));
         view.y = std::lerp(beside.y, below.y, smooth01(under / 0.6f));
 
         // From the bar to a small cover the text stays beside it. To a large one the cover first rises out of the bar
         // and then grows, and the text sets off once the cover is out of its way.
-        Caption bar{small.right() + 14, small.y + 24, t.fs(14), t.fs(12), 19, left.right() - small.right() - 18};
+        Caption bar{small.right() + 12, small.y + 18, t.fs(13), t.fs(12), 18, left.right() - small.right() - 20};
         float rise = std::lerp(np, 1 - (1 - np) * (1 - np), under), grow = std::lerp(np, np * np, under);
         float size = std::lerp(small.w, vc.w, grow);
         Rect cov{std::lerp(small.x, vc.x, rise), std::lerp(small.bottom(), vc.bottom(), rise) - size, size, size};
@@ -87,6 +90,9 @@ namespace lyren {
 
         float depth = smooth01((size - 64) / 136);
         float radius = std::lerp(t.radius_s(), t.radius_l(), depth);
+        if (depth > 0) {
+            p.shadow({cov.x, cov.y + 12, cov.w, cov.h}, radius, 64, t.accent.with_alpha(0.08f * depth * presence));
+        }
         p.shadow({cov.x, cov.y + std::lerp(4.f, 18.f, depth), cov.w, cov.h}, radius, std::lerp(12.f, 48.f, depth), t.shadow.with_alpha(std::lerp(0.6f, 0.9f, depth)));
 
         // The thumbnail stays through the move; the view's larger picture fades in over it once it has loaded.
@@ -136,13 +142,13 @@ namespace lyren {
         // While it moves, the text is scaled from glyphs at the view's sizes instead of being rasterized at a new size
         // every frame. A line that does not fit fades out at its end.
         bool settled = np == 0 || (np == 1 && (under == 0 || under == 1));
-        auto line = [&](float x, float y, std::string_view s, float size, float raster, ui::Color c, float w) {
+        auto line = [&](float x, float y, std::string_view s, float size, float raster, ui::Color c, float w, uint8_t features = 0) {
             if (settled) {
                 raster = size;
             }
             float z = size / raster, limit = w / z;
             p.set_zoom(z, x, y);
-            TextStyle st{.size = raster, .color = c};
+            TextStyle st{.size = raster, .color = c, .features = features};
             float width = p.measure(s, st);
             if (width > limit) {
                 p.set_wipe(x + limit - 16 / z, 32 / z, c.with_alpha(0));
@@ -157,7 +163,7 @@ namespace lyren {
         auto caption = [&](const Track &track, float alpha, float dy, bool live) {
             Fade fade(p, alpha);
             float y = cap.y + dy, k = cap.sub / t.fs(14);
-            float tw = line(cap.x, y, track.title, cap.title, t.fs(22), t.text, cap.w - 44);
+            float tw = line(cap.x, y, track.title, cap.title, t.fs(26), t.text, cap.w - 44, cap.title >= t.fs(20) ? text::semibold : text::medium);
             float aw = line(cap.x, y + cap.gap, track.artist, cap.sub, t.fs(14), t.text_dim, cap.w);
             if (detail > 0 && under > 0 && !track.album.empty()) {
                 Fade more(p, detail * under);
@@ -214,38 +220,26 @@ namespace lyren {
         Fade fade(p, k);
         const float radius = ui.window_radius;
 
-        // The stage fills the window: the cover, blurred and stretched, drifting slowly while the music plays, over a
-        // deep shade of the accent and under a veil that keeps white text readable on light covers.
-        p.rect(window, t.accent.mix({0.02f, 0.02f, 0.03f, 1}, 0.84f), radius);
-        if (playing() && t.motion > 0) {
-            drift_ += ui.now - drift_last_;
-        }
-        drift_last_ = ui.now;
-        constexpr float zoom = 0.8f, tau = 2 * std::numbers::pi_v<float>;
+        // The album supplies a quiet wash behind a steady, dark listening surface.
+        p.rect(window, t.bg.mix(t.accent, 0.045f), radius);
         const float aspect = window.w / window.h;
-        Rect uv = aspect > 1 ? Rect{0, (1 - 1 / aspect) / 2, 1, 1 / aspect} : Rect{(1 - aspect) / 2, 0, aspect, 1};
-        const auto drift = static_cast<float>(drift_);
-        uv = {uv.x + uv.w * (1 - zoom) * (0.5f + 0.5f * std::sin(drift * tau / 41)), uv.y + uv.h * (1 - zoom) * (0.5f + 0.5f * std::cos(drift * tau / 53)), uv.w * zoom,
-              uv.h * zoom};
-        float luma = 0.3f;
-        auto backdrop = [&](const std::string &url, float a) {
+        const Rect uv = cover_uv(1, aspect);
+        auto backdrop = [&](const std::string &url, float alpha) {
             const auto &e = images_.get(url, 128, true);
-            if (!e.ready) {
-                return;
+            if (e.ready) {
+                Fade art(p, alpha * ui.progress(e.ready_at, 480, ease::standard) * 0.24f);
+                p.image(window, e.tex, radius, white, uv);
             }
-            float shown = a * ui.progress(e.ready_at, 600, ease::standard);
-            luma = std::lerp(luma, e.luma, shown);
-            Fade f(p, shown);
-            p.image(window, e.tex, radius, white, uv);
         };
-        float change = ui.progress(cover_time_, 800, ease::standard);
+        const float change = ui.progress(cover_time_, 620, ease::standard);
         if (change < 1 && !prev_.cover.empty()) {
             backdrop(prev_.cover, 1 - change);
         }
         if (tr) {
             backdrop(tr->cover, change);
         }
-        p.gradient(window, {0, 0, 0, 0.14f + 0.36f * luma}, {0, 0, 0, 0.4f + 0.34f * luma}, radius);
+        p.hgradient(window, t.bg.with_alpha(0.12f), t.bg.with_alpha(0.68f), radius);
+        p.gradient(window, t.bg.with_alpha(0), t.bg.with_alpha(0.45f), radius);
 
         // The title strip holds the way back down, on a disc that shows on light covers too.
         {
@@ -261,7 +255,8 @@ namespace lyren {
             }
         }
 
-        r.y += (1 - k) * 40;
+        ui.label({window.x + 60, window.y + 12, 240, 28}, lyren::tr("Now playing"), {.size = t.fs(13), .color = t.text_dim, .features = text::medium});
+        r.y += (1 - k) * 24;
         if (!tr) {
             ui.label(r, lyren::tr("Nothing playing"), {.size = t.fs(15), .color = t.text_dim}, Align::center);
             return;
@@ -273,7 +268,7 @@ namespace lyren {
     void Shell::lyrics_view(ui::Ui &ui, Rect r, float centered) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        TextStyle main{.size = t.fs(22)}, sub{.size = t.fs(15)};
+        TextStyle main{.size = t.fs(26), .features = text::semibold}, sub{.size = t.fs(15)};
         const float main_lh = std::round(main.size * 1.45f), sub_lh = std::round(sub.size * 1.5f), gap = 20, soft = main.size * 0.8f;
         if (lyrics_loading_) {
             ui.spinner(ui::center(r, 22, 22), t.text_dim, 2);
@@ -289,7 +284,7 @@ namespace lyren {
             lyric_layout_.clear();
             float y = 0;
             for (const auto &l : lyrics_) {
-                LyricBlock b{.lines = p.wrap(l.text, main.size, r.w), .y = y};
+                LyricBlock b{.lines = p.wrap(l.text, main.size, r.w, main.features), .y = y};
                 if (lyric_translation_ && !l.translation.empty()) {
                     b.translation = p.wrap(l.translation, sub.size, r.w);
                 }
@@ -450,14 +445,14 @@ namespace lyren {
                 float x = r.x + (r.w - std::min(p.measure(s, st), r.w)) / 2 * centered;
                 lifts.clear();
                 if (wiped) {
-                    const float front = sung_x(p, l, s, st.size, soft, now);
+                    const float front = sung_x(p, l, s, st.size, soft, now, st.features);
                     p.set_wipe(x + front, soft, unsung);
                 }
                 if (&st == &main && on > 0 && !l.words.empty() && t.motion > 0) {
                     fill_lyric_wave(lifts, p.shape(l.text, st), l, s, st.size, now, on);
                 }
                 p.set_lifts(lifts);
-                p.text(x, y + lh * 0.72f, s, {.size = st.size, .color = c}, r.w);
+                p.text(x, y + lh * 0.72f, s, {.size = st.size, .color = c, .features = st.features}, r.w);
                 p.set_lifts({});
                 p.clear_wipe();
                 y += lh;
@@ -494,14 +489,14 @@ namespace lyren {
 
     // Where the wipe of a word-timed line stands at t within s, one of its wrapped lines: px from the start of s,
     // a soft edge's width before it while s is unsung and past its end once sung.
-    float Shell::sung_x(ui::Painter &p, const LyricLine &l, std::string_view s, float size, float soft, double t) {
+    float Shell::sung_x(ui::Painter &p, const LyricLine &l, std::string_view s, float size, float soft, double t, uint8_t features) {
         int k = word_at(l, t);
         if (k < 0) {
             return -soft;
         }
         const LyricWord &w = l.words[static_cast<size_t>(k)];
         auto from = static_cast<uint32_t>(s.data() - l.text.data()), to = from + static_cast<uint32_t>(s.size());
-        const text::Shaped &sh = p.shape(s, {.size = size});
+        const text::Shaped &sh = p.shape(s, {.size = size, .features = features});
         auto x = [&](uint32_t b) {
             if (b <= from) {
                 return -soft;

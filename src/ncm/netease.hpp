@@ -24,7 +24,7 @@ namespace lyren::ncm {
     Result<Ranking> parse_ranking(const Reply &reply, bool all_time);
     Result<void> parse_social_write(const Reply &reply);
 
-    // NetEase Cloud Music. Endpoints and their encodings follow api-enhanced's module/*.js.
+    // NetEase Cloud Music API adapter.
     class Netease : public Provider {
     public:
         Netease(Loop &loop, net::Http &http);

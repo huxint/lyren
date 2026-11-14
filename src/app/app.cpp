@@ -760,11 +760,15 @@ namespace lyren {
                 e.preedit_cursor = cmd == "preedit" ? static_cast<int>(rest.size()) : -1;
                 on_text_input(e);
             } else if (cmd == "shot") {
-                renderer_.capture_next(to_lyrics ? *lyrics_target_ : *target_, [path = rest](const uint8_t *px, uint32_t w, uint32_t h) {
+                renderer_.capture_next(to_lyrics ? *lyrics_target_ : *target_, [this, path = rest, next = i](const uint8_t *px, uint32_t w, uint32_t h) {
                     write_png(path, px, w, h);
+                    loop_.defer([this, next] {
+                        run_script(next);
+                    });
                 });
                 (to_lyrics ? lyrics_hash_ : frame_hash_) = 0;
                 request_redraw();
+                return;
             } else if (cmd == "resize") {
                 int w = 0, h = 0;
                 args >> w >> h;

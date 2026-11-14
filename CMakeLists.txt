@@ -88,6 +88,7 @@ add_library(
     src/audio/output.cpp
     src/audio/player.cpp
     src/ncm/crypto.cpp
+    src/ncm/xeapi.cpp
     src/ncm/client.cpp
     src/ncm/netease.cpp
     src/qq/crypto.cpp
@@ -154,6 +155,7 @@ add_library(
     src/app/library.cpp
     src/app/catalog.cpp
     src/app/playback.cpp
+    src/app/playbar.cpp
     src/app/pages.cpp
     src/app/settings.cpp
     src/app/stage.cpp
@@ -196,6 +198,7 @@ if(BUILD_TESTING)
         tests/test_audio.cpp
         tests/test_http.cpp
         tests/test_ncm.cpp
+        tests/test_xeapi.cpp
         tests/test_qq.cpp
         tests/test_kugou.cpp
         tests/test_bodian.cpp
@@ -212,7 +215,7 @@ if(BUILD_TESTING)
 
     if(LYREN_TEST_GRAPHICS)
         add_executable(lyren_gfx_tests tests/main.cpp tests/test_gfx.cpp)
-        target_link_libraries(lyren_gfx_tests PRIVATE lyren_ui doctest)
+        target_link_libraries(lyren_gfx_tests PRIVATE lyren_lib doctest)
         find_program(LYREN_KWIN_WAYLAND kwin_wayland REQUIRED)
         add_test(NAME graphics COMMAND sh ${CMAKE_SOURCE_DIR}/tests/test_gfx.sh $<TARGET_FILE:lyren_gfx_tests> ${LYREN_KWIN_WAYLAND})
         set_tests_properties(graphics PROPERTIES TIMEOUT 30)

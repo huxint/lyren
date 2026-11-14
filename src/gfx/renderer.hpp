@@ -30,7 +30,7 @@ namespace lyren::gfx {
         std::array<float, 4> uv; // texture coordinates; wave: x played width
         std::array<float, 4> color;
         std::array<float, 4> color2;
-        std::array<float, 4> radii;
+        std::array<float, 4> radii; // wave: the pluck, as its position from the left, its height and its width
         // rect: border width; shadow: _, sigma; arc: thickness, start, sweep (radians, clockwise from 12 o'clock);
         // wave: thickness, amplitude, wavelength, phase; glyph with flag_gradient: wipe x, half its width
         std::array<float, 4> params;

@@ -40,6 +40,11 @@ namespace lyren::ui {
         bool silhouette = false; // colour glyphs (emoji) take the colour as a solid shape, for outlines
     };
 
+    // A local displacement of a progress string, in logical pixels.
+    struct Pluck {
+        float at = 0, lift = 0, spread = 1;
+    };
+
     // Turns logical-pixel drawing calls into renderer primitives in buffer pixels. Rectangle edges and text
     // baselines snap to whole buffer pixels so edges stay sharp at fractional scales.
     class Painter {
@@ -69,17 +74,18 @@ namespace lyren::ui {
         // Arc inscribed in r; angles in radians, clockwise from 12 o'clock.
         void arc(Rect r, float thickness, float start, float sweep, Color color);
         // One progress stroke in r: a tapered sine in the played part and a flat tail. phase is in radians.
-        void wave(Rect r, float filled, float amplitude, float wavelength, float phase, Color color, Color rest);
+        void wave(Rect r, float filled, float amplitude, float wavelength, float phase, Color color, Color rest, Pluck pluck = {});
 
         // Draws one line with its baseline at y, ellipsized to max_width. Returns the drawn width.
         float text(float x, float baseline, std::string_view s, const TextStyle &style, float max_width = std::numeric_limits<float>::infinity());
         // Draws text vertically centred in r.
         float text_in(Rect r, std::string_view s, const TextStyle &style);
         float measure(std::string_view s, const TextStyle &style);
-        // Display text wraps at word and CJK boundaries; returned views borrow s.
-        std::vector<std::string_view> wrap(std::string_view s, float size, float width);
+        // Display text wraps at word and CJK boundaries; returned views borrow s. features: as in the style it is
+        // drawn with, since a heavier weight is wider.
+        std::vector<std::string_view> wrap(std::string_view s, float size, float width, uint8_t features = 0);
         // Explicit line breaks and blank lines stay.
-        std::vector<std::string_view> wrap_lines(std::string_view s, float size, float width);
+        std::vector<std::string_view> wrap_lines(std::string_view s, float size, float width, uint8_t features = 0);
         const text::Shaped &shape(std::string_view s, const TextStyle &style) {
             return shaper_.shape(s, style.features);
         }

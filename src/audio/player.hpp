@@ -72,6 +72,10 @@ namespace lyren::audio {
             return volume_;
         }
         bool buffering() const; // playing, but starved by the network
+        // What the meters show: the loudness of the audio going out now, silent unless it plays.
+        Levels levels() const {
+            return state_ == State::playing ? out_.levels() : Levels{};
+        }
         const std::string &error() const {
             return error_;
         }

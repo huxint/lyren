@@ -10,6 +10,8 @@
 #include <optional>
 
 #include "app/images.hpp"
+#include "app/shell.hpp"
+#include "sys/bus.hpp"
 #include "text/atlas.hpp"
 #include "ui/ui.hpp"
 #include "wl/display.hpp"
@@ -43,6 +45,118 @@ namespace {
     };
 
 } // namespace
+
+TEST_CASE("previous and next keep their direction through unavailable songs and previews") {
+    class RejectedTracks final : public Provider {
+    public:
+        StringMap<std::string> cookies;
+        std::vector<std::string> requested;
+        bool previews = false;
+        StringMap<std::string> &session() override {
+            return cookies;
+        }
+        void on_session_changed(std::move_only_function<void()>) override {}
+        Task<Result<void>> initialize() override {
+            co_return Result<void>{};
+        }
+        bool logged_in() const override {
+            return false;
+        }
+        Task<Result<Account>> account() override {
+            co_return std::unexpected("Not signed in");
+        }
+        Task<void> logout() override {
+            co_return;
+        }
+        Task<Result<Batch>> search(std::string, SearchKind, int, int) override {
+            co_return Batch{};
+        }
+        Task<Result<std::vector<Track>>> tracks(Card) override {
+            co_return std::vector<Track>{};
+        }
+        Task<Result<std::vector<Card>>> recommended_playlists() override {
+            co_return std::vector<Card>{};
+        }
+        Task<Result<std::vector<LyricLine>>> lyrics(Track) override {
+            co_return std::vector<LyricLine>{};
+        }
+        Task<Result<Stream>> stream(Track track, Quality) override {
+            requested.push_back(track.id);
+            if (previews) {
+                co_return Stream{.url = "https://example.invalid/preview.mp3", .trial = true};
+            }
+            co_return std::unexpected("Unavailable");
+        }
+    };
+    struct Scenario {
+        int current, direction;
+        std::vector<std::string> expected;
+    };
+    const std::array scenarios{
+        Scenario{2, -1, {"1", "0", "2"}},
+        Scenario{0, -1, {"2", "1", "0"}},
+        Scenario{0, 1, {"1", "2", "0"}},
+    };
+    for (bool previews : {false, true}) {
+        for (const auto &scenario : scenarios) {
+            CAPTURE(previews);
+            CAPTURE(scenario.current);
+            CAPTURE(scenario.direction);
+            gfx::select_driver(GpuChoice::integrated);
+            Graphics g;
+            text::Fonts fonts("sans-serif");
+            text::Shaper shaper(fonts);
+            text::Atlas atlas(g.renderer, fonts);
+            ui::Painter painter(atlas, shaper, fonts);
+            net::Http http;
+            audio::Player player(g.loop, http);
+            Images images(
+                g.loop, http, g.renderer, [] {},
+                [] {
+                    return 1.;
+                });
+            Bus bus(g.loop);
+            RejectedTracks provider;
+            provider.previews = previews;
+            Config config;
+            config.theme.motion = 0;
+            SavedState saved;
+            saved.current = scenario.current;
+            saved.queue = {{.id = "0", .title = "Earlier"}, {.id = "1", .title = "Unavailable"}, {.id = "2", .title = "Current"}};
+            Shell shell({.loop = g.loop,
+                         .http = http,
+                         .player = player,
+                         .providers = {provider, provider, provider, provider, provider},
+                         .images = images,
+                         .config = config,
+                         .set_setting = [](std::string_view, std::string_view, std::string_view) {},
+                         .desktop_changed = [] {},
+                         .open_config = [] {},
+                         .redraw = [] {},
+                         .now =
+                             [] {
+                                 return 1.;
+                             },
+                         .silent = true,
+                         .bus = bus,
+                         .raise = [](std::string_view) {}},
+                        std::move(saved));
+            std::string errors;
+            const auto theme = ui::Theme::from(config, errors), stage = theme.stage(theme.accent);
+            // Exercise the actual transport buttons; every result is rejected before audio is opened.
+            const float x = scenario.direction < 0 ? 304.f : 416.f;
+            ui::FrameInput input{.x = x, .y = 446, .inside = true};
+            input.actions = {{.x = x, .y = 446, .button = BTN_LEFT, .press = true}, {.x = x, .y = 446, .button = BTN_LEFT, .press = false}};
+            ui::Ui ui;
+            painter.begin(1, 0, 0);
+            ui.begin(painter, theme, 720, 480, 1, input);
+            shell.draw(ui, {0, 52, 720, 428}, stage);
+            ui.end();
+            CHECK(provider.requested == scenario.expected);
+            CHECK(player.state() == audio::Player::State::idle);
+        }
+    }
+}
 
 TEST_CASE("pointer chords keep press modifiers after keys are released before a frame") {
     gfx::select_driver(GpuChoice::integrated);
@@ -480,6 +594,61 @@ TEST_CASE("texture replacement preserves the uploaded pixels across submissions"
         });
         CHECK(captured);
         g.renderer.destroy_texture(tex);
+    }
+    g.renderer.destroy_target(target);
+}
+
+TEST_CASE("a plucked progress string stays continuous when both displacements reinforce") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    text::Fonts fonts("sans-serif");
+    text::Shaper shaper(fonts);
+    text::Atlas atlas(g.renderer, fonts);
+    ui::Painter painter(atlas, shaper, fonts);
+    bool configured = false;
+    wl::Window window(g.display,
+                      {.configure =
+                           [&] {
+                               configured = true;
+                               g.loop.quit();
+                           },
+                       .pointer = [](const wl::PointerEvent &) {},
+                       .key = [](const wl::KeyEvent &) {},
+                       .focus = [](bool) {},
+                       .text_input = [](const wl::TextInputEvent &) {}},
+                      720, 480);
+    auto timeout = g.loop.after(2s, [&] {
+        g.loop.quit();
+    });
+    g.loop.run();
+    g.loop.cancel(timeout);
+    REQUIRE(configured);
+    auto *target = g.renderer.create_target(g.display.display, window.surface());
+    g.renderer.resize(*target, window.buffer_width(), window.buffer_height());
+    for (float scale : {1.f, 1.5f}) {
+        for (float direction : {-1.f, 1.f}) {
+            CAPTURE(scale);
+            CAPTURE(direction);
+            painter.begin(scale, 0, 0);
+            painter.wave({20, 100, 440, 2}, 420, 8, 40, direction * 1.5707963f, {1, 1, 1, 1}, {1, 1, 1, 1}, {201, direction * 12, 32});
+            bool captured = false;
+            g.renderer.capture_next(*target, [&](const uint8_t *pixels, uint32_t width, uint32_t) {
+                int gaps = 0;
+                for (int x = static_cast<int>(22 * scale); x < static_cast<int>(458 * scale); ++x) {
+                    bool stroke = false;
+                    for (int y = static_cast<int>(70 * scale); y < static_cast<int>(132 * scale); ++y) {
+                        stroke |= pixels[(static_cast<size_t>(y) * width + static_cast<size_t>(x)) * 4 + 2] > 180;
+                    }
+                    gaps += !stroke;
+                }
+                CHECK(gaps == 0);
+                captured = true;
+            });
+            g.renderer.draw(*target, painter.prims(), {}, [&] {
+                window.prepare_present();
+            });
+            CHECK(captured);
+        }
     }
     g.renderer.destroy_target(target);
 }

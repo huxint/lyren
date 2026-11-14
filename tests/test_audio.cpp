@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "audio/decoder.hpp"
+#include "audio/meter.hpp"
 #include "audio/output.hpp"
 #include "audio/spool.hpp"
 
@@ -198,4 +199,101 @@ TEST_CASE("MP3 seeks before a frame index is built retain the exact sample timel
         REQUIRE(decoder->read(actual.data(), 2048) == 2048);
         CHECK(max_diff(actual.data(), samples.data() + target * format.channels, actual.size()) < 1e-4f);
     }
+}
+
+TEST_CASE("the meter sorts tones into their bands and reads silence as zero") {
+    constexpr uint32_t rate = 48000;
+    constexpr float tau = 6.2831853f;
+    auto tone = [&](float hz, size_t channels) {
+        std::vector<float> out(4800 * channels);
+        for (size_t i = 0; i < 4800; ++i) {
+            for (size_t c = 0; c < channels; ++c) {
+                out[i * channels + c] = 0.5f * std::sin(tau * hz * static_cast<float>(i) / rate);
+            }
+        }
+        return out;
+    };
+    Meter meter;
+    for (size_t channels : {size_t{1}, size_t{2}, size_t{6}}) {
+        CAPTURE(channels);
+        meter.reset(rate);
+        const auto bass = tone(60, channels), voice = tone(700, channels), air = tone(9000, channels);
+        Levels low = meter.measure(bass.data(), 4800, channels);
+        CHECK(low.all == doctest::Approx(0.3536f).epsilon(0.02));
+        CHECK(low.low > low.mid * 2);
+        CHECK(low.low > low.high * 8);
+        meter.reset(rate);
+        Levels mid = meter.measure(voice.data(), 4800, channels);
+        CHECK(mid.mid > mid.low * 2);
+        CHECK(mid.mid > mid.high * 2);
+        meter.reset(rate);
+        Levels high = meter.measure(air.data(), 4800, channels);
+        CHECK(high.high > high.mid * 3);
+        CHECK(high.high > high.low * 30);
+    }
+    const std::vector<float> silence(4800 * 2, 0.f);
+    for (int i = 0; i < 40; ++i) {
+        meter.measure(silence.data(), 4800, 2);
+    }
+    Levels quiet = meter.measure(silence.data(), 4800, 2);
+    CHECK(quiet.all == 0);
+    CHECK(quiet.low == 0);
+    CHECK(quiet.high == 0);
+    CHECK(meter.measure(silence.data(), 0, 2).all == 0);
+}
+
+TEST_CASE("stereo meters preserve energy when channels have opposite phase") {
+    constexpr size_t frames = 4800;
+    std::vector<float> stereo(frames * 2);
+    for (size_t i = 0; i < frames; ++i) {
+        const float sample = 0.5f * std::sin(6.2831853f * 700 * static_cast<float>(i) / 48000);
+        stereo[i * 2] = sample;
+        stereo[i * 2 + 1] = -sample;
+    }
+    Meter meter;
+    meter.reset(48000);
+    const Levels opposite = meter.measure(stereo.data(), frames, 2);
+    CHECK(opposite.all == doctest::Approx(0.3536f).epsilon(0.01));
+    CHECK(opposite.mid > opposite.low * 2);
+    for (size_t i = 0; i < frames; ++i) {
+        stereo[i * 2 + 1] = stereo[i * 2];
+    }
+    meter.reset(48000);
+    const Levels matching = meter.measure(stereo.data(), frames, 2);
+    CHECK(opposite.all == doctest::Approx(matching.all));
+    CHECK(opposite.low == doctest::Approx(matching.low));
+    CHECK(opposite.mid == doctest::Approx(matching.mid));
+    CHECK(opposite.high == doctest::Approx(matching.high));
+}
+
+TEST_CASE("meter followers use their whole range at any loudness and settle at rest") {
+    for (float loudness : {0.4f, 0.04f}) {
+        CAPTURE(loudness);
+        Follower follower;
+        // A loud beat, then a softer passage, then nothing.
+        for (int i = 0; i < 30; ++i) {
+            follower.follow({loudness, loudness, loudness * 0.5f, loudness * 0.1f}, 1 / 60.f);
+        }
+        CHECK(follower.all() > 0.9f);
+        CHECK(follower.band(0) > 0.9f);
+        CHECK(follower.band(2) > 0.9f); // each band against its own peak
+        const float loud = follower.all();
+        for (int i = 0; i < 30; ++i) {
+            follower.follow({loudness * 0.25f, loudness * 0.25f, 0, 0}, 1 / 60.f);
+        }
+        CHECK(follower.all() < loud);
+        CHECK(follower.all() > 0.2f);
+        CHECK(follower.band(1) < 0.2f);
+        for (int i = 0; i < 600; ++i) {
+            follower.follow({}, 1 / 60.f);
+        }
+        CHECK(follower.all() == 0);
+        CHECK_FALSE(follower.moving());
+    }
+    // A stalled frame clock neither explodes nor leaves the value outside its range.
+    Follower late;
+    late.follow({0.3f, 0.3f, 0.3f, 0.3f}, 30);
+    CHECK(late.all() <= 1);
+    late.follow({0.3f, 0.3f, 0.3f, 0.3f}, -1);
+    CHECK(late.all() >= 0);
 }

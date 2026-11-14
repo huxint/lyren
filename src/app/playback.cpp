@@ -216,6 +216,9 @@ namespace lyren {
     }
 
     void Shell::skip(int delta, bool automatic) {
+        if (!automatic) {
+            failures_ = 0;
+        }
         if (fm_playing_ && delta > 0) {
             return next_fm();
         }
@@ -234,14 +237,15 @@ namespace lyren {
             i = ((current_ + delta) % n + n) % n;
         }
         set_current(i);
-        start(0, automatic ? want_play_ || player_.state() == State::ended : true);
+        start(0, automatic ? want_play_ || player_.state() == State::ended : true, delta);
     }
 
-    void Shell::start(double at, bool play) {
+    void Shell::start(double at, bool play, int direction) {
         if (!current()) {
             return;
         }
         uint64_t gen = ++play_gen_;
+        skip_direction_ = direction;
         retried_ = counted_ = false;
         want_play_ = play;
         fetching_ = true;
@@ -281,10 +285,10 @@ namespace lyren {
                 fetching_ = false;
                 // A run of unplayable tracks is reported once, when one finally plays.
                 if (!failures_) {
-                    notify(r ? lyren::trf("Skipped {}: preview only", t.title) : t.title + ": " + r.error(), "circle-alert", !r);
+                    notify(r ? lyren::trf("Skipped {}: preview only", t.title) : std::format("{}: {}", t.title, lyren::tr(r.error())), "circle-alert", !r);
                 }
                 if (++failures_ < queue_.size()) {
-                    skip(1, true);
+                    skip(skip_direction_, true);
                 } else {
                     failures_ = 0;
                     want_play_ = false;
@@ -377,6 +381,7 @@ namespace lyren {
                     notify(lyren::trf("Skipped {} unavailable songs", failures_), "skip-forward");
                 }
                 failures_ = 0;
+                skip_direction_ = 1;
                 std::erase_if(recent_, [&](const Track &x) {
                     return same(x, *current());
                 });
@@ -410,7 +415,7 @@ namespace lyren {
                 const audio::Spool *sp = player_.spool();
                 // Stream URLs expire; fetch a new one and carry on from here.
                 if (sp && sp->status() == 403 && !retried_) {
-                    start(last_pos_, want_play_);
+                    start(last_pos_, want_play_, skip_direction_);
                     retried_ = true;
                 } else {
                     notify(lyren::trf("Playback failed: {}", player_.error()), "circle-alert", true);

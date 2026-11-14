@@ -601,19 +601,13 @@ namespace lyren::qq {
             std::tm a, b;
             localtime_r(&t, &a);
             localtime_r(&now, &b);
-            std::time_t yesterday = now - 86400;
-            std::tm y;
-            localtime_r(&yesterday, &y);
             if (a.tm_year == b.tm_year && a.tm_yday == b.tm_yday) {
                 return std::format("{:02}:{:02}", a.tm_hour, a.tm_min);
             }
-            if (a.tm_year == y.tm_year && a.tm_yday == y.tm_yday) {
-                return lyren::trf("Yesterday {:02}:{:02}", a.tm_hour, a.tm_min);
-            }
             if (a.tm_year == b.tm_year) {
-                return lyren::trf("{}-{}", a.tm_mon + 1, a.tm_mday);
+                return std::format("{}/{}", a.tm_mon + 1, a.tm_mday);
             }
-            return lyren::trf("{}-{}-{}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
+            return std::format("{}/{}/{}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
         }
 
         // The text of the next <tag><![CDATA[…]]></tag> in s after at, moving at past it; at becomes npos when there is none.

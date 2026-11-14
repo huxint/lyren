@@ -214,9 +214,6 @@ namespace lyren {
             route_.profile->origin = std::exchange(profile_from_, {});
             spawn(load_profile(route_.profile, route_.card));
         }
-        if (page == Page::moments && signed_in() && !lib.feed) {
-            lib.feed = std::make_shared<PostList>();
-        }
         if (page == Page::recommend && !lib.recommended.loaded && !lib.recommended.loading) {
             spawn(load_cards(active_, library(active_).recommended, provider(active_).recommended_playlists()));
         }

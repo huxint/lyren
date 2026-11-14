@@ -34,6 +34,7 @@ namespace lyren::text {
         }
 
         // Split into runs by the face that covers each character, then shape each run with its face.
+        const int weight = features & semibold ? 2 : features & medium ? 1 : 0;
         float pen = 0;
         size_t i = 0;
         while (i < text.size()) {
@@ -47,7 +48,7 @@ namespace lyren::text {
                     // Shown as an emoji: anything from the emoji blocks of plane 1, or a character followed by VS16.
                     size_t after = k;
                     bool emoji = (cp >= 0x1f000 && cp < 0x20000) || (after < text.size() && utf8::decode(text, after) == 0xfe0f);
-                    uint16_t f = fonts_.face_for(cp, emoji);
+                    uint16_t f = fonts_.face_for(cp, emoji, weight);
                     if (chosen && f != face) {
                         break;
                     }

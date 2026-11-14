@@ -1,6 +1,7 @@
 #pragma once
 #include <spa/utils/hook.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include "audio/decoder.hpp"
+#include "audio/meter.hpp"
 #include "core/result.hpp"
 
 struct pw_thread_loop;
@@ -59,11 +61,18 @@ namespace lyren::audio {
         double played_seconds() const {
             return static_cast<double>(played_ns_.load(std::memory_order_relaxed)) * 1e-9;
         }
+        // The audio last sent to PipeWire, after the loudness gain and before the stream volume. Read once a frame
+        // for meters: the four values need not come from the same cycle.
+        Levels levels() const {
+            return {level_[0].load(std::memory_order_relaxed), level_[1].load(std::memory_order_relaxed), level_[2].load(std::memory_order_relaxed),
+                    level_[3].load(std::memory_order_relaxed)};
+        }
 
     private:
         friend struct StreamEvents;
         void process();
         void apply_volume();
+        void publish(Levels l);
 
         std::atomic<uint32_t> &wake_;
         Events ev_;
@@ -95,6 +104,8 @@ namespace lyren::audio {
         std::atomic<uint32_t> flush_applied_{0};
         uint32_t flush_seen_ = 0; // realtime thread
         bool draining_ = false;   // realtime thread
+        Meter meter_;             // realtime thread
+        std::array<std::atomic<float>, 4> level_{};
     };
 
 } // namespace lyren::audio

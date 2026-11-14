@@ -124,15 +124,12 @@ namespace lyren {
         localtime_r(&at, &a);
         localtime_r(&now, &n);
         if (a.tm_year == n.tm_year && a.tm_yday == n.tm_yday) {
-            return trf("Today {:02}:{:02}", a.tm_hour, a.tm_min);
-        }
-        if (a.tm_year == n.tm_year && a.tm_yday + 1 == n.tm_yday) {
-            return trf("Yesterday {:02}:{:02}", a.tm_hour, a.tm_min);
+            return std::format("{:02}:{:02}", a.tm_hour, a.tm_min);
         }
         if (a.tm_year == n.tm_year) {
-            return trf("{}/{} {:02}:{:02}", a.tm_mon + 1, a.tm_mday, a.tm_hour, a.tm_min);
+            return std::format("{}/{} {:02}:{:02}", a.tm_mon + 1, a.tm_mday, a.tm_hour, a.tm_min);
         }
-        return trf("{0}/{1}/{2}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
+        return std::format("{}/{}/{}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
     }
 
     // Topics (#…#) and mentions (@…), as byte ranges of s.

@@ -117,7 +117,7 @@ namespace lyren::ui {
         const Theme &t = *theme_;
         int n = static_cast<int>(labels.size());
         bool pill = style == TabStyle::pill;
-        TextStyle st{.size = pill ? t.fs(13) : t.fs(15), .color = t.text};
+        TextStyle st{.size = pill ? t.fs(13) : t.fs(15), .color = t.text, .features = text::medium};
         constexpr float gap = 28;
 
         // Tab extents: label widths, plus an equal share of the leftover width for pills.
@@ -157,7 +157,7 @@ namespace lyren::ui {
             }
             float hot = anim(sub_id(id, 0x100 + static_cast<uint64_t>(i)), it.hovered ? 1 : 0, 120);
             Color fg = i == selected ? t.text : t.text_dim.mix(t.text, hot * 0.6f);
-            label(c, labels[static_cast<size_t>(i)], {.size = st.size, .color = fg}, pill ? Align::center : Align::left);
+            label(c, labels[static_cast<size_t>(i)], {.size = st.size, .color = fg, .features = st.features}, pill ? Align::center : Align::left);
         }
         if (!pill) {
             p_->rect({ix, r.bottom() - 3, iw, 3}, t.accent, 1.5f);

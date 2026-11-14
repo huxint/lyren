@@ -20,7 +20,7 @@ namespace lyren {
         constexpr ui::Color white{1, 1, 1, 1};
 
         struct PostStyle {
-            static constexpr float pad = 18, avatar = 38, gap = 10, chip = 62, actions = 34, spacing = 12;
+            static constexpr float pad = 12, avatar = 36, gap = 12, chip = 66, actions = 34, spacing = 16;
             static constexpr float text = 15, nested = 14, name = 14, meta = 12;
             static constexpr float picture_w = 380, picture_h = 300, thumb = 150;
         };
@@ -390,12 +390,12 @@ namespace lyren {
                 const auto [hot, down] = ui.feel(id, it, 140);
                 Rect c = chip.inset(down);
                 p.rect(c, t.text.with_alpha(0.05f + 0.04f * hot), t.radius);
-                Rect art{c.x + 8, c.y + 8, 46, 46};
+                Rect art{c.x + 8, c.y + 8, 50, 50};
                 const std::string &image = post.track ? post.track->cover : post.card->cover;
                 cover(ui, art, image, t.radius_s(), post.track ? "music" : post.card->kind == CardKind::album ? "disc-album" : "list-music");
                 const float tx = art.right() + 12, tw = c.right() - tx - 52;
                 const bool on = post.track && is_current(*post.track);
-                p.text(tx, c.y + 27, post.track ? post.track->title : post.card->title, {.size = t.fs(14), .color = on ? t.accent : t.text}, tw);
+                p.text(tx, c.y + 27, post.track ? post.track->title : post.card->title, {.size = t.fs(14), .color = on ? t.accent : t.text, .features = text::medium}, tw);
                 std::string sub;
                 if (post.track) {
                     sub = post.track->artist;
@@ -528,7 +528,8 @@ namespace lyren {
         using S = PostStyle;
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        const float inner = w - S::pad * 2, cx = x + S::pad;
+        const float indent = S::avatar + 14;
+        const float inner = w - S::pad * 2 - indent, cx = x + S::pad + indent;
         const TextStyle body{.size = t.fs(S::text), .color = t.text};
         const float lh = std::round(body.size * 1.62f);
         const float head_y = y + S::pad, head_h = byline ? S::avatar : 18;
@@ -547,21 +548,21 @@ namespace lyren {
         }
 
         Rect card{x, y, w, h - S::spacing};
-        p.rect(card, t.text.with_alpha(t.dark ? 0.04f : 0.03f), t.radius_l(), t.text.with_alpha(0.05f), 1);
+        p.rect({cx, card.bottom(), inner, 1}, t.border.with_alpha(0.65f));
         const TextStyle meta{.size = t.fs(S::meta - 1), .color = t.text_dim, .features = text::tabular_nums};
         if (byline) {
             // Who posted, which opens their page.
-            Rect face{cx, head_y, S::avatar, S::avatar};
-            const float nw = std::min(p.measure(post.author.name, {.size = t.fs(S::name)}) + 1, inner - S::avatar - 60);
+            Rect face{x + S::pad, head_y, S::avatar, S::avatar};
+            const float nw = std::min(p.measure(post.author.name, {.size = t.fs(S::name), .features = text::medium}) + 1, inner - 38);
             Rect who{face.x, face.y, S::avatar + 12 + nw, S::avatar};
             auto it = ui.interact(ui.id("author"), who);
             const float hot = ui.anim(ui.id("author"), it.hovered ? 1 : 0, 140);
             cover(ui, face, post.author.avatar, S::avatar / 2, "user");
-            ui.label({face.right() + 12, head_y - 1, nw, 22}, post.author.name, {.size = t.fs(S::name), .color = t.text});
+            ui.label({face.right() + 14, head_y - 1, nw, 22}, post.author.name, {.size = t.fs(S::name), .color = t.text, .features = text::medium});
             if (hot > 0) {
-                p.rect({face.right() + 12, head_y + 19, nw, 1}, t.text.with_alpha(0.4f * hot));
+                p.rect({face.right() + 14, head_y + 19, nw, 1}, t.text.with_alpha(0.4f * hot));
             }
-            ui.label({face.right() + 12, head_y + 20, inner - S::avatar - 12, 18}, post_time(post.time), meta);
+            ui.label({face.right() + 14, head_y + 20, inner - S::avatar - 12, 18}, post_time(post.time), meta);
             if (it.hovered) {
                 ui.cursor = wl::Cursor::pointer;
             }
@@ -569,6 +570,15 @@ namespace lyren {
                 open_profile(ui, source, post.author.id, post.author.name, post.author.avatar, face);
             }
         } else {
+            if (post.time > 0) {
+                const std::time_t at = static_cast<std::time_t>(post.time / 1000);
+                std::tm date;
+                localtime_r(&at, &date);
+                ui.label({x + S::pad, head_y, S::avatar, 30}, std::format("{:02}", date.tm_mday),
+                         {.size = t.fs(24), .color = t.text_dim, .features = text::medium | text::tabular_nums}, Align::center);
+                ui.label({x + S::pad - 2, head_y + 34, S::avatar + 4, 16}, std::format("{:02}/{}", date.tm_mon + 1, date.tm_year + 1900), {.size = t.fs(9), .color = t.text_dim},
+                         Align::center);
+            }
             ui.label({cx, head_y, inner, 18}, post_time(post.time), meta);
         }
         const auto marks = highlights(post.text);
@@ -586,7 +596,7 @@ namespace lyren {
         const int likes = mine != post_likes_.end() ? mine->second.likes : post.likes;
         float ax = cx - 8;
         const float ay = action_y;
-        const std::string like_n = likes > 0 ? short_number(likes) : "";
+        const std::string like_n = likes > 0 ? short_number(likes) : inner < 280 ? "" : std::string(lyren::tr("Like"));
         const float pop = ui.spring(ui.id("post-like-pop"), liked ? 1 : 0, 320, 0.45f);
         ui.disabled = mine != post_likes_.end() && mine->second.pending;
         float w1 = action_width(ui, like_n);
@@ -597,7 +607,7 @@ namespace lyren {
         ui.disabled = false;
         ax += w1 + 4;
         if (caps.comments[3]) {
-            const std::string n = post.comments > 0 ? short_number(post.comments) : "";
+            const std::string n = post.comments > 0 ? short_number(post.comments) : inner < 280 ? "" : std::string(lyren::tr("Comment"));
             const float w2 = action_width(ui, n);
             if (post_action(ui, ui.id("comments"), {ax, ay, w2, S::actions}, "message-square", n, t.text_dim)) {
                 const std::string &art = post.track ? post.track->cover : !post.pictures.empty() ? post.pictures.front().url : post.author.avatar;
@@ -606,14 +616,14 @@ namespace lyren {
             ax += w2 + 4;
         }
         if (caps.post_write) {
-            const std::string n = post.forwards > 0 ? short_number(post.forwards) : "";
+            const std::string n = post.forwards > 0 ? short_number(post.forwards) : inner < 280 ? "" : std::string(lyren::tr("Repost"));
             const float w3 = action_width(ui, n);
             if (post_action(ui, ui.id("forward"), {ax, ay, w3, S::actions}, "repeat-2", n, t.text_dim)) {
                 open_composer(ui, source, {}, post);
             }
         }
         const bool deleting = post_deletes_.contains(post_key(source, post.id));
-        if (ui.icon_button(ui.id("more"), {card.right() - S::pad - 26, ay + 3, 28, 28}, deleting ? "trash" : "ellipsis", 16)) {
+        if (ui.icon_button(ui.id("more"), {card.right() - S::pad - 26, head_y + 1, 28, 28}, deleting ? "trash" : "ellipsis", 16)) {
             std::vector<ui::MenuItem> items;
             if (!post.text.empty()) {
                 items.push_back({"copy", std::string(lyren::tr("Copy text")), [&ui, text = post.text] {
@@ -649,14 +659,14 @@ namespace lyren {
                                  true});
             }
             if (!items.empty()) {
-                ui.open_menu(card.right() - S::pad - 26, ay + 34, std::move(items));
+                ui.open_menu(card.right() - S::pad - 26, head_y + 32, std::move(items));
             }
         }
         ui.pop_id();
         return h;
     }
 
-    void Shell::post_list(ui::Ui &ui, Rect r, ui::Id id, std::shared_ptr<PostList> list, Source source, const std::string &author, bool byline, double since) {
+    float Shell::post_list(ui::Ui &ui, Rect r, std::shared_ptr<PostList> list, Source source, const std::string &author, bool byline, double since) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         PostList &l = *list;
@@ -666,14 +676,14 @@ namespace lyren {
             }
             if (l.loading || (l.more && l.error.empty()) || !l.error.empty()) {
                 page_status(ui, r, l.loading || l.error.empty(), l.error, false);
-                return;
+                return 200;
             }
             Rect c = ui::center(r, std::min(r.w, 340.f), 120);
             p.icon("messages-square", {c.x + (c.w - 30) / 2, c.y + 4, 30, 30}, t.text_dim);
-            ui.label({c.x, c.y + 50, c.w, 22}, lyren::tr(byline ? "No posts from people you follow" : "No posts yet"), {.size = t.fs(15), .color = t.text}, Align::center);
-            return;
+            ui.label({c.x, c.y + 50, c.w, 22}, lyren::tr(author.empty() ? "No posts from people you follow" : "No posts yet"), {.size = t.fs(15), .color = t.text}, Align::center);
+            return 200;
         }
-        const float w = std::min(r.w - 24, 700.f), x = r.x + (r.w - w) / 2;
+        const float w = std::min(r.w, 640.f), x = r.x;
         const float size = t.fs(PostStyle::text);
         if (l.heights_w != w || l.heights_size != size) {
             l.heights.clear(), l.heights_w = w, l.heights_size = size;
@@ -685,16 +695,14 @@ namespace lyren {
         for (float h : l.heights) {
             content += h;
         }
-        const float off = ui.begin_scroll(id, r, content);
         const Rect clip = ui.clip();
-        float y = r.y + 2 - off;
-        int shown = 0;
+        float y = r.y + 2;
         for (size_t i = 0; i < l.posts.size(); ++i) {
             const float h = l.heights[i];
             if (y + h > clip.y && y < clip.bottom()) {
-                const float a = ui.progress(since + 0.04 * std::min(shown++, 8), 460);
+                const float a = ui.progress(since, 220);
                 Fade fade(p, a);
-                post_card(ui, source, l.posts[i], x, y + (1 - a) * 14, w, true, byline);
+                post_card(ui, source, l.posts[i], x, y, w, true, byline);
             }
             y += h;
         }
@@ -712,40 +720,7 @@ namespace lyren {
             const TextStyle end{.size = t.fs(12), .color = t.text_dim.with_alpha(0.7f)};
             ui.label({r.x, y + 14, r.w, 24}, lyren::tr("That's everything"), end, Align::center);
         }
-        if (off > 0.5f) {
-            p.gradient({r.x, r.y, r.w, 14}, t.surface.with_alpha(t.surface.a * 0.9f), t.surface.with_alpha(0));
-        }
-        ui.end_scroll();
-    }
-
-    void Shell::moments_page(ui::Ui &ui, Rect r) {
-        const auto &t = ui.theme();
-        Rect body = r.inset(32, 0);
-        ui.label({body.x, r.y + 28, body.w, 38}, lyren::tr("Moments"), {.size = t.fs(28), .color = t.text});
-        ui.label({body.x, r.y + 70, body.w, 20}, lyren::tr("From people you follow"), {.size = t.fs(13), .color = t.text_dim});
-        if (page_status(ui, {r.x, r.y + 100, r.w, r.h - 100}, false, "", !signed_in())) {
-            return;
-        }
-        auto &feed = library().feed;
-        if (!feed) {
-            feed = std::make_shared<PostList>();
-        }
-        float right = body.right();
-        if (provider().capabilities.post_write) {
-            const auto label = lyren::tr("New post");
-            const float w = button_width(ui, label, true);
-            if (ui.button(ui.id("moments-write"), {right - w, r.y + 36, w, 38}, label, ui::ButtonKind::primary, "square-pen")) {
-                open_composer(ui, active_);
-            }
-            right -= w + 8;
-        }
-        ui.disabled = feed->loading;
-        if (ui.icon_button(ui.id("moments-refresh"), {right - 38, r.y + 39, 32, 32}, "refresh-cw", 18)) {
-            feed = std::make_shared<PostList>();
-            ui.scroll_to(ui.id("moments"), 0);
-        }
-        ui.disabled = false;
-        post_list(ui, {r.x + 16, r.y + 104, r.w - 32, r.h - 112}, ui.id("moments"), feed, active_, "", true, std::max(page_time_, feed->since));
+        return content;
     }
 
 } // namespace lyren

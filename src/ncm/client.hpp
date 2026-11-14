@@ -1,12 +1,16 @@
 #pragma once
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "core/string_map.hpp"
 #include "core/task.hpp"
 #include "net/fetch.hpp"
+#include "ncm/xeapi.hpp"
 
 namespace lyren::ncm {
 
@@ -23,7 +27,7 @@ namespace lyren::ncm {
         std::string error; // empty on success
     };
 
-    // A cookie session and the request encodings. Behaviour follows api-enhanced util/request.js.
+    // The cookie session and the official API request encodings.
     class Client {
     public:
         Client(Loop &loop, net::Http &http)
@@ -41,9 +45,12 @@ namespace lyren::ncm {
 
         // fields: JSON object members without the braces, e.g. R"("id":1)". uri is the /api/... path.
         Task<Reply> call(std::string uri, std::string fields, Api api = Api::eapi, net::Retry retry = net::Retry::network);
+        Task<Reply> call_xeapi(std::string uri, std::vector<std::pair<std::string, std::string>> fields);
 
     private:
         void apply_set_cookie(std::string_view raw);
+        Task<Reply> exchange(std::string uri, net::Request request, net::Retry retry, bool encrypted = false);
+        std::optional<XeapiKey> xeapi_key_;
 
         Loop &loop_;
         net::Http &http_;

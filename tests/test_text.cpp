@@ -44,3 +44,25 @@ TEST_CASE("shaping reuses borrowed text while keeping font features separate") {
     CHECK(tabular.glyphs.size() == normal.glyphs.size());
     CHECK(&shaper.shape("") != &shaper.shape("", text::tabular_nums));
 }
+
+TEST_CASE("weights shape as their own runs and never lose a glyph") {
+    text::Fonts fonts("sans-serif");
+    text::Shaper shaper(fonts);
+    const std::string_view text = "Lyren 弦间 0123";
+    const auto &regular = shaper.shape(text);
+    const auto &medium = shaper.shape(text, text::medium);
+    const auto &semibold = shaper.shape(text, text::semibold);
+    CHECK(&regular != &medium);
+    CHECK(&medium != &semibold);
+    // A family without the weight falls back to what it has: the same glyph count, and a width that never shrinks.
+    CHECK(medium.glyphs.size() == regular.glyphs.size());
+    CHECK(semibold.glyphs.size() == regular.glyphs.size());
+    CHECK(medium.width >= regular.width - 1e-3f);
+    CHECK(semibold.width >= medium.width - 1e-3f);
+    for (int weight = 0; weight < text::Fonts::weights; ++weight) {
+        CHECK(fonts.face(fonts.face_for(U'A', false, weight)).hb != nullptr);
+    }
+    // Out-of-range weights clamp instead of reading past the chains.
+    CHECK(fonts.face_for(U'A', false, 9) == fonts.face_for(U'A', false, text::Fonts::weights - 1));
+    CHECK(&shaper.shape(text, text::semibold | text::tabular_nums) != &semibold);
+}

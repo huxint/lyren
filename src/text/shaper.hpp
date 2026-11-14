@@ -23,8 +23,11 @@ namespace lyren::text {
         float width = 0; // em
     };
 
+    // tabular_nums is an OpenType feature; medium and semibold pick the weight (at most one of the two).
     enum Feature : uint8_t {
-        tabular_nums = 1
+        tabular_nums = 1,
+        medium = 2,
+        semibold = 4
     };
 
     // Shapes in font units so one result serves every size. Results are cached by text.

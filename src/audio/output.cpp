@@ -117,6 +117,8 @@ namespace lyren::audio {
         w_ = 0, r_ = 0, drop_to_ = 0, base_ = 0, played_ = 0, eos_ = UINT64_MAX;
         flush_seen_ = flush_seq_.load(), flush_applied_ = flush_seen_;
         draining_ = false;
+        meter_.reset(f.rate);
+        publish({});
 
         // state.restore-props=false keeps WirePlumber from restoring an old volume over ours.
         pw_properties *props =
@@ -205,6 +207,7 @@ namespace lyren::audio {
             r_.store(drop_to_.load(std::memory_order_relaxed), std::memory_order_release);
             played_.store(base_.load(std::memory_order_relaxed), std::memory_order_relaxed);
             draining_ = false;
+            meter_.reset(fmt_.rate);
             flush_applied_.store(s, std::memory_order_release);
         }
         uint64_t r = r_.load(std::memory_order_relaxed), k = std::min(n, w_.load(std::memory_order_acquire) - r);
@@ -220,6 +223,7 @@ namespace lyren::audio {
             }
         }
         std::fill_n(dst + k * ch, static_cast<size_t>(n - k) * ch, 0.f);
+        publish(meter_.measure(dst, static_cast<size_t>(k), ch));
         r_.store(r + k, std::memory_order_release);
         played_.store(played_.load(std::memory_order_relaxed) + k, std::memory_order_release);
         played_ns_.fetch_add(k * 1000000000 / fmt_.rate, std::memory_order_relaxed);
@@ -240,6 +244,11 @@ namespace lyren::audio {
         }
     }
 
+    void Output::publish(Levels l) {
+        level_[0].store(l.all, std::memory_order_relaxed), level_[1].store(l.low, std::memory_order_relaxed);
+        level_[2].store(l.mid, std::memory_order_relaxed), level_[3].store(l.high, std::memory_order_relaxed);
+    }
+
     void Output::set_active(bool on) {
         active_ = on;
         pw_thread_loop_lock(loop_);
@@ -247,6 +256,10 @@ namespace lyren::audio {
             pw_stream_set_active(stream_, on);
         }
         pw_thread_loop_unlock(loop_);
+        // A paused stream is not processed, so nothing else would clear the meter.
+        if (!on) {
+            publish({});
+        }
     }
 
     void Output::set_volume(float linear) {

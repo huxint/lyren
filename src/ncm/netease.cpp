@@ -742,7 +742,7 @@ namespace lyren::ncm {
             reply = co_await client.call("/api/song/enhance/player/url", std::format(R"("ids":"[{}]","br":999000)", t.id));
         } else {
             reply =
-                co_await client.call("/api/song/enhance/player/url/v1", std::format(R"("ids":"[{}]","level":"{}","encodeType":"flac")", t.id, levels[static_cast<int>(quality)]));
+                co_await client.call_xeapi("/api/song/enhance/player/url/v1", {{"ids", "[" + t.id + "]"}, {"level", levels[static_cast<int>(quality)]}, {"encodeType", "flac"}});
         }
         co_return parse<UrlReply>(reply).and_then([&](auto r) -> Result<Stream> {
             if (!r.data || r.data->empty() || !r.data->front().url || r.data->front().url->empty()) {
@@ -1597,8 +1597,7 @@ namespace lyren::ncm {
         co_return parse_ranking(co_await client.call("/api/v1/play/record", std::format(R"("uid":{},"type":{})", uid, all_time ? 0 : 1), Api::weapi), all_time);
     }
 
-    // As api-enhanced's scrobble: every value is a string, and the play record always ends with "playend" (the server
-    // does not count others).
+    // Listening reports encode every value as a string; a completed play record ends with "playend".
     Task<void> Netease::report_start(std::string id, std::string source) {
         std::string logs = std::format(R"([{{"action":"startplay","json":{{"id":"{}","type":"song","mainsite":"1","mainsiteWeb":"1","content":"id={}"}}}}])", id, source);
         co_await client.call("/api/feedback/weblog", std::format(R"("logs":{})", glz::write_json(logs).value()), Api::clientlog, net::Retry::never);

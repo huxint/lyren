@@ -88,7 +88,7 @@ namespace lyren {
     std::string Shell::date_label() const {
         const int month = (today_[0] - '0') * 10 + today_[1] - '0';
         const int day = (today_[3] - '0') * 10 + today_[4] - '0';
-        return lyren::trf("{}/{}", month, day);
+        return std::format("{}/{}", month, day);
     }
 
     // A filter pill.

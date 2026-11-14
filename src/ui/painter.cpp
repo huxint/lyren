@@ -136,13 +136,14 @@ namespace lyren::ui {
         p.params[0] = thickness * scale_, p.params[1] = start, p.params[2] = sweep;
     }
 
-    void Painter::wave(Rect r, float filled, float amplitude, float wavelength, float phase, Color color, Color rest) {
-        float y = r.y + r.h / 2, h = amplitude + r.h;
+    void Painter::wave(Rect r, float filled, float amplitude, float wavelength, float phase, Color color, Color rest, Pluck pluck) {
+        float y = r.y + r.h / 2, h = amplitude + std::abs(pluck.lift) + r.h;
         auto &p = emit(gfx::Kind::wave, (r.x + ox_) * scale_, (y + oy_ - h) * scale_, (r.right() + ox_) * scale_, (y + oy_ + h) * scale_);
         premul(p.color, color);
         premul(p.color2, rest);
         p.uv[0] = filled * scale_;
         p.params[0] = r.h * scale_, p.params[1] = amplitude * scale_, p.params[2] = wavelength * scale_, p.params[3] = phase;
+        p.radii = {pluck.at * scale_, pluck.lift * scale_, std::max(pluck.spread, 1.f) * scale_, 0};
     }
 
     void Painter::glyphs(const text::Shaped &shaped, size_t count, float x, float baseline, const TextStyle &style) {
@@ -243,8 +244,8 @@ namespace lyren::ui {
     }
 
     // Greedy line breaking at spaces and around CJK characters, from a single shaping pass. The lines point into s.
-    std::vector<std::string_view> Painter::wrap(std::string_view s, float size, float width) {
-        const text::Shaped &sh = shape(s, {.size = size});
+    std::vector<std::string_view> Painter::wrap(std::string_view s, float size, float width, uint8_t features) {
+        const text::Shaped &sh = shape(s, {.size = size, .features = features});
         if (sh.width * size <= width || sh.glyphs.size() < 2) {
             return {s};
         }
@@ -289,10 +290,10 @@ namespace lyren::ui {
         return out;
     }
 
-    std::vector<std::string_view> Painter::wrap_lines(std::string_view s, float size, float width) {
+    std::vector<std::string_view> Painter::wrap_lines(std::string_view s, float size, float width, uint8_t features) {
         std::vector<std::string_view> out;
         for (auto part : std::views::split(s, '\n')) {
-            auto lines = wrap(std::string_view(part.begin(), part.end()), size, width);
+            auto lines = wrap(std::string_view(part.begin(), part.end()), size, width, features);
             out.insert(out.end(), lines.begin(), lines.end());
         }
         return out;

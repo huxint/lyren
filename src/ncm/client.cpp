@@ -20,6 +20,7 @@ namespace lyren::ncm {
     static constexpr const char *ua_weapi =
         "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0";
     static constexpr const char *ua_osx = "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    static constexpr const char *ua_xeapi = "User-Agent: NeteaseMusic/9.5.61.260802021928(9005061);Dalvik/2.1.0 (Linux; U; Android 12; HBN-AL00 Build/cd737a2.0)";
     static constexpr const char *form = "Content-Type: application/x-www-form-urlencoded";
 
     static int64_t now_ms() {
@@ -40,6 +41,17 @@ namespace lyren::ncm {
     }
 
     using Pairs = std::vector<std::pair<std::string, std::string>>;
+
+    static std::string form_body(const Pairs &fields) {
+        std::string body;
+        for (const auto &[key, value] : fields) {
+            if (!body.empty()) {
+                body += '&';
+            }
+            body += uri_encode(key) + '=' + uri_encode(value);
+        }
+        return body;
+    }
 
     static std::string cookie_header(const Pairs &p) {
         std::string s = "Cookie: ";
@@ -175,6 +187,62 @@ namespace lyren::ncm {
             req.headers = {ua_weapi, "Referer: https://music.163.com", cookie_header(all), form};
         }
 
+        co_return co_await exchange(std::move(uri), std::move(req), retry);
+    }
+
+    Task<Reply> Client::call_xeapi(std::string uri, Pairs fields) {
+        if (!xeapi_key_) {
+            std::string nonce(16, '0');
+            std::random_device random;
+            for (char &digit : nonce) {
+                digit += static_cast<char>(random() % 10);
+            }
+            const std::string timestamp = std::to_string(now_ms());
+            net::Request req{.url = "https://interface.music.163.com/api/bsr/sk/get",
+                             .body = form_body({{"appVersion", "9.5.61"},
+                                                {"currentKeyVersion", ""},
+                                                {"deviceId", get("deviceId")},
+                                                {"nonce", nonce},
+                                                {"os", "android"},
+                                                {"requestType", "active"},
+                                                {"signature", xeapi_signature(timestamp, nonce)},
+                                                {"t1", ""},
+                                                {"t2", ""},
+                                                {"timestamp", timestamp},
+                                                {"uid", ""}}),
+                             .headers = {ua_xeapi, form, cookie_header({{"deviceId", get("deviceId")}})}};
+            auto reply = co_await net::fetch_retry(loop_, http_, std::move(req), net::Retry::network);
+            if (!reply.error.empty()) {
+                co_return Reply{.error = "Network connection failed"};
+            }
+            auto key = parse_xeapi_key(reply.body, nonce);
+            if (!key) {
+                co_return Reply{.code = reply.status, .error = std::move(key.error())};
+            }
+            xeapi_key_ = std::move(*key);
+        }
+        auto body = xeapi_encrypt(form_body(fields), *xeapi_key_);
+        if (!body) {
+            co_return Reply{.error = std::move(body.error())};
+        }
+        const std::string buildver = std::to_string(now_ms() / 1000);
+        Pairs wire(cookies.begin(), cookies.end());
+        std::erase_if(wire, [](const auto &field) {
+            return field.first == "os" || field.first == "osver" || field.first == "appver" || field.first == "buildver" || field.first == "sDeviceId";
+        });
+        wire.append_range(Pairs{{"os", "android"}, {"osver", "16"}, {"appver", "9.1.65"}, {"buildver", buildver}, {"sDeviceId", get("deviceId")}});
+        net::Request req{.url = "https://interface3.music.163.com/xeapi/" + uri.substr(5),
+                         .body = form_body({{"C", body->c}, {"S", body->s}, {"R", body->r}}),
+                         .headers = {ua_xeapi, "Content-Type: application/x-www-form-urlencoded;charset=utf-8", "X-Client-Enc-State: ENCRYPTED", "x-aeapi: true",
+                                     "x-deviceid: " + get("deviceId"), "x-sdeviceid: " + get("deviceId"), "x-os: android", "x-osver: 16", "x-appver: 9.1.65",
+                                     "x-buildver: " + buildver, cookie_header(wire)}};
+        if (logged_in()) {
+            req.headers.push_back("x-music-u: " + get("MUSIC_U"));
+        }
+        co_return co_await exchange(std::move(uri), std::move(req), net::Retry::network, true);
+    }
+
+    Task<Reply> Client::exchange(std::string uri, net::Request req, net::Retry retry, bool encrypted) {
         const std::string login = get("MUSIC_U");
         auto res = co_await net::fetch_retry(loop_, http_, std::move(req), retry);
         if (login != get("MUSIC_U")) {
@@ -194,6 +262,13 @@ namespace lyren::ncm {
             r.error = "Network connection failed";
             log::warn("ncm {}: {}", uri, res.error);
             co_return r;
+        }
+        if (encrypted && res.status == 200) {
+            auto plain = xeapi_response(res.body);
+            if (!plain) {
+                co_return Reply{.code = res.status, .error = std::move(plain.error())};
+            }
+            res.body = std::move(*plain);
         }
         Status st;
         if (auto e = glz::read<glz::opts{.error_on_unknown_keys = false}>(st, res.body)) {
@@ -217,7 +292,12 @@ namespace lyren::ncm {
             if (r.code == 301) {
                 r.error = "Session expired; scan again to sign in";
             }
-            log::warn("ncm {}: code {} {}", uri, r.code, r.error);
+            // A hidden listening ranking is an ordinary privacy state, rendered by the profile page.
+            if (uri == "/api/v1/play/record" && r.code == -2) {
+                log::debug("ncm {}: private ranking", uri);
+            } else {
+                log::warn("ncm {}: code {} {}", uri, r.code, r.error);
+            }
         }
         r.body = std::move(res.body);
         co_return r;

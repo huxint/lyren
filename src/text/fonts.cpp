@@ -35,37 +35,51 @@ namespace lyren::text {
     Fonts::Fonts(const std::string &family) {
         FT_Init_FreeType(&ft_);
         FcConfig *cfg = FcInitLoadConfigAndFonts();
-        FcPattern *pat = FcNameParse(reinterpret_cast<const FcChar8 *>((family + ":lang=zh-cn").c_str()));
-        FcConfigSubstitute(cfg, pat, FcMatchPattern);
-        FcDefaultSubstitute(pat);
-        FcResult res;
-        FcFontSet *set = FcFontSort(cfg, pat, FcTrue, nullptr, &res);
-        for (int i = 0; set && i < set->nfont && faces_.size() < 256; ++i) {
-            FcChar8 *file = nullptr;
-            int index = 0;
-            FcBool color = FcFalse;
-            if (FcPatternGetString(set->fonts[i], FC_FILE, 0, &file) != FcResultMatch) {
-                continue;
+        // The same family at each weight; a variable font's named instances are faces of their own.
+        constexpr std::array<int, weights> wanted{FC_WEIGHT_REGULAR, FC_WEIGHT_MEDIUM, FC_WEIGHT_DEMIBOLD};
+        for (size_t w = 0; w < chains_.size(); ++w) {
+            FcPattern *pat = FcNameParse(reinterpret_cast<const FcChar8 *>((family + ":lang=zh-cn").c_str()));
+            if (w > 0) {
+                FcPatternDel(pat, FC_WEIGHT);
+                FcPatternAddInteger(pat, FC_WEIGHT, wanted[w]);
             }
-            FcPatternGetInteger(set->fonts[i], FC_INDEX, 0, &index);
-            FcPatternGetBool(set->fonts[i], FC_COLOR, 0, &color);
-            if (color) {
-                continue;
-            }
-            std::string path = reinterpret_cast<const char *>(file);
-            if (std::ranges::any_of(faces_, [&](const Face &f) {
+            FcConfigSubstitute(cfg, pat, FcMatchPattern);
+            FcDefaultSubstitute(pat);
+            FcResult res;
+            FcFontSet *set = FcFontSort(cfg, pat, FcTrue, nullptr, &res);
+            auto &chain = chains_[w];
+            for (int i = 0; set && i < set->nfont && chain.size() < 256; ++i) {
+                FcChar8 *file = nullptr;
+                int index = 0;
+                FcBool color = FcFalse;
+                if (FcPatternGetString(set->fonts[i], FC_FILE, 0, &file) != FcResultMatch) {
+                    continue;
+                }
+                FcPatternGetInteger(set->fonts[i], FC_INDEX, 0, &index);
+                FcPatternGetBool(set->fonts[i], FC_COLOR, 0, &color);
+                if (color) {
+                    continue;
+                }
+                std::string path = reinterpret_cast<const char *>(file);
+                auto known = std::ranges::find_if(faces_, [&](const Face &f) {
                     return f.path == path && f.index == index;
-                })) {
-                continue;
+                });
+                const auto at = static_cast<uint16_t>(known - faces_.begin());
+                if (known == faces_.end()) {
+                    FcCharSet *cs = nullptr;
+                    FcPatternGetCharSet(set->fonts[i], FC_CHARSET, 0, &cs);
+                    faces_.push_back({.path = path, .index = index, .coverage = cs ? copy_coverage(cs) : Coverage{}});
+                }
+                if (!std::ranges::contains(chain, at)) {
+                    chain.push_back(at);
+                }
             }
-            FcCharSet *cs = nullptr;
-            FcPatternGetCharSet(set->fonts[i], FC_CHARSET, 0, &cs);
-            faces_.push_back({.path = path, .index = index, .coverage = cs ? copy_coverage(cs) : Coverage{}});
+            if (set) {
+                FcFontSetDestroy(set);
+            }
+            FcPatternDestroy(pat);
         }
-        if (set) {
-            FcFontSetDestroy(set);
-        }
-        FcPatternDestroy(pat);
+        FcResult res;
         // Colour emoji sort far down the chain, so the best one is added at its end.
         FcPattern *emoji = FcNameParse(reinterpret_cast<const FcChar8 *>("emoji:color=true"));
         FcConfigSubstitute(cfg, emoji, FcMatchPattern);
@@ -91,8 +105,14 @@ namespace lyren::text {
             log::error("fontconfig found no font for '{}'", family);
             std::exit(1);
         }
+        // A weight the system could not resolve reads as regular.
+        for (auto &chain : chains_) {
+            if (chain.empty()) {
+                chain = chains_[0];
+            }
+        }
         open(faces_[0]);
-        log::info("font: {} (+{} fallbacks)", faces_[0].path, faces_.size() - 1);
+        log::info("font: {} (+{} fallbacks)", faces_[0].path, chains_[0].size() - 1);
     }
 
     Fonts::~Fonts() {
@@ -122,10 +142,16 @@ namespace lyren::text {
         close(fd);
         FT_New_Memory_Face(ft_, f.data, FT_Long(f.size), f.index, &f.ft);
         hb_blob_t *blob = hb_blob_create(reinterpret_cast<const char *>(f.data), static_cast<unsigned>(f.size), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
-        hb_face_t *face = hb_face_create(blob, static_cast<unsigned>(f.index));
+        // Fontconfig packs a variable font's named instance (from 1) above the face index. FreeType takes the pair as
+        // it is; HarfBuzz is told the instance separately, so that advances follow the weight.
+        const unsigned instance = static_cast<unsigned>(f.index) >> 16;
+        hb_face_t *face = hb_face_create(blob, static_cast<unsigned>(f.index) & 0xffff);
         f.hb = hb_font_create(face);
         f.upem = static_cast<float>(hb_face_get_upem(face));
         hb_font_set_scale(f.hb, static_cast<int>(f.upem), static_cast<int>(f.upem));
+        if (instance > 0 && instance < 0x8000) {
+            hb_font_set_var_named_instance(f.hb, instance - 1);
+        }
         hb_face_destroy(face);
         hb_blob_destroy(blob);
         if (f.ft) {
@@ -141,16 +167,21 @@ namespace lyren::text {
         return faces_[i];
     }
 
-    uint16_t Fonts::face_for(char32_t cp, bool emoji) const {
+    uint16_t Fonts::face_for(char32_t cp, bool emoji, int weight) const {
         if (emoji && color_ >= 0 && faces_[static_cast<size_t>(color_)].coverage.has(cp)) {
             return static_cast<uint16_t>(color_);
         }
-        for (uint16_t i = 0; i < faces_.size(); ++i) {
+        const auto &chain = chains_[static_cast<size_t>(std::clamp(weight, 0, weights - 1))];
+        for (uint16_t i : chain) {
             if (faces_[i].coverage.has(cp)) {
                 return i;
             }
         }
-        return 0;
+        // Whatever only the colour face has.
+        if (color_ >= 0 && faces_[static_cast<size_t>(color_)].coverage.has(cp)) {
+            return static_cast<uint16_t>(color_);
+        }
+        return chain.front();
     }
 
     void Fonts::trim() {
