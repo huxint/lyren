@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -30,10 +32,42 @@ namespace lyren::ui {
     // lighter on dark backgrounds.
     Color accent_for_hue(float hue, bool dark);
 
+    struct TextStyle {
+        float size = 14;
+        Color color;
+        uint8_t features = 0;
+        bool silhouette = false; // colour glyphs (emoji) take the colour as a solid shape, for outlines
+    };
+
+    // The type scale, in logical pixels at the default text size; Theme::fs and Theme::style scale it.
+    namespace type {
+        inline constexpr float display = 28; // what a page is about: its title, a listener, a list, an artist
+        inline constexpr float title = 20;   // dialogs and panels
+        inline constexpr float heading = 16; // sections within a page
+        inline constexpr float lead = 15;    // text meant to be read: posts, comments set large
+        inline constexpr float body = 14;
+        inline constexpr float label = 13;   // controls and secondary lines
+        inline constexpr float caption = 12; // metadata
+        inline constexpr float micro = 11;   // timestamps, badges
+    } // namespace type
+
+    // How long things take, in ms before Theme::motion scales them.
+    namespace pace {
+        inline constexpr float quick = 120;  // hover and other small changes of state
+        inline constexpr float steady = 180; // things that fade or recolour
+        inline constexpr float glide = 280;  // things that move to a new place
+        inline constexpr float arrive = 380; // content coming in
+    } // namespace pace
+
+    // Heights of controls, so that rows of them line up.
+    namespace control {
+        inline constexpr float small = 28, medium = 34, large = 40;
+    } // namespace control
+
     struct Theme {
         Color bg, surface, elevated, border, text, text_dim, accent, danger;
         Color hover, press, shadow;
-        float font_size = 14; // base size; the scale 12/13/14/16/20/28 follows it
+        float font_size = 14; // base size; the type scale follows it
         float radius = 10;    // medium; small and large follow it
         float motion = 1;
         bool dark = true;
@@ -51,6 +85,29 @@ namespace lyren::ui {
         }
         float radius_l() const {
             return radius * 1.6f;
+        }
+        // The corners of a control h tall: fully round at the default radius, squarer as the theme's radius shrinks.
+        float round(float h) const {
+            return std::min(h / 2, radius * 2);
+        }
+        TextStyle style(float size, Color color, uint8_t features = 0) const {
+            return {.size = fs(size), .color = color, .features = features};
+        }
+        // Text a step quieter than text_dim: timestamps, counts, placeholders.
+        Color faint() const {
+            return text.with_alpha(0.42f);
+        }
+        // A quiet container on the page; k scales how much it stands out.
+        Color fill(float k = 1) const {
+            return text.with_alpha((dark ? 0.06f : 0.045f) * k);
+        }
+        // A hairline between things.
+        Color line(float k = 1) const {
+            return border.with_alpha(0.7f * k);
+        }
+        // Readable on the accent, which follows the cover and can be light.
+        Color on_accent() const {
+            return accent.luminance() > 0.6f ? Color{0.07f, 0.07f, 0.08f, 1} : Color{1, 1, 1, 1};
         }
 
         // The colours k of the way to o; sizes stay. For things that move between the window and the stage.

@@ -466,5 +466,21 @@
   "NetEase Music returned an invalid encryption key": "网易云音乐返回的加密密钥无效",
   "NetEase Music returned an invalid encrypted response": "网易云音乐返回的加密数据无效",
   "Could not decompress the NetEase Music response": "无法解压网易云音乐的响应",
-  "NetEase Music returned an invalid compressed response": "网易云音乐返回的压缩数据无效"
+  "NetEase Music returned an invalid compressed response": "网易云音乐返回的压缩数据无效",
+  "Back": "返回",
+  "Close": "关闭",
+  "Could not load this": "加载失败",
+  "Follow listeners to see what they share": "关注听友，看看他们的分享",
+  "More": "更多",
+  "Mute": "静音",
+  "Next": "下一首",
+  "On repeat": "最近常听",
+  "Paste your {} connection settings": "粘贴你的 {} 连接设置",
+  "Play a song to see its lyrics here": "播放歌曲后在这里显示歌词",
+  "Previous": "上一首",
+  "See all": "查看全部",
+  "Share the song playing": "分享正在播放的歌曲",
+  "Songs you play line up here": "播放的歌曲会排在这里",
+  "Translation": "翻译",
+  "Unmute": "取消静音"
 }

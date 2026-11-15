@@ -4,6 +4,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -31,13 +32,6 @@ namespace lyren::ui {
         Rect inset(float dx, float dy) const {
             return {x + dx, y + dy, w - 2 * dx, h - 2 * dy};
         }
-    };
-
-    struct TextStyle {
-        float size = 14;
-        Color color;
-        uint8_t features = 0;
-        bool silhouette = false; // colour glyphs (emoji) take the colour as a solid shape, for outlines
     };
 
     // A local displacement of a progress string, in logical pixels.
@@ -94,6 +88,22 @@ namespace lyren::ui {
         }
         float descent(float size) {
             return fonts_.face(0).descender * size;
+        }
+
+        // For tests: the text and icons drawn since begin(), where they landed and how much of them showed. Off unless
+        // asked for.
+        struct Run {
+            std::string text; // an icon's name, for an icon
+            Rect box;         // what the clip left of it, logical pixels
+            float alpha = 1;  // as drawn, fades included
+            bool cut = false; // ellipsized, or partly outside its clip
+            bool icon = false;
+        };
+        void record(bool on) {
+            recording_ = on;
+        }
+        std::span<const Run> runs() const {
+            return runs_;
         }
 
         // Primitives drawn while deferring are held back until draw_deferred(), so they land above what is drawn in
@@ -155,6 +165,9 @@ namespace lyren::ui {
         gfx::Prim &emit_zoomed(gfx::Kind kind, float x0, float y0, float w, float h);
         float snap(float v) const;
         void glyphs(const text::Shaped &shaped, size_t count, float x, float baseline, const TextStyle &style);
+        void note(std::string_view s, float x, float baseline, float width, const TextStyle &style, bool ellipsized);
+        // box: as given to the drawing call, before zoom and clipping.
+        void note(std::string_view s, Rect box, float alpha, bool ellipsized, bool icon);
 
         text::Atlas &atlas_;
         text::Shaper &shaper_;
@@ -170,6 +183,8 @@ namespace lyren::ui {
         };
         std::optional<Wipe> wipe_;
         std::span<const Lift> lifts_;
+        bool recording_ = false;
+        std::vector<Run> runs_;
     };
 
 } // namespace lyren::ui

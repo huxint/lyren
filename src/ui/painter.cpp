@@ -22,6 +22,7 @@ namespace lyren::ui {
         zoom_ = 1;
         wipe_.reset();
         lifts_ = {};
+        runs_.clear();
     }
 
     float Painter::snap(float v) const {
@@ -118,6 +119,9 @@ namespace lyren::ui {
         float inv = 1.f / static_cast<float>(atlas_.size());
         p.uv[0] = e.x * inv, p.uv[1] = e.y * inv, p.uv[2] = (e.x + e.w) * inv, p.uv[3] = (e.y + e.h) * inv;
         p.info[1] = atlas_.texture();
+        if (recording_) {
+            note(name, r, color.a * alpha_, false, true);
+        }
     }
 
     void Painter::image(Rect r, gfx::TextureId tex, float radius, Color tint, Rect uv) {
@@ -197,11 +201,37 @@ namespace lyren::ui {
         }
     }
 
+    void Painter::note(std::string_view s, float x, float baseline, float width, const TextStyle &style, bool ellipsized) {
+        const float a = ascent(style.size);
+        note(s, {x, baseline - a, width, a + descent(style.size)}, std::max(style.color.a, wipe_ ? wipe_->rest.a : 0.f) * alpha_, ellipsized, false);
+    }
+
+    void Painter::note(std::string_view s, Rect box, float alpha, bool ellipsized, bool icon) {
+        if (s.empty() || alpha <= 0) {
+            return;
+        }
+        // As drawn: zoomed about its centre, then cut by the clip.
+        const float cx = zx_ / scale_ - ox_, cy = zy_ / scale_ - oy_;
+        const float x0 = cx + (box.x - cx) * zoom_, y0 = cy + (box.y - cy) * zoom_;
+        const float x1 = x0 + box.w * zoom_, y1 = y0 + box.h * zoom_;
+        const auto &c = clips_.back();
+        const float left = std::max(x0, c[0] / scale_ - ox_), top = std::max(y0, c[1] / scale_ - oy_);
+        const float right = std::min(x1, c[2] / scale_ - ox_), bottom = std::min(y1, c[3] / scale_ - oy_);
+        if (right <= left || bottom <= top) {
+            return;
+        }
+        const bool clipped = right - left < (x1 - x0) - 0.75f || bottom - top < (y1 - y0) - 0.75f;
+        runs_.push_back({std::string(s), {left, top, right - left, bottom - top}, alpha, ellipsized || clipped, icon});
+    }
+
     float Painter::text(float x, float baseline, std::string_view s, const TextStyle &style, float max_width) {
         const auto &shaped = shaper_.shape(s, style.features);
         float width = shaped.width * style.size;
         if (width <= max_width) {
             glyphs(shaped, shaped.glyphs.size(), x, baseline, style);
+            if (recording_) {
+                note(s, x, baseline, width, style, false);
+            }
             return width;
         }
         // Keep whole clusters that fit before the ellipsis.
@@ -222,6 +252,9 @@ namespace lyren::ui {
         float cut = n < shaped.glyphs.size() ? shaped.glyphs[n].x : shaped.width;
         glyphs(shaped, n, x, baseline, style);
         glyphs(dots, dots.glyphs.size(), x + cut * style.size, baseline, style);
+        if (recording_) {
+            note(s, x, baseline, (cut + dots.width) * style.size, style, true);
+        }
         return (cut + dots.width) * style.size;
     }
 

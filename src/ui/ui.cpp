@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/i18n.hpp"
+
 namespace lyren::ui {
 
     constexpr uint64_t fnv_prime = 0x100000001b3ull;
@@ -54,6 +56,11 @@ namespace lyren::ui {
         had_press_ = std::ranges::any_of(in_->actions, [](const PointerAction &a) {
             return a.press && a.button == BTN_LEFT;
         });
+        // A press says the widget needs no explaining: its tip stays away until the pointer has left and come back.
+        tip_asked_ = false;
+        if (tip_.id && std::ranges::any_of(in_->actions, &PointerAction::press)) {
+            tip_.since = std::numeric_limits<double>::infinity();
+        }
         scroll_stack_.clear();
 
         // A press outside an open menu closes it; a left press stops there, a right press may open the next menu.
@@ -83,6 +90,7 @@ namespace lyren::ui {
         }
         draw_menu();
         draw_toasts();
+        draw_tip();
         if (had_press_ && pressed_id_ != focus) {
             focus = 0;
         }
@@ -98,6 +106,12 @@ namespace lyren::ui {
         std::erase_if(springs_, [this](auto &kv) {
             return kv.second.frame + 2 < frame_;
         });
+        // Views of pages long gone need not be remembered.
+        if (frame_ % 1024 == 0) {
+            std::erase_if(scrolls_, [this](auto &kv) {
+                return now - kv.second.seen > 1800;
+            });
+        }
     }
 
     Layer Ui::layer_at(float x, float y) const {
@@ -165,6 +179,20 @@ namespace lyren::ui {
         return it;
     }
 
+    bool Ui::context_click(Rect r) {
+        if (disabled) {
+            return false;
+        }
+        const Rect hit = intersect(r, clip());
+        for (auto &a : in_->actions) {
+            if (!a.consumed && a.press && a.button == BTN_RIGHT && hit.contains(a.x, a.y) && layer_at(a.x, a.y) == layer_) {
+                a.consumed = consumed_ = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
     float Ui::anim(Id id, float target, float ms, Bezier curve) {
         auto [it, fresh] = anims_.try_emplace(id, Anim{target, target, now, 0, curve, frame_});
         Anim &a = it->second;
@@ -221,7 +249,7 @@ namespace lyren::ui {
 
     float Ui::begin_scroll(Id id, Rect view, float content) {
         Scroll &s = scrolls_[id];
-        s.view = view, s.content = content;
+        s.view = view, s.content = content, s.seen = now;
         scroll_stack_.push_back(id);
         float max = max_offset(s);
 
@@ -327,6 +355,7 @@ namespace lyren::ui {
 
     void Ui::scroll_to(Id id, float offset, bool smooth) {
         Scroll &s = scrolls_[id];
+        s.seen = now;
         s.target = std::clamp(offset, 0.f, max_offset(s));
         if (!smooth) {
             s.offset = s.target;
@@ -350,25 +379,25 @@ namespace lyren::ui {
             return;
         }
         const Theme &t = *theme_;
-        TextStyle st{.size = t.fs(13), .color = t.text};
-        constexpr float item_h = 32, sep_h = 9, pad = 5;
+        const TextStyle st = t.style(type::label, t.text);
+        constexpr float item_h = 34, sep_h = 9, pad = 6;
         float w = 0, h = pad * 2;
         for (auto &m : menu_) {
             w = std::max(w, p_->measure(m.label, st));
             h += m.action ? item_h : sep_h;
         }
-        w = std::clamp(w + 64, 160.f, 320.f);
+        w = std::clamp(w + 68, 176.f, 320.f);
         float x = std::clamp(menu_x_, 4.f, width - w - 4);
         float y = menu_y_ + h > height - 4 ? std::max(4.f, menu_y_ - h) : menu_y_;
         Rect r{x, y, w, h};
         layer_ = Layer::popup;
         layer_rects_.push_back({Layer::popup, r});
 
-        float in = progress(menu_time_, 180);
+        float in = progress(menu_time_, pace::steady);
         p_->set_alpha(in);
         r.y += (menu_y_ > y ? 6 : -6) * (1 - in);
-        p_->shadow({r.x, r.y + 4, r.w, r.h}, t.radius, 18, t.shadow);
-        p_->rect(r, t.elevated, t.radius, t.border, 1);
+        p_->shadow({r.x, r.y + 6, r.w, r.h}, t.radius + 2, 24, t.shadow.with_alpha(t.shadow.a * 0.8f));
+        p_->rect(r, t.elevated, t.radius + 2, t.border, 1);
         std::function<void()> chosen;
         float iy = r.y + pad;
         for (size_t i = 0; i < menu_.size(); ++i) {
@@ -379,13 +408,14 @@ namespace lyren::ui {
                 continue;
             }
             Rect row{r.x + pad, iy, r.w - pad * 2, item_h};
-            auto it = interact(id(0x6d656e75ull + i), row);
-            if (it.hovered) {
-                p_->rect(row, t.hover, t.radius_s());
+            const Id item = id(0x6d656e75ull + i);
+            auto it = interact(item, row);
+            if (const float hot = anim(item, it.hovered ? 1 : 0, 90); hot > 0) {
+                p_->rect(row, (m.danger ? t.danger.with_alpha(0.12f) : t.fill(1.3f)).with_alpha(hot), t.radius_s());
             }
             Color fg = m.danger ? t.danger : t.text;
             if (!m.icon.empty()) {
-                p_->icon(m.icon, {row.x + 10, row.y + 8, 16, 16}, m.danger ? t.danger : t.text_dim);
+                p_->icon(m.icon, {row.x + 10, row.y + (row.h - 16) / 2, 16, 16}, m.danger ? t.danger : t.text_dim);
             }
             p_->text_in({row.x + 36, row.y, row.w - 44, row.h}, m.label, {.size = st.size, .color = fg});
             if (it.clicked) {
@@ -433,17 +463,17 @@ namespace lyren::ui {
             layer_rects_.push_back({Layer::modal, all});
         }
         p_->set_alpha(shown);
-        p_->rect(all, {0, 0, 0, 0.5f}, window_radius);
+        p_->rect(all, {0, 0, 0, t.dark ? 0.56f : 0.32f}, window_radius);
         Rect panel = center(all, spring(id("modal-w"), modal_w_, 300), spring(id("modal-h"), modal_h_, 300));
-        panel = panel.inset((1 - shown) * 10);
-        panel.y += (1 - shown) * 16;
+        panel = panel.inset((1 - shown) * 8);
+        panel.y += (1 - shown) * 10;
         auto body = modal_; // the body may replace the modal while it runs
         if (modal_bare_) {
             body(*this, panel);
         } else {
-            p_->shadow({panel.x, panel.y + 8, panel.w, panel.h}, t.radius_l(), 48, t.shadow);
-            p_->rect(panel, t.elevated, t.radius_l(), t.border, 1);
-            if (icon_button(id("modal-close"), {panel.right() - 44, panel.y + 12, 32, 32}, "x", 18)) {
+            p_->shadow({panel.x, panel.y + 12, panel.w, panel.h}, t.radius_l() + 4, 56, t.shadow);
+            p_->rect(panel, t.elevated, t.radius_l() + 4, t.border, 1);
+            if (icon_button(id("modal-close"), {panel.right() - 46, panel.y + 14, 32, 32}, "x", 17)) {
                 close_modal();
             }
             body(*this, panel.inset(28, 24));
@@ -454,6 +484,30 @@ namespace lyren::ui {
         }
         p_->set_alpha(1);
         layer_ = Layer::base;
+    }
+
+    void Ui::confirm(std::string title, std::string detail, std::string action, std::string icon, std::function<void()> on_confirm) {
+        open_modal(400, 220,
+                   [title = std::move(title), detail = std::move(detail), action = std::move(action), icon = std::move(icon), on_confirm = std::move(on_confirm)](Ui &u, Rect r) {
+                       const Theme &t = u.theme();
+                       u.label({r.x, r.y, r.w - 40, 30}, title, t.style(type::title, t.text, text::semibold));
+                       const TextStyle body = t.style(type::label, t.text_dim);
+                       const auto lines = u.painter().wrap_lines(detail, body.size, r.w);
+                       const size_t shown = std::min<size_t>(lines.size(), 3);
+                       for (size_t i = 0; i < shown; ++i) {
+                           u.label({r.x, r.y + 44 + static_cast<float>(i) * 22, r.w, 22}, lines[i], body);
+                       }
+                       u.resize_modal(400, 48 + 44 + static_cast<float>(std::max<size_t>(shown, 1)) * 22 + 28 + control::large);
+                       const float ok_w = std::max(96.f, u.button_width(action, !icon.empty())), cancel_w = std::max(84.f, u.button_width(tr("Cancel")));
+                       const Rect ok{r.right() - ok_w, r.bottom() - control::large, ok_w, control::large};
+                       if (u.button(u.id("confirm-cancel"), {ok.x - cancel_w - 8, ok.y, cancel_w, ok.h}, tr("Cancel"), ButtonKind::ghost)) {
+                           u.close_modal();
+                       }
+                       if (u.button(u.id("confirm-ok"), ok, action, ButtonKind::danger, icon)) {
+                           u.close_modal();
+                           on_confirm();
+                       }
+                   });
     }
 
     void Ui::toast(std::string text, std::string icon, bool error) {
@@ -469,7 +523,7 @@ namespace lyren::ui {
             return t.start >= 0 && now >= t.until;
         });
         const Theme &t = *theme_;
-        TextStyle st{.size = t.fs(13), .color = t.text};
+        const TextStyle st = t.style(type::label, t.text);
         float y = height - toast_bottom;
         for (auto it = toasts_.rbegin(); it != toasts_.rend(); ++it) {
             Toast &ts = *it;
@@ -487,12 +541,60 @@ namespace lyren::ui {
             float tw = std::min(p_->measure(ts.text, st), width - 160);
             Rect r{(width - tw - 56) / 2, y - 40 + (1 - in) * 16, tw + 56, 40};
             p_->set_alpha(in * out);
-            p_->shadow({r.x, r.y + 6, r.w, r.h}, t.radius, 24, t.shadow);
-            p_->rect(r, t.elevated, t.radius, t.border, 1);
+            p_->shadow({r.x, r.y + 6, r.w, r.h}, t.round(r.h), 24, t.shadow.with_alpha(t.shadow.a * 0.8f));
+            p_->rect(r, t.elevated, t.round(r.h), t.border, 1);
             p_->icon(ts.icon, {r.x + 16, r.y + 12, 16, 16}, ts.error ? t.danger : t.accent);
             p_->text_in({r.x + 40, r.y, tw + 1, r.h}, ts.text, st);
             y -= 48 * in * out;
         }
+        p_->set_alpha(1);
+    }
+
+    void Ui::tooltip(Id id, Rect anchor, std::string_view text) {
+        if (text.empty()) {
+            return;
+        }
+        tip_asked_ = true;
+        if (tip_.id != id) {
+            tip_ = {id, anchor, std::string(text), now};
+        } else {
+            tip_.anchor = anchor;
+        }
+    }
+
+    void Ui::draw_tip() {
+        if (!tip_asked_) {
+            tip_ = {};
+        }
+        // Moving along a row of buttons, the next tip comes at once.
+        const double wait = now - tip_seen_ < 0.4 ? 0.05 : 0.6;
+        const bool due = tip_.id && now - tip_.since >= wait;
+        if (tip_.id && !due && std::isfinite(tip_.since)) {
+            wake(tip_.since + wait);
+        }
+        if (due) {
+            tip_shown_ = tip_;
+        }
+        const float shown = anim(id("tooltip"), due ? 1 : 0, due ? 140 : 100);
+        if (shown <= 0 || !tip_shown_.id) {
+            tip_shown_ = {};
+            return;
+        }
+        tip_seen_ = now;
+        const Theme &t = *theme_;
+        const TextStyle st = t.style(type::caption, t.text);
+        const float w = std::ceil(p_->measure(tip_shown_.text, st)) + 20, h = 28;
+        const Rect &a = tip_shown_.anchor;
+        const bool below = a.bottom() + 8 + h <= height - 8;
+        const float x = std::clamp(a.x + (a.w - w) / 2, 8.f, std::max(8.f, width - 8 - w));
+        const float y = (below ? a.bottom() + 8 : a.y - 8 - h) + (below ? -4.f : 4.f) * (1 - shown);
+        const Rect r{std::round(x), std::round(y), w, h};
+        p_->set_alpha(shown);
+        p_->shadow({r.x, r.y + 3, r.w, r.h}, t.radius_s(), 12, t.shadow.with_alpha(0.6f));
+        Color paper = t.elevated;
+        paper.a = 1;
+        p_->rect(r, paper, t.radius_s(), t.border, 1);
+        label(r, tip_shown_.text, st, Align::center);
         p_->set_alpha(1);
     }
 

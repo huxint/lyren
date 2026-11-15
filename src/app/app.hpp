@@ -5,8 +5,8 @@
 
 #include "app/frames.hpp"
 #include "app/images.hpp"
-#include "app/shell.hpp"
 #include "app/state.hpp"
+#include "app/view/shell.hpp"
 #include "audio/player.hpp"
 #include "ncm/netease.hpp"
 #include "qq/qq.hpp"

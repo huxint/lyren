@@ -104,7 +104,9 @@ namespace lyren::ui {
     enum class ButtonKind : uint8_t {
         primary,
         secondary,
-        ghost
+        ghost,
+        tonal, // the accent as a tint: the main action where there are many of it, as in a list
+        danger // primary, for what cannot be undone
     };
     enum class Align : uint8_t {
         left,
@@ -208,6 +210,9 @@ namespace lyren::ui {
         bool is_active(Id id) const {
             return active_ == id;
         }
+        // A right press on r, taken ahead of the widget drawn there: for a menu on something a click also works. Call it
+        // before that widget.
+        bool context_click(Rect r);
         FrameInput &input() {
             return *in_;
         }
@@ -231,6 +236,11 @@ namespace lyren::ui {
         }
         // Eased 0..1 for a transition that started at the given time.
         float progress(double since, float ms, Bezier curve = ease::emphasized);
+        // The arrival of the i-th of several things that appeared at `since`, each setting off a little after the one
+        // before it; the same 0..1 serves as their opacity and as how far they have risen into place.
+        float cascade(double since, int i, float ms = pace::arrive) {
+            return progress(since + 0.024 * std::min(i, 14), ms);
+        }
         void keep_animating() {
             animating_ = true;
         }
@@ -249,7 +259,17 @@ namespace lyren::ui {
 
         // Widgets.
         bool button(Id id, Rect r, std::string_view label, ButtonKind kind = ButtonKind::secondary, std::string_view icon = {});
-        bool icon_button(Id id, Rect r, std::string_view icon, float icon_size = 18, bool active = false);
+        // The width a button takes to fit its label and icon.
+        float button_width(std::string_view label, bool icon = false);
+        // tip names what the button does, for when its icon alone does not.
+        bool icon_button(Id id, Rect r, std::string_view icon, float icon_size = 18, bool active = false, std::string_view tip = {});
+        // A pill that filters or picks: lit while selected.
+        bool chip(Id id, Rect r, std::string_view label, bool selected, std::string_view icon = {});
+        float chip_width(std::string_view label, bool icon = false);
+        // A line of text that leads somewhere; it underlines under the pointer. r is cut to the text. True when clicked.
+        bool link(Id id, Rect r, std::string_view s, const TextStyle &style);
+        // A short note beside anchor once the pointer has rested on it. Call it while the widget is hovered.
+        void tooltip(Id id, Rect anchor, std::string_view text);
         // Returns true when Enter is pressed.
         bool text_box(Id id, Rect r, std::string &text, std::string_view placeholder, std::string_view icon = {});
         // Wrapped multiline editor. Enter never submits. Unframed editors use the parent's padding and focus ring.
@@ -282,7 +302,7 @@ namespace lyren::ui {
         // what is on show in place when the content around it is laid out anew.
         void scroll_by(Id id, float delta) {
             Scroll &s = scrolls_[id];
-            s.offset += delta, s.target += delta;
+            s.offset += delta, s.target += delta, s.seen = now;
         }
 
         void open_menu(float x, float y, std::vector<MenuItem> items);
@@ -304,6 +324,9 @@ namespace lyren::ui {
                 modal_closed_ = now, focus = 0, redraw_ = true;
             }
         }
+        // A question before something that cannot be undone: a title, what it is about (up to three lines), and the
+        // button that goes ahead; on_confirm runs once it is pressed.
+        void confirm(std::string title, std::string detail, std::string action, std::string icon, std::function<void()> on_confirm);
         void toast(std::string text, std::string icon = "info", bool error = false);
 
     private:
@@ -324,6 +347,7 @@ namespace lyren::ui {
             Rect view;
             float offset = 0, target = 0, velocity = 0, content = 0;
             double last_frame = 0, last_input = -10, last_move = -10;
+            double seen = 0; // when it was last on show or told where to stand
             bool smooth = false, coasting = false;
             float grab = -1; // thumb drag: pointer offset inside the thumb
         };
@@ -340,6 +364,12 @@ namespace lyren::ui {
             bool error;
             double start = -1, until = 0;
         };
+        struct Tip {
+            Id id = 0;
+            Rect anchor;
+            std::string text;
+            double since = 0; // when the pointer came to rest on it
+        };
 
         Layer layer_at(float x, float y) const;
         float max_offset(const Scroll &s) const {
@@ -350,6 +380,7 @@ namespace lyren::ui {
         void draw_menu();
         void draw_modal();
         void draw_toasts();
+        void draw_tip();
 
         Painter *p_ = nullptr;
         const Theme *theme_ = nullptr;
@@ -377,6 +408,32 @@ namespace lyren::ui {
         double modal_time_ = 0, modal_closed_ = -1;
         bool modal_bare_ = false;
         std::vector<Toast> toasts_;
+        Tip tip_, tip_shown_; // the one asked for this frame, and the one on show (which may be fading out)
+        bool tip_asked_ = false;
+        double tip_seen_ = -10; // when one was last visible: the next one along needs no wait
+    };
+
+    // Widgets in the scope ignore the pointer and draw faded while off.
+    class Enabled {
+    public:
+        Enabled(Ui &ui, bool on, float faded = 0.4f)
+        : ui_(ui),
+          disabled_(ui.disabled),
+          alpha_(ui.painter().alpha()) {
+            ui_.disabled = disabled_ || !on;
+            ui_.painter().set_alpha(alpha_ * (on ? 1 : faded));
+        }
+        ~Enabled() {
+            ui_.disabled = disabled_;
+            ui_.painter().set_alpha(alpha_);
+        }
+        Enabled(const Enabled &) = delete;
+        Enabled &operator=(const Enabled &) = delete;
+
+    private:
+        Ui &ui_;
+        bool disabled_;
+        float alpha_;
     };
 
 } // namespace lyren::ui

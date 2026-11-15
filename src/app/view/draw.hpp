@@ -14,8 +14,12 @@
 #include "media/types.hpp"
 #include "ui/ui.hpp"
 
-// Drawing helpers shared by the parts of the shell.
+// Drawing helpers shared by the parts of the window.
 namespace lyren {
+
+    inline constexpr ui::Color white{1, 1, 1, 1};
+    // What stays dark whatever the theme: the modules of a QR code, the body of a record.
+    inline constexpr ui::Color ink{0.07f, 0.07f, 0.08f, 1};
 
     inline std::string mmss(double seconds) {
         const auto whole = static_cast<uint32_t>(std::max(0.0, seconds));
@@ -180,6 +184,90 @@ namespace lyren {
         }
     }
 
+    // The columns of a track row, and of the header above the rows.
+    struct TrackColumns {
+        ui::Rect index, title, album, like, duration;
+    };
+
+    inline TrackColumns track_columns(ui::Rect r) {
+        TrackColumns c;
+        r = r.inset(12, 0);
+        c.index = ui::cut_left(r, 40);
+        ui::cut_left(r, 4);
+        c.duration = ui::cut_right(r, 48);
+        c.like = ui::cut_right(r, 44);
+        if (r.w > 460) {
+            c.album = ui::cut_right(r, std::round(r.w * 0.36f));
+            ui::cut_right(r, 16);
+        }
+        c.title = r;
+        return c;
+    }
+
+    // Cards in as many columns as fit. Row and column changes are animated; ordinary resizing and scrolling stay under
+    // the pointer.
+    struct CardGrid {
+        static constexpr float gap = 20, caption = 54, reflow_ms = 280;
+        ui::Ui &ui;
+        ui::Id id;
+        int cols;
+        float cw, ch;
+        CardGrid(ui::Ui &ui, ui::Id id, float width, float min_w = 150)
+        : ui(ui),
+          id(id) {
+            cols = columns(width, min_w);
+            const float count = ui.spring(ui::sub_id(id, 0xc0), static_cast<float>(cols), reflow_ms);
+            cw = (width + gap) / count - gap;
+            ch = cw + caption;
+        }
+        static int columns(float width, float min_w = 150) {
+            return std::max(1, static_cast<int>((width + gap) / (min_w + gap)));
+        }
+        // The height n cards take once they have settled, without animating anything.
+        static float settled_height(float width, size_t n, float min_w = 150) {
+            if (!n) {
+                return 0;
+            }
+            const auto cols = static_cast<size_t>(columns(width, min_w));
+            const float cw = (width + gap) / static_cast<float>(cols) - gap;
+            return static_cast<float>((n + cols - 1) / cols) * (cw + caption + gap) - gap;
+        }
+        float height(size_t n) const {
+            if (!n) {
+                return 0;
+            }
+            const float last = ui.spring(ui::sub_id(id, 0xc1), static_cast<float>((n - 1) / static_cast<size_t>(cols)), reflow_ms);
+            return last * (ch + gap) + ch;
+        }
+        ui::Rect cell(float x, float y, size_t i, ui::Id item) const {
+            const float col = ui.spring(ui::sub_id(item, 0xc0), static_cast<float>(i % static_cast<size_t>(cols)), reflow_ms);
+            const float row = ui.spring(ui::sub_id(item, 0xc1), static_cast<float>(i / static_cast<size_t>(cols)), reflow_ms);
+            return {x + col * (cw + gap), y + row * (ch + gap), cw, ch};
+        }
+    };
+
+    // A dialog's heading in r's top: its title and, under it, a quieter line.
+    inline void dialog_title(ui::Ui &ui, ui::Rect r, std::string_view title, std::string_view subtitle = {}) {
+        const auto &t = ui.theme();
+        ui.label({r.x, r.y, r.w - 40, 30}, title, t.style(ui::type::title, t.text, text::semibold));
+        if (!subtitle.empty()) {
+            ui.label({r.x, r.y + 31, r.w - 40, 20}, subtitle, t.style(ui::type::label, t.text_dim));
+        }
+    }
+
+    // The buttons across a dialog's foot: Cancel, which closes it, and the one that goes ahead, which answers only
+    // while enabled. True when that one is pressed.
+    inline bool dialog_actions(ui::Ui &ui, ui::Rect r, std::string_view action, bool enabled = true, std::string_view icon = {}, ui::ButtonKind kind = ui::ButtonKind::primary) {
+        const float h = ui::control::large;
+        const float ok_w = std::max(96.f, ui.button_width(action, !icon.empty())), cancel_w = std::max(84.f, ui.button_width(tr("Cancel")));
+        const ui::Rect ok{r.right() - ok_w, r.bottom() - h, ok_w, h};
+        if (ui.button(ui.id("dialog-cancel"), {ok.x - cancel_w - 8, ok.y, cancel_w, h}, tr("Cancel"), ui::ButtonKind::ghost)) {
+            ui.close_modal();
+        }
+        ui::Enabled possible(ui, enabled);
+        return ui.button(ui.id("dialog-ok"), ok, action, kind, icon);
+    }
+
     // With thousands separators: 12,345.
     inline std::string grouped(int n) {
         std::string s = std::to_string(n);
@@ -189,10 +277,28 @@ namespace lyren {
         return s;
     }
 
-    // Width of a button that fits its label and icon.
-    inline float button_width(ui::Ui &ui, std::string_view label, bool icon) {
-        float w = ui.painter().measure(label, {.size = ui.theme().fs(13)});
-        return std::round(w + (icon ? 22 : 0) + (label.empty() ? 24 : 36));
+    // A count in r, worded by text. One that goes up or down by one rolls over: the number leaving slides out as the
+    // one arriving slides in after it. Any other change shows at once.
+    template <class Text>
+    void rolling_count(ui::Ui &ui, ui::Id id, ui::Rect r, int count, Text &&text, const ui::TextStyle &style, ui::Align align = ui::Align::left) {
+        const auto target = static_cast<float>(count);
+        const bool step = std::abs(target - std::round(ui.spring_value(id, target))) <= 1;
+        const float value = ui.spring(id, target, step ? 260 : 0);
+        const float low = std::floor(value), turn = value - low;
+        const std::string from = text(static_cast<int>(low)), to = text(static_cast<int>(std::ceil(value)));
+        if (turn == 0 || from == to) {
+            return ui.label(r, to, style, align);
+        }
+        ui.push_clip(r);
+        {
+            Fade fade(ui.painter(), 1 - turn);
+            ui.label({r.x, r.y - 10 * turn, r.w, r.h}, from, style, align);
+        }
+        {
+            Fade fade(ui.painter(), turn);
+            ui.label({r.x, r.y + 10 * (1 - turn), r.w, r.h}, to, style, align);
+        }
+        ui.pop_clip();
     }
 
 } // namespace lyren

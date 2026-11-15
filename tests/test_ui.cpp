@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
-#include "app/draw.hpp"
+#include "app/view/draw.hpp"
 #include "ui/motion.hpp"
 #include "ui/text_edit.hpp"
 #include "ui/ui.hpp"

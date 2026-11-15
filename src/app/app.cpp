@@ -350,7 +350,7 @@ namespace lyren {
         p.rect({0, 0, w, h}, theme_.bg, radius, floating ? theme_.border : ui::Color{}, floating ? 1 : 0);
 
         ui_.window_radius = radius;
-        ui_.toast_bottom = Shell::player_h + 20;
+        ui_.toast_bottom = PlayerBar::height + 12;
         ui_.begin(p, frame_theme_, w, h, now, input_);
         if (accent_moving) {
             ui_.keep_animating();
@@ -359,7 +359,7 @@ namespace lyren {
         ui::Rect bar = ui::cut_top(area, titlebar_h);
         // The title bar takes input before the page but is drawn over it, since the stage reaches under it.
         p.defer(true);
-        titlebar(bar, shell_.stage(ui_));
+        titlebar(bar, shell_.stage.raised(ui_));
         p.defer(false);
         shell_.draw(ui_, area, stage_theme_);
         p.draw_deferred();
@@ -397,7 +397,7 @@ namespace lyren {
         } else {
             ui::cut_left(r, 8);
         }
-        shell_.top_bar(ui_, r, bar.w / 2);
+        shell_.chrome.top_bar(ui_, r, bar.w / 2);
         ui_.use_theme(saved);
     }
 
@@ -463,9 +463,9 @@ namespace lyren {
     }
 
     void App::sync_desktop_lyrics() {
-        bool want = shell_.desktop_enabled();
+        bool want = shell_.desktop.enabled();
         if (want && !display_.layer_shell) {
-            shell_.set_desktop_enabled(false);
+            shell_.desktop.set_enabled(false);
             return toast(std::string(tr("Desktop lyrics require a compositor with layer-shell support")));
         }
         if (want && !lyrics_) {
@@ -478,7 +478,7 @@ namespace lyren {
                     [this] {
                         loop_.defer([this] {
                             close_desktop_lyrics();
-                            shell_.set_desktop_enabled(false);
+                            shell_.desktop.set_enabled(false);
                         });
                     },
                 .frame =
@@ -530,7 +530,7 @@ namespace lyren {
             if (accent_moving) {
                 lyrics_ui_.keep_animating();
             }
-            input = shell_.desktop_lyrics(lyrics_ui_, w, h);
+            input = shell_.desktop.draw(lyrics_ui_, w, h);
             lyrics_ui_.end();
             lyrics_input_.consumed();
             if (!atlas_->reset()) {

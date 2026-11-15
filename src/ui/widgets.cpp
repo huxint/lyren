@@ -8,34 +8,37 @@ namespace lyren::ui {
 
     constexpr Color white{1, 1, 1, 1};
 
-    // Readable text over the accent, which follows the cover and can be light.
-    static Color on_accent(Color accent) {
-        return accent.luminance() > 0.6f ? Color{0.07f, 0.07f, 0.08f, 1} : white;
-    }
-
     bool Ui::button(Id id, Rect r, std::string_view label, ButtonKind kind, std::string_view icon) {
         const Theme &t = *theme_;
         auto it = interact(id, r);
         const auto [hot, down] = feel(id, it);
         r = r.inset(down * 1.5f);
-        Color bg, fg = t.text, border{};
+        Color bg, fg = t.text;
         switch (kind) {
             case ButtonKind::primary:
-                bg = t.accent.mix(white, 0.12f * hot).mix({0, 0, 0, 1}, 0.12f * down);
-                fg = on_accent(t.accent);
+                bg = t.accent.mix(white, 0.1f * hot).mix({0, 0, 0, 1}, 0.1f * down);
+                fg = t.on_accent();
+                break;
+            case ButtonKind::danger:
+                bg = t.danger.mix(white, 0.1f * hot).mix({0, 0, 0, 1}, 0.1f * down);
+                fg = white;
                 break;
             case ButtonKind::secondary:
-                bg = t.elevated.mix(t.text, 0.06f * hot + 0.05f * down);
-                border = t.border;
+                bg = t.fill(1.3f + 0.8f * hot + 0.5f * down);
                 break;
             case ButtonKind::ghost:
-                bg = t.text.with_alpha(0.07f * hot + 0.05f * down);
+                bg = t.fill(1.2f * hot + 0.6f * down);
+                fg = t.text_dim.mix(t.text, hot);
+                break;
+            case ButtonKind::tonal:
+                bg = t.accent.with_alpha(0.14f + 0.07f * hot + 0.05f * down);
+                fg = t.accent;
                 break;
         }
-        p_->rect(r, bg, t.radius_s(), border, border.a > 0 ? 1 : 0);
-        TextStyle st{.size = t.fs(13), .color = fg};
-        float tw = p_->measure(label, st), iw = icon.empty() ? 0 : label.empty() ? 16 : 22;
-        float x = r.x + (r.w - tw - iw) / 2;
+        p_->rect(r, bg, t.round(r.h));
+        const TextStyle st = t.style(type::label, fg, text::medium);
+        const float tw = p_->measure(label, st), iw = icon.empty() ? 0 : label.empty() ? 16 : 22;
+        const float x = r.x + (r.w - tw - iw) / 2;
         if (!icon.empty()) {
             p_->icon(icon, {x, r.y + (r.h - 16) / 2, 16, 16}, fg);
         }
@@ -43,16 +46,63 @@ namespace lyren::ui {
         return it.clicked;
     }
 
-    bool Ui::icon_button(Id id, Rect r, std::string_view icon, float icon_size, bool active) {
+    float Ui::button_width(std::string_view label, bool icon) {
+        const float w = p_->measure(label, theme_->style(type::label, {}, text::medium));
+        return std::round(w + (icon ? 22 : 0) + (label.empty() ? 18 : 36));
+    }
+
+    bool Ui::icon_button(Id id, Rect r, std::string_view icon, float icon_size, bool active, std::string_view tip) {
         const Theme &t = *theme_;
         auto it = interact(id, r);
         const auto [hot, down] = feel(id, it);
         Rect bg = r.inset(down * 2);
         if (hot > 0) {
-            p_->rect(bg, t.text.with_alpha((0.08f + 0.05f * down) * hot), std::min(bg.w, bg.h) / 2);
+            p_->rect(bg, t.fill((1.3f + 0.7f * down) * hot), t.round(std::min(bg.w, bg.h)));
         }
         float s = icon_size - down * 1.5f;
         p_->icon(icon, center(r, s, s), active ? t.accent : t.text_dim.mix(t.text, hot));
+        if (it.hovered && !it.held) {
+            tooltip(id, r, tip);
+        }
+        return it.clicked;
+    }
+
+    float Ui::chip_width(std::string_view label, bool icon) {
+        return std::ceil(p_->measure(label, theme_->style(type::label, {}))) + 28 + (icon ? 18 : 0);
+    }
+
+    bool Ui::chip(Id id, Rect r, std::string_view label, bool selected, std::string_view icon) {
+        const Theme &t = *theme_;
+        auto it = interact(id, r);
+        const auto [hot, down] = feel(id, it);
+        const float on = anim(sub_id(id, 0x5e), selected ? 1 : 0, pace::steady);
+        r = r.inset(down * 1.5f);
+        p_->rect(r, t.fill(1 + 0.8f * hot).mix(t.accent.with_alpha(0.16f + 0.05f * hot), on), t.round(r.h));
+        const Color fg = t.text_dim.mix(t.text, hot).mix(t.accent, on);
+        const TextStyle st = t.style(type::label, fg);
+        const float tw = p_->measure(label, st);
+        p_->text_in({r.x + 14, r.y, tw + 1, r.h}, label, st);
+        if (!icon.empty()) {
+            p_->icon(icon, {r.x + 18 + tw, r.y + (r.h - 14) / 2, 14, 14}, fg);
+        }
+        return it.clicked;
+    }
+
+    bool Ui::link(Id id, Rect r, std::string_view s, const TextStyle &style) {
+        const Theme &t = *theme_;
+        r.w = std::min(std::ceil(p_->measure(s, style)) + 1, r.w);
+        auto it = interact(id, r);
+        const float hot = anim(id, it.hovered ? 1 : 0, pace::quick);
+        TextStyle st = style;
+        st.color = style.color.mix(t.text, 0.6f * hot);
+        const float w = p_->text_in(r, s, st);
+        if (hot > 0) {
+            const float a = p_->ascent(st.size), d = p_->descent(st.size);
+            p_->rect({r.x, std::round(r.y + (r.h - a - d) / 2 + a + 2), w, 1}, st.color.with_alpha(0.55f * hot));
+        }
+        if (it.hovered) {
+            cursor = wl::Cursor::pointer;
+        }
         return it.clicked;
     }
 
@@ -117,7 +167,7 @@ namespace lyren::ui {
         const Theme &t = *theme_;
         int n = static_cast<int>(labels.size());
         bool pill = style == TabStyle::pill;
-        TextStyle st{.size = pill ? t.fs(13) : t.fs(15), .color = t.text, .features = text::medium};
+        TextStyle st = t.style(pill ? type::label : type::lead, t.text, text::medium);
         constexpr float gap = 28;
 
         // Tab extents: label widths, plus an equal share of the leftover width for pills.
@@ -160,7 +210,7 @@ namespace lyren::ui {
             label(c, labels[static_cast<size_t>(i)], {.size = st.size, .color = fg, .features = st.features}, pill ? Align::center : Align::left);
         }
         if (!pill) {
-            p_->rect({ix, r.bottom() - 3, iw, 3}, t.accent, 1.5f);
+            p_->rect({ix, r.bottom() - 2, iw, 2}, t.accent, 1);
         }
         return changed;
     }
@@ -204,7 +254,7 @@ namespace lyren::ui {
             }
             float hot = anim(cid, it.hovered ? 1 : 0, 120);
             bool on = selected == static_cast<int>(i);
-            label(cell, labels[i], {.size = t.fs(13), .color = on ? t.text : t.text_dim.mix(t.text, 0.5f * hot)}, Align::center);
+            label(cell, labels[i], t.style(type::label, on ? t.text : t.text_dim.mix(t.text, 0.5f * hot), on ? text::medium : 0), Align::center);
         }
         return changed;
     }

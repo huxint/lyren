@@ -1,22 +1,19 @@
-#include "app/shell.hpp"
+#include "app/view/desktop.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <numbers>
-#include <utility>
-
-#include "app/draw.hpp"
+#include "app/view/draw.hpp"
+#include "app/view/shell.hpp"
 #include "core/i18n.hpp"
 
-// Desktop lyrics share a fixed surface covering the available screen. The settings page draws both as live previews.
 namespace lyren {
 
     using ui::Rect;
+    using ui::TextStyle;
     namespace ease = ui::ease;
 
     namespace {
-        constexpr ui::Color white{1, 1, 1, 1}, ink{0.03f, 0.03f, 0.035f, 1};
         constexpr float toolbar_height = 40, tau = 2 * std::numbers::pi_v<float>;
         constexpr double lead = 0.2; // a line lights up a little early, with the voice rather than after it
 
@@ -57,29 +54,42 @@ namespace lyren {
         }
     } // namespace
 
-    void Shell::set_desktop_enabled(bool enabled) {
-        dl_enabled_ = enabled;
-        changed();
-        desktop_changed_();
+    DesktopLyrics::DesktopLyrics(Shell &shell, const SavedState &saved)
+    : Part(shell),
+      dl_x_(saved.lyrics_x),
+      dl_bottom_(saved.lyrics_bottom),
+      island_x_(saved.island_x),
+      island_y_(saved.island_y),
+      dl_snap_(saved.lyrics_snap),
+      island_snap_(saved.island_snap),
+      dl_locked_(saved.lyrics_locked),
+      dl_enabled_(saved.lyrics_enabled),
+      dl_island_(saved.lyrics_island) {}
+
+    void DesktopLyrics::save(SavedState &to) const {
+        to.lyrics_x = dl_x_, to.lyrics_bottom = dl_bottom_;
+        to.island_x = island_x_, to.island_y = island_y_;
+        to.lyrics_snap = dl_snap_, to.island_snap = island_snap_;
+        to.lyrics_locked = dl_locked_;
+        to.lyrics_enabled = dl_enabled_, to.lyrics_island = dl_island_;
     }
 
-    void Shell::set_desktop_island(bool island) {
+    void DesktopLyrics::set_enabled(bool enabled) {
+        dl_enabled_ = enabled;
+        shell_.changed();
+        shell_.desktop_changed();
+    }
+
+    void DesktopLyrics::set_island(bool island) {
         if (dl_island_ != island) {
             dl_island_ = island;
             dl_locked_ = dl_dragging_ = island_moving_ = false;
-            changed();
-            desktop_changed_();
+            shell_.changed();
+            shell_.desktop_changed();
         }
     }
 
-    void Shell::toggle_translation() {
-        lyric_translation_ = !lyric_translation_;
-        lyric_layout_.clear();
-        changed();
-        redraw_();
-    }
-
-    float Shell::show_line(ui::Ui &ui, LineChange &c, std::string_view text, std::string_view sub, bool timed) {
+    float DesktopLyrics::show_line(ui::Ui &ui, LineChange &c, std::string_view text, std::string_view sub, bool timed) {
         if (text != c.shown.text || sub != c.shown.sub || timed != c.shown.timed) {
             c.prev = std::exchange(c.shown, {std::string(text), std::string(sub), timed});
             c.prev_since = c.since, c.since = ui.now;
@@ -87,18 +97,18 @@ namespace lyren {
         return ui.progress(c.since, 360, ease::standard);
     }
 
-    void Shell::lyric_frames(ui::Ui &ui, int line, bool timed) {
-        if (!playing()) {
+    void DesktopLyrics::lyric_frames(ui::Ui &ui, int line, bool timed) {
+        if (!playback_.playing()) {
             return;
         }
         if (timed) {
             ui.keep_animating();
-        } else if (const auto next = static_cast<size_t>(line + 1); next < lyrics_.size()) {
-            ui.wake(ui.now + lyrics_[next].time - lead - timeline().to_song(position()));
+        } else if (const auto next = static_cast<size_t>(line + 1); next < playback_.lyrics().size()) {
+            ui.wake(ui.now + playback_.lyrics()[next].time - lead - playback_.timeline().to_song(playback_.position()));
         }
     }
 
-    Rect Shell::desktop_lyrics(ui::Ui &ui, float width, float height) {
+    Rect DesktopLyrics::draw(ui::Ui &ui, float width, float height) {
         if (!dl_island_) {
             return floating(ui, {0, 0, width, height}, true);
         }
@@ -114,16 +124,16 @@ namespace lyren {
         return island_moving_ ? Rect{0, 0, width, height} : input;
     }
 
-    Rect Shell::island(ui::Ui &ui, float center, float top, bool movable) {
+    Rect DesktopLyrics::island(ui::Ui &ui, float center, float top, bool movable) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        const auto &options = config_.desktop_lyrics.island;
+        const auto &options = env_.config.desktop_lyrics.island;
         const bool art = options.cover, ring = art && options.progress;
-        const Track *track = current();
-        const auto clock = timeline();
-        const double elapsed = position(), now = clock.to_song(elapsed);
-        const int at = lyric_at(lyrics_, now + lead);
-        const LyricLine *line = at >= 0 ? &lyrics_[static_cast<size_t>(at)] : nullptr;
+        const Track *track = playback_.current();
+        const auto clock = playback_.timeline();
+        const double elapsed = playback_.position(), now = clock.to_song(elapsed);
+        const int at = lyric_at(playback_.lyrics(), now + lead);
+        const LyricLine *line = at >= 0 ? &playback_.lyrics()[static_cast<size_t>(at)] : nullptr;
         const std::string_view text = line ? std::string_view(line->text) : track ? std::string_view(track->title) : lyren::tr("Nothing playing");
         const bool timed = line && !line->words.empty();
         const float change = show_line(ui, island_line_, text, {}, timed);
@@ -192,7 +202,7 @@ namespace lyren {
             } else if (!ui.input().left_down) {
                 island_moving_ = false;
                 if (island_dragged_) {
-                    changed();
+                    shell_.changed();
                 }
             }
         };
@@ -205,14 +215,14 @@ namespace lyren {
             return mix(Rect{center, pill.y + pill_h / 2, 0, 0}, end, open);
         };
         ui.push_clip(panel.inset(1));
-        const float live = ui.anim(ui.id("island-live"), playing() ? 1 : 0, 420);
+        const float live = ui.anim(ui.id("island-live"), playback_.playing() ? 1 : 0, 420);
         auto meter = [&](float cx, float cy, float alpha) {
             for (int i = 0; i < 4; ++i) {
                 float h = 3 + 11 * live * level(ui.now, i);
                 p.rect({cx - 8.75f + 5 * static_cast<float>(i), cy - h / 2, 2.5f, h}, t.accent.with_alpha(alpha), 1.25f);
             }
         };
-        if (live > 0 && playing()) {
+        if (live > 0 && playback_.playing()) {
             ui.keep_animating();
         }
 
@@ -238,11 +248,11 @@ namespace lyren {
             if (press.hovered && track && open < 0.5f) {
                 ui.cursor = wl::Cursor::pointer;
                 p.rect(a, {0, 0, 0, 0.35f}, r);
-                p.icon(playing() ? "pause-fill" : "play-fill", ui::center(a, 12, 12), white);
+                p.icon(playback_.playing() ? "pause-fill" : "play-fill", ui::center(a, 12, 12), white);
             }
             drag_island(press);
             if (press.clicked && track && open < 0.5f && !island_dragged_) {
-                toggle_play();
+                playback_.toggle();
             }
         }
 
@@ -250,7 +260,7 @@ namespace lyren {
         auto sung = [&](std::string_view value, float x, float baseline, float size, float limit) {
             if (line && timed) {
                 const float soft = size * 0.7f;
-                p.set_wipe(x + sung_x(p, *line, value, size, soft, now), soft, white.with_alpha(0.42f));
+                p.set_wipe(x + Stage::sung_x(p, *line, value, size, soft, now), soft, white.with_alpha(0.42f));
             }
             p.text(x, baseline, value, {.size = size, .color = white.with_alpha(0.96f)}, limit);
             p.clear_wipe();
@@ -273,9 +283,9 @@ namespace lyren {
                 }
                 float target = 0;
                 if (current && line && timed) {
-                    target = std::clamp(sung_x(p, *line, value, line_size, 8, now) - avail * 0.6f, 0.f, overflow);
+                    target = std::clamp(Stage::sung_x(p, *line, value, line_size, 8, now) - avail * 0.6f, 0.f, overflow);
                 } else if (current && line) {
-                    const double from = line->time, to = static_cast<size_t>(at + 1) < lyrics_.size() ? lyrics_[static_cast<size_t>(at + 1)].time : from + 5;
+                    const double from = line->time, to = static_cast<size_t>(at + 1) < playback_.lyrics().size() ? playback_.lyrics()[static_cast<size_t>(at + 1)].time : from + 5;
                     target = overflow * smooth01((static_cast<float>((now + lead - from) / std::max(to - from, 0.5)) - 0.15f) / 0.6f);
                 }
                 return ui.spring(ui::sub_id(ui.id("island-slide"), std::bit_cast<uint64_t>(since)), target, 700);
@@ -351,7 +361,7 @@ namespace lyren {
             }
             if (island_dragging_ && !ui.is_active(ui.id("island-seek"))) {
                 island_dragging_ = false;
-                seek_song(island_drag_v_ * duration);
+                playback_.seek(island_drag_v_ * duration);
             }
             detail({card.x + pad, py + 11, 38, 0}, mmss(island_dragging_ ? island_drag_v_ * duration : now), times);
             const std::string total = mmss(duration);
@@ -373,20 +383,20 @@ namespace lyren {
                 return it.clicked;
             };
             if (button("island-previous", {center - 64, cy - 16, 32, 32}, "skip-back")) {
-                skip(-1);
+                playback_.skip(-1);
             }
-            if (button("island-play", {center - 20, cy - 20, 40, 40}, playing() ? "pause-fill" : "play-fill", true)) {
-                toggle_play();
+            if (button("island-play", {center - 20, cy - 20, 40, 40}, playback_.playing() ? "pause-fill" : "play-fill", true)) {
+                playback_.toggle();
             }
             if (button("island-next", {center + 32, cy - 16, 32, 32}, "skip-forward")) {
-                skip(1);
+                playback_.skip(1);
             }
             ui.disabled = open_a < 0.6f;
             if (button("island-floating", {card.x + pad - 6, cy - 16, 32, 32}, "panel-bottom")) {
-                set_desktop_island(false);
+                set_island(false);
             }
             if (button("island-hide", {card.right() - pad - 26, cy - 16, 32, 32}, "x")) {
-                set_desktop_enabled(false);
+                set_enabled(false);
             }
             ui.disabled = false;
         }
@@ -396,8 +406,8 @@ namespace lyren {
         return panel;
     }
 
-    void Shell::floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color, ui::Color rest,
-                              float focus) {
+    void DesktopLyrics::floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color,
+                                      ui::Color rest, float focus) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         // Long lines shrink to fit, down to 70%, before they are cut short.
@@ -410,8 +420,8 @@ namespace lyren {
         float front = 0;
         lyric_lifts_.clear();
         if (sung) {
-            const double now = timeline().to_song(position());
-            front = sung_x(p, *live, text, font, soft, now);
+            const double now = playback_.timeline().to_song(playback_.position());
+            front = Stage::sung_x(p, *live, text, font, soft, now);
             if (t.motion > 0) {
                 fill_lyric_wave(lyric_lifts_, p.shape(live->text, {.size = font}), *live, text, font, now, focus);
             }
@@ -429,20 +439,20 @@ namespace lyren {
         p.clear_wipe();
     }
 
-    Rect Shell::floating(ui::Ui &ui, Rect area, bool movable) {
+    Rect DesktopLyrics::floating(ui::Ui &ui, Rect area, bool movable) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        const Track *track = current();
-        const double now = timeline().to_song(position());
+        const Track *track = playback_.current();
+        const double now = playback_.timeline().to_song(playback_.position());
         // The waiting row anticipates the cue; promotion follows the actual start of the line.
-        const int at = lyric_at(lyrics_, now);
-        const LyricLine *line = at >= 0 ? &lyrics_[static_cast<size_t>(at)] : nullptr;
+        const int at = lyric_at(playback_.lyrics(), now);
+        const LyricLine *line = at >= 0 ? &playback_.lyrics()[static_cast<size_t>(at)] : nullptr;
         const std::string_view text = line ? std::string_view(line->text) : track ? std::string_view(track->title) : lyren::tr("Nothing playing");
-        const std::string_view below = line && lyric_translation_ ? std::string_view(line->translation) : std::string_view{};
+        const std::string_view below = line && shell_.stage.translation() ? std::string_view(line->translation) : std::string_view{};
         const size_t next = static_cast<size_t>(at + 1);
-        const LyricLine *following = next < lyrics_.size() ? &lyrics_[next] : nullptr;
+        const LyricLine *following = next < playback_.lyrics().size() ? &playback_.lyrics()[next] : nullptr;
         const std::array<std::string_view, 2> texts{text, following ? std::string_view(following->text) : !line && track ? std::string_view(track->artist) : std::string_view{}};
-        const std::array<std::string_view, 2> subs{below, following && lyric_translation_ ? std::string_view(following->translation) : std::string_view{}};
+        const std::array<std::string_view, 2> subs{below, following && shell_.stage.translation() ? std::string_view(following->translation) : std::string_view{}};
         const bool timed = line && !line->words.empty();
         auto &c = floating_lines_;
         if (at != c.line || texts[0] != c.shown[0].text || texts[1] != c.shown[1].text || subs[0] != c.shown[0].sub || subs[1] != c.shown[1].sub || timed != c.shown[0].timed) {
@@ -456,12 +466,12 @@ namespace lyren {
             c.duration = following && t.motion > 0 ? std::min(620.f, static_cast<float>((following->time - now) * 800 / t.motion)) : 620;
         }
         const float change = ui.progress(c.since, c.duration, ease::linear);
-        const bool translated = std::ranges::any_of(lyrics_, [](const LyricLine &l) {
+        const bool translated = std::ranges::any_of(playback_.lyrics(), [](const LyricLine &l) {
             return !l.translation.empty();
         });
 
         const float size = t.lyric_size, sub = std::round(size * 0.58f), line_height = std::round(size * 1.35f), pad = std::round(size * 0.24f);
-        const float row_height = ui.spring(ui.id("floating-row-height"), line_height + (lyric_translation_ && translated ? std::round(sub * 1.35f) : 0) + 10, 320);
+        const float row_height = ui.spring(ui.id("floating-row-height"), line_height + (shell_.stage.translation() && translated ? std::round(sub * 1.35f) : 0) + 10, 320);
         const float max_width = area.w - (movable ? 64 + 2 * desktop_edge : 32);
         float text_width = 0;
         for (size_t i = 0; i < texts.size(); ++i) {
@@ -523,7 +533,7 @@ namespace lyren {
         ui.push_clip({area.x, panel.y + tools_height, area.w, panel.h - tools_height});
         if (c.advance) {
             if (change < 1) {
-                draw(c.prev[0], at > 0 ? &lyrics_[static_cast<size_t>(at - 1)] : nullptr, depart(c.from[0]));
+                draw(c.prev[0], at > 0 ? &playback_.lyrics()[static_cast<size_t>(at - 1)] : nullptr, depart(c.from[0]));
             }
             c.pose[0] = c.from[1].mix(singing, enter);
             c.pose[1] = Pose{1.16f, 0, 0.86f, 0}.mix(waiting, queued);
@@ -539,7 +549,7 @@ namespace lyren {
         draw(c.shown[0], line, c.pose[0]);
         draw(c.shown[1], following, c.pose[1]);
         ui.pop_clip();
-        if (playing()) {
+        if (playback_.playing()) {
             if ((timed && finished < 1) || (following && now >= following->time - prepare)) {
                 ui.keep_animating();
             } else if (following) {
@@ -570,7 +580,7 @@ namespace lyren {
             p.rect(lock, ink.with_alpha(0.8f), 16);
             if (button("floating-unlock-button", lock, "lock-open")) {
                 dl_locked_ = false;
-                changed();
+                shell_.changed();
             }
         } else if (movable) {
             const float visible = ui.anim(ui.id("floating-tools"), ui.pointing(panel) || dl_dragging_ ? 1 : 0, 180);
@@ -588,29 +598,29 @@ namespace lyren {
                 };
                 ui.disabled = !track;
                 if (button("floating-previous", next_slot(), "skip-back")) {
-                    skip(-1);
+                    playback_.skip(-1);
                 }
-                if (button("floating-play", next_slot(), playing() ? "pause-fill" : "play-fill")) {
-                    toggle_play();
+                if (button("floating-play", next_slot(), playback_.playing() ? "pause-fill" : "play-fill")) {
+                    playback_.toggle();
                 }
                 if (button("floating-next", next_slot(), "skip-forward")) {
-                    skip(1);
+                    playback_.skip(1);
                 }
                 ui.disabled = false;
                 p.rect({x + 4, panel.y + 10, 1, 16}, white.with_alpha(0.16f));
                 x += 10;
-                if (translated && button("floating-translation", next_slot(), "languages", lyric_translation_)) {
-                    toggle_translation();
+                if (translated && button("floating-translation", next_slot(), "languages", shell_.stage.translation())) {
+                    shell_.stage.toggle_translation();
                 }
                 if (button("floating-island", next_slot(), "panel-top")) {
-                    set_desktop_island(true);
+                    set_island(true);
                 }
                 if (button("floating-lock", next_slot(), "lock")) {
                     dl_locked_ = true;
-                    changed();
+                    shell_.changed();
                 }
                 if (button("floating-close", next_slot(), "x")) {
-                    set_desktop_enabled(false);
+                    set_enabled(false);
                 }
             }
             const auto drag = ui.interact(ui.id("floating-drag"), panel);
@@ -624,7 +634,7 @@ namespace lyren {
                 ui.cursor = wl::Cursor::grabbing;
             } else if (dl_dragging_) {
                 dl_dragging_ = false;
-                changed();
+                shell_.changed();
             }
         }
 

@@ -88,7 +88,9 @@ git config core.hooksPath .githooks
 | [src/audio/](src/audio/) | 缓冲、音频解码与 PipeWire 输出 |
 | [src/media/](src/media/) | 音乐模型、平台契约与歌词 |
 | [src/sys/](src/sys/) | 配置、凭据与桌面服务 |
-| [src/app/](src/app/) | 应用状态、导航与页面 |
+| [src/app/](src/app/) | 应用装配、图片缓存与保存的状态 |
+| [src/app/model/](src/app/model/) | 播放、曲库、导航、账号、评论与社交的状态和读写 |
+| [src/app/view/](src/app/view/) | 窗口的各个部分：侧栏、页面、播放栏、正在播放、主页与动态、评论、设置、桌面歌词 |
 
 ## 文档
 

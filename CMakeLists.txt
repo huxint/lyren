@@ -149,20 +149,29 @@ add_library(
     lyren_lib STATIC
     src/sys/bus.cpp
     src/sys/mpris.cpp
+    src/app/model/playback.cpp
+    src/app/model/library.cpp
+    src/app/model/catalog.cpp
+    src/app/model/social.cpp
+    src/app/model/comments.cpp
+    src/app/model/browser.cpp
+    src/app/model/accounts.cpp
     src/app/app.cpp
-    src/app/shell.cpp
-    src/app/account.cpp
-    src/app/library.cpp
-    src/app/catalog.cpp
-    src/app/playback.cpp
-    src/app/playbar.cpp
-    src/app/pages.cpp
-    src/app/settings.cpp
-    src/app/stage.cpp
-    src/app/panel.cpp
-    src/app/profile.cpp
-    src/app/posts.cpp
-    src/app/desktop.cpp)
+    src/app/view/part.cpp
+    src/app/view/shell.cpp
+    src/app/view/chrome.cpp
+    src/app/view/pages.cpp
+    src/app/view/tracks.cpp
+    src/app/view/dialogs.cpp
+    src/app/view/account_dialog.cpp
+    src/app/view/settings.cpp
+    src/app/view/profile.cpp
+    src/app/view/feed.cpp
+    src/app/view/side_panel.cpp
+    src/app/view/comments_view.cpp
+    src/app/view/player_bar.cpp
+    src/app/view/stage.cpp
+    src/app/view/desktop.cpp)
 target_link_libraries(lyren_lib PUBLIC lyren_ui PkgConfig::SDBUS glaze PRIVATE PkgConfig::QRENCODE)
 add_wayland_protocols(
     lyren_ui

@@ -10,7 +10,7 @@
 #include <optional>
 
 #include "app/images.hpp"
-#include "app/shell.hpp"
+#include "app/view/shell.hpp"
 #include "sys/bus.hpp"
 #include "text/atlas.hpp"
 #include "ui/ui.hpp"
@@ -143,11 +143,29 @@ TEST_CASE("previous and next keep their direction through unavailable songs and 
                         std::move(saved));
             std::string errors;
             const auto theme = ui::Theme::from(config, errors), stage = theme.stage(theme.accent);
-            // Exercise the actual transport buttons; every result is rejected before audio is opened.
-            const float x = scenario.direction < 0 ? 304.f : 416.f;
-            ui::FrameInput input{.x = x, .y = 446, .inside = true};
-            input.actions = {{.x = x, .y = 446, .button = BTN_LEFT, .press = true}, {.x = x, .y = 446, .button = BTN_LEFT, .press = false}};
+            // Exercise the actual transport buttons, pressed where the player draws them; every result is rejected before
+            // audio is opened.
             ui::Ui ui;
+            ui::FrameInput idle;
+            painter.record(true);
+            painter.begin(1, 0, 0);
+            ui.begin(painter, theme, 720, 480, 1, idle);
+            shell.draw(ui, {0, 52, 720, 428}, stage);
+            ui.end();
+            const std::string_view icon = scenario.direction < 0 ? "skip-back-fill" : "skip-forward-fill";
+            const auto button = std::ranges::find_if(painter.runs(), [&](const ui::Painter::Run &run) {
+                return run.icon && run.text == icon;
+            });
+            REQUIRE(button != painter.runs().end());
+            REQUIRE(provider.requested.empty());
+            // The player names what is current, in full.
+            static constexpr std::array<std::string_view, 3> titles{"Earlier", "Unavailable", "Current"};
+            CHECK(std::ranges::any_of(painter.runs(), [&](const ui::Painter::Run &run) {
+                return !run.icon && !run.cut && run.text == titles[static_cast<size_t>(scenario.current)];
+            }));
+            const float x = button->box.x + button->box.w / 2, y = button->box.y + button->box.h / 2;
+            ui::FrameInput input{.x = x, .y = y, .inside = true};
+            input.actions = {{.x = x, .y = y, .button = BTN_LEFT, .press = true}, {.x = x, .y = y, .button = BTN_LEFT, .press = false}};
             painter.begin(1, 0, 0);
             ui.begin(painter, theme, 720, 480, 1, input);
             shell.draw(ui, {0, 52, 720, 428}, stage);
