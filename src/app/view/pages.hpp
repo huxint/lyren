@@ -20,8 +20,6 @@ namespace lyren {
         // The hue a page washes its top with, 0..1: its cover's; negative for the accent.
         float hue(ui::Ui &ui);
 
-        // Draws cards in columns from r's top-left; returns the clicked index or -1.
-        int card_grid(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Card> &cards, bool round, double since);
         // A page's tabs: picking one starts the slide of its content, which tab_enter applies to content and returns
         // the fade of.
         bool page_tabs(ui::Ui &ui, ui::Id id, ui::Rect r, std::span<const std::string_view> labels, int &selected, std::span<const bool> enabled = {});
@@ -39,20 +37,18 @@ namespace lyren {
         void dislikes_page(ui::Ui &ui, ui::Rect r);
         void artist_page(ui::Ui &ui, ui::Rect r);
         void search_page(ui::Ui &ui, ui::Rect r);
-        void list_page(ui::Ui &ui, ui::Rect r, std::vector<Track> &tracks, bool loading, const std::string &error, double since);
+        void list_page(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, bool loading, const std::string &error, double since);
         // card_grid in its own scrolling view; near_end tells when the last rows are close.
         int grid_view(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Card> &cards, bool round, double since, bool more, bool &near_end);
-        bool card(ui::Ui &ui, ui::Id id, ui::Rect r, const Card &c, bool round);
-        bool hero(ui::Ui &ui, ui::Id id, ui::Rect r, std::string_view big, std::string_view title, std::string_view subtitle, float hue, std::string_view icon = {});
+        bool hero(ui::Ui &ui, ui::Id id, ui::Rect r, std::string_view big, std::string_view badge, std::string_view title, std::string_view subtitle, float hue,
+                  std::string_view icon = {}, std::string_view action_icon = "play-fill");
         // "Play all" and "Shuffle" from x; returns where the next button goes.
-        float play_buttons(ui::Ui &ui, float x, float y, std::vector<Track> &tracks);
+        float play_buttons(ui::Ui &ui, float x, float y, const std::vector<Track> &tracks, float height = ui::control::large, bool compact = false);
         // The buttons after "play all" and "shuffle" on album and playlist pages, from x.
-        void list_actions(ui::Ui &ui, float x, float y);
+        void list_actions(ui::Ui &ui, float x, float y, float height = ui::control::large, bool compact = false);
         void categories_modal(ui::Ui &ui, ui::Rect r);
         static float special_hue(Page page);
         ui::Id search_scroll_id(ui::Ui &ui, int tab) const;
-
-        std::vector<Track> recent_; // what played on this device, as the page on show lists it
     };
 
 } // namespace lyren

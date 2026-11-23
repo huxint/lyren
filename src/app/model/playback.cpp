@@ -199,6 +199,8 @@ namespace lyren {
         queue_ = list;
         shuffle_history_.clear();
         shuffle_next_ = -1;
+        failures_ = 0;
+        failed_.clear();
         start();
     }
 
@@ -237,6 +239,8 @@ namespace lyren {
         radio_ = false;
         set_current(i);
         shuffle_next_ = -1;
+        failures_ = 0;
+        failed_.clear();
         start();
     }
 
@@ -251,6 +255,8 @@ namespace lyren {
         queue_.insert(queue_.begin() + at, std::move(track));
         shuffle_history_.clear();
         shuffle_next_ = -1;
+        failures_ = 0;
+        failed_.clear();
         radio_ = false;
         set_current(at);
         start();
@@ -259,6 +265,7 @@ namespace lyren {
     void Playback::play_next(Track track) {
         shuffle_history_.clear();
         shuffle_next_ = -1;
+        failed_.clear();
         if (!current()) {
             // Nothing is on: the song becomes the current one, ready to play.
             queue_.insert(queue_.begin(), std::move(track));
@@ -287,6 +294,7 @@ namespace lyren {
         queue_.erase(queue_.begin() + i);
         shuffle_history_.clear();
         shuffle_next_ = -1;
+        failed_.clear();
         if (i < current_) {
             --current_;
         } else if (i == current_) {
@@ -314,6 +322,8 @@ namespace lyren {
         radio_ = false;
         shuffle_history_.clear();
         shuffle_next_ = -1;
+        failures_ = 0;
+        failed_.clear();
         halt();
         drop_lyrics();
         touch();
@@ -420,6 +430,7 @@ namespace lyren {
         mode_ = mode;
         shuffle_next_ = -1;
         shuffle_history_.clear();
+        failed_.clear();
         touch();
     }
 
@@ -470,12 +481,28 @@ namespace lyren {
         if (mode_ != Mode::shuffle) {
             return (current_ + 1) % n;
         }
-        if (shuffle_next_ < 0 || shuffle_next_ >= n) {
+        if (shuffle_next_ >= 0 && shuffle_next_ < n && (n == 1 || shuffle_next_ != current_) && !failed_.contains(shuffle_next_)) {
+            return shuffle_next_;
+        }
+        if (failed_.empty()) {
             shuffle_next_ = n == 1 ? 0 : static_cast<int>(random() % static_cast<uint64_t>(n - 1));
             if (shuffle_next_ >= current_ && n > 1) {
                 ++shuffle_next_;
             }
+            return shuffle_next_;
         }
+        std::vector<int> candidates;
+        candidates.reserve(static_cast<size_t>(n));
+        for (int k = 0; k < n; ++k) {
+            if (k != current_ && !failed_.contains(k)) {
+                candidates.push_back(k);
+            }
+        }
+        if (candidates.empty()) {
+            shuffle_next_ = -1;
+            return -1;
+        }
+        shuffle_next_ = candidates[random() % candidates.size()];
         return shuffle_next_;
     }
 
@@ -486,6 +513,7 @@ namespace lyren {
     void Playback::step(int delta, bool automatic) {
         if (!automatic) {
             failures_ = 0;
+            failed_.clear();
         }
         if (radio_ && delta > 0) {
             if (on_radio_skip) {
@@ -497,16 +525,60 @@ namespace lyren {
             return;
         }
         const int n = static_cast<int>(queue_.size());
-        int i;
+        int i = -1;
         if (mode_ == Mode::shuffle && delta > 0) {
             i = next_index();
-            shuffle_history_.push_back(current_);
+            if (i < 0) {
+                failures_ = 0;
+                failed_.clear();
+                want_play_ = false;
+                publish();
+                return;
+            }
+            if (!failed_.contains(current_)) {
+                shuffle_history_.push_back(current_);
+            }
             shuffle_next_ = -1;
-        } else if (mode_ == Mode::shuffle && !shuffle_history_.empty()) {
-            i = shuffle_history_.back();
-            shuffle_history_.pop_back();
+        } else if (mode_ == Mode::shuffle && delta < 0) {
+            while (!shuffle_history_.empty()) {
+                const int prev = shuffle_history_.back();
+                shuffle_history_.pop_back();
+                if (prev >= 0 && prev < n && !failed_.contains(prev)) {
+                    i = prev;
+                    break;
+                }
+            }
+            if (i < 0) {
+                for (int tries = 1; tries <= n; ++tries) {
+                    const int cand = ((current_ + delta * tries) % n + n) % n;
+                    if (!failed_.contains(cand)) {
+                        i = cand;
+                        break;
+                    }
+                }
+            }
+            if (i < 0) {
+                failures_ = 0;
+                failed_.clear();
+                want_play_ = false;
+                publish();
+                return;
+            }
         } else {
-            i = ((current_ + delta) % n + n) % n;
+            for (int tries = 1; tries <= n; ++tries) {
+                const int cand = ((current_ + delta * tries) % n + n) % n;
+                if (!failed_.contains(cand)) {
+                    i = cand;
+                    break;
+                }
+            }
+            if (i < 0) {
+                failures_ = 0;
+                failed_.clear();
+                want_play_ = false;
+                publish();
+                return;
+            }
         }
         set_current(i);
         start(0, automatic ? want_play_ || player_.state() == State::ended : true, delta);
@@ -559,14 +631,17 @@ namespace lyren {
             }
             if (!r || (r->trial && skip_trials())) {
                 fetching_ = false;
+                failed_.insert(current_);
+                failures_ = failed_.size();
                 // A run of unplayable tracks is reported once, when one finally plays.
-                if (!failures_) {
+                if (failures_ == 1) {
                     env_.notify(r ? lyren::trf("Skipped {}: preview only", t.title) : std::format("{}: {}", t.title, lyren::tr(r.error())), "circle-alert", !r);
                 }
-                if (++failures_ < queue_.size()) {
+                if (failed_.size() < queue_.size()) {
                     step(skip_direction_, true);
                 } else {
                     failures_ = 0;
+                    failed_.clear();
                     want_play_ = false;
                     publish();
                 }
@@ -669,6 +744,7 @@ namespace lyren {
                     env_.notify(lyren::trf("Skipped {} unavailable songs", failures_), "skip-forward");
                 }
                 failures_ = 0;
+                failed_.clear();
                 skip_direction_ = 1;
                 std::erase_if(recent_, [&](const Track &x) {
                     return same(x, *current());

@@ -12,12 +12,12 @@ namespace lyren {
         : Part(shell) {}
 
         // since: when the list appeared, for the staggered entrance. Returns true when the last rows are visible.
-        bool list(ui::Ui &ui, ui::Rect r, ui::Id id, std::vector<Track> &tracks, double since);
+        bool list(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Track> &tracks, double since);
         // What can be done with the i-th song, or with the picked ones when it is among them.
-        void menu(ui::Ui &ui, float x, float y, std::vector<Track> &tracks, int i);
+        void menu(ui::Ui &ui, float x, float y, const std::vector<Track> &tracks, int i);
 
     private:
-        void row(ui::Ui &ui, ui::Rect r, std::vector<Track> &tracks, int i);
+        void row(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, int i);
     };
 
 } // namespace lyren

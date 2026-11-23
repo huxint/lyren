@@ -54,12 +54,20 @@ namespace lyren {
             Listing songs, albums, intro;
             std::vector<std::pair<std::string, std::string>> sections;
         };
+        // One search query and its results on each platform.
+        struct Search {
+            std::string query;
+            int tab = 0;
+            uint64_t serial = 0;
+            std::array<std::array<Listing, 5>, platforms.size()> results;
+        };
         struct Route {
             Page page = Page::recommend;
             Card card; // what a playlist-like page shows
             std::shared_ptr<TrackList> list;
             std::shared_ptr<Artist> artist;
             std::shared_ptr<Social::Page> profile;
+            std::shared_ptr<Search> search;
             uint64_t serial = 0; // names this visit: what it scrolls starts from the top
         };
         // Rows picked in the track list on show, to act on together.
@@ -91,6 +99,9 @@ namespace lyren {
         bool can_go_back() const {
             return !history_.empty();
         }
+        bool can_go_forward() const {
+            return !forward_.empty();
+        }
         // Counts the times the listener went somewhere.
         uint64_t navigations() const {
             return navigations_;
@@ -113,6 +124,7 @@ namespace lyren {
         // False when the platform on show has no account signed in.
         bool open_own_profile();
         bool back();
+        bool forward();
         void switch_platform(Source source);
         // Loads what the page on show still lacks.
         void ensure();
@@ -121,15 +133,17 @@ namespace lyren {
 
         // Search.
         std::string query; // as typed
-        int search_tab = 0;
+        int &search_tab() {
+            return route_.search ? route_.search->tab : empty_tab_;
+        }
         const std::string &searched() const {
-            return searched_;
+            return route_.search ? route_.search->query : empty_query_;
         }
         uint64_t search_serial() const {
-            return search_gen_;
+            return route_.search ? route_.search->serial : 0;
         }
         Listing &results(int tab) {
-            return results_[static_cast<size_t>(active_)][static_cast<size_t>(tab)];
+            return route_.search ? route_.search->results[static_cast<size_t>(active_)][static_cast<size_t>(tab)] : empty_listing_;
         }
         void search();
         void load_results(int tab, bool retry = false);
@@ -161,7 +175,7 @@ namespace lyren {
         void on_library(const Library::Event &event);
         template <class F>
         void each_route(F &&visit);
-        Task<void> fetch_results(uint64_t gen, int tab, Source source, std::string query, int offset);
+        Task<void> fetch_results(std::shared_ptr<Search> session, uint64_t serial, int tab, Source source, int offset);
         Task<void> load_artist(std::shared_ptr<Artist> page, Card card);
         Task<void> fetch_artist(std::shared_ptr<Artist> page, Card card, int tab, int offset);
         Task<void> reorder(std::shared_ptr<TrackList> list, Card playlist, std::vector<Track> order, int selected, uint64_t account_gen);
@@ -171,12 +185,13 @@ namespace lyren {
         Social &social_;
         Source active_;
         Route route_;
-        std::vector<Route> history_;
+        std::vector<Route> history_, forward_;
         uint64_t serial_ = 0, navigations_ = 0;
         std::string today_;
-        std::string searched_;
-        std::array<std::array<Listing, 5>, platforms.size()> results_;
         uint64_t search_gen_ = 0;
+        std::string empty_query_;
+        int empty_tab_ = 0;
+        Listing empty_listing_;
         Selection selection_;
     };
 

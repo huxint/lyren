@@ -18,6 +18,8 @@ namespace lyren {
         void pick_playlist(ui::Ui &ui, std::vector<Track> tracks);
         // "Copy link" for something that has one.
         void link_menu(ui::Ui &ui, float x, float y, const Card &card);
+        // A picture shown large over the window; aspect is width over height.
+        void show_picture(ui::Ui &ui, std::string url, float aspect);
 
     private:
         void editor(ui::Ui &ui, ui::Rect r, Card card);

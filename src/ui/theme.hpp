@@ -41,6 +41,7 @@ namespace lyren::ui {
 
     // The type scale, in logical pixels at the default text size; Theme::fs and Theme::style scale it.
     namespace type {
+        inline constexpr float numeral = 44; // a figure that stands for something: the day on today's mix
         inline constexpr float display = 28; // what a page is about: its title, a listener, a list, an artist
         inline constexpr float title = 20;   // dialogs and panels
         inline constexpr float heading = 16; // sections within a page
@@ -53,11 +54,17 @@ namespace lyren::ui {
 
     // How long things take, in ms before Theme::motion scales them.
     namespace pace {
+        inline constexpr float snap = 85;    // immediate tactile feedback
         inline constexpr float quick = 120;  // hover and other small changes of state
-        inline constexpr float steady = 180; // things that fade or recolour
-        inline constexpr float glide = 280;  // things that move to a new place
-        inline constexpr float arrive = 380; // content coming in
+        inline constexpr float steady = 175; // things that fade or recolour
+        inline constexpr float glide = 250;  // things that move to a new place
+        inline constexpr float arrive = 340; // content coming in
     } // namespace pace
+
+    // Spatial rhythm, in logical pixels.
+    namespace space {
+        inline constexpr float xs = 4, s = 8, m = 12, l = 16, xl = 24, xxl = 32;
+    } // namespace space
 
     // Heights of controls, so that rows of them line up.
     namespace control {
@@ -104,6 +111,10 @@ namespace lyren::ui {
         // A hairline between things.
         Color line(float k = 1) const {
             return border.with_alpha(0.7f * k);
+        }
+        // A quiet 1px structural edge around sheets, cards and floating consoles.
+        Color surface_edge(float k = 1) const {
+            return text.with_alpha((dark ? 0.075f : 0.08f) * k);
         }
         // Readable on the accent, which follows the cover and can be light.
         Color on_accent() const {

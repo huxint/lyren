@@ -8,30 +8,33 @@ namespace lyren::ui {
 
     constexpr Color white{1, 1, 1, 1};
 
-    bool Ui::button(Id id, Rect r, std::string_view label, ButtonKind kind, std::string_view icon) {
+    bool Ui::button(Id id, Rect r, std::string_view label, ButtonKind kind, std::string_view icon, std::string_view tip) {
         const Theme &t = *theme_;
         auto it = interact(id, r);
+        if (it.hovered) {
+            cursor = wl::Cursor::pointer;
+        }
         const auto [hot, down] = feel(id, it);
-        r = r.inset(down * 1.5f);
+        r = r.inset(down * 1.2f);
         Color bg, fg = t.text;
         switch (kind) {
             case ButtonKind::primary:
-                bg = t.accent.mix(white, 0.1f * hot).mix({0, 0, 0, 1}, 0.1f * down);
+                bg = t.accent.mix(white, 0.08f * hot).mix({0, 0, 0, 1}, 0.1f * down);
                 fg = t.on_accent();
                 break;
             case ButtonKind::danger:
-                bg = t.danger.mix(white, 0.1f * hot).mix({0, 0, 0, 1}, 0.1f * down);
+                bg = t.danger.mix(white, 0.08f * hot).mix({0, 0, 0, 1}, 0.1f * down);
                 fg = white;
                 break;
             case ButtonKind::secondary:
-                bg = t.fill(1.3f + 0.8f * hot + 0.5f * down);
+                bg = t.fill(1.25f + 0.75f * hot + 0.5f * down);
                 break;
             case ButtonKind::ghost:
-                bg = t.fill(1.2f * hot + 0.6f * down);
+                bg = t.fill(1.15f * hot + 0.6f * down);
                 fg = t.text_dim.mix(t.text, hot);
                 break;
             case ButtonKind::tonal:
-                bg = t.accent.with_alpha(0.14f + 0.07f * hot + 0.05f * down);
+                bg = t.accent.with_alpha(0.13f + 0.07f * hot + 0.05f * down);
                 fg = t.accent;
                 break;
         }
@@ -43,6 +46,9 @@ namespace lyren::ui {
             p_->icon(icon, {x, r.y + (r.h - 16) / 2, 16, 16}, fg);
         }
         p_->text_in({x + iw, r.y, tw + 1, r.h}, label, st);
+        if (it.hovered && !it.held) {
+            tooltip(id, r, tip);
+        }
         return it.clicked;
     }
 
@@ -54,12 +60,15 @@ namespace lyren::ui {
     bool Ui::icon_button(Id id, Rect r, std::string_view icon, float icon_size, bool active, std::string_view tip) {
         const Theme &t = *theme_;
         auto it = interact(id, r);
-        const auto [hot, down] = feel(id, it);
-        Rect bg = r.inset(down * 2);
-        if (hot > 0) {
-            p_->rect(bg, t.fill((1.3f + 0.7f * down) * hot), t.round(std::min(bg.w, bg.h)));
+        if (it.hovered) {
+            cursor = wl::Cursor::pointer;
         }
-        float s = icon_size - down * 1.5f;
+        const auto [hot, down] = feel(id, it);
+        Rect bg = r.inset(down * 1.5f);
+        if (hot > 0) {
+            p_->rect(bg, t.fill((1.25f + 0.65f * down) * hot), t.round(std::min(bg.w, bg.h)));
+        }
+        float s = icon_size - down * 1.2f;
         p_->icon(icon, center(r, s, s), active ? t.accent : t.text_dim.mix(t.text, hot));
         if (it.hovered && !it.held) {
             tooltip(id, r, tip);
@@ -74,10 +83,13 @@ namespace lyren::ui {
     bool Ui::chip(Id id, Rect r, std::string_view label, bool selected, std::string_view icon) {
         const Theme &t = *theme_;
         auto it = interact(id, r);
+        if (it.hovered) {
+            cursor = wl::Cursor::pointer;
+        }
         const auto [hot, down] = feel(id, it);
         const float on = anim(sub_id(id, 0x5e), selected ? 1 : 0, pace::steady);
-        r = r.inset(down * 1.5f);
-        p_->rect(r, t.fill(1 + 0.8f * hot).mix(t.accent.with_alpha(0.16f + 0.05f * hot), on), t.round(r.h));
+        r = r.inset(down * 1.2f);
+        p_->rect(r, t.fill(1 + 0.75f * hot).mix(t.accent.with_alpha(0.16f + 0.05f * hot), on), t.round(r.h));
         const Color fg = t.text_dim.mix(t.text, hot).mix(t.accent, on);
         const TextStyle st = t.style(type::label, fg);
         const float tw = p_->measure(label, st);
@@ -110,6 +122,9 @@ namespace lyren::ui {
         constexpr float tau = 2 * std::numbers::pi_v<float>;
         const Theme &t = *theme_;
         auto it = interact(id, r);
+        if (it.hovered || it.held) {
+            cursor = wl::Cursor::pointer;
+        }
         bool changed = false;
         if (it.pressed || it.held) {
             float raw = (in_->x - r.x) / r.w;
@@ -121,7 +136,7 @@ namespace lyren::ui {
             }
         }
         float hot = anim(id, it.hovered || it.held ? 1 : 0, 150);
-        float th = 4 + hot;
+        float th = 3 + 1.5f * hot;
         float cy = r.y + r.h / 2;
         float sx0 = r.x + r.w * std::clamp(style.span_from, 0.f, 1.f), sx1 = r.x + r.w * std::clamp(style.span_to, style.span_from, 1.f);
         float filled = std::clamp(r.x + r.w * value - sx0, 0.f, sx1 - sx0);
@@ -154,7 +169,7 @@ namespace lyren::ui {
             }
             p_->rect({x0, cy + th / 2 + 2.5f, x1 - x0, 2.5f}, t.accent.with_alpha(0.30f + 0.18f * hot), 1.25f);
         }
-        float knob = 13 * hot;
+        float knob = 11 * hot;
         if (knob > 0.5f) {
             Rect k{sx0 + filled - knob / 2, cy - knob / 2, knob, knob};
             p_->shadow(k, knob / 2, 8, t.shadow);
@@ -194,14 +209,17 @@ namespace lyren::ui {
         const float x0 = spring(sub_id(id, 1), to0, rightwards ? 380 : 220), x1 = spring(sub_id(id, 2), to1, rightwards ? 220 : 380);
         const float ix = r.x + x0, iw = x1 - x0;
         if (pill) {
-            p_->rect(r, t.text.with_alpha(0.06f), r.h / 2);
-            p_->shadow({ix + 2, r.y + 3, iw - 4, r.h - 4}, (r.h - 4) / 2, 6, t.shadow.with_alpha(0.5f));
-            p_->rect({ix + 2, r.y + 2, iw - 4, r.h - 4}, t.elevated.mix(t.text, 0.06f), (r.h - 4) / 2);
+            p_->rect(r, t.text.with_alpha(0.06f), t.round(r.h));
+            p_->shadow({ix + 2, r.y + 3, iw - 4, r.h - 4}, t.round(r.h - 4), 6, t.shadow.with_alpha(0.5f));
+            p_->rect({ix + 2, r.y + 2, iw - 4, r.h - 4}, t.elevated.mix(t.text, 0.06f), t.round(r.h - 4));
         }
         bool changed = false;
         for (int i = 0; i < n; ++i) {
             Rect c = cell(i);
             auto it = interact(sub_id(id, 0x100 + static_cast<uint64_t>(i)), pill ? c : c.inset(-gap / 2, 0));
+            if (it.hovered) {
+                cursor = wl::Cursor::pointer;
+            }
             if (it.clicked && selected != i) {
                 selected = i, changed = true;
             }
@@ -218,37 +236,43 @@ namespace lyren::ui {
     bool Ui::toggle(Id id, Rect r, bool &on) {
         const Theme &t = *theme_;
         auto it = interact(id, r);
+        if (it.hovered) {
+            cursor = wl::Cursor::pointer;
+        }
         if (it.clicked) {
             on = !on;
         }
         float k = spring(id, on ? 1 : 0, 220);
         float hot = anim(sub_id(id, 1), it.hovered ? 1 : 0, 150);
         float down = anim(sub_id(id, 0xd0), it.held ? 1 : 0, 90);
-        p_->rect(r, t.text.with_alpha(0.16f + 0.06f * hot).mix(t.accent, k), r.h / 2);
+        p_->rect(r, t.text.with_alpha(0.16f + 0.06f * hot).mix(t.accent, k), t.round(r.h));
         // The knob stretches while pressed.
-        float d = r.h - 6, stretch = 5 * down;
-        p_->rect({r.x + 3 + (r.w - 6 - d - stretch) * k, r.y + 3, d + stretch, d}, white, d / 2);
+        float d = r.h - 6, stretch = 4 * down;
+        p_->rect({r.x + 3 + (r.w - 6 - d - stretch) * k, r.y + 3, d + stretch, d}, white, t.round(d));
         return it.clicked;
     }
 
     bool Ui::segmented(Id id, Rect r, std::span<const std::string_view> labels, int &selected) {
         const Theme &t = *theme_;
         const float n = static_cast<float>(labels.size()), w = r.w / n;
-        p_->rect(r, t.text.with_alpha(t.dark ? 0.07f : 0.055f), r.h / 2);
+        p_->rect(r, t.text.with_alpha(t.dark ? 0.07f : 0.055f), t.round(r.h), t.surface_edge(0.6f), 1);
         float shown = anim(sub_id(id, 2), selected >= 0 ? 1 : 0, 150);
         float x = r.x + w * spring(sub_id(id, 1), static_cast<float>(std::max(selected, 0)), 260);
         if (shown > 0) {
             Rect thumb = Rect{x, r.y, w, r.h}.inset(3);
             if (!t.dark) {
-                p_->shadow({thumb.x, thumb.y + 1, thumb.w, thumb.h}, thumb.h / 2, 6, t.shadow.with_alpha(0.7f * shown));
+                p_->shadow({thumb.x, thumb.y + 1, thumb.w, thumb.h}, t.round(thumb.h), 6, t.shadow.with_alpha(0.65f * shown));
             }
-            p_->rect(thumb, (t.dark ? t.elevated.mix(t.text, 0.1f) : t.surface).with_alpha(shown), thumb.h / 2);
+            p_->rect(thumb, (t.dark ? t.elevated.mix(t.text, 0.1f) : t.surface).with_alpha(shown), t.round(thumb.h), t.surface_edge(0.8f * shown), 1);
         }
         bool changed = false;
         for (size_t i = 0; i < labels.size(); ++i) {
             Rect cell{r.x + w * static_cast<float>(i), r.y, w, r.h};
             Id cid = sub_id(id, 0x100 + i);
             auto it = interact(cid, cell);
+            if (it.hovered) {
+                cursor = wl::Cursor::pointer;
+            }
             if (it.clicked && selected != static_cast<int>(i)) {
                 selected = static_cast<int>(i), changed = true;
             }

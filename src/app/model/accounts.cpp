@@ -7,6 +7,7 @@
 #include "app/model/browser.hpp"
 #include "app/model/library.hpp"
 #include "core/i18n.hpp"
+#include "core/log.hpp"
 #include "gfx/image.hpp"
 
 namespace lyren {
@@ -18,8 +19,9 @@ namespace lyren {
         for (const auto &entry : platforms) {
             env_.provider(entry.source).on_session_changed([this, source = entry.source] {
                 const auto &shelf = library_.shelf(source);
+                const bool ended = !env_.signed_in(source);
                 // The service ended the session: what the account showed goes with it.
-                if (!env_.signed_in(source) && (shelf.account || shelf.preference_gen != 0)) {
+                if (ended && (shelf.account || shelf.preference_gen != 0)) {
                     if (shelf.account) {
                         env_.notify(std::format("{}: {}", lyren::tr(platform(source).name), lyren::tr("Session expired; sign in again")), "user", true);
                     }
@@ -28,19 +30,19 @@ namespace lyren {
                         browser_.ensure();
                     }
                 }
-                save();
+                save(ended);
             });
         }
         library.subscribe([this](const Library::Event &event) {
             if (event.kind == Library::Event::Kind::signed_out) {
-                save();
+                save(true);
             }
         });
         spawn(startup());
     }
 
     Accounts::~Accounts() {
-        env_.loop.cancel(save_timer_);
+        flush();
     }
 
     Task<void> Accounts::startup() {
@@ -48,8 +50,9 @@ namespace lyren {
         if (saved) {
             credentials_ = creds::from_json(*saved);
             for (const auto &entry : platforms) {
-                env_.provider(entry.source).session() = std::move(credentials_[std::string(entry.id)]);
+                env_.provider(entry.source).session() = credentials_[std::string(entry.id)];
             }
+            saved_json_ = creds::to_json(credentials_);
             can_save_ = true;
         } else {
             env_.notify(lyren::trf("Could not read saved credentials: {}", saved.error()), "triangle-alert", true);
@@ -57,7 +60,6 @@ namespace lyren {
         for (const auto &entry : platforms) {
             spawn(initialize(entry.source));
         }
-        save();
     }
 
     Task<void> Accounts::initialize(Source source) {
@@ -74,24 +76,78 @@ namespace lyren {
         }
     }
 
-    void Accounts::save() {
+    std::string Accounts::snapshot() {
+        for (const auto &entry : platforms) {
+            credentials_[std::string(entry.id)] = env_.provider(entry.source).session();
+        }
+        return creds::to_json(credentials_);
+    }
+
+    Task<void> Accounts::write() {
+        saving_ = true;
+        while (dirty_) {
+            const uint64_t gen = save_gen_;
+            std::string json = snapshot();
+            if (json == saved_json_) {
+                if (gen == save_gen_) {
+                    dirty_ = false;
+                }
+                continue;
+            }
+            auto r = co_await creds::save(env_.loop, json);
+            if (!r) {
+                saving_ = false;
+                env_.notify(lyren::trf("Could not save credentials: {}", r.error()), "triangle-alert", true);
+                co_return;
+            }
+            saved_json_ = std::move(json);
+            if (gen == save_gen_) {
+                dirty_ = false;
+            }
+        }
+        saving_ = false;
+    }
+
+    void Accounts::save(bool immediate) {
         if (!can_save_) {
             return;
         }
-        // Responses often set several cookies in a row; write once they settle.
+        dirty_ = true;
+        ++save_gen_;
         env_.loop.cancel(save_timer_);
+        save_timer_ = 0;
+        if (immediate) {
+            if (!saving_) {
+                spawn(write());
+            }
+            return;
+        }
+        // Routine responses often set several cookies in a row; write once they settle.
         save_timer_ = env_.loop.after(1s, [this] {
             save_timer_ = 0;
-            spawn([](Accounts *self) -> Task<void> {
-                for (const auto &entry : platforms) {
-                    self->credentials_[std::string(entry.id)] = self->env_.provider(entry.source).session();
-                }
-                auto r = co_await creds::save(self->env_.loop, creds::to_json(self->credentials_));
-                if (!r) {
-                    self->env_.notify(lyren::trf("Could not save credentials: {}", r.error()), "triangle-alert", true);
-                }
-            }(this));
+            if (!saving_) {
+                spawn(write());
+            }
         });
+    }
+
+    void Accounts::flush() {
+        env_.loop.cancel(save_timer_);
+        save_timer_ = 0;
+        if (!can_save_ || !dirty_) {
+            return;
+        }
+        std::string json = snapshot();
+        if (json == saved_json_) {
+            dirty_ = false;
+            return;
+        }
+        if (auto r = creds::save_sync(json); !r) {
+            log::warn("credentials: {}", r.error());
+        } else {
+            saved_json_ = std::move(json);
+            dirty_ = false;
+        }
     }
 
     void Accounts::begin(Source source) {
@@ -129,7 +185,7 @@ namespace lyren {
     Task<void> Accounts::arrived(Source source, uint64_t gen) {
         can_save_ = true;
         library_.reset(source);
-        save();
+        save(true);
         co_await library_.load(source);
         if (gen != gen_) {
             co_return;

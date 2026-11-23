@@ -110,9 +110,15 @@ namespace lyren {
 
     std::string short_number(int n) {
         if (language() == Language::zh) {
+            if (n >= 100000000) {
+                return trf("{:.1f}yi", n / 1e8);
+            }
             return n >= 10000 ? trf("{:.1f}w", n / 1e4) : std::to_string(n);
         }
-        return n >= 1000 ? std::format("{:.1f}k", n / 1e3) : std::to_string(n);
+        if (n >= 1000000) {
+            return std::format("{:.1f}M", n / 1e6);
+        }
+        return n >= 1000 ? std::format("{:.1f}K", n / 1e3) : std::to_string(n);
     }
 
     std::string cover_url(std::string_view url, int px) {

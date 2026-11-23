@@ -135,7 +135,7 @@ namespace lyren::ui {
             bool home = k->keysym == XKB_KEY_Home || k->keysym == XKB_KEY_KP_Home;
             bool end = k->keysym == XKB_KEY_End || k->keysym == XKB_KEY_KP_End;
             if (multiline && (up || down || ((home || end) && !(k->mods & wl::mod_ctrl)))) {
-                float size = theme_->fs(13);
+                float size = theme_->fs(type::body);
                 auto lines = edit_lines(*p_, text, size, multiline_width);
                 size_t row = edit_row(lines, e.cursor, box.line_end);
                 size_t at;
@@ -183,21 +183,25 @@ namespace lyren::ui {
         }
     }
 
-    bool Ui::text_box(Id id, Rect r, std::string &text, std::string_view placeholder, std::string_view icon) {
+    bool Ui::text_box(Id id, Rect r, std::string &text, std::string_view placeholder, std::string_view icon, std::string_view shortcut) {
         const Theme &t = *theme_;
         EditBox &box = edits_[id];
         box.edit.clamp(text);
-        TextStyle st{.size = t.fs(13), .color = t.text};
+        TextStyle st = t.style(type::label, t.text);
         constexpr float pad = 14;
         bool has_clear = !text.empty();
         Rect clear_r{r.right() - r.h, r.y, r.h, r.h};
+        const TextStyle key_st = t.style(type::micro, t.faint(), text::medium);
+        const float key_w = !shortcut.empty() && text.empty() && focus != id ? std::max(18.f, std::ceil(p_->measure(shortcut, key_st)) + 10) : 0;
         Rect inner{r.x + pad + (icon.empty() ? 0 : 24), r.y, 0, r.h};
-        inner.w = (has_clear ? clear_r.x : r.right() - pad) - inner.x;
+        inner.w = (has_clear ? clear_r.x : r.right() - (key_w > 0 ? key_w + 14 : pad)) - inner.x;
 
         // The clear button sits inside the field, so it asks for presses first.
         Interaction clear = has_clear ? interact(sub_id(id, 0xc1), clear_r) : Interaction{};
         Interaction it = interact(id, r);
-        if (it.hovered && !clear.hovered) {
+        if (clear.hovered) {
+            cursor = wl::Cursor::pointer;
+        } else if (it.hovered) {
             cursor = wl::Cursor::text;
         }
         if (clear.clicked) {
@@ -230,9 +234,9 @@ namespace lyren::ui {
         focused = focus == id;
         box.edit.clamp(text);
 
-        float hot = anim(id, it.hovered ? 1 : 0, 120), f = anim(sub_id(id, 0xf0), focused ? 1 : 0, 120);
-        Color fill = t.text.with_alpha(0.06f + 0.03f * hot * (1 - f));
-        p_->rect(r, fill, r.h / 2, fill.mix(t.accent.with_alpha(0.8f), f), 1);
+        float hot = anim(id, it.hovered ? 1 : 0, pace::quick), f = anim(sub_id(id, 0xf0), focused ? 1 : 0, pace::quick);
+        Color fill = t.fill(1 + 0.5f * hot * (1 - f));
+        p_->rect(r, fill, t.round(r.h), t.surface_edge(0.8f + 0.4f * hot).mix(t.accent.with_alpha(0.75f), f), 1);
         if (!icon.empty()) {
             p_->icon(icon, {r.x + pad, r.y + (r.h - 16) / 2, 16, 16}, t.text_dim.mix(t.text, f));
         }
@@ -272,7 +276,7 @@ namespace lyren::ui {
         float line_h = std::round(st.size * 1.4f), line_y = r.y + (r.h - line_h) / 2;
         push_clip({inner.x - 2, r.y, inner.w + 4, r.h});
         if (shown.empty()) {
-            p_->text(inner.x, baseline, placeholder, {.size = st.size, .color = t.text_dim}, inner.w);
+            p_->text(inner.x, baseline, placeholder, {.size = st.size, .color = t.faint()}, inner.w);
         } else {
             if (focused && e.has_selection()) {
                 auto shift = [&](size_t b) {
@@ -309,6 +313,11 @@ namespace lyren::ui {
         if (has_clear) {
             float ch = anim(sub_id(id, 0xc1), clear.hovered ? 1 : 0, 120);
             p_->icon("circle-x", center(clear_r, 16, 16), t.text_dim.mix(t.text, ch));
+        } else if (const float ka = anim(sub_id(id, 0xc2), !shortcut.empty() && text.empty() && !focused ? 1 : 0, pace::quick); ka > 0.01f && !shortcut.empty()) {
+            const float bw = std::max(18.f, std::ceil(p_->measure(shortcut, key_st)) + 10);
+            const Rect cap{r.right() - 8 - bw, r.y + (r.h - 18) / 2, bw, 18};
+            p_->rect(cap, t.fill(1.2f * ka), std::min(5.f, t.radius_s()), t.surface_edge(0.9f * ka), 1);
+            label(cap, shortcut, {.size = key_st.size, .color = t.faint().with_alpha(ka), .features = key_st.features}, Align::center);
         }
         return submitted;
     }
@@ -317,7 +326,7 @@ namespace lyren::ui {
         const Theme &t = *theme_;
         EditBox &box = edits_[id];
         box.edit.clamp(text);
-        TextStyle st{.size = t.fs(13), .color = t.text};
+        TextStyle st = t.style(type::body, t.text);
         const float line_h = std::round(st.size * 1.55f);
         Rect inner = framed ? r.inset(10) : r;
         auto it = interact(id, r);
@@ -357,8 +366,8 @@ namespace lyren::ui {
         focused = focus == id && !disabled;
         box.edit.clamp(text);
         if (framed) {
-            float f = anim(sub_id(id, 0xf0), focused ? 1 : 0, 120);
-            p_->rect(r, t.text.with_alpha(0.05f), t.radius_s(), t.border.mix(t.accent, f), 1);
+            float f = anim(sub_id(id, 0xf0), focused ? 1 : 0, pace::quick);
+            p_->rect(r, t.fill(0.9f), t.radius_s(), t.surface_edge(1.1f).mix(t.accent.with_alpha(0.75f), f), 1);
         }
 
         const TextEdit &e = box.edit;
@@ -419,7 +428,7 @@ namespace lyren::ui {
             p_->text(inner.x, y + baseline, part, st);
         }
         if (shown.empty()) {
-            p_->text(inner.x, inner.y + baseline, placeholder, {.size = st.size, .color = t.text_dim}, inner.w);
+            p_->text(inner.x, inner.y + baseline, placeholder, {.size = st.size, .color = t.faint()}, inner.w);
         }
         if (focused) {
             const auto &line = lines[caret_row];

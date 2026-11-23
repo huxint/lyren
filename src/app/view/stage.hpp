@@ -41,10 +41,6 @@ namespace lyren {
             return cover_px_;
         }
 
-        // Where the wipe of a word-timed line stands at time within text, one of its wrapped lines: px from the start
-        // of text, a soft edge's width before it while it is unsung and past its end once sung.
-        static float sung_x(ui::Painter &p, const LyricLine &line, std::string_view text, float size, float soft, double time, uint8_t features = 0);
-
     private:
         struct Block {
             std::vector<std::string_view> lines, translation; // wrapped, pointing into the lyrics

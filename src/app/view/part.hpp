@@ -63,6 +63,9 @@ namespace lyren {
         float heart_size(ui::Ui &ui, const Track &track, float size) const;
         // The heart of a song, where its platform keeps likes. True when it was drawn.
         bool heart(ui::Ui &ui, ui::Id id, ui::Rect r, const Track &track, float size = 18);
+        // Draws cards in responsive columns from r's top-left; returns the clicked index or -1.
+        int card_grid(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Card> &cards, bool round, double since);
+        bool card(ui::Ui &ui, ui::Id id, ui::Rect r, const Card &c, bool round);
 
         Shell &shell_;
         Env &env_;

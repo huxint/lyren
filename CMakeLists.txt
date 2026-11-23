@@ -223,7 +223,7 @@ if(BUILD_TESTING)
     add_test(NAME no_alsa COMMAND ${CMAKE_COMMAND} "-DEXECUTABLES=$<TARGET_FILE:lyren>;$<TARGET_FILE:lyren-probe>" -P ${CMAKE_SOURCE_DIR}/tests/no_alsa.cmake)
 
     if(LYREN_TEST_GRAPHICS)
-        add_executable(lyren_gfx_tests tests/main.cpp tests/test_gfx.cpp)
+        add_executable(lyren_gfx_tests tests/main.cpp tests/test_gfx.cpp tests/test_view.cpp)
         target_link_libraries(lyren_gfx_tests PRIVATE lyren_lib doctest)
         find_program(LYREN_KWIN_WAYLAND kwin_wayland REQUIRED)
         add_test(NAME graphics COMMAND sh ${CMAKE_SOURCE_DIR}/tests/test_gfx.sh $<TARGET_FILE:lyren_gfx_tests> ${LYREN_KWIN_WAYLAND})

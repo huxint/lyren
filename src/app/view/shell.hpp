@@ -71,6 +71,7 @@ namespace lyren {
         void changed(); // something worth saving changed
         // Back closes the listening view first, then returns through the pages.
         void back();
+        void forward();
         bool compact() const {
             return compact_;
         }
@@ -113,6 +114,7 @@ namespace lyren {
         DesktopLyrics desktop;
 
     private:
+        void sync_stage_comments();
         void page(ui::Ui &ui, ui::Rect area);
         void keys(ui::Ui &ui);
 

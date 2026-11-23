@@ -138,11 +138,11 @@ namespace lyren::ui {
         Theme th;
         th.dark = t.mode == ThemeMode::dark;
         if (th.dark) {
-            th.bg = hex("#111113"), th.surface = hex("#1a1a1e"), th.elevated = hex("#232329"), th.border = hex("#2c2c33");
-            th.text = hex("#ececf1"), th.text_dim = hex("#9a9aa5"), th.danger = hex("#e5484d");
+            th.bg = hex("#0d0d10"), th.surface = hex("#151519"), th.elevated = hex("#1e1e24"), th.border = hex("#26262e");
+            th.text = hex("#f2f2f5"), th.text_dim = hex("#9292a0"), th.danger = hex("#e5484d");
         } else {
-            th.bg = hex("#f3f3f6"), th.surface = hex("#ffffff"), th.elevated = hex("#ffffff"), th.border = hex("#e3e3ea");
-            th.text = hex("#1c1c21"), th.text_dim = hex("#6b6b76"), th.danger = hex("#d1293d");
+            th.bg = hex("#f2f2f5"), th.surface = hex("#ffffff"), th.elevated = hex("#ffffff"), th.border = hex("#e3e3ec");
+            th.text = hex("#141419"), th.text_dim = hex("#666674"), th.danger = hex("#d1293d");
         }
         auto apply = [&](const std::optional<std::string> &v, Color &dst, const char *key) {
             if (!v) {

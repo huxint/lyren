@@ -42,6 +42,9 @@ namespace lyren {
         for (auto &route : history_) {
             visit(route);
         }
+        for (auto &route : forward_) {
+            visit(route);
+        }
     }
 
     bool Browser::supports(Page page, Source source) const {
@@ -86,6 +89,7 @@ namespace lyren {
             ++navigations_;
             return env_.redraw();
         }
+        forward_.clear();
         history_.push_back(route_);
         if (history_.size() > 50) {
             history_.erase(history_.begin());
@@ -96,6 +100,9 @@ namespace lyren {
             old.list.reset();
             old.artist.reset();
             old.profile.reset();
+            if (old.search) {
+                old.search->results = {};
+            }
         }
         Card target = card;
         if (page == Page::playlist) {
@@ -138,9 +145,27 @@ namespace lyren {
         if (history_.empty()) {
             return false;
         }
+        forward_.push_back(route_);
+        if (forward_.size() > 50) {
+            forward_.erase(forward_.begin());
+        }
         Route route = std::move(history_.back());
         history_.pop_back();
         enter(std::move(route), -1);
+        return true;
+    }
+
+    bool Browser::forward() {
+        if (forward_.empty()) {
+            return false;
+        }
+        history_.push_back(route_);
+        if (history_.size() > 50) {
+            history_.erase(history_.begin());
+        }
+        Route route = std::move(forward_.back());
+        forward_.pop_back();
+        enter(std::move(route), 1);
         return true;
     }
 
@@ -152,11 +177,14 @@ namespace lyren {
         const bool platform_changed = active_ != route_.card.source;
         if (platform_changed) {
             active_ = route_.card.source;
-            if (!env_.provider(active_).capabilities.search[static_cast<size_t>(search_tab)]) {
-                search_tab = 0;
-            }
             if (on_change) {
                 on_change();
+            }
+        }
+        if (route_.page == Page::search && route_.search) {
+            query = route_.search->query;
+            if (!env_.provider(active_).capabilities.search[static_cast<size_t>(route_.search->tab)]) {
+                route_.search->tab = 0;
             }
         }
         entered = env_.now();
@@ -200,8 +228,8 @@ namespace lyren {
         if (route_.page == Page::search || route_.page == Page::settings) {
             tab_direction = source > active_ ? 1 : -1;
             active_ = route_.card.source = source;
-            if (!env_.provider(active_).capabilities.search[static_cast<size_t>(search_tab)]) {
-                search_tab = 0;
+            if (route_.search && !env_.provider(active_).capabilities.search[static_cast<size_t>(route_.search->tab)]) {
+                route_.search->tab = 0;
             }
             reset_selection();
             tab_since = env_.now();
@@ -224,8 +252,8 @@ namespace lyren {
         const Page page = route_.page;
         auto &lib = shelf();
         const bool signed_in = env_.signed_in(active_);
-        if (page == Page::search && !results(search_tab).loaded) {
-            load_results(search_tab);
+        if (page == Page::search && route_.search && !results(route_.search->tab).loaded) {
+            load_results(route_.search->tab);
         }
         const bool listed = page == Page::daily || page == Page::radar || page == Page::cloud || page == Page::liked || page == Page::playlist || page == Page::album ||
                             page == Page::similar || (page == Page::recent && lib.recent_tab == 1 && signed_in);
@@ -305,32 +333,53 @@ namespace lyren {
             return;
         }
         reset_selection();
-        searched_ = query;
-        ++search_gen_;
-        results_ = {};
-        search_tab = 0;
-        load_results(0);
-        open(Page::search);
+        if (route_.page == Page::search && route_.search && route_.search->query == query) {
+            route_.search->results = {};
+            route_.search->tab = 0;
+            route_.search->serial = ++search_gen_;
+            ++navigations_;
+            load_results(0);
+            return env_.redraw();
+        }
+        forward_.clear();
+        history_.push_back(route_);
+        if (history_.size() > 50) {
+            history_.erase(history_.begin());
+        }
+        if (history_.size() > 8) {
+            Route &old = history_[history_.size() - 9];
+            old.list.reset();
+            old.artist.reset();
+            old.profile.reset();
+            if (old.search) {
+                old.search->results = {};
+            }
+        }
+        auto session = std::make_shared<Search>(Search{.query = query, .serial = ++search_gen_});
+        enter({.page = Page::search, .card = {.source = active_}, .search = std::move(session)}, 1);
     }
 
     void Browser::load_results(int tab, bool retry) {
+        if (!route_.search || route_.search->query.empty()) {
+            return;
+        }
         Listing &listing = results(tab);
-        if (!listing.open(retry) || searched_.empty()) {
+        if (!listing.open(retry)) {
             return;
         }
         listing.loading = true;
         listing.error.clear();
-        spawn(fetch_results(search_gen_, tab, active_, searched_, listing.next_offset));
+        spawn(fetch_results(route_.search, route_.search->serial, tab, active_, listing.next_offset));
     }
 
-    Task<void> Browser::fetch_results(uint64_t gen, int tab, Source source, std::string query, int offset) {
+    Task<void> Browser::fetch_results(std::shared_ptr<Search> session, uint64_t serial, int tab, Source source, int offset) {
         const auto &lib = library_.shelf(source);
         const uint64_t account_gen = lib.account_gen;
-        auto r = co_await env_.provider(source).search(query, static_cast<SearchKind>(tab), offset, tab == 0 ? 30 : 40);
-        if (gen != search_gen_ || account_gen != lib.account_gen) {
+        auto r = co_await env_.provider(source).search(session->query, static_cast<SearchKind>(tab), offset, tab == 0 ? 30 : 40);
+        if (serial != session->serial || account_gen != lib.account_gen) {
             co_return;
         }
-        Listing &listing = results_[static_cast<size_t>(source)][static_cast<size_t>(tab)];
+        Listing &listing = session->results[static_cast<size_t>(source)][static_cast<size_t>(tab)];
         library_.arrived(listing, std::move(r));
         if (!listing.more()) {
             listing.total = static_cast<int>(listing.size());
@@ -688,8 +737,10 @@ namespace lyren {
                 if (source == active_) {
                     reset_selection();
                 }
-                results_[static_cast<size_t>(source)] = {};
                 each_route([&](Route &route) {
+                    if (route.search) {
+                        route.search->results[static_cast<size_t>(source)] = {};
+                    }
                     if (route.card.source != source) {
                         return;
                     }
@@ -776,6 +827,7 @@ namespace lyren {
                 break;
             }
             case Kind::account:
+            case Kind::radio_ready:
                 break;
         }
         env_.redraw();

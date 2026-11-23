@@ -14,6 +14,8 @@ namespace lyren {
     void set_language(Language language);
     Language language();
     std::string_view tr(std::string_view english);
+    // Disambiguates identical English labels that translate differently by context (looked up as "english|context").
+    std::string_view tr_ctx(std::string_view context, std::string_view english);
 
     template <class... Args>
     std::string trf(std::string_view english, Args &&...args) {

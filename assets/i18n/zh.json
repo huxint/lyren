@@ -1,5 +1,6 @@
 {
   "{:.1f}w": "{:.1f}万",
+  "{:.1f}yi": "{:.1f}亿",
   "Sign in to {} to like this song": "登录{}后才能收藏这首歌",
   "Added to liked songs": "已添加到我喜欢的音乐",
   "Removed from liked songs": "已取消喜欢",
@@ -482,5 +483,13 @@
   "Share the song playing": "分享正在播放的歌曲",
   "Songs you play line up here": "播放的歌曲会排在这里",
   "Translation": "翻译",
-  "Unmute": "取消静音"
+  "Unmute": "取消静音",
+  "Forward": "前进",
+  "Following|nav": "关注",
+  "1 year": "1 年",
+  "1 day": "1 天",
+  "Up next": "下一首",
+  "Appearance reset": "已恢复默认外观",
+  "Audio quality and listening behavior": "音质与播放行为",
+  "Language, rendering and configuration": "语言、渲染与配置文件"
 }

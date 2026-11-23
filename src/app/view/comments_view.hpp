@@ -1,5 +1,4 @@
 #pragma once
-#include <string>
 #include <utility>
 
 #include "app/view/part.hpp"
@@ -14,8 +13,6 @@ namespace lyren {
         : Part(shell) {}
 
         void draw(ui::Ui &ui, ui::Rect r);
-        // A picture shown large over the window; aspect is width over height.
-        void show_picture(ui::Ui &ui, std::string url, float aspect);
 
     private:
         Comments::Thread &thread() const {
@@ -28,8 +25,6 @@ namespace lyren {
         float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw, bool featured = false);
         void picture(ui::Ui &ui, const Comment &c, ui::Rect r);
         void confirm_delete(ui::Ui &ui, Comment comment);
-        // The comments are on the song that plays now.
-        bool playing() const;
         // The lyric line sung now, when the comments are on the current song.
         const LyricLine *lyric();
 

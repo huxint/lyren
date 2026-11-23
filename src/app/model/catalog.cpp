@@ -200,25 +200,45 @@ namespace lyren {
             co_return;
         }
         lib.radio_loading = false;
+        const bool pending = std::exchange(lib.radio_pending, false);
         if (r) {
+            const size_t before = lib.radio.size();
             env_.images.prefetch(*r);
             lib.radio.append_range(std::views::as_rvalue(*r));
+            if (pending && lib.radio.size() > before) {
+                if (before > 0 && lib.radio_pos + 1 < static_cast<int>(lib.radio.size())) {
+                    ++lib.radio_pos;
+                }
+                lib.radio_since = env_.now();
+                emit({.kind = Event::Kind::radio_ready, .source = source});
+            }
         } else {
             lib.radio_error = r.error();
+            if (pending) {
+                env_.notify(lyren::trf("Playback failed: {}", r.error()), "triangle-alert", true);
+            }
         }
         env_.redraw();
     }
 
-    void Library::advance_radio(Source source) {
+    bool Library::advance_radio(Source source) {
         Shelf &lib = shelf(source);
+        if (lib.radio_pos + 1 >= static_cast<int>(lib.radio.size()) && !lib.radio_loading) {
+            // Ask for the next batch now; if the provider answers immediately, we advance below.
+            spawn(load_radio(source));
+        }
         const int count = static_cast<int>(lib.radio.size());
         if (lib.radio_pos + 1 < count) {
             ++lib.radio_pos;
+            lib.radio_pending = false;
+            if (lib.radio_pos + 2 >= count && !lib.radio_loading) {
+                spawn(load_radio(source));
+            }
+            lib.radio_since = env_.now();
+            return true;
         }
-        if (lib.radio_pos + 2 >= count && !lib.radio_loading) {
-            spawn(load_radio(source));
-        }
-        lib.radio_since = env_.now();
+        lib.radio_pending = lib.radio_loading;
+        return false;
     }
 
     void Library::dislike_radio(Track track) {

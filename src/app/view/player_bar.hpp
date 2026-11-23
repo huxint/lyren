@@ -9,7 +9,7 @@ namespace lyren {
     class PlayerBar : public Part {
     public:
         // The strip the window gives it, and the margin the console keeps inside the strip.
-        static constexpr float height = 92, margin = 8;
+        static constexpr float height = 88, margin = 8;
         struct Layout {
             ui::Rect card;    // the console
             ui::Rect cover;   // the current song's cover

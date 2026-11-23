@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -76,20 +77,71 @@ namespace lyren::creds {
             void await_resume() const noexcept {}
         };
 
+        Result<Params> parse_reply(std::string_view reply) {
+            VarlinkReply r;
+            if (glz::read<glz::opts{.error_on_unknown_keys = false}>(r, reply)) {
+                return std::unexpected("systemd-creds: bad reply");
+            }
+            if (r.error) {
+                return std::unexpected(std::format("systemd-creds: {}", *r.error));
+            }
+            return r.parameters.value_or(Params{});
+        }
+
         Task<Result<Params>> call(Loop &loop, std::string method, std::string params) {
             Call c{loop, std::format(R"({{"method":"io.systemd.Credentials.{}","parameters":{}}})", method, params)};
             co_await c;
             if (!c.error.empty()) {
                 co_return std::unexpected(c.error);
             }
-            VarlinkReply r;
-            if (glz::read<glz::opts{.error_on_unknown_keys = false}>(r, c.reply)) {
-                co_return std::unexpected("systemd-creds: bad reply");
+            co_return parse_reply(c.reply);
+        }
+
+        Result<Params> call_sync(std::string_view method, std::string_view params) {
+            int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+            if (fd < 0) {
+                return std::unexpected(std::format("systemd-creds: {}", std::strerror(errno)));
             }
-            if (r.error) {
-                co_return std::unexpected(std::format("systemd-creds: {}", *r.error));
+            timeval tv{.tv_sec = 2, .tv_usec = 0};
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+            sockaddr_un addr{.sun_family = AF_UNIX, .sun_path = "/run/systemd/io.systemd.Credentials"};
+            std::string request = std::format(R"({{"method":"io.systemd.Credentials.{}","parameters":{}}})", method, params);
+            request += '\0';
+            if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) < 0 || write(fd, request.data(), request.size()) != static_cast<ssize_t>(request.size())) {
+                const int err = errno;
+                close(fd);
+                return std::unexpected(std::format("systemd-creds: {}", std::strerror(err)));
             }
-            co_return r.parameters.value_or(Params{});
+            std::string reply;
+            std::array<char, 4096> buf;
+            while (reply.empty() || reply.back() != '\0') {
+                const ssize_t n = read(fd, buf.data(), buf.size());
+                if (n <= 0) {
+                    const int err = n < 0 ? errno : 0;
+                    close(fd);
+                    return std::unexpected(err ? std::format("systemd-creds: {}", std::strerror(err)) : "systemd-creds closed the connection");
+                }
+                reply.append(buf.data(), static_cast<size_t>(n));
+            }
+            close(fd);
+            reply.pop_back();
+            return parse_reply(reply);
+        }
+
+        Result<void> write_blob(const Params &r) {
+            auto path = paths::state_dir() / "credentials", tmp = path;
+            tmp += ".tmp";
+            int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+            std::string blob = r.blob.value_or("") + "\n";
+            bool ok = fd >= 0 && write(fd, blob.data(), blob.size()) == static_cast<ssize_t>(blob.size()) && fsync(fd) == 0;
+            if (fd >= 0) {
+                close(fd);
+            }
+            if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
+                return std::unexpected(std::format("Could not save credentials: {}", std::strerror(errno)));
+            }
+            return {};
         }
 
     } // namespace
@@ -109,21 +161,11 @@ namespace lyren::creds {
     }
 
     Task<Result<void>> save(Loop &loop, std::string plaintext) {
-        co_return (co_await call(loop, "Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext))))
-            .and_then([](const Params &r) -> Result<void> {
-                auto path = paths::state_dir() / "credentials", tmp = path;
-                tmp += ".tmp";
-                int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-                std::string blob = r.blob.value_or("") + "\n";
-                bool ok = fd >= 0 && write(fd, blob.data(), blob.size()) == static_cast<ssize_t>(blob.size()) && fsync(fd) == 0;
-                if (fd >= 0) {
-                    close(fd);
-                }
-                if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
-                    return std::unexpected(std::format("Could not save credentials: {}", std::strerror(errno)));
-                }
-                return {};
-            });
+        co_return (co_await call(loop, "Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext)))).and_then(write_blob);
+    }
+
+    Result<void> save_sync(std::string_view plaintext) {
+        return call_sync("Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext))).and_then(write_blob);
     }
 
     std::string to_json(const Credentials &c) {

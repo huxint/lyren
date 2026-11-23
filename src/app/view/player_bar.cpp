@@ -20,14 +20,14 @@ namespace lyren {
     PlayerBar::Layout PlayerBar::layout(Rect strip) {
         Layout l;
         l.card = {strip.x + margin, strip.y + margin, strip.w - 2 * margin, strip.h - 2 * margin};
-        Rect r = l.card.inset(14, 0);
-        // Both sides are equally wide, so the transport stands in the middle of the window.
-        const float side = std::min(320.f, std::round(l.card.w * 0.3f));
+        Rect r = l.card.inset(12, 0);
+        // Both sides are equally wide, so the transport stands dead-centre in the window.
+        const float side = std::clamp(std::round(l.card.w * 0.27f), 184.f, 300.f);
         const Rect left = ui::cut_left(r, side);
         l.tools = ui::cut_right(r, side);
         l.centre = r;
         l.cover = {left.x, l.card.y + (l.card.h - 48) / 2, 48, 48};
-        l.caption = {l.cover.right() + 12, l.cover.y, left.right() - l.cover.right() - 20, l.cover.h};
+        l.caption = {l.cover.right() + 12, l.cover.y, std::max(0.f, left.right() - l.cover.right() - 16), l.cover.h};
         return l;
     }
 
@@ -35,14 +35,14 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Layout l = layout(strip);
-        // A card on the window; on the stage, a pane of glass over the cover.
+        // A refined floating console on the window; on the stage, a frosted glass pane over the cover.
         if (const float lift = smooth01(1 - 2 * stage); lift > 0 && !t.dark) {
-            p.shadow({l.card.x, l.card.y + 1, l.card.w, l.card.h}, t.radius_l(), 10, t.shadow.with_alpha(0.45f * lift));
+            p.shadow({l.card.x, l.card.y + 1, l.card.w, l.card.h}, t.radius_l(), 10, t.shadow.with_alpha(0.4f * lift));
         }
-        p.rect(l.card, t.surface, t.radius_l(), t.line(stage), 1);
-        const Rect centre = ui::center(l.centre, std::min(l.centre.w, 640.f), l.centre.h);
-        transport(ui, {centre.x, l.card.y + 10, centre.w, 36});
-        string(ui, {centre.x, l.card.y + 49, centre.w, 20}, l.card.y - 6, stage);
+        p.rect(l.card, t.surface, t.radius_l(), t.surface_edge().mix(t.line(), stage), 1);
+        const Rect centre = ui::center(l.centre, std::min(l.centre.w, 600.f), l.centre.h);
+        transport(ui, {centre.x, l.card.y + 8, centre.w, 36});
+        string(ui, {centre.x, l.card.y + 46, centre.w, 20}, l.card.y - 6, stage);
         tools(ui, l.tools, stage);
     }
 
@@ -67,8 +67,11 @@ namespace lyren {
             const ui::Id id = ui.id("play");
             const Rect at{cx - 18, cy - 18, 36, 36};
             const auto it = ui.interact(id, at);
+            if (it.hovered) {
+                ui.cursor = wl::Cursor::pointer;
+            }
             const auto [hot, down] = ui.feel(id, it);
-            const Rect disc = at.inset(-1.5f * hot + 2.5f * down);
+            const Rect disc = at.inset(-1.5f * hot + 2.f * down);
             p.rect(disc, t.text, disc.w / 2);
             const float morph = ui.anim(ui.id("play-morph"), playback_.playing() ? 1 : 0, 240, ease::emphasized);
             {
@@ -141,19 +144,19 @@ namespace lyren {
         const bool held = dragging_ || released;
         const float value = ui.spring(ui.id("progress-v"), held ? drag_v_ : clock.progress(position), held ? 0 : 240);
         const float filled = std::clamp(r.w * (value - from), 0.f, width);
-        const float thickness = 2 + hot;
+        const float thickness = 2.5f + 1.5f * hot;
 
-        // While the music sounds the played part is a wave that swells with it, and letting go plucks the string.
+        // While the music sounds the played part is a calm acoustic wave that swells subtly with it, and letting go plucks the string.
         const bool wave = env_.config.interface.progress == ProgressStyle::wave && t.motion > 0;
         meter_.follow(playback_.player().levels(), static_cast<float>(ui.now - meter_time_));
         meter_time_ = ui.now;
         const float live = ui.anim(ui.id("string-live"), playback_.playing() && !playback_.player().buffering() && wave ? 1.f : 0.f, 500, ease::standard);
-        const float amplitude = ui.spring(ui.id("string-amplitude"), (2 + 0.6f * stage + 1.6f * meter_.all()) * live, 240);
-        const float phase = -static_cast<float>(std::fmod(ui.now * 0.7, 1.0)) * 2 * std::numbers::pi_v<float>;
+        const float amplitude = ui.spring(ui.id("string-amplitude"), (1.4f + 0.4f * stage + 1.15f * meter_.all()) * live, 240);
+        const float phase = -static_cast<float>(std::fmod(ui.now * 0.65, 1.0)) * 2 * std::numbers::pi_v<float>;
         ui::Pluck pluck;
         const float age = t.motion > 0 ? static_cast<float>((ui.now - pluck_time_) / t.motion) : 1.f;
-        if (wave && age < 0.7f) {
-            pluck = {r.w * (pluck_at_ - from), 7 * std::exp(-age * 7) * std::sin(age * 30), 32};
+        if (wave && age < 0.65f) {
+            pluck = {r.w * (pluck_at_ - from), 5 * std::exp(-age * 7.5f) * std::sin(age * 28), 30};
             ui.keep_animating();
         }
         if (amplitude > 0.01f && filled > 0) {
@@ -189,7 +192,7 @@ namespace lyren {
         }
         if (seekable) {
             // A bead rides the string where the song stands, and grows under the pointer.
-            const float bead = 4 + 6 * hot;
+            const float bead = 5 + 6 * hot;
             const auto pin = [](float x) {
                 x = std::clamp(x, 0.f, 1.f);
                 return x * x * (3 - 2 * x);
@@ -227,7 +230,7 @@ namespace lyren {
         p.shadow({bubble.x, bubble.y + 4, bubble.w, bubble.h}, t.radius, 18, t.shadow.with_alpha(0.6f));
         ui::Color paper = t.elevated;
         paper.a = 1;
-        p.rect(bubble, paper, t.radius, t.border, 1);
+        p.rect(bubble, paper, t.radius, t.surface_edge(1.3f), 1);
         ui.label({bubble.x + 14, bubble.y + 5, bubble.w - 28, 20}, time, time_style, Align::center);
         if (!words.empty()) {
             ui.label({bubble.x + 14, bubble.y + 27, bubble.w - 28, 20}, words, words_style, Align::center);
@@ -241,11 +244,11 @@ namespace lyren {
         const Track *track = playback_.current();
 
         // The volume: a narrow window keeps only its icon, and the wheel turns it over either.
-        const float slider_w = ui.spring(ui.id("volume-w"), shell_.compact() ? 0 : 88, pace::glide);
+        const float slider_w = ui.spring(ui.id("volume-w"), shell_.compact() ? 0 : 84, pace::glide);
         const Rect slider{r.right() - 2 - slider_w, cy - 10, slider_w, 20};
         float volume = playback_.volume();
         if (slider_w > 8) {
-            Fade fade(p, std::clamp(slider_w / 88, 0.f, 1.f));
+            Fade fade(p, std::clamp(slider_w / 84, 0.f, 1.f));
             if (ui.slider(ui.id("volume"), slider, volume, {.accent = false})) {
                 playback_.set_volume(volume);
             }
@@ -261,11 +264,12 @@ namespace lyren {
             wheel = 0;
             ui.redraw();
         }
-        float x = speaker.x - 4;
+        const float step = shell_.compact() ? 34.f : 36.f;
+        float x = speaker.x - (shell_.compact() ? 2.f : 4.f);
         if (ui.icon_button(ui.id("queue"), {x - 32, cy - 16, 32, 32}, "list-music", 18, shell_.panel.kind() == SidePanel::Kind::queue, lyren::tr("Queue"))) {
             shell_.panel.toggle(SidePanel::Kind::queue);
         }
-        x -= 36;
+        x -= step;
         {
             // The lyrics on the desktop: a click turns them on and off, a right click picks how they show.
             const Rect at{x - 32, cy - 16, 32, 32};
@@ -293,7 +297,7 @@ namespace lyren {
                 }
                 ui.open_menu(at.x, at.y - 6, std::move(menu));
             }
-            x -= 36;
+            x -= step;
         }
 
         // On the stage the console also holds what belongs to the song on show: its comments, and the translation of
@@ -315,7 +319,7 @@ namespace lyren {
                     shell_.open_comments(track->source, Subject::song, track->id, track->title + " · " + track->artist, track->cover, true);
                 }
             }
-            x -= 36;
+            x -= step;
         }
         // The button keeps its place while the next song's lyrics load.
         const bool translated = std::ranges::any_of(playback_.lyrics(), [](const LyricLine &line) {

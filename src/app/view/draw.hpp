@@ -80,6 +80,32 @@ namespace lyren {
         return {std::lerp(a.x, b.x, k), std::lerp(a.y, b.y, k), std::lerp(a.w, b.w, k), std::lerp(a.h, b.h, k)};
     }
 
+    // Where the wipe of a word-timed line stands at time within text, one of its wrapped lines: px from the start
+    // of text, a soft edge's width before it while it is unsung and past its end once sung.
+    inline float lyric_sung_x(ui::Painter &p, const LyricLine &line, std::string_view text, float size, float soft, double time, uint8_t features = 0) {
+        const int k = word_at(line, time);
+        if (k < 0) {
+            return -soft;
+        }
+        const LyricWord &word = line.words[static_cast<size_t>(k)];
+        const auto from = static_cast<uint32_t>(text.data() - line.text.data()), to = from + static_cast<uint32_t>(text.size());
+        const text::Shaped &shaped = p.shape(text, {.size = size, .features = features});
+        auto x = [&](uint32_t byte) {
+            if (byte <= from) {
+                return -soft;
+            }
+            if (byte >= to) {
+                return shaped.width * size + soft;
+            }
+            auto glyph = std::ranges::find_if(shaped.glyphs, [&](const text::Glyph &g) {
+                return g.cluster >= byte - from;
+            });
+            return (glyph == shaped.glyphs.end() ? shaped.width : glyph->x) * size;
+        };
+        const float sung = word.duration() > 0 ? static_cast<float>(std::clamp((time - word.time()) / word.duration(), 0.0, 1.0)) : 1;
+        return x(word.from) + (x(word.to) - x(word.from)) * sung;
+    }
+
     // Each cluster rises and settles in time, independently of the highlight stopping between words. Shape the whole
     // line so a word split across wrapped rows keeps the same timing. The returned offsets are relative to s.
     inline void fill_lyric_wave(std::vector<ui::Painter::Lift> &out, const text::Shaped &shaped, const LyricLine &line, std::string_view s, float size, double now, float amount) {
@@ -245,6 +271,37 @@ namespace lyren {
             return {x + col * (cw + gap), y + row * (ch + gap), cw, ch};
         }
     };
+
+    // A page's readable content column: generous inset normally, snug on narrow windows, and centered at max_w on
+    // wide monitors so grids, track lists, and headers keep balanced proportions.
+    inline ui::Rect page_frame(ui::Rect r, float max_w = 1380) {
+        const float pad = r.w < 680 ? 20.f : 32.f;
+        ui::Rect body = r.inset(pad, 0);
+        if (body.w > max_w) {
+            body = ui::center(body, max_w, body.h);
+        }
+        return body;
+    }
+
+    // A page's title and quiet subtitle, aligned with the content column.
+    inline void page_title(ui::Ui &ui, ui::Rect body, float y, std::string_view title, std::string_view subtitle = {}) {
+        const auto &t = ui.theme();
+        ui.label({body.x, y, body.w, 38}, title, t.style(ui::type::display, t.text, text::semibold));
+        if (!subtitle.empty()) {
+            ui.label({body.x, y + 42, body.w, 20}, subtitle, t.style(ui::type::label, t.text_dim));
+        }
+    }
+
+    // A section heading with an optional quiet count or note beside it.
+    inline void section_heading(ui::Ui &ui, float x, float y, float w, std::string_view title, std::string_view note = {}) {
+        const auto &t = ui.theme();
+        const auto style = t.style(ui::type::heading, t.text, text::semibold);
+        const float tw = std::min(std::ceil(ui.painter().measure(title, style)) + 1, w);
+        ui.label({x, y, tw, 26}, title, style);
+        if (!note.empty() && tw + 12 < w) {
+            ui.label({x + tw + 8, y + 1, w - tw - 8, 26}, note, t.style(ui::type::label, t.faint(), text::tabular_nums));
+        }
+    }
 
     // A dialog's heading in r's top: its title and, under it, a quieter line.
     inline void dialog_title(ui::Ui &ui, ui::Rect r, std::string_view title, std::string_view subtitle = {}) {

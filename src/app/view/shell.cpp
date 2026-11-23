@@ -46,9 +46,12 @@ namespace lyren {
         };
         // A radio has no queue to walk: its platform says what comes next.
         playback.on_radio_skip = [this](Source source) {
-            library.advance_radio(source);
-            const auto &shelf = library.shelf(source);
-            playback.play_radio(source, shelf.radio, shelf.radio_pos);
+            if (library.advance_radio(source)) {
+                const auto &shelf = library.shelf(source);
+                playback.play_radio(source, shelf.radio, shelf.radio_pos);
+            } else {
+                playback.stop();
+            }
         };
         browser.on_change = [this] {
             changed();
@@ -56,6 +59,11 @@ namespace lyren {
         library.subscribe([this](const Library::Event &event) {
             if (event.kind == Library::Event::Kind::left) {
                 playback.forget(event.source);
+            } else if (event.kind == Library::Event::Kind::radio_ready && playback.radio(event.source)) {
+                const auto &shelf = library.shelf(event.source);
+                if (shelf.radio_pos >= 0 && shelf.radio_pos < static_cast<int>(shelf.radio.size())) {
+                    playback.play_radio(event.source, shelf.radio, shelf.radio_pos);
+                }
             }
         });
         playback.connect(d.bus, std::move(d.raise));
@@ -81,6 +89,7 @@ namespace lyren {
         stage.save(state);
         desktop.save(state);
         save_state(state);
+        accounts.flush();
     }
 
     void Shell::config_changed() {
@@ -131,10 +140,25 @@ namespace lyren {
         }
     }
 
+    void Shell::forward() {
+        if (!stage.open()) {
+            browser.forward();
+        }
+    }
+
     void Shell::open_comments(Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows) {
         comments.close_replies();
         comments.open(source, subject, std::move(id), std::move(title), std::move(cover), follows);
         panel.show(SidePanel::Kind::comments);
+    }
+
+    void Shell::sync_stage_comments() {
+        const auto &thread = comments.thread();
+        if (const Track *track = playback.current(); track && stage.open() && env.provider(*track).capabilities.comments[0] &&
+                                                     !(panel.kind() == SidePanel::Kind::comments && !thread.follows) &&
+                                                     !(thread.follows && thread.is(track->source, Subject::song, track->id))) {
+            comments.open(track->source, Subject::song, track->id, track->title + " · " + track->artist, track->cover, true);
+        }
     }
 
     void Shell::draw(ui::Ui &ui, Rect area, const ui::Theme &stage_theme) {
@@ -161,18 +185,11 @@ namespace lyren {
         } else if (area.w > 912) {
             compact_ = false;
         }
-        const Rect side = ui::cut_left(area, ui.spring(ui.id("side-w"), compact_ ? 72 : 220, 320));
+        const Rect side = ui::cut_left(area, ui.spring(ui.id("side-w"), compact_ ? 64 : 220, 280));
         ui::cut_right(area, 8);
-        // On the stage the comments follow the music, loaded ahead so they open at once, unless the panel is showing
-        // others.
-        const auto &thread = comments.thread();
-        if (const Track *track = playback.current(); track && stage.open() && env.provider(*track).capabilities.comments[0] &&
-                                                     !(panel.kind() == SidePanel::Kind::comments && !thread.follows) &&
-                                                     !(thread.follows && thread.is(track->source, Subject::song, track->id))) {
-            comments.open(track->source, Subject::song, track->id, track->title + " · " + track->artist, track->cover, true);
-        }
+        sync_stage_comments();
         // The panel beside the page slides in from the right.
-        const float panel_w = ui.spring(ui.id("panel-w"), SidePanel::width(panel.kind()), 340);
+        const float panel_w = ui.spring(ui.id("panel-w"), SidePanel::width(panel.kind()), 320);
         const Rect slot = panel_w > 0.5f ? ui::cut_right(area, panel_w) : Rect{};
 
         // The now-playing stage comes up over the whole window; once it covers it the sidebar and page are not drawn.
@@ -205,22 +222,22 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Page on = browser.route().page;
-        // The page is a sheet with a wash of its own colour at the top; it slides in from the side it was reached from.
+        // The page is an architectural sheet with a whisper wash of its own colour at the top.
         if (!t.dark) {
-            p.shadow({area.x, area.y + 1, area.w, area.h}, t.radius_l(), 10, t.shadow.with_alpha(0.45f));
+            p.shadow({area.x, area.y + 1, area.w, area.h}, t.radius_l(), 10, t.shadow.with_alpha(0.4f));
         }
-        p.rect(area, t.surface, t.radius_l());
-        const float enter = ui.progress(browser.entered, 420);
+        p.rect(area, t.surface, t.radius_l(), t.surface_edge(), 1);
+        const float enter = ui.progress(browser.entered, ui::pace::glide);
         if (on != Page::search && on != Page::settings && on != Page::profile) {
             const float hue = pages.hue(ui);
-            const ui::Color tint = hue >= 0 ? ui::hsl(hue, 0.55f, 0.5f) : t.accent;
-            p.gradient({area.x, area.y, area.w, 300}, tint.with_alpha((t.dark ? 0.14f : 0.08f) * enter), tint.with_alpha(0), t.radius_l());
+            const ui::Color tint = hue >= 0 ? ui::hsl(hue, 0.5f, 0.5f) : t.accent;
+            p.gradient({area.x + 1, area.y + 1, area.w - 2, 240}, tint.with_alpha((t.dark ? 0.10f : 0.055f) * enter), tint.with_alpha(0), t.radius_l() - 1);
         }
-        ui.push_clip(area);
+        ui.push_clip(area.inset(1));
         {
             Fade fade(p, enter);
             Rect r = area;
-            r.x += (1 - enter) * 28 * static_cast<float>(browser.direction);
+            r.x += (1 - enter) * 12 * static_cast<float>(browser.direction);
             if (on == Page::profile) {
                 profile.draw(ui, r);
             } else if (on == Page::settings) {
@@ -237,15 +254,20 @@ namespace lyren {
             return;
         }
         for (auto &action : ui.input().actions) {
-            if (action.press && !action.consumed && action.button == BTN_SIDE) {
+            if (action.press && !action.consumed && (action.button == BTN_SIDE || action.button == BTN_EXTRA)) {
                 action.consumed = true;
-                back();
+                if (action.button == BTN_SIDE) {
+                    back();
+                } else {
+                    forward();
+                }
                 ui.redraw();
             }
         }
         auto &pressed = ui.input().keys;
         for (auto key = pressed.begin(); key != pressed.end();) {
-            const bool ctrl = key->mods & wl::mod_ctrl, alt = key->mods & wl::mod_alt, escape = key->keysym == XKB_KEY_Escape && !ui.menu_open();
+            const bool ctrl = key->mods & wl::mod_ctrl, alt = key->mods & wl::mod_alt, plain = !(key->mods & (wl::mod_ctrl | wl::mod_alt));
+            const bool escape = key->keysym == XKB_KEY_Escape && !ui.menu_open();
             bool used = true;
             if (key->keysym == XKB_KEY_space && !key->repeat) {
                 playback.toggle();
@@ -258,7 +280,8 @@ namespace lyren {
             } else if (ctrl && (key->keysym == XKB_KEY_a || key->keysym == XKB_KEY_A) && browser.selection().list && !ui.focus && !ui.menu_open() && !stage.open() &&
                        env.provider(browser.active()).capabilities.playlist_edit) {
                 browser.choose_all();
-            } else if (ctrl && (key->keysym == XKB_KEY_f || key->keysym == XKB_KEY_F)) {
+            } else if ((ctrl && (key->keysym == XKB_KEY_f || key->keysym == XKB_KEY_F || key->keysym == XKB_KEY_k || key->keysym == XKB_KEY_K)) ||
+                       (plain && key->keysym == XKB_KEY_slash && !ui.focus && !ui.menu_open() && !stage.open())) {
                 ui.focus = ui.id("search");
             } else if (ctrl && key->keysym == XKB_KEY_Right) {
                 playback.skip(1);
@@ -266,6 +289,8 @@ namespace lyren {
                 playback.skip(-1);
             } else if (alt && key->keysym == XKB_KEY_Left) {
                 back();
+            } else if (alt && key->keysym == XKB_KEY_Right) {
+                forward();
             } else {
                 used = false;
             }

@@ -29,14 +29,20 @@ namespace lyren {
         };
 
         Layout layout(Rect page, bool wide) {
-            Rect body = page.inset(56, 36);
+            Rect body = page.inset(52, 32);
             if (!wide) {
                 return {{body.x, body.y + 4, 64, 64}, {body.x, body.y + 96, body.w, body.h - 96}};
             }
-            const Rect left = ui::cut_left(body, std::round(body.w * 0.42f));
-            ui::cut_left(body, 40);
-            const float side = std::floor(std::min({left.w - 20, left.h - 132, 400.f}));
-            return {{left.x + (left.w - side) / 2, left.y + (left.h - side - 110) / 2, side, side}, body};
+            if (body.w > 1320) {
+                body = ui::center(body, 1320, body.h);
+            }
+            const Rect left = ui::cut_left(body, std::round(body.w * 0.44f));
+            ui::cut_left(body, 48);
+            const float max_side = body.h > 780 ? 440.f : 380.f;
+            const float side = std::floor(std::min({left.w - 24, left.h - 136, max_side}));
+            // Keep a quiet right gutter for the seek timestamp on hover so long lyric lines never collide with it.
+            const float lyrics_w = std::min(std::max(body.w - 48, 200.f), 620.f);
+            return {{left.x + (left.w - side) / 2, left.y + (left.h - side - 112) / 2, side, side}, {body.x, body.y, lyrics_w, body.h}};
         }
 
         // Where the title and the artist stand: the title's baseline origin, the two sizes, the artist's baseline below
@@ -122,19 +128,19 @@ namespace lyren {
         const Layout stacked = layout(page, false);
         const Rect body = page.inset(56, 44);
         const float presence = t.motion > 0 ? ui.spring(ui.id("cover-presence"), playback_.playing() ? 1.f : 0.f, 520) : 1.f;
-        const float resting = 0.96f + 0.04f * presence;
+        const float resting = 0.97f + 0.03f * presence;
         large.cover = ui::center(large.cover, large.cover.w * resting, large.cover.h * resting);
         const Rect staged = mix(stacked.cover, large.cover, wide);
         const float under = smooth01((staged.w - stacked.cover.w) / (std::min(160.f, large.cover.w) - stacked.cover.w));
         const Caption beside{staged.right() + 20, staged.y + 24, t.fs(type::title), t.fs(type::label), 24, body.right() - staged.right() - 20};
-        const Caption below{staged.x, staged.bottom() + 46, t.fs(type::display), t.fs(type::lead), 28, staged.w};
+        const Caption below{staged.x, staged.bottom() + 44, t.fs(type::display), t.fs(type::lead), 28, staged.w};
         Caption on_stage = beside.mix(below, under);
         on_stage.x = std::lerp(beside.x, below.x, smooth01((under - 0.4f) / 0.6f));
         on_stage.y = std::lerp(beside.y, below.y, smooth01(under / 0.6f));
 
         // From the console to a small cover the text stays beside it. To a large one the cover first rises out of the
         // console and then grows, and the text sets off once the cover is out of its way.
-        const Caption in_console{console.caption.x, small.y + 20, t.fs(type::label), t.fs(type::caption), 18, console.caption.w};
+        const Caption in_console{console.caption.x, small.y + 19, t.fs(type::body), t.fs(type::caption), 19, console.caption.w};
         const float rise = std::lerp(np, 1 - (1 - np) * (1 - np), under), grow = std::lerp(np, np * np, under);
         const float size = std::lerp(small.w, staged.w, grow);
         const Rect cover{std::lerp(small.x, staged.x, rise), std::lerp(small.bottom(), staged.bottom(), rise) - size, size, size};
@@ -182,24 +188,33 @@ namespace lyren {
             Fade fade(p, change);
             artwork(track->cover);
         }
+        p.rect(cover, {}, radius, t.surface_edge(0.9f).mix(white.with_alpha(0.10f), depth), 1);
 
         // While it moves, the text is scaled from glyphs at the stage's sizes instead of being rasterized at a new
-        // size every frame. A line that does not fit fades out at its end.
+        // size every frame. A line that does not fit fades out softly inside its clipped bounds so nothing ever
+        // collides with the heart button or adjacent columns.
         const bool settled = np == 0 || (np == 1 && (under == 0 || under == 1));
         auto line = [&](float x, float y, std::string_view s, float size, float raster, ui::Color color, float w, uint8_t features = 0) {
+            if (w <= 0) {
+                return 0.f;
+            }
             if (settled) {
                 raster = size;
             }
             const float zoom = size / raster, limit = w / zoom;
-            p.set_zoom(zoom, x, y);
             const TextStyle style{.size = raster, .color = color, .features = features};
             const float width = p.measure(s, style);
+            const float asc = p.ascent(size), desc = p.descent(size);
+            p.push_clip({x - 1, y - asc - 2, w + 1, asc + desc + 4});
+            p.set_zoom(zoom, x, y);
             if (width > limit) {
-                p.set_wipe(x + limit - 16 / zoom, 32 / zoom, color.with_alpha(0));
+                const float soft = std::min(24.f, w * 0.35f) / zoom;
+                p.set_wipe(x + limit - soft * 0.5f, soft, color.with_alpha(0));
             }
             p.text(x, y, s, style);
             p.clear_wipe();
             p.set_zoom(1);
+            p.pop_clip();
             return std::min(width, limit) * zoom;
         };
         // The album and the stream's format belong to the stage and come in as the text arrives there.
@@ -252,19 +267,60 @@ namespace lyren {
         }
         caption(*track, in, 8 * (1 - in), true);
 
-        // In the console, what plays is the way up to the stage.
+        // On the settled stage, right-clicking the cover opens the song's actions, and clicking artist/album jumps there.
+        if (settled && np >= 1) {
+            if (const auto cov_it = ui.interact(ui.id("stage-cover"), cover); cov_it.right_clicked && playback_.index() >= 0) {
+                shell_.tracks.menu(ui, cov_it.px, cov_it.py, playback_.queue(), playback_.index());
+            }
+            if (!track->artist_id.empty()) {
+                const float aw = std::min(p.measure(track->artist, {.size = cap.sub}), cap.w);
+                const Rect ar{cap.x, cap.y + cap.gap - p.ascent(cap.sub) - 2, aw, cap.sub + 6};
+                const auto ait = ui.interact(ui.id("stage-artist"), ar);
+                if (ait.hovered) {
+                    ui.cursor = wl::Cursor::pointer;
+                    p.rect({ar.x, cap.y + cap.gap + 3, aw, 1}, t.text_dim.with_alpha(0.6f));
+                }
+                if (ait.clicked) {
+                    browser_.open(Page::artist,
+                                  {.kind = CardKind::artist, .source = track->source, .id = track->artist_id, .title = track->artist.substr(0, track->artist.find(" / "))});
+                }
+            }
+            if (under > 0.5f && !track->album.empty() && !track->album_id.empty()) {
+                const float aw = p.measure(track->artist, {.size = cap.sub});
+                const float sep_w = p.measure(" · ", {.size = cap.sub});
+                const float alb_x = cap.x + aw + sep_w;
+                if (const float rem = cap.x + cap.w - alb_x; rem > 16) {
+                    const float alb_w = std::min(p.measure(track->album, {.size = cap.sub}), rem);
+                    const Rect alr{alb_x, cap.y + cap.gap - p.ascent(cap.sub) - 2, alb_w, cap.sub + 6};
+                    const auto bit = ui.interact(ui.id("stage-album"), alr);
+                    if (bit.hovered) {
+                        ui.cursor = wl::Cursor::pointer;
+                        p.rect({alr.x, cap.y + cap.gap + 3, alb_w, 1}, t.text_dim.with_alpha(0.6f));
+                    }
+                    if (bit.clicked) {
+                        browser_.open(
+                            Page::album,
+                            {.kind = CardKind::album, .source = track->source, .id = track->album_id, .title = track->album, .subtitle = track->artist, .cover = track->cover});
+                    }
+                }
+            }
+            return;
+        }
+        // In the console, what plays is the way up to the stage, and right-clicking opens the song's actions.
         if (np > 0) {
             return;
         }
         const ui::Id id = ui.id("bar-cover");
         const auto it = ui.interact(id, {cover.x, cover.y, console.caption.x - cover.x + std::min(text_w, console.caption.w), cover.h});
         if (const float hot = ui.anim(id, it.hovered ? 1 : 0, 150); hot > 0) {
-            p.rect(cover, ui::Color{0, 0, 0, 0.45f * hot}, radius);
+            p.rect(cover, ui::Color{0, 0, 0, 0.42f * hot}, radius);
             p.icon("chevron-up", ui::center(cover, 20, 20), white.with_alpha(hot));
             ui.cursor = wl::Cursor::pointer;
         }
         if (it.clicked) {
             show(true);
+        } else if (it.right_clicked && playback_.index() >= 0) {
+            shell_.tracks.menu(ui, it.px, it.py, playback_.queue(), playback_.index());
         }
     }
 
@@ -297,12 +353,15 @@ namespace lyren {
         // The title strip holds the way back down, on a disc that shows on light covers too.
         {
             const ui::Id id = ui.id("stage-close");
-            const Rect at{window.x + 14, window.y + 8, 36, 36};
+            const Rect at{window.x + 14, window.y + 6, 36, 36};
             const auto it = ui.interact(id, at);
+            if (it.hovered) {
+                ui.cursor = wl::Cursor::pointer;
+            }
             const auto [hot, down] = ui.feel(id, it);
-            const Rect disc = at.inset(down * 2);
-            p.rect(disc, white.with_alpha(0.08f + 0.1f * hot), disc.h / 2);
-            p.icon("chevron-down", ui::center(at, 20 - down * 1.5f, 20 - down * 1.5f), white.with_alpha(0.72f + 0.28f * hot));
+            const Rect disc = at.inset(down * 1.5f);
+            p.rect(disc, white.with_alpha(0.08f + 0.1f * hot), disc.h / 2, white.with_alpha(0.08f), 1);
+            p.icon("chevron-down", ui::center(at, 20 - down * 1.2f, 20 - down * 1.2f), white.with_alpha(0.72f + 0.28f * hot));
             if (it.hovered && !it.held) {
                 ui.tooltip(id, at, lyren::tr("Close"));
             }
@@ -310,7 +369,7 @@ namespace lyren {
                 show(false);
             }
         }
-        ui.label({window.x + 62, window.y + 12, 240, 28}, lyren::tr("Now playing"), t.style(type::label, t.text_dim, text::medium));
+        ui.label({window.x + 62, window.y + 10, 240, 28}, lyren::tr("Now playing"), t.style(type::label, t.text_dim, text::medium));
         page.y += (1 - k) * 24;
         if (!track) {
             return empty(ui, page, "music", lyren::tr("Nothing playing"), lyren::tr("Play a song to see its lyrics here"));
@@ -444,13 +503,14 @@ namespace lyren {
             ui.keep_animating();
         }
 
-        ui.push_clip({r.x - 12, r.y, r.w + 24, r.h});
+        const float time_gutter = centered < 0.5f ? 52.f : 0.f;
+        ui.push_clip({r.x - 12, r.y, r.w + 24 + time_gutter, r.h});
         ui.push_id(ui.id("lyrics"));
         int shown = 0;
         std::vector<ui::Painter::Lift> lifts;
-        // Lines fade out towards the top and the bottom of the view.
+        // Lines fade out gently towards the top and the bottom of the view.
         auto edge = [&](float top, float h) {
-            return std::clamp(std::min(top - r.y, r.bottom() - top - h) / 80, 0.f, 1.f);
+            return smooth01(std::min(top - r.y, r.bottom() - top - h) / 92);
         };
         for (size_t i = 0; i < blocks.size(); ++i) {
             const Block &block = blocks[i];
@@ -476,8 +536,11 @@ namespace lyren {
             const float in = ui.cascade(playback_.lyrics_since(), shown++, 420);
             top += (1 - in) * 14;
             const ui::Id id = ui.id(static_cast<uint64_t>(i));
-            const Rect hit{r.x - 12, top - gap / 2, r.w + 24, block.h + gap};
+            const Rect hit{r.x - 12, top - gap / 2, r.w + 24 + time_gutter, block.h + gap};
             const auto it = ui.interact(id, hit);
+            if (it.hovered) {
+                ui.cursor = wl::Cursor::pointer;
+            }
             const float hot = ui.anim(id, it.hovered ? 1 : 0, 150);
             const bool sung = static_cast<int>(i) == current && pause < 0;
             const float on = ui.anim(ui::sub_id(id, 1), sung ? 1 : 0, 420, ease::standard);
@@ -493,6 +556,10 @@ namespace lyren {
             const ui::Color unsung = t.text.with_alpha((base + (1 - base) * 0.25f * on) * edge(top, block.h) * in);
             if (hot > 0) {
                 p.rect(hit, t.fill(hot), t.radius_s());
+                if (time_gutter > 0) {
+                    ui.label({hit.right() - 52, top + (main_lh - 18) / 2, 40, 18}, mmss(l.time),
+                             t.style(type::micro, t.faint().with_alpha(hot * (1 - centered)), text::tabular_nums), Align::right);
+                }
             }
             p.set_zoom(scale, r.x + r.w / 2 * centered, top + block.h / 2);
             float y = top;
@@ -500,7 +567,7 @@ namespace lyren {
                 const float x = r.x + (r.w - std::min(p.measure(s, style), r.w)) / 2 * centered;
                 lifts.clear();
                 if (wiped) {
-                    p.set_wipe(x + sung_x(p, l, s, style.size, soft, now, style.features), soft, unsung);
+                    p.set_wipe(x + lyric_sung_x(p, l, s, style.size, soft, now, style.features), soft, unsung);
                 }
                 if (&style == &main && on > 0 && !l.words.empty() && t.motion > 0) {
                     fill_lyric_wave(lifts, p.shape(l.text, style), l, s, style.size, now, on);
@@ -539,30 +606,6 @@ namespace lyren {
         } else if (const auto next = static_cast<size_t>(current + 1); next < lines.size()) {
             ui.wake(ui.now + (lines[next].time - lead - now));
         }
-    }
-
-    float Stage::sung_x(ui::Painter &p, const LyricLine &line, std::string_view text, float size, float soft, double time, uint8_t features) {
-        const int k = word_at(line, time);
-        if (k < 0) {
-            return -soft;
-        }
-        const LyricWord &word = line.words[static_cast<size_t>(k)];
-        const auto from = static_cast<uint32_t>(text.data() - line.text.data()), to = from + static_cast<uint32_t>(text.size());
-        const text::Shaped &shaped = p.shape(text, {.size = size, .features = features});
-        auto x = [&](uint32_t byte) {
-            if (byte <= from) {
-                return -soft;
-            }
-            if (byte >= to) {
-                return shaped.width * size + soft;
-            }
-            auto glyph = std::ranges::find_if(shaped.glyphs, [&](const text::Glyph &g) {
-                return g.cluster >= byte - from;
-            });
-            return (glyph == shaped.glyphs.end() ? shaped.width : glyph->x) * size;
-        };
-        const float sung = word.duration() > 0 ? static_cast<float>(std::clamp((time - word.time()) / word.duration(), 0.0, 1.0)) : 1;
-        return x(word.from) + (x(word.to) - x(word.from)) * sung;
     }
 
 } // namespace lyren

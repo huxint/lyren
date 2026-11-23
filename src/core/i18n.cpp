@@ -40,4 +40,22 @@ namespace lyren {
         return english;
     }
 
+    std::string_view tr_ctx(std::string_view context, std::string_view english) {
+        if (selected == Language::zh) {
+            const auto &catalog = chinese();
+            std::string key;
+            key.reserve(english.size() + 1 + context.size());
+            key.append(english);
+            key.push_back('|');
+            key.append(context);
+            if (auto it = catalog.find(key); it != catalog.end()) {
+                return it->second;
+            }
+            if (auto it = catalog.find(english); it != catalog.end()) {
+                return it->second;
+            }
+        }
+        return english;
+    }
+
 } // namespace lyren

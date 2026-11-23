@@ -17,7 +17,7 @@ namespace lyren {
     namespace pace = ui::pace;
     namespace control = ui::control;
 
-    bool Tracks::list(ui::Ui &ui, Rect r, ui::Id id, std::vector<Track> &tracks, double since) {
+    bool Tracks::list(ui::Ui &ui, Rect r, ui::Id id, const std::vector<Track> &tracks, double since) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto &picked = browser_.selection();
@@ -57,7 +57,7 @@ namespace lyren {
         if (provider().capabilities.playlist_edit && !ordering && !tracks.empty()) {
             const auto label = lyren::tr(picked.choosing ? "Done selecting" : "Select songs");
             const float w = ui.button_width(label);
-            if (ui.button(ui.id("select-songs"), {head.right() - w - 12, head.y, w, control::small}, label, ui::ButtonKind::ghost)) {
+            if (ui.button(ui.id("select-songs"), {head.right() - w - 12, head.y + (head.h - control::small) / 2, w, control::small}, label, ui::ButtonKind::ghost)) {
                 if (picked.choosing) {
                     browser_.reset_selection();
                     picked.list = &tracks;
@@ -120,11 +120,14 @@ namespace lyren {
             row(ui, {r.x, r.y + y - off + (1 - in) * 12, r.w, row_h}, tracks, i);
         }
         ui.pop_id();
+        if (off > 0.5f && t.surface.a > 0.9f) {
+            p.gradient({r.x, r.y, r.w, 12}, t.surface.with_alpha(0.9f), t.surface.with_alpha(0));
+        }
         ui.end_scroll();
         return last + 10 >= count;
     }
 
-    void Tracks::row(ui::Ui &ui, Rect r, std::vector<Track> &tracks, int i) {
+    void Tracks::row(ui::Ui &ui, Rect r, const std::vector<Track> &tracks, int i) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto &picked = browser_.selection();
@@ -135,10 +138,12 @@ namespace lyren {
         const bool pointed = ui.hovering(r) || ui.is_active(row_id), on = playback_.is_current(track);
         const bool chosen = picked.chosen.contains(track.id), selected = picked.choosing ? chosen : picked.selected == i;
         const float hot = ui.anim(row_id, pointed ? 1 : 0, pace::quick), lit = ui.anim(ui::sub_id(row_id, 0x5e), selected ? 1 : 0, pace::steady);
-        if (hot > 0 || lit > 0) {
+        if (hot > 0 || lit > 0 || (on && !picked.choosing)) {
             const Rect bg = r.inset(4, 2);
             if (picked.choosing) {
                 p.rect(bg, t.accent.with_alpha(0.05f * hot + 0.09f * lit), t.radius_s());
+            } else if (on) {
+                p.rect(bg, t.accent.with_alpha(0.065f + 0.045f * hot), t.radius_s());
             } else {
                 p.rect(bg, t.fill(hot + 0.9f * lit), t.radius_s());
             }
@@ -169,6 +174,7 @@ namespace lyren {
         }
         const Rect art{c.title.x, r.y + (r.h - 40) / 2, 40, 40};
         cover(ui, art, track.cover, t.radius_s());
+        p.rect(art, {}, t.radius_s(), t.surface_edge(0.8f), 1);
         const float tx = art.right() + 14, tw = c.title.right() - tx - 8;
         const auto title = t.style(type::body, on ? t.accent : t.text, on ? text::medium : 0);
         const float w = p.text(tx, r.y + 25, track.title, title, tw);
@@ -229,7 +235,7 @@ namespace lyren {
         ui.pop_id();
     }
 
-    void Tracks::menu(ui::Ui &ui, float x, float y, std::vector<Track> &tracks, int i) {
+    void Tracks::menu(ui::Ui &ui, float x, float y, const std::vector<Track> &tracks, int i) {
         const Track track = tracks[static_cast<size_t>(i)];
         const auto &picked = browser_.selection();
         const auto &route = browser_.route();
@@ -240,7 +246,7 @@ namespace lyren {
         auto add = [&](std::string_view icon, std::string_view label, std::function<void()> action, bool danger = false) {
             items.push_back({std::string(icon), std::string(lyren::tr(label)), std::move(action), danger});
         };
-        if (picked.choosing && picked.chosen.size() > 1) {
+        if (picked.choosing && picked.list == &tracks && picked.chosen.size() > 1 && picked.chosen.contains(track.id)) {
             const auto songs = picked.of(tracks);
             add("play", "Play selected", [this, songs] {
                 playback_.play(songs, 0);

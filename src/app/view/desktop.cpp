@@ -260,7 +260,7 @@ namespace lyren {
         auto sung = [&](std::string_view value, float x, float baseline, float size, float limit) {
             if (line && timed) {
                 const float soft = size * 0.7f;
-                p.set_wipe(x + Stage::sung_x(p, *line, value, size, soft, now), soft, white.with_alpha(0.42f));
+                p.set_wipe(x + lyric_sung_x(p, *line, value, size, soft, now), soft, white.with_alpha(0.42f));
             }
             p.text(x, baseline, value, {.size = size, .color = white.with_alpha(0.96f)}, limit);
             p.clear_wipe();
@@ -283,7 +283,7 @@ namespace lyren {
                 }
                 float target = 0;
                 if (current && line && timed) {
-                    target = std::clamp(Stage::sung_x(p, *line, value, line_size, 8, now) - avail * 0.6f, 0.f, overflow);
+                    target = std::clamp(lyric_sung_x(p, *line, value, line_size, 8, now) - avail * 0.6f, 0.f, overflow);
                 } else if (current && line) {
                     const double from = line->time, to = static_cast<size_t>(at + 1) < playback_.lyrics().size() ? playback_.lyrics()[static_cast<size_t>(at + 1)].time : from + 5;
                     target = overflow * smooth01((static_cast<float>((now + lead - from) / std::max(to - from, 0.5)) - 0.15f) / 0.6f);
@@ -338,7 +338,7 @@ namespace lyren {
 
         if (open_a > 0) {
             Fade fade(p, open_a);
-            ui.disabled = open_a < 0.6f;
+            ui::Enabled interactive(ui, open_a >= 0.6f, 1);
             auto detail = [&](Rect end, std::string_view value, ui::TextStyle style) {
                 const Rect at = unfold(end);
                 p.set_zoom(open, at.x, at.y);
@@ -354,25 +354,13 @@ namespace lyren {
             const float py = card.y + pad + head_h + 14 + lines_h + 16;
             const ui::TextStyle times{.size = 11, .color = white.with_alpha(0.5f), .features = text::tabular_nums};
             const Rect bar = unfold({card.x + pad + 42, py, card.w - 2 * pad - 84, 14});
-            ui.disabled = ui.disabled || !track;
-            float v = island_dragging_ ? island_drag_v_ : done;
-            if (ui.slider(ui.id("island-seek"), bar, v) || ui.is_active(ui.id("island-seek"))) {
-                island_dragging_ = true, island_drag_v_ = v;
-            }
-            if (island_dragging_ && !ui.is_active(ui.id("island-seek"))) {
-                island_dragging_ = false;
-                playback_.seek(island_drag_v_ * duration);
-            }
-            detail({card.x + pad, py + 11, 38, 0}, mmss(island_dragging_ ? island_drag_v_ * duration : now), times);
-            const std::string total = mmss(duration);
-            detail({card.right() - pad - p.measure(total, times), py + 11, 38, 0}, total, times);
-
-            // Controls: the floating mode and hiding on the sides, the transport in the middle.
-            const float cy = py + 14 + 12 + 20;
             auto button = [&](std::string_view name, Rect end, std::string_view icon, bool primary = false) {
                 const Rect b = unfold(end);
                 const auto id = ui.id(name);
                 const auto it = ui.interact(id, b);
+                if (it.hovered) {
+                    ui.cursor = wl::Cursor::pointer;
+                }
                 const auto [hot, down] = ui.feel(id, it);
                 const Rect face = b.inset(down * 1.5f * open);
                 p.rect(face, primary ? white.with_alpha(0.95f) : white.with_alpha(0.1f * hot), face.h / 2);
@@ -382,23 +370,38 @@ namespace lyren {
                 p.set_zoom(1);
                 return it.clicked;
             };
-            if (button("island-previous", {center - 64, cy - 16, 32, 32}, "skip-back")) {
-                playback_.skip(-1);
+            const float cy = py + 14 + 12 + 20;
+            {
+                ui::Enabled has_track(ui, track != nullptr, 1);
+                float v = island_dragging_ ? island_drag_v_ : done;
+                if (ui.slider(ui.id("island-seek"), bar, v) || ui.is_active(ui.id("island-seek"))) {
+                    island_dragging_ = true, island_drag_v_ = v;
+                }
+                if (island_dragging_ && !ui.is_active(ui.id("island-seek"))) {
+                    island_dragging_ = false;
+                    playback_.seek(island_drag_v_ * duration);
+                }
+                detail({card.x + pad, py + 11, 38, 0}, mmss(island_dragging_ ? island_drag_v_ * duration : now), times);
+                const std::string total = mmss(duration);
+                detail({card.right() - pad - p.measure(total, times), py + 11, 38, 0}, total, times);
+
+                // Controls: the floating mode and hiding on the sides, the transport in the middle.
+                if (button("island-previous", {center - 64, cy - 16, 32, 32}, "skip-back")) {
+                    playback_.skip(-1);
+                }
+                if (button("island-play", {center - 20, cy - 20, 40, 40}, playback_.playing() ? "pause-fill" : "play-fill", true)) {
+                    playback_.toggle();
+                }
+                if (button("island-next", {center + 32, cy - 16, 32, 32}, "skip-forward")) {
+                    playback_.skip(1);
+                }
             }
-            if (button("island-play", {center - 20, cy - 20, 40, 40}, playback_.playing() ? "pause-fill" : "play-fill", true)) {
-                playback_.toggle();
-            }
-            if (button("island-next", {center + 32, cy - 16, 32, 32}, "skip-forward")) {
-                playback_.skip(1);
-            }
-            ui.disabled = open_a < 0.6f;
             if (button("island-floating", {card.x + pad - 6, cy - 16, 32, 32}, "panel-bottom")) {
                 set_island(false);
             }
             if (button("island-hide", {card.right() - pad - 26, cy - 16, 32, 32}, "x")) {
                 set_enabled(false);
             }
-            ui.disabled = false;
         }
         drag_island(ui.interact(ui.id("island-move"), panel));
         ui.pop_clip();
@@ -421,7 +424,7 @@ namespace lyren {
         lyric_lifts_.clear();
         if (sung) {
             const double now = playback_.timeline().to_song(playback_.position());
-            front = Stage::sung_x(p, *live, text, font, soft, now);
+            front = lyric_sung_x(p, *live, text, font, soft, now);
             if (t.motion > 0) {
                 fill_lyric_wave(lyric_lifts_, p.shape(live->text, {.size = font}), *live, text, font, now, focus);
             }
@@ -596,17 +599,18 @@ namespace lyren {
                     x += 34 + gap;
                     return r;
                 };
-                ui.disabled = !track;
-                if (button("floating-previous", next_slot(), "skip-back")) {
-                    playback_.skip(-1);
+                {
+                    ui::Enabled has_track(ui, track != nullptr, 0.4f);
+                    if (button("floating-previous", next_slot(), "skip-back")) {
+                        playback_.skip(-1);
+                    }
+                    if (button("floating-play", next_slot(), playback_.playing() ? "pause-fill" : "play-fill")) {
+                        playback_.toggle();
+                    }
+                    if (button("floating-next", next_slot(), "skip-forward")) {
+                        playback_.skip(1);
+                    }
                 }
-                if (button("floating-play", next_slot(), playback_.playing() ? "pause-fill" : "play-fill")) {
-                    playback_.toggle();
-                }
-                if (button("floating-next", next_slot(), "skip-forward")) {
-                    playback_.skip(1);
-                }
-                ui.disabled = false;
                 p.rect({x + 4, panel.y + 10, 1, 16}, white.with_alpha(0.16f));
                 x += 10;
                 if (translated && button("floating-translation", next_slot(), "languages", shell_.stage.translation())) {

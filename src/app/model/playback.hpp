@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -204,6 +205,7 @@ namespace lyren {
         bool want_play_ = false, fetching_ = false;
         bool retried_ = false, counted_ = false;
         size_t failures_ = 0;
+        std::unordered_set<int> failed_;          // queue indices that already failed in this skip run
         int skip_direction_ = 1;                  // keep searching in the requested direction until a track starts
         double resume_at_ = 0, last_pos_ = 0;     // nonnegative seconds within the current file
         std::optional<double> pending_song_seek_; // nonnegative song seconds, only while fetching the stream

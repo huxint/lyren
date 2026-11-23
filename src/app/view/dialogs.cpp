@@ -98,6 +98,9 @@ namespace lyren {
             const ui::Id id = ui.id(static_cast<uint64_t>(i));
             ui::Enabled idle(ui, !busy, 0.45f);
             const auto it = ui.interact(id, row);
+            if (it.hovered) {
+                ui.cursor = wl::Cursor::pointer;
+            }
             const float hot = ui.anim(id, it.hovered ? 1 : 0, pace::quick);
             if (hot > 0) {
                 p.rect(row.inset(2), t.fill(hot), t.radius_s());
@@ -105,8 +108,9 @@ namespace lyren {
             const Rect art_box{row.x + 10, row.y + 8, 40, 40};
             if (art) {
                 cover(ui, art_box, *art, t.radius_s(), "list-music");
+                p.rect(art_box, {}, t.radius_s(), t.surface_edge(0.8f), 1);
             } else {
-                p.rect(art_box, t.fill(1.4f), t.radius_s());
+                p.rect(art_box, t.fill(1.4f), t.radius_s(), t.surface_edge(0.8f), 1);
                 p.icon("plus", ui::center(art_box, 18, 18), t.text_dim);
             }
             p.text(art_box.right() + 14, row.y + (sub.empty() ? 34 : 25), title, t.style(type::body, t.text), row.w - 80);
@@ -142,6 +146,40 @@ namespace lyren {
                                  ui.copy = link;
                                  ui.toast(std::string(lyren::tr("Link copied")), "copy");
                              }}});
+    }
+
+    void Dialogs::show_picture(ui::Ui &ui, std::string url, float aspect) {
+        const float safe_aspect = std::clamp(aspect > 0 ? aspect : 1.f, 0.25f, 4.f);
+        float w = ui.width * 0.84f, h = w / safe_aspect;
+        if (h > ui.height * 0.84f) {
+            h = ui.height * 0.84f, w = h * safe_aspect;
+        }
+        ui.open_modal(
+            std::round(w), std::round(h),
+            [this, url = std::move(url)](ui::Ui &u, Rect r) {
+                auto &p = u.painter();
+                const auto &t = u.theme();
+                const auto &e = env_.images.picture(url, 1024);
+                p.shadow({r.x, r.y + 12, r.w, r.h}, t.radius_l(), 48, t.shadow);
+                if (e.ready) {
+                    p.image(r, e.tex, t.radius_l(), white, cover_uv(static_cast<float>(e.w) / static_cast<float>(std::max(e.h, 1u)), r.w / r.h));
+                } else if (e.failed || url.empty()) {
+                    p.rect(r, t.elevated, t.radius_l());
+                    empty(u, r, "cloud-off", lyren::tr("Could not load this"));
+                } else {
+                    p.rect(r, t.elevated, t.radius_l());
+                    u.spinner(ui::center(r, 24, 24), t.text_dim, 2);
+                }
+                p.rect(r, {}, t.radius_l(), t.surface_edge(1.2f), 1);
+                const auto it = u.interact(u.id("picture-view"), r);
+                if (it.hovered) {
+                    u.cursor = wl::Cursor::pointer;
+                }
+                if (it.clicked) {
+                    u.close_modal();
+                }
+            },
+            true);
     }
 
 } // namespace lyren

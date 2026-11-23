@@ -12,6 +12,8 @@ namespace lyren::creds {
     // only this user on this machine can read it. load() returns "" when there is no file yet.
     Task<Result<std::string>> load(Loop &loop);
     Task<Result<void>> save(Loop &loop, std::string plaintext);
+    // Blocking save for shutdown paths when the event loop is no longer running.
+    Result<void> save_sync(std::string_view plaintext);
 
     // What the plaintext holds: each service's cookie session.
     using Credentials = StringMap<StringMap<std::string>>;

@@ -21,13 +21,18 @@ namespace lyren {
     namespace control = ui::control;
 
     namespace {
-        // The page is a column: the timeline and, when there is room for both, a rail beside it.
-        constexpr float rail_w = 248, rail_gap = 48, page_w = PostFeed::column + rail_gap + rail_w;
+        // The page is an editorial column: the timeline and, when there is room for both, a framed studio rail beside it.
+        constexpr float rail_gap = 32, rail_min = 276, rail_max = 324, page_w = PostFeed::column + rail_gap + rail_max;
         constexpr float tabs_h = 46, section_gap = 20;
 
         // "8 years", or the days of a newer account.
         std::string age(int days) {
-            return days >= 365 ? trf("{} years", days / 365) : trf("{} days", std::max(days, 1));
+            if (days >= 365) {
+                const int years = days / 365;
+                return years == 1 ? std::string(tr("1 year")) : trf("{} years", years);
+            }
+            const int d = std::max(days, 1);
+            return d == 1 ? std::string(tr("1 day")) : trf("{} days", d);
         }
 
         // A count as a stat shows it: whole while it fits, shortened once it is long.
@@ -117,13 +122,28 @@ namespace lyren {
         }
 
         const float off = ui.begin_scroll(scroll_id(ui, "profile"), r, std::max(content_h_, r.h));
-        // Their background, or their picture, washes the top of the page; it stays put and fades as the page scrolls.
-        if (const std::string &art = who.background.empty() ? who.avatar : who.background; !art.empty()) {
-            const Rect band{r.x, r.y, r.w, 232};
-            if (const auto &image = env_.images.get(art, 128, true); image.ready) {
-                Fade wash(p, ui.progress(image.ready_at, 480, ease::standard) * (t.dark ? 0.22f : 0.14f) * (1 - smooth01(off / 160)));
-                p.image(band, image.tex, t.radius_l(), white, cover_uv(1, band.w / band.h));
-                p.gradient(band, t.surface.with_alpha(0), t.surface, t.radius_l());
+        // Their background, or their picture, washes the top of the page; the fade-to-surface runs at full opacity so
+        // it dissolves imperceptibly into the canvas without a hard lower seam.
+        {
+            const float scroll_fade = 1 - smooth01(off / 180);
+            if (scroll_fade > 0.01f) {
+                const Rect band{r.x, r.y, r.w, 260};
+                const std::string &art = who.background.empty() ? who.avatar : who.background;
+                bool drew_art = false;
+                if (!art.empty()) {
+                    if (const auto &image = env_.images.get(art, 128, true); image.ready) {
+                        const float k = ui.progress(image.ready_at, 480, ease::standard);
+                        {
+                            Fade wash(p, k * (t.dark ? 0.32f : 0.18f) * scroll_fade);
+                            p.image(band, image.tex, t.radius_l(), white, cover_uv(1, band.w / band.h));
+                        }
+                        p.gradient(band, t.surface.with_alpha(0.08f), t.surface, t.radius_l());
+                        drew_art = true;
+                    }
+                }
+                if (!drew_art) {
+                    p.gradient(band, t.accent.with_alpha((t.dark ? 0.10f : 0.06f) * scroll_fade), t.surface.with_alpha(0), t.radius_l());
+                }
             }
         }
         header_h_ = header(ui, {body.x, r.y - off, body.w, 0}, page, who, self);
@@ -136,9 +156,13 @@ namespace lyren {
             content_h_ = header_h_ + rest.h;
             return ui.end_scroll();
         }
-        // The tabs come to rest at the top of the view, and what they show scrolls under them.
+        // The tabs come to rest at the top of the view, with an opaque surface backing once pinned so the scrolled head
+        // never bleeds through behind them.
         const Rect strip{body.x, std::max(r.y, r.y + header_h_ - off), body.w, tabs_h};
         const float pinned = smooth01((off - header_h_ + 24) / 24);
+        if (pinned > 0.01f) {
+            p.rect({r.x, strip.y, r.w, strip.h}, t.surface.with_alpha(pinned), {t.radius_l(), t.radius_l(), 0, 0});
+        }
         const float edge = std::lerp(body.x, r.x, pinned);
         p.rect({edge, strip.bottom() - 1, r.w - 2 * (edge - r.x), 1}, t.line());
         tabs(ui, strip, page, who, pinned);
@@ -169,25 +193,27 @@ namespace lyren {
         // The head arrives as one: the picture a little small at first, settling to its size.
         const float in = ui.progress(page->since, pace::arrive);
         Fade fade(p, in);
-        const float d = compact ? 72.f : 96.f;
-        const Rect face{r.x, r.y + 28, d, d};
+        const float d = compact ? 72.f : 100.f;
+        const Rect face{r.x, r.y + 30, d, d};
         {
             const float size = d * (0.94f + 0.06f * in);
             const Rect portrait = ui::center(face, size, size);
+            p.shadow({portrait.x, portrait.y + 6, portrait.w, portrait.h}, size / 2, 24, t.shadow.with_alpha(0.55f));
             // A ring of the page's own colour sets the picture off from the wash behind it.
-            p.rect(portrait.inset(-4), t.surface, size / 2 + 4);
+            p.rect(portrait.inset(-4), t.surface, size / 2 + 4, t.surface_edge(0.8f), 1);
             cover(ui, portrait, who.avatar, size / 2, "user");
+            p.rect(portrait, {}, size / 2, t.surface_edge(1.0f), 1);
             const auto it = ui.interact(ui.id("profile-face"), face);
             if (it.hovered && !who.avatar.empty()) {
                 ui.cursor = wl::Cursor::pointer;
             }
             if (it.clicked && !who.avatar.empty()) {
-                shell_.comments_view.show_picture(ui, who.avatar, 1);
+                shell_.dialogs.show_picture(ui, who.avatar, 1);
             }
         }
 
         // What can be done here stands at the top right: following them, or writing a post of one's own.
-        const float top = face.y + (compact ? 0.f : 4.f), name_h = compact ? 28.f : 36.f;
+        const float top = face.y + (compact ? 0.f : 4.f), name_h = compact ? 30.f : 40.f;
         const float button_y = top + (name_h - control::medium) / 2;
         float right = r.right();
         if (const Rect more{right - control::medium, button_y, control::medium, control::medium};
@@ -255,14 +281,14 @@ namespace lyren {
             for (const auto &badge : badges) {
                 const float w = std::ceil(p.measure(badge.text, badge_style)) + 14;
                 const Rect pill{x, top + (name_h - 20) / 2 + 1, w, 20};
-                p.rect(pill, badge.lit ? t.accent.with_alpha(0.14f) : t.fill(1.6f), 10);
+                p.rect(pill, badge.lit ? t.accent.with_alpha(0.14f) : t.fill(1.6f), 10, badge.lit ? t.accent.with_alpha(0.24f) : t.surface_edge(0.8f), 1);
                 ui.label(pill, badge.text, t.style(type::micro, badge.lit ? t.accent : t.text_dim, text::medium), Align::center);
                 x += w + 6;
             }
         }
 
         // What they say of themselves, in two lines at most.
-        float y = top + name_h + (compact ? 2.f : 6.f);
+        float y = top + name_h + (compact ? 4.f : 8.f);
         const float text_w = r.right() - tx;
         if (page->loading && !page->info) {
             ui.skeleton({tx, y + 5, std::min(text_w, 260.f), 10}, 5);
@@ -328,7 +354,7 @@ namespace lyren {
         };
         std::inplace_vector<Stat, 4> all;
         if (caps.people) {
-            all.push_back({lyren::tr("Following people"), social_.count(*page, false), Section::follows});
+            all.push_back({lyren::tr_ctx("nav", "Following"), social_.count(*page, false), Section::follows});
             all.push_back({lyren::tr("Followers"), social_.count(*page, true), Section::fans});
         }
         if (caps.posts) {
@@ -340,21 +366,28 @@ namespace lyren {
         if (all.empty()) {
             return 0;
         }
-        constexpr float h = 52;
-        const float cell = std::min(136.f, r.w / static_cast<float>(all.size()));
-        const auto number = t.style(type::title, t.text, text::semibold | text::tabular_nums);
-        float x = r.x;
+        const bool tight = r.w < 460;
+        constexpr float h = 64;
+        const float radius = t.radius_l() * 0.75f;
+        const Rect bar{r.x, r.y, r.w, h};
+        p.rect(bar, t.dark ? t.fill(0.72f) : t.bg.mix(t.surface, 0.42f), radius, t.surface_edge(0.85f), 1);
+        const float cell = bar.w / static_cast<float>(all.size());
+        float x = bar.x;
         for (size_t i = 0; i < all.size(); ++i) {
             const Stat &stat = all[i];
             const ui::Id id = ui::sub_id(ui.id("profile-stat"), i);
+            const Rect slot{x, bar.y, cell, h};
+            if (i > 0) {
+                p.rect({x, bar.y + 14, 1, h - 28}, t.line(0.65f));
+            }
             float hot = 0;
             if (stat.opens) {
-                const Rect hit{x - 10, r.y, cell - 6, h};
+                const Rect hit = slot.inset(4);
                 const auto it = ui.interact(id, hit);
                 const auto feel = ui.feel(id, it, pace::quick);
                 hot = feel.hot;
                 if (hot > 0) {
-                    p.rect(hit.inset(feel.down), t.fill(hot), t.radius_s());
+                    p.rect(hit.inset(feel.down), t.fill(0.95f * hot), std::max(radius - 4, 4.f));
                 }
                 if (it.hovered) {
                     ui.cursor = wl::Cursor::pointer;
@@ -366,14 +399,16 @@ namespace lyren {
                     show(ui, page, *stat.opens);
                 }
             }
-            // A follow made here rolls the count over.
-            const Rect value{x, r.y + 5, cell - 20, 26};
+            // A follow made here rolls the count over; clear vertical separation prevents any numeral/label touch.
+            const float pad_x = tight ? 10.f : 18.f;
+            const Rect value{slot.x + pad_x, bar.y + 9, std::max(0.f, slot.w - 2 * pad_x), 26};
+            const auto num_style = t.style(tight ? type::lead : type::title, t.text.mix(t.accent, 0.35f * hot), text::semibold | text::tabular_nums);
             if (stat.value < 0) {
-                ui.label(value, "—", number);
+                ui.label(value, "—", num_style);
             } else {
-                rolling_count(ui, ui::sub_id(id, 0xc7), value, stat.value, stat_number, number);
+                rolling_count(ui, ui::sub_id(id, 0xc7), value, stat.value, stat_number, num_style);
             }
-            ui.label({x, r.y + 30, cell - 20, 18}, stat.label, t.style(type::caption, t.text_dim.mix(t.text, 0.6f * hot)));
+            ui.label({slot.x + pad_x, bar.y + 38, std::max(0.f, slot.w - 2 * pad_x), 18}, stat.label, t.style(type::caption, t.text_dim.mix(t.text, 0.55f * hot)));
             x += cell;
         }
         return h;
@@ -387,13 +422,14 @@ namespace lyren {
         };
         // In the order of Section.
         static constexpr std::array<Tab, 5> all{
-            {{"Posts", "message-square"}, {"Most played", "headphones"}, {"Playlists", "list-music"}, {"Following people", "users"}, {"Followers", "heart"}}};
+            {{"Posts", "message-square"}, {"Most played", "headphones"}, {"Playlists", "list-music"}, {"Following", "users"}, {"Followers", "heart"}}};
         const auto sections = social_.sections(page->who);
         std::inplace_vector<std::string_view, all.size()> labels;
         const auto style = t.style(type::lead, {}, text::medium);
         float needed = 28 * static_cast<float>(sections.size() - 1);
         for (const Section part : sections) {
-            labels.push_back(lyren::tr(all[static_cast<size_t>(part)].label));
+            const auto &tab = all[static_cast<size_t>(part)];
+            labels.push_back(part == Section::follows ? lyren::tr_ctx("nav", tab.label) : lyren::tr(tab.label));
             needed += p.measure(labels.back(), style);
         }
         const auto at = std::ranges::find(sections, page->section);
@@ -448,26 +484,28 @@ namespace lyren {
         const auto &caps = provider(card).capabilities;
         Rect column = r;
         float beside = 0;
-        if (r.w >= 560 + rail_gap + rail_w && (caps.ranking || caps.people)) {
-            // The rail stays in sight while the timeline scrolls past it.
+        if (r.w >= 540 + rail_gap + rail_min && (caps.ranking || caps.people)) {
+            // The framed studio rail stays in sight while the timeline scrolls past it.
+            const float rw = std::clamp(r.w - PostFeed::column - rail_gap, rail_min, rail_max);
             const Rect clip = ui.clip();
-            Rect side = ui::cut_right(column, rail_w);
+            Rect side = ui::cut_right(column, rw);
             ui::cut_right(column, rail_gap);
             side.y = std::max(side.y, clip.y + section_gap);
             side.h = clip.bottom() - side.y - 12;
             beside = rail(ui, side, page);
         }
+        const float feed_w = std::min(column.w, PostFeed::column);
         float y = column.y;
         // The account's own page also holds the feed of the people it follows.
         const bool feed = self && page->posts_tab == 1;
         if (self) {
             const std::array<std::string_view, 2> labels{lyren::tr("My posts"), lyren::tr("Following feed")};
             int tab = page->posts_tab;
-            if (ui.segmented(ui.id("profile-feed"), {column.x, y, std::min(280.f, column.w - 48), control::medium}, labels, tab)) {
+            if (ui.segmented(ui.id("profile-feed"), {column.x, y, std::min(280.f, feed_w - 48), control::medium}, labels, tab)) {
                 page->posts_tab = tab;
                 show(ui, page, Section::posts);
             }
-            const Rect again{column.right() - control::medium, y, control::medium, control::medium};
+            const Rect again{column.x + feed_w - control::medium, y, control::medium, control::medium};
             if (const auto &list = feed ? social_.feed(card.source) : page->posts; list->loading) {
                 ui.spinner(ui::center(again, 16, 16), t.text_dim, 2);
             } else if (ui.icon_button(ui.id("profile-refresh"), again, "refresh-cw", 16, false, lyren::tr("Refresh"))) {
@@ -475,11 +513,11 @@ namespace lyren {
             }
             y += control::medium + 18;
             if (caps.post_write) {
-                y += shell_.feed.prompt(ui, {column.x, y, std::min(column.w, PostFeed::column), 0}, card.source) + 6;
+                y += shell_.feed.prompt(ui, {column.x, y, feed_w, 0}, card.source) + 6;
             }
         }
         const auto list = feed ? social_.feed(card.source) : page->posts;
-        y += shell_.feed.draw(ui, {column.x, y, column.w, 0}, list, card.source, feed ? std::string() : card.id, feed);
+        y += shell_.feed.draw(ui, {column.x, y, feed_w, 0}, list, card.source, feed ? std::string() : card.id, feed);
         return std::max(y - r.y, beside);
     }
 
@@ -490,59 +528,70 @@ namespace lyren {
         const auto &caps = provider(card).capabilities;
         const auto &follows = page->people[0];
         const bool faces = caps.people && !follows.items.empty();
+        const float radius = t.radius_l() * 0.8f;
+        const ui::Color card_fill = t.dark ? t.fill(0.78f) : t.bg.mix(t.surface, 0.38f);
         float y = r.y;
-        // A heading, a quieter note beside it, and the way to the part of the page it stands for.
-        auto heading = [&](ui::Id id, std::string_view title, std::string_view note, Section opens) {
+
+        auto card_header = [&](Rect box, ui::Id id, std::string_view title, std::string_view note, Section opens) {
             const auto style = t.style(type::label, t.text, text::semibold);
             const float w = std::ceil(p.measure(title, style)) + 1;
-            ui.label({r.x, y, w, 24}, title, style);
-            ui.label({r.x + w + 8, y, r.w - w - 44, 24}, note, t.style(type::caption, t.faint(), text::tabular_nums));
-            if (ui.icon_button(id, {r.right() - 28, y - 2, 28, 28}, "chevron-right", 16, false, lyren::tr("See all"))) {
+            ui.label({box.x + 16, box.y + 12, w, 24}, title, style);
+            ui.label({box.x + 16 + w + 8, box.y + 12, std::max(0.f, box.w - w - 64), 24}, note, t.style(type::caption, t.faint(), text::tabular_nums));
+            if (ui.icon_button(id, {box.right() - 36, box.y + 10, 28, 28}, "chevron-right", 16, false, lyren::tr("See all"))) {
                 show(ui, page, opens);
             }
-            y += 36;
+            p.rect({box.x + 16, box.y + 45, box.w - 32, 1}, t.line(0.7f));
         };
+
         if (caps.ranking) {
             auto &chart = page->charts[static_cast<size_t>(page->chart_tab)];
             auto &tracks = chart.ranking.tracks;
-            heading(ui.id("rail-chart"), lyren::tr("On repeat"), lyren::tr(page->chart_tab ? "All time" : "This week"), Section::chart);
-            constexpr float row_h = 52;
-            // As many songs as the rail holds, the people under them included.
-            const auto rows = static_cast<size_t>(std::clamp(static_cast<int>((r.bottom() - y - (faces ? 100.f : 0.f)) / row_h), 1, 5));
+            constexpr float head_h = 46, row_h = 52;
+            const auto max_rows = static_cast<size_t>(std::clamp(static_cast<int>((r.bottom() - y - head_h - (faces ? 160.f : 24.f)) / row_h), 1, 5));
+            const size_t shown = !chart.loaded ? std::min<size_t>(max_rows, 3) : std::min(tracks.size(), max_rows);
+            const float body_h = !chart.loaded ? static_cast<float>(shown) * row_h + 12 : tracks.empty() ? 52.f : static_cast<float>(shown) * row_h + 12;
+            const Rect box{r.x, y, r.w, head_h + body_h};
+            p.rect(box, card_fill, radius, t.surface_edge(0.9f), 1);
+            card_header(box, ui.id("rail-chart"), lyren::tr("On repeat"), lyren::tr(page->chart_tab ? "All time" : "This week"), Section::chart);
+
+            float ry = box.y + head_h + 6;
             if (!chart.loaded) {
-                for (size_t i = 0; i < std::min<size_t>(rows, 3); ++i) {
+                for (size_t i = 0; i < shown; ++i) {
                     const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
-                    ui.skeleton({r.x, y + 6, 40, 40}, t.radius_s());
-                    ui.skeleton({r.x + 52, y + 13, (r.w - 52) * (0.5f + 0.4f * k), 10}, 5);
-                    ui.skeleton({r.x + 52, y + 31, (r.w - 52) * (0.3f + 0.3f * (1 - k)), 9}, 4.5f);
-                    y += row_h;
+                    ui.skeleton({box.x + 16, ry + 7, 38, 38}, t.radius_s());
+                    ui.skeleton({box.x + 66, ry + 13, (box.w - 86) * (0.5f + 0.4f * k), 10}, 5);
+                    ui.skeleton({box.x + 66, ry + 31, (box.w - 86) * (0.3f + 0.3f * (1 - k)), 9}, 4.5f);
+                    ry += row_h;
                 }
             } else if (tracks.empty()) {
                 const bool hidden = chart.error == "This listening ranking is private";
-                p.icon(hidden ? "lock" : "headphones", {r.x, y + 3, 14, 14}, t.faint());
-                ui.label({r.x + 22, y, r.w - 22, 20},
+                p.icon(hidden ? "lock" : "headphones", {box.x + 16, ry + 11, 14, 14}, t.faint());
+                ui.label({box.x + 38, ry + 8, box.w - 54, 20},
                          lyren::tr(hidden                ? "Their ranking is private"
                                    : chart.error.empty() ? "Nothing played yet"
                                                          : chart.error),
                          t.style(type::caption, t.text_dim));
-                y += 32;
             } else {
                 ui.push_id(ui.id("rail-songs"));
-                for (size_t i = 0; i < std::min(tracks.size(), rows); ++i) {
+                for (size_t i = 0; i < shown; ++i) {
                     const Track &track = tracks[i];
                     const float in = ui.cascade(std::max(page->section_since, chart.since), static_cast<int>(i));
                     Fade fade(p, in);
-                    const Rect row{r.x - 8, y + (1 - in) * 8, r.w + 16, row_h};
+                    const Rect row{box.x + 8, ry + (1 - in) * 8, box.w - 16, row_h};
                     const ui::Id id = item_id(ui, track);
                     const auto it = ui.interact(id, row);
                     const auto [hot, down] = ui.feel(id, it, pace::quick);
                     if (hot > 0) {
                         p.rect(row.inset(down, 2 + down), t.fill(hot), t.radius_s());
                     }
-                    const Rect art{row.x + 8, row.y + 6, 40, 40};
-                    cover(ui, art, track.cover, t.radius_s());
+                    ui.label({row.x + 4, row.y, 18, row.h}, std::to_string(i + 1),
+                             t.style(type::caption, i < 3 ? t.accent.with_alpha(0.85f) : t.faint(), text::semibold | text::tabular_nums), Align::center);
+                    const Rect art{row.x + 26, row.y + 7, 38, 38};
                     const bool on = playback_.is_current(track);
-                    if (const float veil = std::max(hot, on ? 1.f : 0.f); veil > 0) {
+                    const float veil = std::max(hot, on ? 1.f : 0.f);
+                    cover(ui, art, track.cover, t.radius_s(), veil > 0.5f ? "" : "music");
+                    p.rect(art, {}, t.radius_s(), t.surface_edge(0.8f), 1);
+                    if (veil > 0) {
                         p.rect(art, ui::Color{0, 0, 0, 0.42f * veil}, t.radius_s());
                         if (on && playback_.playing() && hot < 0.5f) {
                             ui.equalizer(ui::sub_id(id, 1), ui::center(art, 13, 13), white, true);
@@ -568,41 +617,83 @@ namespace lyren {
                     if (it.right_clicked) {
                         shell_.tracks.menu(ui, it.px, it.py, tracks, static_cast<int>(i));
                     }
-                    y += row_h;
+                    ry += row_h;
                 }
                 ui.pop_id();
             }
-            y += 20;
+            y = box.bottom() + 16;
         }
-        if (faces && y + 80 <= r.bottom()) {
+
+        if (faces && y + 106 <= r.bottom()) {
             const int count = social_.count(*page, false);
-            heading(ui.id("rail-people"), lyren::tr("Following people"), count >= 0 ? stat_number(count) : std::string(), Section::follows);
-            // Their faces in a row; each opens that listener's page.
-            constexpr float d = 36, gap = 8;
-            const auto n = std::min(follows.items.size(), static_cast<size_t>((r.w + gap) / (d + gap)));
+            constexpr float head_h = 46, person_h = 48;
+            const float avail = r.bottom() - y - head_h - 14;
+            const bool list_mode = avail >= person_h * 2;
+            const size_t rows = list_mode ? std::min<size_t>({follows.items.size(), static_cast<size_t>(avail / person_h), 4}) : 0;
+            const float body_h = list_mode ? static_cast<float>(rows) * person_h + 12 : 62.f;
+            const Rect box{r.x, y, r.w, head_h + body_h};
+            p.rect(box, card_fill, radius, t.surface_edge(0.9f), 1);
+            card_header(box, ui.id("rail-people"), lyren::tr_ctx("nav", "Following"), count >= 0 ? stat_number(count) : std::string(), Section::follows);
+
             ui.push_id(ui.id("rail-faces"));
-            for (size_t i = 0; i < n; ++i) {
-                const Person &who = follows.items[i];
-                const Rect face{r.x + static_cast<float>(i) * (d + gap), y, d, d};
-                const ui::Id id = ui.id(who.id);
-                const auto it = ui.interact(id, face);
-                const auto [hot, down] = ui.feel(id, it, pace::quick);
-                cover(ui, face.inset(down), who.avatar, d / 2, "user");
-                if (hot > 0) {
-                    p.rect(face.inset(-2), {}, d / 2 + 2, t.text.with_alpha(0.4f * hot), 1.5f);
-                }
-                if (it.hovered) {
-                    ui.cursor = wl::Cursor::pointer;
-                    if (!it.held) {
-                        ui.tooltip(id, face, who.name);
+            if (list_mode) {
+                float py = box.y + head_h + 6;
+                for (size_t i = 0; i < rows; ++i) {
+                    const Person &who = follows.items[i];
+                    const Rect row{box.x + 8, py, box.w - 16, person_h};
+                    const ui::Id id = ui.id(who.id);
+                    const auto it = ui.interact(id, row);
+                    const auto [hot, down] = ui.feel(id, it, pace::quick);
+                    if (hot > 0) {
+                        p.rect(row.inset(down, 2 + down), t.fill(hot), t.radius_s());
                     }
+                    const Rect face{row.x + 8, row.y + (row.h - 34) / 2, 34, 34};
+                    cover(ui, face, who.avatar, 17, "user");
+                    p.rect(face, {}, 17, t.surface_edge(0.85f), 1);
+                    const float tx = face.right() + 12, tw = row.right() - tx - 8;
+                    std::string meta = who.signature.substr(0, who.signature.find('\n'));
+                    if (meta.empty() && who.fans >= 0) {
+                        meta = lyren::trf("{} fans", short_number(who.fans));
+                    }
+                    p.text(tx, row.y + (meta.empty() ? 29.f : 21.f), who.name, t.style(type::label, t.text, text::medium), tw);
+                    if (!meta.empty()) {
+                        p.text(tx, row.y + 38, meta, t.style(type::caption, t.text_dim), tw);
+                    }
+                    if (it.hovered) {
+                        ui.cursor = wl::Cursor::pointer;
+                    }
+                    if (it.clicked) {
+                        browser_.open_profile(card.source, who.id, who.name, who.avatar);
+                    }
+                    py += person_h;
                 }
-                if (it.clicked) {
-                    browser_.open_profile(card.source, who.id, who.name, who.avatar);
+            } else {
+                constexpr float d = 36, gap = 8;
+                const auto n = std::min(follows.items.size(), static_cast<size_t>((box.w - 32 + gap) / (d + gap)));
+                for (size_t i = 0; i < n; ++i) {
+                    const Person &who = follows.items[i];
+                    const Rect face{box.x + 16 + static_cast<float>(i) * (d + gap), box.y + head_h + 13, d, d};
+                    const ui::Id id = ui.id(who.id);
+                    const auto it = ui.interact(id, face);
+                    const auto [hot, down] = ui.feel(id, it, pace::quick);
+                    cover(ui, face.inset(down), who.avatar, d / 2, "user");
+                    p.rect(face.inset(down), {}, d / 2, t.surface_edge(0.85f), 1);
+                    if (hot > 0) {
+                        p.rect(face.inset(-2), {}, d / 2 + 2, t.text.with_alpha(0.4f * hot), 1.5f);
+                    }
+                    if (it.hovered) {
+                        ui.cursor = wl::Cursor::pointer;
+                        if (!it.held) {
+                            ui.tooltip(id, face, who.name);
+                        }
+                    }
+                    if (it.clicked) {
+                        browser_.open_profile(card.source, who.id, who.name, who.avatar);
+                    }
                 }
             }
             ui.pop_id();
-            y += d + 8;
+            y = box.bottom() + 8;
         }
         return y - r.y;
     }
@@ -678,6 +769,7 @@ namespace lyren {
             }
             const Rect art{rank.right() + 6, row.y + 8, 40, 40};
             cover(ui, art, track.cover, t.radius_s());
+            p.rect(art, {}, t.radius_s(), t.surface_edge(0.8f), 1);
             // How often it is played, against the most played; the bars grow in with their rows.
             const float meter_w = std::min(180.f, std::round(row.w * 0.24f));
             const float tx = art.right() + 14, tw = row.right() - tx - meter_w - 36;
@@ -705,8 +797,6 @@ namespace lyren {
     }
 
     float ProfileView::playlists(ui::Ui &ui, Rect r, const Listener &page, bool self) {
-        auto &p = ui.painter();
-        const auto &t = ui.theme();
         const Card &card = page->who;
         std::vector<Card> made, saved;
         double since = page->section_since;
@@ -746,12 +836,9 @@ namespace lyren {
             if (cards.empty()) {
                 return;
             }
-            const auto style = t.style(type::heading, t.text, text::semibold);
-            const float w = std::ceil(p.measure(title, style)) + 1;
-            ui.label({r.x, y, w, 26}, title, style);
-            ui.label({r.x + w + 8, y + 1, 80, 26}, std::to_string(cards.size()), t.style(type::label, t.faint(), text::tabular_nums));
+            section_heading(ui, r.x, y, r.w, title, std::to_string(cards.size()));
             y += 42;
-            if (const int i = shell_.pages.card_grid(ui, {r.x, y, r.w, 0}, ui.id(key), cards, false, since); i >= 0) {
+            if (const int i = card_grid(ui, {r.x, y, r.w, 0}, ui.id(key), cards, false, since); i >= 0) {
                 picked = cards[static_cast<size_t>(i)];
             }
             y += CardGrid::settled_height(r.w, cards.size()) + 32;
@@ -821,7 +908,7 @@ namespace lyren {
         const ui::Id id = ui.id("card");
         // Held on its follow button, the card stays lit.
         const float hot = ui.anim(id, ui.pointing(r) ? 1 : 0, pace::quick);
-        p.rect(r, t.fill(0.7f + 0.8f * hot), t.radius);
+        p.rect(r, t.fill(0.7f + 0.8f * hot), t.radius, t.surface_edge(0.75f + 0.45f * hot), 1);
         const Rect face{r.x + 14, r.y + (r.h - 44) / 2, 44, 44};
         cover(ui, face, person.avatar, 22, "user");
         const auto &account = library_.shelf(source).account;

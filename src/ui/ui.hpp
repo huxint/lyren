@@ -239,7 +239,7 @@ namespace lyren::ui {
         // The arrival of the i-th of several things that appeared at `since`, each setting off a little after the one
         // before it; the same 0..1 serves as their opacity and as how far they have risen into place.
         float cascade(double since, int i, float ms = pace::arrive) {
-            return progress(since + 0.024 * std::min(i, 14), ms);
+            return progress(since + 0.018 * std::min(i, 10), ms);
         }
         void keep_animating() {
             animating_ = true;
@@ -258,7 +258,7 @@ namespace lyren::ui {
         bool want_paste = false;
 
         // Widgets.
-        bool button(Id id, Rect r, std::string_view label, ButtonKind kind = ButtonKind::secondary, std::string_view icon = {});
+        bool button(Id id, Rect r, std::string_view label, ButtonKind kind = ButtonKind::secondary, std::string_view icon = {}, std::string_view tip = {});
         // The width a button takes to fit its label and icon.
         float button_width(std::string_view label, bool icon = false);
         // tip names what the button does, for when its icon alone does not.
@@ -270,8 +270,8 @@ namespace lyren::ui {
         bool link(Id id, Rect r, std::string_view s, const TextStyle &style);
         // A short note beside anchor once the pointer has rested on it. Call it while the widget is hovered.
         void tooltip(Id id, Rect anchor, std::string_view text);
-        // Returns true when Enter is pressed.
-        bool text_box(Id id, Rect r, std::string &text, std::string_view placeholder, std::string_view icon = {});
+        // Returns true when Enter is pressed. shortcut shows a quiet keycap badge at the right while empty and unfocused.
+        bool text_box(Id id, Rect r, std::string &text, std::string_view placeholder, std::string_view icon = {}, std::string_view shortcut = {});
         // Wrapped multiline editor. Enter never submits. Unframed editors use the parent's padding and focus ring.
         void text_area(Id id, Rect r, std::string &text, std::string_view placeholder, bool framed = true);
         // Returns true while the user changes the value (0..1).

@@ -70,6 +70,7 @@ namespace lyren {
             std::vector<Track> radio;
             int radio_pos = 0;
             bool radio_loading = false;
+            bool radio_pending = false; // waiting for the next batch after reaching the end
             std::string radio_error;
             double radio_since = -10; // when the radio moved on
 
@@ -79,15 +80,16 @@ namespace lyren {
         // Told to the parts that keep copies of what changed.
         struct Event {
             enum class Kind : uint8_t {
-                account,      // another account is signed in on the platform
-                loaded,       // the account's playlists and likes arrived
-                left,         // the account is gone and its data with it
-                signed_out,   // the service has been told
-                liked,        // a song joined or left the liked songs
-                liked_stale,  // the liked songs changed on the service in ways only a reload shows
-                playlists,    // the account's playlists changed
-                tracks,       // a playlist's songs changed: fresh is what it holds now, requested what was asked
-                tracks_failed // a playlist's songs may have changed, and reading them back failed
+                account,       // another account is signed in on the platform
+                loaded,        // the account's playlists and likes arrived
+                left,          // the account is gone and its data with it
+                signed_out,    // the service has been told
+                liked,         // a song joined or left the liked songs
+                liked_stale,   // the liked songs changed on the service in ways only a reload shows
+                playlists,     // the account's playlists changed
+                tracks,        // a playlist's songs changed: fresh is what it holds now, requested what was asked
+                tracks_failed, // a playlist's songs may have changed, and reading them back failed
+                radio_ready    // the next radio songs arrived while waiting at the end of a batch
             };
             Kind kind;
             Source source;
@@ -177,8 +179,8 @@ namespace lyren {
         void load_releases(Source source);
         Task<void> load_collection(Source source);
         Task<void> load_radio(Source source);
-        // The radio moves on to its next song, fetching more as the end nears.
-        void advance_radio(Source source);
+        // The radio moves on to its next song, fetching more as the end nears. False while waiting for the next batch.
+        bool advance_radio(Source source);
         // Fewer songs like this one on the radio.
         void dislike_radio(Track track);
 

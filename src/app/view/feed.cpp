@@ -149,7 +149,7 @@ namespace lyren {
             }
         } else if (draft.track) {
             const Rect chip{r.x, y, r.w, 64};
-            p.rect(chip, t.fill(), t.radius);
+            p.rect(chip, t.fill(), t.radius, t.surface_edge(0.8f), 1);
             cover(ui, {chip.x + 8, chip.y + 8, 48, 48}, draft.track->cover, t.radius_s());
             p.text(chip.x + 68, chip.y + 28, draft.track->title, t.style(type::body, t.text, text::medium), chip.w - 116);
             p.text(chip.x + 68, chip.y + 47, draft.track->artist, t.style(type::caption, t.text_dim), chip.w - 116);
@@ -161,7 +161,7 @@ namespace lyren {
             const ui::Id id = ui.id("post-attach");
             const auto it = ui.interact(id, chip);
             const auto [hot, down] = ui.feel(id, it, pace::quick);
-            p.rect(chip.inset(down), t.fill(0.6f + 0.8f * hot), t.radius);
+            p.rect(chip.inset(down), t.fill(0.6f + 0.8f * hot), t.radius, t.surface_edge(0.75f + 0.45f * hot), 1);
             p.icon("plus", {chip.x + 14, chip.y + 14, 16, 16}, t.accent);
             p.text(chip.x + 40, chip.y + 27, lyren::trf("Attach the song playing: {} · {}", playing->title, playing->artist), t.style(type::label, t.text_dim.mix(t.text, hot)),
                    chip.w - 56);
@@ -193,6 +193,7 @@ namespace lyren {
         const auto &account = library_.shelf(source).account;
         const Rect face{r.x, r.y + (h - look::avatar) / 2, look::avatar, look::avatar};
         cover(ui, face, account ? account->avatar : std::string(), look::avatar / 2, "user");
+        p.rect(face, {}, look::avatar / 2, t.surface_edge(0.9f), 1);
         Rect field{r.x + look::gutter, r.y, r.w - look::gutter, h};
         // The song playing is one click from being shared.
         const Track *playing = playback_.current();
@@ -200,7 +201,19 @@ namespace lyren {
         if (shareable) {
             const Rect share = ui::cut_right(field, h);
             ui::cut_right(field, 8);
-            if (ui.icon_button(ui.id("prompt-share"), share.inset(2), "music", 18, false, lyren::tr("Share the song playing"))) {
+            const ui::Id sid = ui.id("prompt-share");
+            const auto sit = ui.interact(sid, share);
+            if (sit.hovered) {
+                ui.cursor = wl::Cursor::pointer;
+                if (!sit.held) {
+                    ui.tooltip(sid, share, lyren::tr("Share the song playing"));
+                }
+            }
+            const auto [shot, sdown] = ui.feel(sid, sit, pace::quick);
+            const Rect disc = share.inset(sdown);
+            p.rect(disc, t.fill(0.95f + 0.7f * shot), disc.h / 2, t.surface_edge(0.85f + 0.4f * shot), 1);
+            p.icon("music", ui::center(disc, 17, 17), t.text_dim.mix(t.accent, shot));
+            if (sit.clicked) {
                 compose(ui, source, *playing);
             }
         }
@@ -208,7 +221,7 @@ namespace lyren {
         const auto it = ui.interact(id, field);
         const auto [hot, down] = ui.feel(id, it, pace::quick);
         const Rect pill = field.inset(down);
-        p.rect(pill, t.fill(1 + 0.7f * hot), t.round(pill.h));
+        p.rect(pill, t.fill(0.9f + 0.7f * hot), t.round(pill.h), t.surface_edge(0.8f + 0.5f * hot), 1);
         p.icon("square-pen", {pill.x + 16, pill.y + (pill.h - 16) / 2, 16, 16}, t.faint().mix(t.text_dim, hot));
         ui.label({pill.x + 42, pill.y, pill.w - 58, pill.h}, lyren::tr("What are you listening to?"), t.style(type::body, t.faint().mix(t.text_dim, hot)));
         if (it.hovered) {
@@ -227,17 +240,18 @@ namespace lyren {
         // A song plays where it is, after the one playing; a playlist or an album opens.
         if (post.track || post.card) {
             if (draw) {
-                const Rect chip{x, y, std::min(w, 440.f), look::chip};
+                const Rect chip{x, y, w, look::chip};
                 const ui::Id id = ui.id(post.track ? "track" : "card");
                 const auto it = ui.interact(id, chip);
                 const auto [hot, down] = ui.feel(id, it, pace::quick);
                 const Rect c = chip.inset(down);
-                p.rect(c, t.fill(1 + 0.8f * hot), t.radius);
+                p.rect(c, t.fill(0.9f + 0.8f * hot), t.radius, t.surface_edge(0.8f + 0.4f * hot), 1);
                 const Rect art{c.x + 8, c.y + 8, 48, 48};
                 cover(ui, art, post.track ? post.track->cover : post.card->cover, t.radius_s(),
                       post.track                           ? "music"
                       : post.card->kind == CardKind::album ? "disc-album"
                                                            : "list-music");
+                p.rect(art, {}, t.radius_s(), t.surface_edge(0.75f), 1);
                 const float tx = art.right() + 12, tw = c.right() - tx - 52;
                 const bool on = post.track && playback_.is_current(*post.track);
                 p.text(tx, c.y + 28, post.track ? post.track->title : post.card->title, t.style(type::body, on ? t.accent : t.text, text::medium), tw);
@@ -326,7 +340,7 @@ namespace lyren {
                         ui.cursor = wl::Cursor::pointer;
                     }
                     if (it.clicked) {
-                        shell_.comments_view.show_picture(ui, picture.url, aspect);
+                        shell_.dialogs.show_picture(ui, picture.url, aspect);
                     }
                 }
                 ui.pop_id();
@@ -346,7 +360,7 @@ namespace lyren {
             const float block_h = inset + static_cast<float>(lines.size()) * lh + (carried > 0 ? 8 + carried - look::gap : 0) + inset;
             if (draw) {
                 const Rect block{x, y + h, w, block_h};
-                p.rect(block, t.fill(), t.radius);
+                p.rect(block, t.fill(0.85f), t.radius, t.surface_edge(0.75f), 1);
                 p.rect({block.x, block.y + 14, 3, block.h - 28}, t.accent.with_alpha(0.55f), 1.5f);
                 // The author's name opens their page.
                 const auto it = ui.interact(ui.id("author"), {block.x + inset, block.y + inset, p.measure(name, body), lh});
@@ -414,8 +428,9 @@ namespace lyren {
         } else {
             // On one listener's timeline the day stands where the face would: the posts read as a journal.
             if (post.time > 0) {
-                ui.label({x, head_y - 3, look::avatar, 28}, std::format("{:02}", when.tm_mday), t.style(type::title, t.text_dim, text::medium | text::tabular_nums), Align::center);
-                ui.label({x - 4, head_y + 25, look::avatar + 8, 16}, std::format("{}/{:02}", when.tm_year + 1900, when.tm_mon + 1),
+                ui.label({x, head_y - 2, look::avatar, 24}, std::format("{:02}", when.tm_mday), t.style(type::title, t.text.with_alpha(0.82f), text::semibold | text::tabular_nums),
+                         Align::center);
+                ui.label({x - 4, head_y + 24, look::avatar + 8, 16}, std::format("{}/{:02}", when.tm_year + 1900, when.tm_mon + 1),
                          t.style(type::micro, t.faint(), text::tabular_nums), Align::center);
                 ui.label({cx, head_y, inner - 40, head_h}, std::format("{:02}:{:02}", when.tm_hour, when.tm_min), quiet);
             }

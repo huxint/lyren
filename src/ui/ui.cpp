@@ -397,21 +397,24 @@ namespace lyren::ui {
         p_->set_alpha(in);
         r.y += (menu_y_ > y ? 6 : -6) * (1 - in);
         p_->shadow({r.x, r.y + 6, r.w, r.h}, t.radius + 2, 24, t.shadow.with_alpha(t.shadow.a * 0.8f));
-        p_->rect(r, t.elevated, t.radius + 2, t.border, 1);
+        p_->rect(r, t.elevated, t.radius + 2, t.surface_edge(1.3f), 1);
         std::function<void()> chosen;
         float iy = r.y + pad;
         for (size_t i = 0; i < menu_.size(); ++i) {
             auto &m = menu_[i];
             if (!m.action) {
-                p_->rect({r.x + 10, iy + 4, r.w - 20, 1}, t.border);
+                p_->rect({r.x + 10, iy + 4, r.w - 20, 1}, t.line());
                 iy += sep_h;
                 continue;
             }
             Rect row{r.x + pad, iy, r.w - pad * 2, item_h};
             const Id item = id(0x6d656e75ull + i);
             auto it = interact(item, row);
-            if (const float hot = anim(item, it.hovered ? 1 : 0, 90); hot > 0) {
-                p_->rect(row, (m.danger ? t.danger.with_alpha(0.12f) : t.fill(1.3f)).with_alpha(hot), t.radius_s());
+            if (it.hovered) {
+                cursor = wl::Cursor::pointer;
+            }
+            if (const float hot = anim(item, it.hovered ? 1 : 0, pace::snap); hot > 0) {
+                p_->rect(row, (m.danger ? t.danger.with_alpha(0.12f) : t.fill(1.35f)).with_alpha(hot), t.radius_s());
             }
             Color fg = m.danger ? t.danger : t.text;
             if (!m.icon.empty()) {
@@ -472,8 +475,8 @@ namespace lyren::ui {
             body(*this, panel);
         } else {
             p_->shadow({panel.x, panel.y + 12, panel.w, panel.h}, t.radius_l() + 4, 56, t.shadow);
-            p_->rect(panel, t.elevated, t.radius_l() + 4, t.border, 1);
-            if (icon_button(id("modal-close"), {panel.right() - 46, panel.y + 14, 32, 32}, "x", 17)) {
+            p_->rect(panel, t.elevated, t.radius_l() + 4, t.surface_edge(1.3f), 1);
+            if (icon_button(id("modal-close"), {panel.right() - 46, panel.y + 14, 32, 32}, "x", 17, false, tr("Close"))) {
                 close_modal();
             }
             body(*this, panel.inset(28, 24));
@@ -542,7 +545,7 @@ namespace lyren::ui {
             Rect r{(width - tw - 56) / 2, y - 40 + (1 - in) * 16, tw + 56, 40};
             p_->set_alpha(in * out);
             p_->shadow({r.x, r.y + 6, r.w, r.h}, t.round(r.h), 24, t.shadow.with_alpha(t.shadow.a * 0.8f));
-            p_->rect(r, t.elevated, t.round(r.h), t.border, 1);
+            p_->rect(r, t.elevated, t.round(r.h), t.surface_edge(1.3f), 1);
             p_->icon(ts.icon, {r.x + 16, r.y + 12, 16, 16}, ts.error ? t.danger : t.accent);
             p_->text_in({r.x + 40, r.y, tw + 1, r.h}, ts.text, st);
             y -= 48 * in * out;
@@ -593,7 +596,7 @@ namespace lyren::ui {
         p_->shadow({r.x, r.y + 3, r.w, r.h}, t.radius_s(), 12, t.shadow.with_alpha(0.6f));
         Color paper = t.elevated;
         paper.a = 1;
-        p_->rect(r, paper, t.radius_s(), t.border, 1);
+        p_->rect(r, paper, t.radius_s(), t.surface_edge(1.3f), 1);
         label(r, tip_shown_.text, st, Align::center);
         p_->set_alpha(1);
     }

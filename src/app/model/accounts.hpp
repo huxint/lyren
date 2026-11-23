@@ -47,6 +47,8 @@ namespace lyren {
         void refresh_code();
         void import_settings();
         void sign_out(Source source);
+        // Synchronously writes any unsaved session changes before shutdown.
+        void flush();
 
     private:
         Task<void> startup();
@@ -55,14 +57,20 @@ namespace lyren {
         Task<void> import(Source source);
         // The session is in: the account's data replaces whatever was there.
         Task<void> arrived(Source source, uint64_t gen);
-        void save();
+        void save(bool immediate = false);
+        Task<void> write();
+        std::string snapshot();
 
         Env &env_;
         Library &library_;
         Browser &browser_;
         bool can_save_ = false; // the stored credentials were read, so writing them back loses nothing
+        bool dirty_ = false;    // session state changed since the last completed write
+        bool saving_ = false;   // a write is currently in flight
         creds::Credentials credentials_;
+        std::string saved_json_;
         Loop::TimerId save_timer_ = 0;
+        uint64_t save_gen_ = 0;
         SignIn sign_in_;
         uint64_t gen_ = 0; // disowns the sign-in requests under way
     };

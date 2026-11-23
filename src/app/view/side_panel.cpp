@@ -37,8 +37,11 @@ namespace lyren {
         const auto &t = ui.theme();
         // On the stage the panel is a pane of glass over the cover, standing clear of the player below it.
         const Rect frame{slot.x + 8, slot.y, slot.w - 8, slot.h - std::round(4 * stage)};
-        p.rect(frame, t.surface, t.radius_l(), t.line(stage), 1);
-        ui.push_clip(frame);
+        if (!t.dark && stage < 0.5f) {
+            p.shadow({frame.x, frame.y + 1, frame.w, frame.h}, t.radius_l(), 10, t.shadow.with_alpha(0.4f * (1 - 2 * stage)));
+        }
+        p.rect(frame, t.surface, t.radius_l(), t.surface_edge().mix(t.line(), stage), 1);
+        ui.push_clip(frame.inset(1));
         auto content = [&](Kind kind, Rect r) {
             if (kind == Kind::queue) {
                 queue(ui, r);
@@ -79,6 +82,7 @@ namespace lyren {
                 return;
             }
         }
+        p.rect({r.x + 20, r.y + 52, r.w - 40, 1}, t.line());
         constexpr float row_h = 54;
         const Rect view{r.x + 8, r.y + 58, r.w - 16, r.h - 66};
         if (songs.empty()) {
@@ -106,7 +110,9 @@ namespace lyren {
             if (!on && hot > 0) {
                 p.rect(row.inset(2), t.fill(hot), t.radius_s());
             }
-            cover(ui, {row.x + 10, row.y + 9, 36, 36}, track.cover, t.radius_s());
+            const Rect thumb{row.x + 10, row.y + 9, 36, 36};
+            cover(ui, thumb, track.cover, t.radius_s());
+            p.rect(thumb, {}, t.radius_s(), t.surface_edge(0.8f), 1);
             const float text_w = row.w - 58 - (pointed || on ? 44 : 12);
             p.text(row.x + 58, row.y + 23, track.title, t.style(type::label, on ? t.accent : t.text, on ? text::medium : 0), text_w);
             p.text(row.x + 58, row.y + 41, track.artist, t.style(type::caption, t.text_dim), text_w);
@@ -117,12 +123,21 @@ namespace lyren {
             } else if (on) {
                 ui.equalizer(ui.id("playing"), {row.right() - 31, row.y + 20, 14, 14}, t.accent, playback_.playing());
             }
-            if (ui.interact(row_id, row).double_clicked) {
+            const auto row_it = ui.interact(row_id, row);
+            if (row_it.hovered) {
+                ui.cursor = wl::Cursor::pointer;
+            }
+            if (row_it.double_clicked) {
                 jump = i;
+            } else if (row_it.right_clicked) {
+                shell_.tracks.menu(ui, row_it.px, row_it.py, songs, i);
             }
             ui.pop_id();
         }
         ui.pop_id();
+        if (off > 0.5f && t.surface.a > 0.9f) {
+            p.gradient({view.x, view.y, view.w, 12}, t.surface.with_alpha(0.9f), t.surface.with_alpha(0));
+        }
         ui.end_scroll();
         if (remove >= 0) {
             playback_.remove(remove);

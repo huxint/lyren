@@ -91,9 +91,9 @@ namespace lyren {
         const auto &t = ui.theme();
         const Rect c = ui::center(r, std::min(r.w, 360.f), detail.empty() ? 92.f : 116.f);
         const Rect disc{c.x + (c.w - 48) / 2, c.y, 48, 48};
-        p.rect(disc, t.fill(), 24);
+        p.rect(disc, t.fill(), 24, t.surface_edge(0.9f), 1);
         p.icon(icon, ui::center(disc, 20, 20), t.text_dim);
-        ui.label({c.x, disc.bottom() + 16, c.w, 22}, title, t.style(type::lead, t.text), Align::center);
+        ui.label({c.x, disc.bottom() + 16, c.w, 22}, title, t.style(type::lead, t.text, text::medium), Align::center);
         if (!detail.empty()) {
             ui.label({c.x, disc.bottom() + 42, c.w, 20}, detail, t.style(type::label, t.text_dim), Align::center);
         }
@@ -162,6 +162,65 @@ namespace lyren {
             library_.toggle_like(track);
         }
         return true;
+    }
+
+    bool Part::card(ui::Ui &ui, ui::Id id, Rect r, const Card &c, bool round) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const auto it = ui.interact(id, r);
+        if (it.hovered) {
+            ui.cursor = wl::Cursor::pointer;
+        }
+        const auto [hot, down] = ui.feel(id, it, ui::pace::steady);
+        const Rect cov = Rect{r.x, r.y - 2 * hot, r.w, r.w}.inset(down * 1.5f);
+        const float radius = round ? cov.w / 2 : t.radius;
+        if (hot > 0) {
+            p.shadow({cov.x, cov.y + 6, cov.w, cov.h}, radius, 18, t.shadow.with_alpha(0.65f * hot));
+        }
+        cover(ui, cov, c.cover, radius, round ? "user" : c.kind == CardKind::album ? "disc-album" : "list-music");
+        p.rect(cov, {}, radius, t.surface_edge(0.8f + 0.5f * hot), 1);
+        if (hot > 0 && !round) {
+            // A quiet shade gathers under the play disc, which glides into place.
+            p.gradient({cov.x, cov.y + cov.h * 0.55f, cov.w, cov.h * 0.45f}, {0, 0, 0, 0}, {0, 0, 0, 0.24f * hot}, radius);
+            const Rect b{cov.right() - 42, cov.bottom() - 42 + 4 * (1 - hot), 32, 32};
+            p.shadow(b, 16, 8, t.shadow.with_alpha(0.6f * hot));
+            p.rect(b, t.accent.with_alpha(hot), 16);
+            Rect glyph = ui::center(b, 13, 13);
+            glyph.x += 1;
+            p.icon("play-fill", glyph, t.on_accent().with_alpha(hot));
+        }
+        const Align align = round ? Align::center : Align::left;
+        ui.label({r.x, r.y + r.w + 10, r.w, 20}, c.title, t.style(type::body, t.text, text::medium), align);
+        ui.label({r.x, r.y + r.w + 31, r.w, 18}, card_subtitle(c), t.style(type::caption, t.text_dim), align);
+        if (it.right_clicked) {
+            shell_.dialogs.link_menu(ui, it.px, it.py, c);
+        }
+        return it.clicked;
+    }
+
+    int Part::card_grid(ui::Ui &ui, Rect r, ui::Id id, const std::vector<Card> &cards, bool round, double since) {
+        const CardGrid g(ui, id, r.w, round ? 130 : 150);
+        const Rect clip = ui.clip();
+        int clicked = -1, shown = 0;
+        ui.push_id(id);
+        for (size_t i = 0; i < cards.size(); ++i) {
+            const ui::Id item = item_id(ui, cards[i]);
+            Rect c = g.cell(r.x, r.y, i, item);
+            if (c.bottom() < clip.y || c.y > clip.bottom()) {
+                if (c.bottom() >= clip.y - clip.h && c.y <= clip.bottom() + clip.h) {
+                    env_.images.prefetch(cards[i].cover, static_cast<uint32_t>(Images::tier(c.w * ui.painter().scale())));
+                }
+                continue;
+            }
+            const float a = ui.cascade(since, shown++, ui::pace::arrive);
+            Fade fade(ui.painter(), a);
+            c.y += (1 - a) * 8;
+            if (card(ui, item, c, cards[i], round)) {
+                clicked = static_cast<int>(i);
+            }
+        }
+        ui.pop_id();
+        return clicked;
     }
 
 } // namespace lyren

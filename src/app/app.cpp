@@ -21,7 +21,7 @@
 
 namespace lyren {
 
-    constexpr float titlebar_h = 52;
+    constexpr float titlebar_h = 48;
     constexpr int shadow_margin = 28, resize_border = 8;
 
     static wl::Cursor cursor_for(uint32_t edges) {
@@ -389,11 +389,12 @@ namespace lyren {
             if (window_button(ui_.id("win-close"), {x + 80, y, 36, 28}, "x", 16, true)) {
                 loop_.quit();
             }
-            float name_w = p.measure("Lyren", {.size = t.fs(15)});
-            ui::Rect mark = ui::cut_left(r, 60 + name_w);
-            float shown = 1 - stage;
-            p.icon("disc-3", {mark.x + 20, bar.y + (bar.h - 20) / 2, 20, 20}, t.accent.with_alpha(shown));
-            p.text_in({mark.x + 48, bar.y, name_w, bar.h}, "Lyren", {.size = t.fs(15), .color = (window_->activated() ? t.text : t.text_dim).with_alpha(shown)});
+            const float shown = 1 - stage;
+            const auto brand_style = t.style(ui::type::lead, (window_->activated() ? t.text : t.text_dim).with_alpha(shown), text::semibold);
+            float name_w = p.measure("Lyren", brand_style);
+            ui::Rect mark = ui::cut_left(r, 52 + name_w);
+            p.icon("audio-lines", {mark.x + 16, bar.y + (bar.h - 17) / 2, 17, 17}, t.accent.with_alpha(shown));
+            p.text_in({mark.x + 41, bar.y, name_w + 1, bar.h}, "Lyren", brand_style);
         } else {
             ui::cut_left(r, 8);
         }
@@ -405,7 +406,10 @@ namespace lyren {
         auto &p = *painter_;
         const auto &t = ui_.theme();
         auto it = ui_.interact(id, r);
-        float hot = ui_.anim(id, it.hovered ? 1 : 0, 150);
+        if (it.hovered) {
+            ui_.cursor = wl::Cursor::pointer;
+        }
+        float hot = ui_.anim(id, it.hovered ? 1 : 0, ui::pace::quick);
         bool down = it.held && it.hovered;
         ui::Color fg = window_->activated() ? t.text : t.text_dim;
         if (hot > 0) {

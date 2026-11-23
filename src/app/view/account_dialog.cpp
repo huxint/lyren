@@ -53,14 +53,15 @@ namespace lyren {
         for (size_t i = 0; i < platforms.size(); ++i) {
             const auto &entry = platforms[i];
             const Rect row{r.x, view.y + static_cast<float>(i) * step - off, r.w, row_h};
-            p.rect(row, t.fill(), t.radius);
+            p.rect(row, t.fill(0.95f), t.radius, t.surface_edge(0.85f), 1);
             const Rect face{row.x + 14, row.y + 12, 40, 40};
             const auto &account = library_.shelf(entry.source).account;
             const bool in = env_.signed_in(entry.source), qr = provider(entry.source).capabilities.qr_login;
             if (account) {
                 cover(ui, face, account->avatar, 20, "user");
+                p.rect(face, {}, 20, t.surface_edge(0.8f), 1);
             } else {
-                p.rect(face, t.fill(1.6f), 20);
+                p.rect(face, t.fill(1.5f), 20, t.surface_edge(0.8f), 1);
                 p.icon("user", ui::center(face, 18, 18), t.text_dim);
             }
             const auto label = lyren::tr(in ? "Sign out" : qr ? "Scan to sign in" : "Connect account");
@@ -125,8 +126,8 @@ namespace lyren {
         ui.label({r.x, r.y + 40, r.w, 20}, lyren::tr(platform(source).scan_hint), t.style(type::label, t.text_dim), Align::center);
         // The code keeps its white card in every theme: phones read dark modules on white.
         const Rect card = ui::center({r.x, r.y + 76, r.w, 240}, 228, 228);
-        p.shadow({card.x, card.y + 8, card.w, card.h}, 14, 30, t.shadow.with_alpha(0.6f));
-        p.rect(card, white, 14);
+        p.shadow({card.x, card.y + 8, card.w, card.h}, 14, 30, t.shadow.with_alpha(0.55f));
+        p.rect(card, white, 14, t.dark ? ui::Color{} : t.surface_edge(1.1f), t.dark ? 0.f : 1.f);
         const QrState state = sign_in.status ? sign_in.status->state : QrState::waiting;
         const bool failed = !sign_in.error.empty();
         if (sign_in.has_code()) {
