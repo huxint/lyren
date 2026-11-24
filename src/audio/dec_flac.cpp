@@ -24,7 +24,7 @@ namespace lyren::audio {
                     FLAC__STREAM_DECODER_INIT_STATUS_OK) {
                     return false;
                 }
-                if (!FLAC__stream_decoder_process_until_end_of_metadata(d_) || !format.rate) {
+                if (!FLAC__stream_decoder_process_until_end_of_metadata(d_) || !format.rate || !format.channels) {
                     return false;
                 }
                 codec = "flac";

@@ -232,8 +232,7 @@ namespace lyren {
         ui.push_id(id);
         for (size_t i = first; i < limit; ++i) {
             const ui::Id item = item_id(ui, cards[i]);
-            Rect c = g.reflowing ? g.cell(r.x, r.y, i, item)
-                                 : Rect{r.x + static_cast<float>(i % ucols) * (g.cw + CardGrid::gap), r.y + static_cast<float>(i / ucols) * step, g.cw, g.ch};
+            Rect c = g.cell(r.x, r.y, i, item);
             if (c.bottom() < clip.y || c.y > clip.bottom()) {
                 if (c.bottom() >= clip.y - clip.h && c.y <= clip.bottom() + clip.h) {
                     env_.images.prefetch(cards[i].cover, static_cast<uint32_t>(Images::tier(c.w * ui.painter().scale())));

@@ -289,8 +289,8 @@ namespace lyren {
             }
             return ui.open_menu(x, y, std::move(items));
         }
-        add("play", "Play", [this, list = &tracks, i] {
-            playback_.play(*list, i);
+        add("play", "Play", [this, songs = tracks, i] {
+            playback_.play(songs, i);
         });
         add("list-plus", "Play next", [this, &ui, track] {
             playback_.play_next(track);

@@ -23,6 +23,8 @@ quality = "lossless"
 trial = "skip"
 # Match track loudness using the gain reported by the service.
 normalize = false
+# Persistent audio cache limit in MiB; 0 disables keeping tracks on disk.
+cache_size = 512
 
 [theme]
 # dark | light

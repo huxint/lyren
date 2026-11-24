@@ -6,6 +6,7 @@
 
 #include "audio/decoder.hpp"
 #include "audio/spool.hpp"
+#include "core/i18n.hpp"
 #include "http_server.hpp"
 #include "qishui/media.hpp"
 #include "qishui/qishui.hpp"
@@ -492,4 +493,133 @@ TEST_CASE("Qishui profiles, other user playlists, and comment user IDs") {
     REQUIRE(page);
     REQUIRE(page->comments.size() == 1);
     CHECK(page->comments[0].user_id == "99");
+}
+
+TEST_CASE("Qishui lenient cookie parsing, signer error attribution, diagnostic check, and collection caching") {
+    SUBCASE("lenient cookie formats and Netscape cookie_jar") {
+        auto trailing = qishui::parse_cookie_input("  Cookie: sessionid=abc; sid_tt=123; ;  \r\n");
+        REQUIRE(trailing);
+        const auto jar = net::CookieJar::from_netscape(*trailing);
+        CHECK(jar.get("sessionid", "api.qishui.com") == "abc");
+        CHECK(jar.get("sessionid", "www.qishui.com") == "abc");
+        CHECK(jar.get("sid_tt", "qishui.com") == "123");
+        CHECK(jar.header("other.example").empty());
+
+        auto netscape = qishui::parse_cookie_input("# Netscape HTTP Cookie File\n.qishui.com\tTRUE\t/\tTRUE\t0\tsessionid\tjar_tok\n");
+        REQUIRE(netscape);
+        CHECK(net::CookieJar::from_netscape(*netscape).get("sessionid", "api.qishui.com") == "jar_tok");
+    }
+
+    SUBCASE("signer HTTP errors point to the signing service and check_session reports step-by-step status") {
+        std::atomic<int> signer_mode{404};
+        test::Server bad_signer([&](std::string_view req) {
+            const int m = signer_mode.load();
+            if (m == 401) {
+                return std::string("HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+            }
+            if (m == 404) {
+                return std::string("HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found");
+            }
+            if (req.starts_with("GET /config ")) {
+                return test::ok(R"({"ok":true,"identity":{"device_id":"d1","iid":"i1","fp":"f1"}})");
+            }
+            return test::ok(R"({"ok":true,"headers":{"x-helios":"h","x-medusa":"m"}})");
+        });
+        test::Server api([](std::string_view) {
+            return test::ok(R"({"my_info":{"id":"42","nickname":"阿弦"}})");
+        });
+
+        Loop loop;
+        net::Http http;
+        qishui::Qishui qs(loop, http);
+        qs.client.api_base = api.url();
+
+        const Language prev_lang = language();
+        set_language(Language::en);
+        auto r404_en = run(loop, qs.import_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value()));
+        REQUIRE_FALSE(r404_en);
+        CHECK(r404_en.error().contains("signing service"));
+        set_language(Language::zh);
+        auto r404_zh = run(loop, qs.import_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value()));
+        REQUIRE_FALSE(r404_zh);
+        CHECK(r404_zh.error().contains("签名服务"));
+        set_language(prev_lang);
+
+        signer_mode = 401;
+        std::optional<SessionCheck> chk401;
+        spawn([&]() -> Task<void> {
+            chk401 = co_await qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value());
+            loop.quit();
+        }());
+        loop.run();
+        REQUIRE(chk401);
+        CHECK(chk401->signer.state == SessionCheck::State::failed);
+        CHECK_FALSE(chk401->ok());
+
+        signer_mode = 200;
+        std::optional<SessionCheck> chk_anon, chk_user;
+        spawn([&]() -> Task<void> {
+            chk_anon = co_await qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value());
+            chk_user = co_await qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url(), "cookie", "Cookie: sessionid=ok; "}).value());
+            loop.quit();
+        }());
+        loop.run();
+        REQUIRE(chk_anon);
+        CHECK(chk_anon->ok());
+        CHECK(chk_anon->account.state == SessionCheck::State::skipped);
+        REQUIRE(chk_user);
+        CHECK(chk_user->ok());
+        CHECK(chk_user->account.state == SessionCheck::State::ok);
+        CHECK(chk_user->account.detail.contains("阿弦"));
+    }
+
+    SUBCASE("user_playlists fallback uses session user_id and album/artist cache collection state and tolerate 500s") {
+        std::atomic<int> mixed_fetches{0};
+        std::atomic<bool> fail_collections{false};
+        test::Server api([&](std::string_view req) {
+            if (req.starts_with("GET /luna/pc/me/playlist?")) {
+                return test::ok(R"({"playlists":[{"id":"created1","title":"自建","type":0}],"has_more":false})");
+            }
+            if (req.starts_with("GET /luna/pc/user/playlist?")) {
+                CHECK(req.contains("user_id=7"));
+                CHECK_FALSE(req.contains("user_id=&"));
+                return test::ok(R"({"playlists":[{"id":"liked7","title":"我喜欢","type":1}],"has_more":false})");
+            }
+            if (req.starts_with("GET /luna/me/collection/mixed?")) {
+                ++mixed_fetches;
+                if (req.contains("item_types=playlist")) {
+                    return test::ok(R"({"mixed_collections":[],"has_more":false})");
+                }
+                if (fail_collections.load()) {
+                    return std::string("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                }
+                return test::ok(R"({"mixed_collections":[{"album":{"id":"alb-1","name":"已藏专辑"}}],"has_more":false})");
+            }
+            if (req.starts_with("GET /luna/pc/albums/")) {
+                return test::ok(R"({"album_info":{"id":"alb","name":"测试专辑","artists":[{"id":"ar1","name":"歌手"}]},"tracks":[]})");
+            }
+            return test::ok(R"({})");
+        });
+        Context c(api.url());
+        const auto lists = run(c.loop, c.service.user_playlists(""));
+        REQUIRE(lists);
+        CHECK(lists->first.id == "liked7");
+        mixed_fetches = 0;
+
+        const auto a1 = run(c.loop, c.service.album("alb-1"));
+        REQUIRE(a1);
+        CHECK(a1->collected);
+        const auto a2 = run(c.loop, c.service.album("alb-2"));
+        REQUIRE(a2);
+        CHECK_FALSE(a2->collected);
+        // Second album detail reuses the cached saved-album set instead of paginating again.
+        CHECK(mixed_fetches == 1);
+
+        // Even when the collection endpoint fails on a fresh session, album() still loads cleanly.
+        Context c2(api.url());
+        fail_collections = true;
+        const auto a3 = run(c2.loop, c2.service.album("alb-1"));
+        REQUIRE_MESSAGE(a3.has_value(), (a3 ? std::string{} : a3.error()));
+        CHECK_FALSE(a3->collected);
+    }
 }

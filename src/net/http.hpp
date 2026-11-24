@@ -45,6 +45,7 @@ namespace lyren::net {
         bool follow_redirects = true;
         std::optional<CookieJar> cookie_jar;
         std::string method;
+        size_t max_bytes = 32u << 20;
     };
 
     enum class Verification : uint8_t {

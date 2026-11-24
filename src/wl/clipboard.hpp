@@ -43,7 +43,12 @@ namespace lyren::wl {
             std::shared_ptr<const std::string> bytes;
             size_t offset = 0;
         };
+        struct Incoming {
+            std::string text;
+            std::move_only_function<void(std::string)> done;
+        };
         std::unordered_map<int, Outgoing> sending_;
+        std::unordered_map<int, Incoming> reading_;
     };
 
 } // namespace lyren::wl

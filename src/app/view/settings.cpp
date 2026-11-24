@@ -632,6 +632,7 @@ namespace lyren {
                 const auto &caps = provider(entry.source).capabilities;
                 const auto &account = library_.shelf(entry.source).account;
                 const bool in = env_.signed_in(entry.source), active = entry.source == browser_.active(), qr = caps.qr_login;
+                const bool signer_only = accounts_.signer_connected(entry.source);
                 const Rect rr = row(68, i == 0, i + 1 == platforms.size());
                 const ui::Id rid = ui::sub_id(ui.id("svc-row"), i);
 
@@ -643,8 +644,8 @@ namespace lyren {
                     cover(ui, face, account->avatar, 20, "user");
                     p.rect(face, {}, 20, t.surface_edge(0.85f), 1);
                 } else {
-                    p.rect(face, in ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 20, t.surface_edge(0.85f), 1);
-                    p.icon(in ? "user" : "music", ui::center(face, 18, 18), in ? t.accent : t.text_dim);
+                    p.rect(face, (in || signer_only) ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 20, t.surface_edge(0.85f), 1);
+                    p.icon(in ? "user" : signer_only ? "link" : "music", ui::center(face, 18, 18), (in || signer_only) ? t.accent : t.text_dim);
                 }
 
                 // Right-aligned actions.
@@ -655,6 +656,13 @@ namespace lyren {
                         sign_out_of = entry.source;
                     }
                     right = out_r.x - 8;
+                    if (caps.session_import) {
+                        const Rect edit_r{right - control::medium, rr.y + (rr.h - control::medium) / 2, control::medium, control::medium};
+                        if (ui.icon_button(ui::sub_id(rid, 4), edit_r, "pencil", 15, false, lyren::tr("Edit connection"))) {
+                            sign_in_of = entry.source;
+                        }
+                        right = edit_r.x - 8;
+                    }
                     if (account) {
                         const auto prof_lbl = rr.w < 540 ? std::string_view{} : lyren::tr("My profile");
                         const float pw = prof_lbl.empty() ? control::medium + 4 : ui.button_width(prof_lbl, true);
@@ -666,6 +674,13 @@ namespace lyren {
                         right = prof_r.x - 10;
                     }
                 } else {
+                    if (signer_only) {
+                        const Rect disc_r{right - control::medium, rr.y + (rr.h - control::medium) / 2, control::medium, control::medium};
+                        if (ui.icon_button(ui::sub_id(rid, 5), disc_r, "log-out", 16, false, lyren::tr("Disconnect signing service"))) {
+                            sign_out_of = entry.source;
+                        }
+                        right = disc_r.x - 8;
+                    }
                     const auto label = lyren::tr(qr ? "Scan to sign in" : "Connect account");
                     const float bw = ui.button_width(label, true);
                     const Rect btn{right - bw, rr.y + (rr.h - control::medium) / 2, bw, control::medium};
@@ -689,8 +704,12 @@ namespace lyren {
                     ui.label(pill, badge_sv, badge_st, Align::center);
                 }
 
-                const std::string_view status = account ? std::string_view(account->name) : in ? lyren::tr("Loading account") : lyren::tr("Not signed in");
-                ui.label({tx, rr.y + 37, text_w, 18}, status, t.style(type::caption, account ? t.text_dim : t.faint()));
+                const std::string_view status = account               ? std::string_view(account->name)
+                                                : in                  ? lyren::tr("Loading account")
+                                                : signer_only         ? lyren::tr("Signing service connected · Not signed in")
+                                                : caps.session_import ? lyren::tr("Not signed in · Anonymous playback ready")
+                                                                      : lyren::tr("Not signed in");
+                ui.label({tx, rr.y + 37, text_w, 18}, status, t.style(type::caption, account || signer_only ? t.text_dim : t.faint()));
 
                 // Clicking the info area switches to that platform.
                 if (const auto hit = ui.interact(rid, {rr.x + 12, rr.y + 6, std::max(0.f, right - rr.x - 16), rr.h - 12}); !active) {

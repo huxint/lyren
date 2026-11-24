@@ -201,6 +201,7 @@ namespace lyren {
         uint64_t rng_ = 0x2545f4914f6cdd1dull;
 
         uint64_t play_gen_ = 0;
+        uint64_t player_event_ = 0;
         State last_state_ = State::idle;
         bool want_play_ = false, fetching_ = false;
         bool retried_ = false, counted_ = false;

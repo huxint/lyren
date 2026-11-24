@@ -43,6 +43,7 @@ namespace lyren {
         float repeat_height(const Listener &page, size_t max_rows) const;
         float repeat_card(ui::Ui &ui, ui::Rect r, const Listener &page, size_t max_rows);
         void person(ui::Ui &ui, ui::Rect r, Source source, const Person &person);
+        void ensure_own_playlists(Source source);
         // Turns the page to a section, its top in sight.
         void show(ui::Ui &ui, const Listener &page, Section section);
 
@@ -54,7 +55,7 @@ namespace lyren {
         float content_h_ = 0, header_h_ = 0; // as last laid out
         Source playlists_source_ = Source::netease;
         bool playlists_dirty_ = true;
-        std::vector<Card> own_made_, own_saved_;
+        std::vector<Card> own_made_, own_saved_, own_preview_;
     };
 
 } // namespace lyren

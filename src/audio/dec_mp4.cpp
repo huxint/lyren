@@ -164,13 +164,17 @@ namespace lyren::audio {
                     return;
                 }
                 valid = true;
-                auto children = [&](this auto &self, size_t from, size_t to) -> void {
+                auto children = [&](this auto &self, size_t from, size_t to, int depth) -> void {
+                    if (depth > 8) {
+                        valid = false;
+                        return;
+                    }
                     each_box(buf, from, to, [&](uint32_t child, size_t cb, size_t ce) {
                         Cursor c{buf, cb, ce};
                         if (child == fourcc("esds")) {
                             parse_esds(c, t);
                         } else if (child == fourcc("wave") || child == fourcc("sinf") || child == fourcc("schi")) {
-                            self(cb, ce);
+                            self(cb, ce, depth + 1);
                         } else if (t.encryption) {
                             auto &enc = *t.encryption;
                             if (child == fourcc("frma")) {
@@ -190,7 +194,7 @@ namespace lyren::audio {
                         valid &= !c.bad;
                     });
                 };
-                children(c.at, end);
+                children(c.at, end, 0);
                 if (t.encryption) {
                     const auto &enc = *t.encryption;
                     valid &= enc.scheme == fourcc("cenc") && (enc.iv_size == 8 || enc.iv_size == 16);
@@ -366,6 +370,9 @@ namespace lyren::audio {
                     return false;
                 }
                 CStreamInfo *si = aacDecoder_GetStreamInfo(h_);
+                if (!si || si->sampleRate <= 0 || si->numChannels <= 0 || si->frameSize <= 0) {
+                    return false;
+                }
                 format = {static_cast<uint32_t>(si->sampleRate), static_cast<uint32_t>(si->numChannels)};
                 fill(si);
                 length = t_.timescale ? t_.duration * format.rate / t_.timescale : 0;
@@ -380,7 +387,12 @@ namespace lyren::audio {
                         if (!decode_next()) {
                             break;
                         }
-                        fill(aacDecoder_GetStreamInfo(h_));
+                        const CStreamInfo *si = aacDecoder_GetStreamInfo(h_);
+                        if (!si || si->numChannels <= 0 || si->frameSize <= 0 || static_cast<uint32_t>(si->sampleRate) != format.rate) {
+                            bad_ = true;
+                            break;
+                        }
+                        fill(si);
                     }
                     if (skip_) {
                         size_t k = std::min(skip_, buf_.size() - head_);
@@ -399,10 +411,13 @@ namespace lyren::audio {
 
             // A fresh decoder starts one packet early: the packet before the target primes the overlap-add.
             bool seek(uint64_t frame) override {
+                if (!frame_size_ || (length > 0 && frame > length) || frame / frame_size_ > t_.sizes.size()) {
+                    return false;
+                }
                 error.clear(), bad_ = false;
                 uint64_t k = frame / frame_size_, start = k ? k - 1 : 0;
                 next_ = std::min<uint64_t>(start, t_.sizes.size());
-                skip_ = static_cast<size_t>(frame - start * frame_size_) * format.channels;
+                skip_ = static_cast<size_t>(frame - next_ * frame_size_) * format.channels;
                 buf_.clear(), head_ = 0;
                 return reset();
             }
@@ -439,9 +454,17 @@ namespace lyren::audio {
                     ++next_;
                     UCHAR *p = packet_.data();
                     UINT size = static_cast<UINT>(packet_.size()), valid = size;
-                    aacDecoder_Fill(h_, &p, &size, &valid);
-                    if (aacDecoder_DecodeFrame(h_, pcm_.data(), static_cast<INT>(pcm_.size()), 0) == AAC_DEC_OK) {
+                    if (aacDecoder_Fill(h_, &p, &size, &valid) != AAC_DEC_OK) {
+                        bad_ = true;
+                        return false;
+                    }
+                    const AAC_DECODER_ERROR err = aacDecoder_DecodeFrame(h_, pcm_.data(), static_cast<INT>(pcm_.size()), 0);
+                    if (err == AAC_DEC_OK) {
+                        bad_ = false;
                         return true;
+                    }
+                    if (err != AAC_DEC_NOT_ENOUGH_BITS) {
+                        bad_ = true;
                     }
                 }
                 return false;

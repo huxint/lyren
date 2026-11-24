@@ -334,3 +334,38 @@ TEST_CASE("partial audio responses fill subsequent gaps without overwriting earl
     CHECK(bytes == body);
     CHECK(spool->progress() == std::pair<uint64_t, uint64_t>{6145, 6145});
 }
+
+TEST_CASE("HTTP requests enforce max_bytes body limits and CookieJar merges large jars accurately") {
+    SUBCASE("oversized response body aborts before unbounded allocation") {
+        const std::string huge(65536, 'x');
+        Server server([&](std::string_view) {
+            return ok(huge);
+        });
+        const auto response = request_with_retry({.url = server.url(), .max_bytes = 4096}, net::Retry::never);
+        CHECK_FALSE(response.error.empty());
+        CHECK(response.body.size() <= 4096);
+    }
+
+    SUBCASE("CookieJar::merge handles hundreds of cookies with O(N) index") {
+        std::string base_lines, after_lines;
+        for (int i = 0; i < 400; ++i) {
+            base_lines += std::format(".example.test\tTRUE\t/\tFALSE\t0\tc{}\tv{}\n", i, i);
+            if (i >= 50) {
+                after_lines += std::format(".example.test\tTRUE\t/\tFALSE\t0\tc{}\t{}\n", i, i < 150 ? std::format("updated_{}", i) : std::format("v{}", i));
+            }
+        }
+        for (int i = 400; i < 450; ++i) {
+            after_lines += std::format(".example.test\tTRUE\t/\tFALSE\t0\tc{}\tnew_{}\n", i, i);
+        }
+        const auto before = net::CookieJar::from_netscape(base_lines);
+        const auto after = net::CookieJar::from_netscape(after_lines);
+        net::CookieJar jar = net::CookieJar::from_netscape(base_lines + "other.test\tFALSE\t/\tFALSE\t0\tsibling\tkept\n");
+        jar.merge(before, after);
+        CHECK(jar.get("c0", "api.example.test").empty());
+        CHECK(jar.get("c49", "api.example.test").empty());
+        CHECK(jar.get("c50", "api.example.test") == "updated_50");
+        CHECK(jar.get("c200", "api.example.test") == "v200");
+        CHECK(jar.get("c425", "api.example.test") == "new_425");
+        CHECK(jar.get("sibling", "other.test") == "kept");
+    }
+}

@@ -84,6 +84,11 @@ namespace lyren::wl {
             close(fd);
         }
         sending_.clear();
+        for (auto &[fd, _] : reading_) {
+            display_.loop.unwatch(fd);
+            close(fd);
+        }
+        reading_.clear();
         if (source_) {
             wl_data_source_destroy(source_);
         }
@@ -218,24 +223,41 @@ namespace lyren::wl {
         close(fds[1]);
         wl_display_flush(display_.display);
         // The owner may be this very process, so read from the loop instead of blocking.
-        struct Read {
-            std::string text;
-            std::move_only_function<void(std::string)> done;
-        };
-        auto pending = std::make_shared<Read>(std::string{}, std::move(fn));
         int rfd = fds[0];
-        display_.loop.watch(rfd, EPOLLIN, [this, rfd, pending](uint32_t) {
-            std::array<char, 4096> chunk;
-            ssize_t n;
-            while ((n = read(rfd, chunk.data(), chunk.size())) > 0) {
-                pending->text.append(chunk.data(), static_cast<size_t>(n));
-            }
-            if (n < 0 && errno == EAGAIN) {
+        reading_[rfd] = {{}, std::move(fn)};
+        display_.loop.watch(rfd, EPOLLIN, [this, rfd](uint32_t) {
+            static constexpr size_t max_paste_bytes = 4u << 20;
+            auto it = reading_.find(rfd);
+            if (it == reading_.end()) {
                 return;
             }
+            std::array<char, 4096> chunk;
+            ssize_t n = 0;
+            bool overflow = false;
+            for (;;) {
+                n = read(rfd, chunk.data(), chunk.size());
+                if (n > 0) {
+                    const size_t room = max_paste_bytes - std::min(it->second.text.size(), max_paste_bytes);
+                    it->second.text.append(chunk.data(), std::min(static_cast<size_t>(n), room));
+                    if (static_cast<size_t>(n) > room) {
+                        overflow = true;
+                        break;
+                    }
+                    continue;
+                }
+                if (n < 0 && errno == EINTR) {
+                    continue;
+                }
+                break;
+            }
+            if (!overflow && n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                return;
+            }
+            auto incoming = std::move(it->second);
+            reading_.erase(it);
             display_.loop.unwatch(rfd);
             close(rfd);
-            pending->done(std::move(pending->text));
+            incoming.done(std::move(incoming.text));
         });
     }
 

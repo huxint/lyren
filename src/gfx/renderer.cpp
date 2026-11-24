@@ -435,6 +435,9 @@ namespace lyren::gfx {
                 vkFreeMemory(ctx_.device, st.memory, nullptr);
             });
             staging_ = {};
+        } else if (staging_.buffer) {
+            // Every staged texture was destroyed before draw(); reclaim the unused host buffer now.
+            free_staging();
         }
 
         before_present();
@@ -513,29 +516,82 @@ namespace lyren::gfx {
         return id;
     }
 
+    size_t Renderer::live_staging_bytes() const {
+        size_t total = 0;
+        for (const auto &c : copies_) {
+            total = ((total + 15) & ~static_cast<size_t>(15)) + static_cast<size_t>(c.region.imageExtent.width) * c.region.imageExtent.height * textures_[c.tex].texel;
+        }
+        return total;
+    }
+
+    void Renderer::free_staging() {
+        if (staging_.buffer) {
+            vkDestroyBuffer(ctx_.device, staging_.buffer, nullptr);
+            vkFreeMemory(ctx_.device, staging_.memory, nullptr);
+            staging_ = {};
+        }
+    }
+
+    void Renderer::compact_staging(size_t extra_bytes) {
+        if (copies_.empty()) {
+            if (extra_bytes == 0) {
+                free_staging();
+            } else {
+                staging_.used = 0;
+            }
+            return;
+        }
+        std::ranges::stable_sort(copies_, {}, [](const Copy &c) {
+            return c.region.bufferOffset;
+        });
+        const size_t live = live_staging_bytes();
+        const size_t aligned_live = (live + 15) & ~static_cast<size_t>(15);
+        const size_t want = aligned_live + extra_bytes;
+        if (want <= staging_.size && (extra_bytes > 0 || staging_.size <= (2u << 20) || want * 2 > staging_.size)) {
+            size_t dst = 0;
+            for (auto &c : copies_) {
+                dst = (dst + 15) & ~static_cast<size_t>(15);
+                const size_t sz = static_cast<size_t>(c.region.imageExtent.width) * c.region.imageExtent.height * textures_[c.tex].texel;
+                if (dst != c.region.bufferOffset) {
+                    std::memmove(staging_.map + dst, staging_.map + c.region.bufferOffset, sz);
+                    c.region.bufferOffset = dst;
+                }
+                dst += sz;
+            }
+            staging_.used = dst;
+            return;
+        }
+        const size_t size = std::max<size_t>(256u << 10, std::bit_ceil(want));
+        Staging next;
+        VkBufferCreateInfo bci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+        check(vkCreateBuffer(ctx_.device, &bci, nullptr, &next.buffer));
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(ctx_.device, next.buffer, &req);
+        next.memory = ctx_.allocate(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(ctx_.device, next.buffer, next.memory, 0);
+        vkMapMemory(ctx_.device, next.memory, 0, VK_WHOLE_SIZE, 0, reinterpret_cast<void **>(&next.map));
+        next.size = size;
+        size_t dst = 0;
+        for (auto &c : copies_) {
+            dst = (dst + 15) & ~static_cast<size_t>(15);
+            const size_t sz = static_cast<size_t>(c.region.imageExtent.width) * c.region.imageExtent.height * textures_[c.tex].texel;
+            std::memcpy(next.map + dst, staging_.map + c.region.bufferOffset, sz);
+            c.region.bufferOffset = dst;
+            dst += sz;
+        }
+        next.used = dst;
+        free_staging();
+        staging_ = next;
+    }
+
     void Renderer::upload(TextureId tex, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void *pixels, uint32_t pitch) {
         const Texture &t = textures_[tex];
         size_t row = static_cast<size_t>(w) * t.texel, bytes = row * h;
         size_t offset = (staging_.used + 15) & ~static_cast<size_t>(15);
         if (offset + bytes > staging_.size) {
-            // Grow, keeping what is already staged for this frame.
-            size_t size = std::max({static_cast<size_t>(256) << 10, staging_.size * 2, offset + bytes});
-            Staging grown;
-            VkBufferCreateInfo bci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
-            check(vkCreateBuffer(ctx_.device, &bci, nullptr, &grown.buffer));
-            VkMemoryRequirements req;
-            vkGetBufferMemoryRequirements(ctx_.device, grown.buffer, &req);
-            grown.memory = ctx_.allocate(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            vkBindBufferMemory(ctx_.device, grown.buffer, grown.memory, 0);
-            vkMapMemory(ctx_.device, grown.memory, 0, VK_WHOLE_SIZE, 0, reinterpret_cast<void **>(&grown.map));
-            grown.size = size;
-            grown.used = staging_.used;
-            if (staging_.buffer) {
-                std::memcpy(grown.map, staging_.map, staging_.used);
-                vkDestroyBuffer(ctx_.device, staging_.buffer, nullptr);
-                vkFreeMemory(ctx_.device, staging_.memory, nullptr);
-            }
-            staging_ = grown;
+            // Reclaim dead ranges from evicted textures before growing the staging buffer.
+            compact_staging(bytes);
+            offset = (staging_.used + 15) & ~static_cast<size_t>(15);
         }
         auto *src = static_cast<const uint8_t *>(pixels);
         for (uint32_t r = 0; r < h; ++r) {
@@ -579,6 +635,11 @@ namespace lyren::gfx {
         std::erase_if(copies_, [id](const Copy &c) {
             return c.tex == id;
         });
+        if (copies_.empty()) {
+            free_staging();
+        } else if (staging_.size > (4u << 20) && live_staging_bytes() * 4 <= staging_.size) {
+            compact_staging();
+        }
         textures_[id] = {};
         retire([this, t, id] {
             vkDestroyImageView(ctx_.device, t.view, nullptr);

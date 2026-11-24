@@ -58,6 +58,7 @@ namespace lyren::text {
         std::vector<Face> faces_;                           // every face once; the regular family's own comes first
         std::array<std::vector<uint16_t>, weights> chains_; // fallback order per weight
         int color_ = -1;                                    // the colour emoji face
+        mutable std::array<uint64_t, 1024> lookup_cache_{}; // direct-mapped (cp, weight, emoji) -> face index
     };
 
 } // namespace lyren::text

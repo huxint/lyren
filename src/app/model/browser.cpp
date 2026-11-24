@@ -330,7 +330,8 @@ namespace lyren {
         if (source == active_ && supports(Page::releases, source) && !lib.releases[static_cast<size_t>(lib.release_tab)].loaded) {
             library_.load_releases(source);
         }
-        if (source == active_ && supports(Page::collection, source) && p.logged_in() && !lib.collection[0].loaded && !lib.collection[0].loading) {
+        if (source == active_ && supports(Page::collection, source) && p.logged_in() && !lib.collection[0].loaded && !lib.collection[0].loading &&
+            lib.collection[0].error.empty() && lib.collection[1].error.empty()) {
             co_await library_.load_collection(source);
         }
     }
@@ -425,7 +426,16 @@ namespace lyren {
         } else if (page == Page::cloud) {
             r = co_await provider.features.cloud();
         } else if (page == Page::recent) {
-            r = co_await provider.features.recent_plays();
+            if (lib.recent_plays_loaded && env_.now() - lib.recent_plays_at < 60.0) {
+                r = lib.recent_plays;
+            } else {
+                r = co_await provider.features.recent_plays();
+                if (r && account_gen == lib.account_gen) {
+                    lib.recent_plays = *r;
+                    lib.recent_plays_at = env_.now();
+                    lib.recent_plays_loaded = true;
+                }
+            }
         } else if (page == Page::similar) {
             r = co_await provider.similar(card.id);
         } else {
@@ -453,6 +463,9 @@ namespace lyren {
     }
 
     void Browser::reload_list() {
+        if (route_.page == Page::recent) {
+            library_.shelf(route_.card.source).recent_plays_loaded = false;
+        }
         if (route_.list) {
             spawn(load_list(route_.list, route_.page, route_.card));
         } else {

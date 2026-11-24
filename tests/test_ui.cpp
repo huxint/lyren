@@ -200,4 +200,14 @@ TEST_CASE("multiline comments preserve pasted lines and Enter variants never sub
     }
     CHECK(text.ends_with("第三行\n\n\n\n"));
     CHECK(e.apply(text, key(XKB_KEY_KP_Enter, wl::mod_ctrl), copied, true) == TextEdit::Key::edited);
+
+    std::string jar_text;
+    TextEdit jar_edit;
+    jar_edit.insert(jar_text, ".qishui.com\tTRUE\t/\tTRUE\t0\tsessionid\tabc123\n", true);
+    CHECK(jar_text == ".qishui.com\tTRUE\t/\tTRUE\t0\tsessionid\tabc123\n");
+
+    std::string single_line;
+    TextEdit single_edit;
+    single_edit.insert(single_line, "a\tb\nc", false);
+    CHECK(single_line == "a b c");
 }

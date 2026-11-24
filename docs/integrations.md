@@ -40,7 +40,9 @@
 
 ## 汽水账号连接
 
-公开搜索、歌单、榜单、歌手、专辑、评论及公开媒体可匿名读取。账号资料库、写操作和应用取流通过账号面板导入会话：
+公开搜索、歌单、榜单、歌手、专辑、评论及公开媒体可匿名读取，无需配置签名服务或账号即可使用。
+
+如需同步个人资料库、喜欢/收藏、发表评论或使用签名取流，可在账号面板通过结构化表单填写，或直接粘贴 JSON 配置：
 
 ```json
 {
@@ -50,16 +52,46 @@
 }
 ```
 
-配置值均为字符串。`signer_token` 可省略；`cookie_jar` 可代替 `cookie`，其内容为保留域名、路径、Secure 和有效期的 Netscape Cookie jar。
+配置值均为字符串：
+- `signer_token` 可省略；服务校验失败（HTTP 401/403）会单独提示令牌异常。
+- `cookie`（可选）支持省略（仅连接签名服务，不登录个人账号）、`name=value; ...`（忽略首尾空白、多余分号及可选 `Cookie:` 请求头前缀，自动写入 `.qishui.com` 作用域），也支持直接粘贴保留域名、路径、Secure 和有效期的 Netscape `cookie_jar`。
+- 高级字段 `device_id`、`iid`、`fp` 可选；留空时使用签名服务 `GET /config` 返回的设备身份。
 
-`signer_url` 指向用户配置的签名服务。Lyren 使用以下服务契约：
+界面内置「测试连接」按钮，也可在命令行执行 `./build/lyren-probe qishui check [signer_url|json] [cookie|cookie_file]`，按 ① 签名服务连通性、② 设备身份完整性、③ `/luna/pc/me` 账号有效性三步输出诊断结果。
+
+`signer_url` 指向用户配置的签名服务。Lyren 使用以下最小 HTTP JSON 契约：
 
 | 请求 | 输入 | 响应 |
 |---|---|---|
-| `GET /config` | 无请求体 | `ok:true`；`identity` 中的 `device_id`、`iid`、`fp` |
+| `GET /config` | 无请求体（可选 `Authorization: Bearer <token>`） | `ok:true`；`identity` 中的 `device_id`、`iid`、`fp` |
 | `POST /sign` | `url`、`method`、`body`、`headers`、`ts_ms` | `ok:true`；`headers` 中的 `x-helios` 和 `x-medusa` |
 
-签名请求的 `body` 为将要发送的原始正文字符串，`headers` 为请求头对象，`ts_ms` 为毫秒时间戳。响应可提供 `ms_token` 或 `msToken`，以及 `a_bogus`，用于补充业务 URL 的查询参数。服务失败响应使用 `ok:false` 和 `error`。
+最小响应示例：
+
+```json
+// GET /config -> 200 OK
+{
+  "ok": true,
+  "identity": {
+    "device_id": "7300000000000000000",
+    "iid": "7300000000000000001",
+    "fp": "verify_xxxxxxxx"
+  }
+}
+
+// POST /sign -> 200 OK
+{
+  "ok": true,
+  "headers": {
+    "x-helios": "<signature>",
+    "x-medusa": "<signature>"
+  },
+  "msToken": "<optional>",
+  "a_bogus": "<optional>"
+}
+```
+
+签名请求的 `body` 为将要发送的原始正文字符串，`headers` 为请求头对象，`ts_ms` 为毫秒时间戳。响应可提供 `ms_token` 或 `msToken`，以及 `a_bogus`，用于补充业务 URL 的查询参数。服务失败响应使用 `{"ok": false, "error": "原因"}`。
 
 配置中的 `device_id`、`iid` 和 `fp` 可补充服务未提供的身份字段，并须与签名上下文一致。服务 Token 通过 `Authorization: Bearer <token>` 发送给签名服务。业务请求使用对应 Cookie 和签名，不重新序列化已经签名的正文。
 

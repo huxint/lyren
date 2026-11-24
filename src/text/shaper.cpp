@@ -16,7 +16,7 @@ namespace lyren::text {
     // Characters that should stay in the surrounding run whatever font covers them: spaces, joiners, variation
     // selectors, combining marks, the keycap and emoji tags.
     static bool joins_run(char32_t cp) {
-        return cp == ' ' || cp == 0x200d || cp == 0x20e3 || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x300 && cp <= 0x36f) || (cp >= 0xe0020 && cp <= 0xe007f);
+        return cp == ' ' || cp == '\t' || cp == 0x200d || cp == 0x20e3 || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x300 && cp <= 0x36f) || (cp >= 0xe0020 && cp <= 0xe007f);
     }
 
     const Shaped &Shaper::shape(std::string_view text, uint8_t features) {

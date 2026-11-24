@@ -1,5 +1,7 @@
 #include <mpg123.h>
 
+#include <limits>
+
 #include "audio/decoder.hpp"
 #include "audio/spool.hpp"
 
@@ -66,6 +68,9 @@ namespace lyren::audio {
             }
 
             bool seek(uint64_t frame) override {
+                if (frame > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) || (length > 0 && frame > length)) {
+                    return false;
+                }
                 error.clear();
                 return mpg123_seek64(h_, static_cast<int64_t>(frame), SEEK_SET) >= 0;
             }
@@ -79,7 +84,11 @@ namespace lyren::audio {
             }
             static int64_t seek_cb(void *ud, int64_t off, int whence) {
                 auto *d = static_cast<Mp3 *>(ud);
-                int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(d->pos_) : static_cast<int64_t>(d->s_.size());
+                const auto size = static_cast<int64_t>(d->s_.size());
+                const int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(d->pos_) : whence == SEEK_END ? size : -1;
+                if (base < 0 || off < -base || off > size - base) {
+                    return -1;
+                }
                 d->pos_ = static_cast<uint64_t>(base + off);
                 return static_cast<int64_t>(d->pos_);
             }

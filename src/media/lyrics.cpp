@@ -333,8 +333,7 @@ namespace lyren {
     }
 
     std::vector<LyricLine> parse_krc(std::string_view text) {
-        std::string yrc;
-        yrc.reserve(text.size());
+        std::vector<LyricLine> lines;
         KrcLanguage language;
         std::vector<uint32_t> starts;
         while (!text.empty()) {
@@ -349,34 +348,59 @@ namespace lyren {
                 continue;
             }
             starts.push_back(head->first);
-            yrc += std::format("[{},{}]", head->first, head->second);
+            LyricLine l{.time = head->first / 1000.0};
             while (!line.empty()) {
                 if (const auto word = timing(line, '<', '>')) {
                     if (word->first <= UINT32_MAX - head->first) {
-                        yrc += std::format("({},{},0)", head->first + word->first, word->second);
+                        const auto at = static_cast<uint32_t>(l.text.size());
+                        l.words.push_back({head->first + word->first, word->second, at, at});
                     }
                     continue;
                 }
                 const auto next = line.find('<', 1);
-                yrc += line.substr(0, next);
+                std::string_view chunk = line.substr(0, next);
+                while (l.text.empty() && chunk.starts_with(' ')) {
+                    chunk.remove_prefix(1);
+                }
+                l.text += chunk;
+                if (!l.words.empty()) {
+                    l.words.back().to = static_cast<uint32_t>(l.text.size());
+                }
                 line = next == line.npos ? std::string_view{} : line.substr(next);
             }
-            yrc += '\n';
+            while (l.text.ends_with(' ')) {
+                l.text.pop_back();
+            }
+            if (l.text.empty()) {
+                continue;
+            }
+            for (auto &w : l.words) {
+                w.to = std::min(w.to, static_cast<uint32_t>(l.text.size())), w.from = std::min(w.from, w.to);
+            }
+            lines.push_back(std::move(l));
         }
-        std::string translation;
+        std::ranges::stable_sort(lines, {}, &LyricLine::time);
+        std::vector<LyricLine> trans;
         for (const auto &entry : language.content) {
             if (entry.type != 1) {
                 continue;
             }
-            for (size_t i = 0; i < std::min(starts.size(), entry.lyricContent.size()); ++i) {
-                translation += std::format("[{}:{:02}.{:03}]", starts[i] / 60000, starts[i] / 1000 % 60, starts[i] % 1000);
+            const size_t n = std::min(starts.size(), entry.lyricContent.size());
+            trans.reserve(trans.size() + n);
+            for (size_t i = 0; i < n; ++i) {
+                std::string joined;
                 for (const auto &word : entry.lyricContent[i]) {
-                    translation += word;
+                    joined += word;
                 }
-                translation += '\n';
+                const auto cleaned = trim(joined);
+                if (!cleaned.empty()) {
+                    trans.push_back({starts[i] / 1000.0, std::string(cleaned), {}});
+                }
             }
         }
-        return parse_lyrics({}, translation, yrc);
+        std::ranges::stable_sort(trans, {}, &LyricLine::time);
+        add_translation(lines, std::move(trans));
+        return lines;
     }
 
     std::vector<LyricLine> parse_qrc(std::string_view qrc, std::string_view translation) {

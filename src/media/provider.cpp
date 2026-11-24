@@ -151,5 +151,8 @@ namespace lyren {
     Task<Result<void>> Provider::import_session(std::string) {
         return unavailable<void>();
     }
+    Task<SessionCheck> Provider::check_session(std::string) {
+        co_return SessionCheck{.signer = {SessionCheck::State::failed, "This feature is not available on this platform"}};
+    }
 
 } // namespace lyren

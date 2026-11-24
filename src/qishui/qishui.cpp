@@ -329,46 +329,217 @@ namespace lyren::qishui {
         };
     }
 
+    namespace {
+        std::string_view trim_ascii(std::string_view s) {
+            const auto first = s.find_first_not_of(" \t\r\n");
+            if (first == s.npos) {
+                return {};
+            }
+            return s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
+        }
+
+        bool looks_like_netscape_jar(std::string_view s) {
+            while (!s.empty()) {
+                const size_t nl = std::min(s.find('\n'), s.size());
+                std::string_view line = trim_ascii(s.substr(0, nl));
+                s.remove_prefix(std::min(nl + 1, s.size()));
+                if (line.empty()) {
+                    continue;
+                }
+                if (line.starts_with("#HttpOnly_")) {
+                    return std::ranges::count(line, '\t') >= 6;
+                }
+                if (line.starts_with('#')) {
+                    continue;
+                }
+                return std::ranges::count(line, '\t') >= 6;
+            }
+            return false;
+        }
+
+        struct ParsedSettings {
+            StringMap<std::string> session;
+            Result<std::string> cookie_jar{std::string{}};
+        };
+
+        Result<ParsedSettings> parse_settings_json(std::string_view text) {
+            StringMap<std::string> raw;
+            if (glz::read_json(raw, text)) {
+                return std::unexpected("Connection settings must be a JSON object of strings");
+            }
+            ParsedSettings out;
+            std::optional<std::string> raw_cookie;
+            for (auto &[name, value] : raw) {
+                if (name == "cookie") {
+                    raw_cookie = std::move(value);
+                    continue;
+                }
+                if (name == "cookie_jar") {
+                    if (!raw_cookie) {
+                        raw_cookie = std::move(value);
+                    }
+                    continue;
+                }
+                const auto trimmed = trim_ascii(value);
+                if (trimmed.find_first_of("\r\n\t") != trimmed.npos) {
+                    return std::unexpected("Connection settings contain invalid control characters");
+                }
+                if (!trimmed.empty()) {
+                    out.session.emplace(name, std::string(trimmed));
+                }
+            }
+            const auto signer = out.session.find("signer_url");
+            if (signer == out.session.end() || (!signer->second.starts_with("http://") && !signer->second.starts_with("https://")) ||
+                signer->second.find(' ') != std::string::npos) {
+                return std::unexpected("Connection settings require an http:// or https:// signer_url");
+            }
+            if (raw_cookie) {
+                out.cookie_jar = parse_cookie_input(*raw_cookie);
+            }
+            return out;
+        }
+    } // namespace
+
+    Result<std::string> parse_cookie_input(std::string_view raw) {
+        raw = trim_ascii(raw);
+        if (raw.empty()) {
+            return std::string{};
+        }
+        if (looks_like_netscape_jar(raw)) {
+            std::string normalized = net::CookieJar::from_netscape(raw).netscape();
+            if (normalized.empty()) {
+                return std::unexpected("Qishui Music Cookie must contain name=value pairs");
+            }
+            return normalized;
+        }
+        if (raw.size() >= 7) {
+            bool prefix = true;
+            for (size_t i = 0; i < 6; ++i) {
+                const auto c = static_cast<unsigned char>(raw[i]);
+                if ((c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c) != static_cast<unsigned char>("cookie"[i])) {
+                    prefix = false;
+                    break;
+                }
+            }
+            if (prefix && raw[6] == ':') {
+                raw = trim_ascii(raw.substr(7));
+            }
+        }
+        std::string jar;
+        bool any = false;
+        std::string_view rest = raw;
+        while (!rest.empty()) {
+            const auto end = rest.find(';');
+            const auto entry = trim_ascii(rest.substr(0, end));
+            if (!entry.empty()) {
+                const auto equal = entry.find('=');
+                if (equal == entry.npos || equal == 0) {
+                    return std::unexpected("Qishui Music Cookie must contain name=value pairs");
+                }
+                const auto name = trim_ascii(entry.substr(0, equal));
+                const auto value = trim_ascii(entry.substr(equal + 1));
+                if (name.empty() || name.find_first_of(" \t\r\n") != name.npos || value.find_first_of(" \t\r\n") != value.npos) {
+                    return std::unexpected("Qishui Music Cookie must contain name=value pairs");
+                }
+                jar += std::format(".qishui.com\tTRUE\t/\tTRUE\t0\t{}\t{}\n", name, value);
+                any = true;
+            }
+            if (end == rest.npos) {
+                break;
+            }
+            rest.remove_prefix(end + 1);
+        }
+        if (!any) {
+            return std::string{};
+        }
+        return net::CookieJar::from_netscape(jar).netscape();
+    }
+
+    void Qishui::sync_collection_cache() {
+        const std::string uid = logged_in() ? client.get("user_id") : std::string{};
+        if (collection_uid_ != uid) {
+            collection_uid_ = uid;
+            saved_albums_.reset();
+            followed_artists_.reset();
+            saved_albums_at_ = {};
+            followed_artists_at_ = {};
+        }
+    }
+
     Task<Result<void>> Qishui::initialize() {
+        sync_collection_cache();
         co_return co_await client.initialize();
+    }
+
+    Task<SessionCheck> Qishui::check_session(std::string text) {
+        using State = SessionCheck::State;
+        SessionCheck check;
+        auto parsed = parse_settings_json(text);
+        if (!parsed) {
+            check.signer = {State::failed, parsed.error()};
+            co_return check;
+        }
+        Client candidate(loop_, http_);
+        candidate.api_base = client.api_base;
+        candidate.seo_base = client.seo_base;
+        candidate.session = std::move(parsed->session);
+        auto config = co_await candidate.signer("/config");
+        if (!config) {
+            check.signer = {State::failed, config.error()};
+            co_return check;
+        }
+        check.signer = {State::ok, candidate.get("signer_url")};
+        const auto &identity = field(*config, "identity");
+        for (auto name : {"device_id", "iid", "fp"}) {
+            auto value = string(field(identity, name));
+            if (!value.empty()) {
+                candidate.session.insert_or_assign(name, std::move(value));
+            }
+        }
+        if (candidate.get("device_id").empty() || candidate.get("iid").empty()) {
+            check.identity = {State::failed, "Qishui Music signer must provide device_id and iid, or include them in the connection settings"};
+            co_return check;
+        }
+        if (candidate.get("fp").empty()) {
+            candidate.session["fp"] = candidate.get("device_id");
+        }
+        check.identity = {State::ok, std::format("device_id {}", candidate.get("device_id"))};
+        if (!parsed->cookie_jar) {
+            check.account = {State::failed, parsed->cookie_jar.error()};
+            co_return check;
+        }
+        if (parsed->cookie_jar->empty()) {
+            check.account = {State::skipped, "No Cookie provided; signing service ready"};
+            co_return check;
+        }
+        candidate.session["cookie_jar"] = *parsed->cookie_jar;
+        candidate.cookies_ = net::CookieJar::from_netscape(*parsed->cookie_jar);
+        auto response = co_await candidate.call("/luna/pc/me");
+        if (!response) {
+            check.account = {State::failed, response.error()};
+            co_return check;
+        }
+        auto account = account_info(*response);
+        if (!account) {
+            check.account = {State::failed, account.error()};
+            co_return check;
+        }
+        check.account = {State::ok, account->name.empty() ? account->id : std::format("{} ({})", account->name, account->id)};
+        co_return check;
     }
 
     Task<Result<void>> Qishui::import_session(std::string text) {
         const auto generation = client.generation;
-        StringMap<std::string> settings;
-        if (glz::read_json(settings, text)) {
-            co_return std::unexpected("Connection settings must be a JSON object of strings");
+        auto parsed = parse_settings_json(text);
+        if (!parsed) {
+            co_return std::unexpected(parsed.error());
         }
-        const auto signer = settings.find("signer_url");
-        if (signer == settings.end() || (!signer->second.starts_with("http://") && !signer->second.starts_with("https://"))) {
-            co_return std::unexpected("Connection settings require an http:// or https:// signer_url");
+        if (!parsed->cookie_jar) {
+            co_return std::unexpected(parsed->cookie_jar.error());
         }
-        for (const auto &[name, value] : settings) {
-            if (name != "cookie_jar" && value.find_first_of("\r\n\t") != value.npos) {
-                co_return std::unexpected("Connection settings contain invalid control characters");
-            }
-        }
-        if (auto cookie = settings.find("cookie"); cookie != settings.end()) {
-            std::string jar;
-            std::string_view rest = cookie->second;
-            while (!rest.empty()) {
-                auto end = rest.find(';');
-                auto entry = rest.substr(0, end);
-                while (entry.starts_with(' ')) {
-                    entry.remove_prefix(1);
-                }
-                const auto equal = entry.find('=');
-                if (equal == entry.npos || equal == 0) {
-                    co_return std::unexpected("Qishui Music Cookie must contain name=value pairs");
-                }
-                jar += std::format("api.qishui.com\tFALSE\t/\tTRUE\t0\t{}\t{}\n", entry.substr(0, equal), entry.substr(equal + 1));
-                if (end == rest.npos) {
-                    break;
-                }
-                rest.remove_prefix(end + 1);
-            }
-            settings["cookie_jar"] = net::CookieJar::from_netscape(jar).netscape();
-            settings.erase("cookie");
+        StringMap<std::string> settings = std::move(parsed->session);
+        if (!parsed->cookie_jar->empty()) {
+            settings["cookie_jar"] = std::move(*parsed->cookie_jar);
         }
         Client candidate(loop_, http_);
         candidate.api_base = client.api_base;
@@ -404,6 +575,7 @@ namespace lyren::qishui {
         lyric_id_.clear();
         lyric_text_.clear();
         lyric_type_.clear();
+        sync_collection_cache();
         if (client.on_session) {
             client.on_session();
         }
@@ -438,10 +610,18 @@ namespace lyren::qishui {
     }
 
     Task<void> Qishui::logout() {
+        const bool was_logged_in = logged_in();
         ++client.generation;
         client.session.erase("cookie_jar");
         client.session.erase("cookie");
         client.session.erase("user_id");
+        if (!was_logged_in) {
+            client.session.erase("signer_url");
+            client.session.erase("signer_token");
+            client.session.erase("device_id");
+            client.session.erase("iid");
+            client.session.erase("fp");
+        }
         client.cookies_ = {};
         pagination_.clear();
         square_seen_.clear();
@@ -452,6 +632,10 @@ namespace lyren::qishui {
         lyric_id_.clear();
         lyric_text_.clear();
         lyric_type_.clear();
+        sync_collection_cache();
+        if (!was_logged_in) {
+            (void)co_await client.initialize();
+        }
         if (client.on_session) {
             client.on_session();
         }
@@ -799,13 +983,15 @@ namespace lyren::qishui {
         }
         result.tracks = std::move(*parsed);
         if (logged_in()) {
-            auto saved = co_await collected_albums();
-            if (!saved) {
-                co_return std::unexpected(saved.error());
+            sync_collection_cache();
+            if (!saved_albums_ || Clock::now() - saved_albums_at_ >= 5min) {
+                if (auto saved = co_await collected_albums(); !saved) {
+                    log::debug("qishui album collected state unavailable: {}", saved.error());
+                }
             }
-            result.collected = std::ranges::any_of(*saved, [&](const auto &card) {
-                return card.id == id;
-            });
+            if (saved_albums_) {
+                result.collected = saved_albums_->contains(id);
+            }
         }
         co_return result;
     }
@@ -821,13 +1007,15 @@ namespace lyren::qishui {
         }
         ArtistInfo result{.name = string(field(info, "name")), .avatar = image(field(info, "url_avatar")), .songs = count(field(info, "count_tracks"))};
         if (logged_in()) {
-            auto saved = co_await followed_artists();
-            if (!saved) {
-                co_return std::unexpected(saved.error());
+            sync_collection_cache();
+            if (!followed_artists_ || Clock::now() - followed_artists_at_ >= 5min) {
+                if (auto saved = co_await followed_artists(); !saved) {
+                    log::debug("qishui artist follow state unavailable: {}", saved.error());
+                }
             }
-            result.followed = std::ranges::any_of(*saved, [&](const auto &card) {
-                return card.id == id;
-            });
+            if (followed_artists_) {
+                result.followed = followed_artists_->contains(id);
+            }
         }
         co_return result;
     }
@@ -1007,9 +1195,10 @@ namespace lyren::qishui {
         if (!result) {
             co_return std::unexpected(result.error());
         }
-        if (result->first.id.empty()) {
+        const std::string owner_id = uid.empty() ? client.get("user_id") : uid;
+        if (result->first.id.empty() && !owner_id.empty()) {
             // The system likes playlist is exposed by the user catalogue, not always by the created-list catalogue.
-            auto liked = co_await read_pages(client, "/luna/pc/user/playlist", "playlists", {{"user_id", uid}, {"scene", "aweme_user_profile"}},
+            auto liked = co_await read_pages(client, "/luna/pc/user/playlist", "playlists", {{"user_id", owner_id}, {"scene", "aweme_user_profile"}},
                                              Card{.source = Source::qishui, .commentable = false}, [](std::span<const Json> items, Card &out) -> Result<void> {
                                                  for (const auto &item : items) {
                                                      if (number(field(item, "type")) != 1) {
@@ -1099,10 +1288,28 @@ namespace lyren::qishui {
     }
 
     Task<Result<void>> Qishui::follow(std::string id, bool on) {
-        co_return co_await collection("artist", std::move(id), on);
+        auto r = co_await collection("artist", id, on);
+        sync_collection_cache();
+        if (r && followed_artists_) {
+            if (on) {
+                followed_artists_->insert(std::move(id));
+            } else {
+                followed_artists_->erase(id);
+            }
+        }
+        co_return r;
     }
     Task<Result<void>> Qishui::collect(std::string id, bool on) {
-        co_return co_await collection("album", std::move(id), on);
+        auto r = co_await collection("album", id, on);
+        sync_collection_cache();
+        if (r && saved_albums_) {
+            if (on) {
+                saved_albums_->insert(std::move(id));
+            } else {
+                saved_albums_->erase(id);
+            }
+        }
+        co_return r;
     }
     Task<Result<void>> Qishui::collect_playlist(std::string id, bool on) {
         co_return co_await collection("playlist", std::move(id), on);
@@ -1130,20 +1337,43 @@ namespace lyren::qishui {
         return collections(CardKind::playlist);
     }
     Task<Result<std::vector<Card>>> Qishui::collected_albums() {
-        return collections(CardKind::album);
+        auto r = co_await collections(CardKind::album);
+        if (r && logged_in()) {
+            sync_collection_cache();
+            std::unordered_set<std::string> ids;
+            ids.reserve(r->size());
+            for (const auto &card : *r) {
+                ids.insert(card.id);
+            }
+            saved_albums_ = std::move(ids);
+            saved_albums_at_ = Clock::now();
+        }
+        co_return r;
     }
 
     Task<Result<std::vector<Card>>> Qishui::followed_artists() {
-        return read_pages(client, "/luna/me/collection/artist", "artists", {}, std::vector<Card>{}, [](std::span<const Json> items, std::vector<Card> &out) -> Result<void> {
-            for (const auto &item : items) {
-                auto parsed = card(item, CardKind::artist);
-                if (!parsed) {
-                    return std::unexpected(parsed.error());
+        auto r =
+            co_await read_pages(client, "/luna/me/collection/artist", "artists", {}, std::vector<Card>{}, [](std::span<const Json> items, std::vector<Card> &out) -> Result<void> {
+                for (const auto &item : items) {
+                    auto parsed = card(item, CardKind::artist);
+                    if (!parsed) {
+                        return std::unexpected(parsed.error());
+                    }
+                    out.push_back(std::move(*parsed));
                 }
-                out.push_back(std::move(*parsed));
+                return {};
+            });
+        if (r && logged_in()) {
+            sync_collection_cache();
+            std::unordered_set<std::string> ids;
+            ids.reserve(r->size());
+            for (const auto &card : *r) {
+                ids.insert(card.id);
             }
-            return {};
-        });
+            followed_artists_ = std::move(ids);
+            followed_artists_at_ = Clock::now();
+        }
+        co_return r;
     }
 
     Task<Result<Card>> Qishui::create_playlist(std::string name, bool hidden) {

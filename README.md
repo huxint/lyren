@@ -51,6 +51,15 @@ ctest --test-dir build --output-on-failure
 
 账号凭据通过 systemd 用户凭据接口加密保存。各平台会话独立管理。
 
+### 连接汽水音乐
+
+- **开箱即用（免登录）**：切换到汽水音乐后，无需配置即可直接匿名搜索、浏览推荐/榜单并播放公开曲目与歌词。
+- **同步个人曲库与写操作**：在「账号 → 汽水音乐」中按表单填写：
+  1. 启动兼容 `GET /config` 与 `POST /sign` 的本地或自托管签名服务，填入服务地址（如 `http://127.0.0.1:8000`）及可选访问令牌。
+  2. （可选）从已登录汽水音乐的浏览器开发者工具 Network 面板复制 `Cookie`（支持 `name=value; ...`、带 `Cookie:` 前缀、Netscape `cookie_jar`，或直接粘贴整段 JSON 配置）。
+  3. 点击「测试连接」逐项检查签名服务、设备身份与账号登录态，确认通过后点击「连接」加密保存。
+- 也可通过命令行诊断：`./build/lyren-probe qishui check http://127.0.0.1:8000 [cookie_or_file]`。完整协议契约与请求/响应示例见 [平台接口与账号连接](docs/integrations.md#汽水账号连接)。
+
 ## 开发
 
 `./build/lyren --debug` 启用调试日志。

@@ -66,6 +66,9 @@ namespace lyren {
             std::array<Listing, 2> collection; // albums, artists
             uint64_t collection_gen = 0;
             std::array<std::shared_ptr<DislikeList>, 3> dislikes;
+            std::vector<Track> recent_plays;
+            double recent_plays_at = -1e9;
+            bool recent_plays_loaded = false;
 
             std::vector<Track> radio;
             int radio_pos = 0;

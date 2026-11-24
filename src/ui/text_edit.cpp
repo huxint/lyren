@@ -103,7 +103,7 @@ namespace lyren::ui {
                 }
                 c = '\n';
             }
-            clean += c == '\t' || (c == '\n' && !multiline) ? ' ' : c;
+            clean += (c == '\t' || c == '\n') && !multiline ? ' ' : c;
         }
         size_t at = lo();
         text.replace(at, hi() - at, clean);

@@ -8,7 +8,8 @@ namespace lyren::paths {
         const char *v = std::getenv(var);
         std::filesystem::path base = v && *v ? std::filesystem::path(v) : std::filesystem::path(std::getenv("HOME")) / fallback;
         auto dir = base / "lyren";
-        std::filesystem::create_directories(dir);
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
         return dir;
     }
 

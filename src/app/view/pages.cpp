@@ -630,10 +630,16 @@ namespace lyren {
         ui.painter().rect({tab_bar.x, tab_bar.bottom() - 1, tab_bar.w, 1}, ui.theme().line());
         const std::array<std::string_view, 2> tabs = {lyren::tr("Albums"), lyren::tr("Artists")};
         const std::array enabled = {provider().capabilities.collect_albums, provider().capabilities.follow_artists};
-        page_tabs(ui, ui.id("collection-tabs"), tab_bar, tabs, lib.collection_tab, enabled);
+        page_tabs(ui, ui.id("collection-tabs"), {tab_bar.x, tab_bar.y, tab_bar.w - 44, tab_bar.h}, tabs, lib.collection_tab, enabled);
+        const Listing &res = lib.collection[lib.collection_tab];
+        const Rect refresh_r{tab_bar.right() - control::medium, tab_bar.y + (tab_bar.h - control::medium) / 2 - 2, control::medium, control::medium};
+        if (res.loading) {
+            ui.spinner(ui::center(refresh_r, 16, 16), ui.theme().text_dim, 2);
+        } else if (ui.icon_button(ui.id("collection-refresh"), refresh_r, "refresh-cw", 16, false, lyren::tr("Refresh"))) {
+            spawn(library_.load_collection(browser_.active()));
+        }
         Rect content{body.x - 12, tab_bar.bottom() + 10, body.w + 24, r.bottom() - tab_bar.bottom() - 18};
         Fade fade(ui.painter(), tab_enter(ui, content));
-        const Listing &res = lib.collection[lib.collection_tab];
         std::string error = res.cards.empty() ? res.error : "";
         if (res.cards.empty() && res.loaded && error.empty()) {
             error = lib.collection_tab ? lyren::tr("No followed artists yet") : lyren::tr("No saved albums yet");

@@ -914,6 +914,15 @@ namespace lyren::bodian {
             });
     }
 
+    void Bodian::sync_collection_cache() {
+        const std::string uid = logged_in() ? client.get("uid") : std::string{};
+        if (collection_uid_ != uid) {
+            collection_uid_ = uid;
+            followed_artists_.reset();
+            followed_artists_at_ = {};
+        }
+    }
+
     Task<Result<ArtistInfo>> Bodian::artist(std::string id) {
         auto detail = parse<ArtistData>(co_await client.call({.path = "service/artist/" + id}));
         co_return co_await and_then(std::move(detail), [this, id = std::move(id)](ArtistData data) -> Task<Result<ArtistInfo>> {
@@ -927,13 +936,13 @@ namespace lyren::bodian {
                            .songs = std::max(0, artist.musicCnt),
                            .albums = std::max(0, artist.albumCnt)};
             if (logged_in()) {
-                auto followed = co_await followed_artists();
-                if (!followed) {
-                    co_return std::unexpected(std::move(followed).error());
+                sync_collection_cache();
+                if (!followed_artists_ || Clock::now() - followed_artists_at_ >= 5min) {
+                    (void)co_await followed_artists();
                 }
-                out.followed = std::ranges::any_of(*followed, [&](const Card &card) {
-                    return card.id == id;
-                });
+                if (followed_artists_) {
+                    out.followed = followed_artists_->contains(id);
+                }
             }
             co_return out;
         });
@@ -957,10 +966,7 @@ namespace lyren::bodian {
                           .tracks = std::move(*songs)};
             if (logged_in()) {
                 auto state = parse<CollectStates>(co_await client.call({.path = "service/collect/multipleState", .query = {{"source", "6"}, {"sourceIds", id}}, .sign = true}));
-                if (!state) {
-                    co_return std::unexpected(std::move(state).error());
-                }
-                if (state->result) {
+                if (state && state->result) {
                     for (const auto &item : *state->result) {
                         if (std::to_string(item.id) == id) {
                             out.collected = item.collect;
@@ -1099,6 +1105,7 @@ namespace lyren::bodian {
     Task<void> Bodian::logout() {
         cancel_login();
         client.clear_login();
+        sync_collection_cache();
         co_return;
     }
 
@@ -1234,6 +1241,16 @@ namespace lyren::bodian {
             out.insert(out.end(), std::make_move_iterator(page->cards.begin()), std::make_move_iterator(page->cards.end()));
             offset = page->next_offset;
         }
+        if (logged_in()) {
+            sync_collection_cache();
+            std::unordered_set<std::string> ids;
+            ids.reserve(out.size());
+            for (const auto &card : out) {
+                ids.insert(card.id);
+            }
+            followed_artists_ = std::move(ids);
+            followed_artists_at_ = Clock::now();
+        }
         co_return out;
     }
 
@@ -1256,7 +1273,16 @@ namespace lyren::bodian {
     }
 
     Task<Result<void>> Bodian::follow(std::string artist, bool on) {
-        co_return co_await set_collection(std::move(artist), 7, on);
+        auto r = co_await set_collection(artist, 7, on);
+        sync_collection_cache();
+        if (r && followed_artists_) {
+            if (on) {
+                followed_artists_->insert(std::move(artist));
+            } else {
+                followed_artists_->erase(artist);
+            }
+        }
+        co_return r;
     }
 
     Task<Result<void>> Bodian::collect(std::string album, bool on) {

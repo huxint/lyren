@@ -113,10 +113,12 @@ namespace lyren::text {
         // One pixel of empty border keeps neighbours from bleeding in.
         const size_t texel = sheet.format == VK_FORMAT_R8_UNORM ? 1 : 4;
         int pw = w + 2, ph = h + 2;
-        uint16_t x, y;
+        uint16_t x = 0, y = 0;
         if (!sheet.place(pw, ph, x, y)) {
             clear(sheet);
-            sheet.place(pw, ph, x, y);
+            if (!sheet.place(pw, ph, x, y)) {
+                return {};
+            }
         }
         scratch_.assign(static_cast<size_t>(pw) * ph * texel, 0);
         for (int r = 0; r < h; ++r) {

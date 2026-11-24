@@ -220,7 +220,7 @@ namespace lyren {
             background_in_flight_ += background;
             const uint32_t tier = key.variant & ~whole;
             std::string url = key.variant & whole ? picture_url(key.text, static_cast<int>(tier)) : cover_url(key.text, static_cast<int>(key.variant ? tier : 128));
-            e.request = http_.request({.url = std::move(url)}, [loader = loader_, key = std::move(key), ticket, background](net::Response r) mutable {
+            e.request = http_.request({.url = std::move(url), .max_bytes = 16u << 20}, [loader = loader_, key = std::move(key), ticket, background](net::Response r) mutable {
                 using namespace huxint::nexus;
                 auto submitted = loader->pool.execute(
                     background ? task_priority::low : task_priority::high, [loader, key = std::move(key), ticket, background, r = std::move(r)]() mutable noexcept {

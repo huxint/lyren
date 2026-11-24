@@ -1274,15 +1274,17 @@ namespace lyren::qq {
                         });
                     });
                 });
-        if (client.logged_in()) {
-            co_return co_await and_then(std::move(result), [this, &mid](AlbumInfo out) -> Task<Result<AlbumInfo>> {
-                co_return (co_await collected_albums()).transform([&](const std::vector<Card> &favorites) {
-                    out.collected = std::ranges::any_of(favorites, [&](const Card &c) {
-                        return c.id == mid;
-                    });
-                    return std::move(out);
-                });
-            });
+        if (!result || !client.logged_in()) {
+            co_return result;
+        }
+        sync_collection_cache();
+        if (!saved_albums_ || Clock::now() - saved_albums_at_ >= 5min) {
+            if (auto favorites = co_await collected_albums(); !favorites) {
+                log::debug("qq album collected state unavailable: {}", favorites.error());
+            }
+        }
+        if (saved_albums_) {
+            result->collected = saved_albums_->contains(mid);
         }
         co_return result;
     }
@@ -1314,15 +1316,17 @@ namespace lyren::qq {
                                   return out;
                               });
                           });
-        if (client.logged_in()) {
-            co_return co_await and_then(std::move(result), [this, &mid](ArtistInfo out) -> Task<Result<ArtistInfo>> {
-                co_return (co_await followed_artists()).transform([&](const std::vector<Card> &followed) {
-                    out.followed = std::ranges::any_of(followed, [&](const Card &c) {
-                        return c.id == mid;
-                    });
-                    return std::move(out);
-                });
-            });
+        if (!result || !client.logged_in()) {
+            co_return result;
+        }
+        sync_collection_cache();
+        if (!followed_artists_ || Clock::now() - followed_artists_at_ >= 5min) {
+            if (auto followed = co_await followed_artists(); !followed) {
+                log::debug("qq artist follow state unavailable: {}", followed.error());
+            }
+        }
+        if (followed_artists_) {
+            result->followed = followed_artists_->contains(mid);
         }
         co_return result;
     }
@@ -1684,40 +1688,80 @@ namespace lyren::qq {
             .transform([](const QWrite &) {});
     }
 
+    void Qq::sync_collection_cache() {
+        const std::string uid = client.logged_in() ? client.get("musicid") : std::string{};
+        if (collection_uid_ != uid) {
+            collection_uid_ = uid;
+            saved_albums_.reset();
+            followed_artists_.reset();
+            saved_albums_at_ = {};
+            followed_artists_at_ = {};
+        }
+    }
+
     Task<Result<void>> Qq::collect(std::string mid, bool on) {
-        co_return written(co_await client.call({{"music.musicasset.AlbumFavWrite", on ? "FavAlbum" : "CancelFavAlbum",
-                                                 std::format(R"({{"uin":"{}","v_albumMid":["{}"]}})", client.get("musicid"), mid)}},
-                                               Comm::app, net::Retry::never))
-            .transform([](const auto &) {});
+        auto r = written(co_await client.call({{"music.musicasset.AlbumFavWrite", on ? "FavAlbum" : "CancelFavAlbum",
+                                                std::format(R"({{"uin":"{}","v_albumMid":["{}"]}})", client.get("musicid"), mid)}},
+                                              Comm::app, net::Retry::never))
+                     .transform([](const auto &) {});
+        sync_collection_cache();
+        if (r && saved_albums_) {
+            if (on) {
+                saved_albums_->insert(std::move(mid));
+            } else {
+                saved_albums_->erase(mid);
+            }
+        }
+        co_return r;
     }
 
     Task<Result<std::vector<Card>>> Qq::collected_albums() {
-        co_return parse_data<QAlbumFavorites>(co_await client.call({{"music.musicasset.AlbumFavRead", "GetAlbumFavInfo", std::format(R"({{"uin":"{}"}})", client.get("musicid"))}}))
-            .and_then([&](auto d) -> Result<std::vector<Card>> {
-                std::vector<Card> out;
-                if (d.v_list) {
-                    for (const auto &a : *d.v_list) {
-                        if (a.albumMid.value_or("").empty()) {
-                            return std::unexpected("QQ Music returned an invalid saved album");
-                        }
-                        out.push_back({.kind = CardKind::album,
-                                       .source = Source::qq,
-                                       .id = *a.albumMid,
-                                       .title = a.albumName.value_or(""),
-                                       .subtitle = a.singerName.value_or(""),
-                                       .cover = a.pic.value_or(photo(2, *a.albumMid)),
-                                       .count = a.songNum});
-                    }
-                }
-                return out;
-            });
+        auto r = parse_data<QAlbumFavorites>(co_await client.call({{"music.musicasset.AlbumFavRead", "GetAlbumFavInfo", std::format(R"({{"uin":"{}"}})", client.get("musicid"))}}))
+                     .and_then([&](auto d) -> Result<std::vector<Card>> {
+                         std::vector<Card> out;
+                         if (d.v_list) {
+                             for (const auto &a : *d.v_list) {
+                                 if (a.albumMid.value_or("").empty()) {
+                                     return std::unexpected("QQ Music returned an invalid saved album");
+                                 }
+                                 out.push_back({.kind = CardKind::album,
+                                                .source = Source::qq,
+                                                .id = *a.albumMid,
+                                                .title = a.albumName.value_or(""),
+                                                .subtitle = a.singerName.value_or(""),
+                                                .cover = a.pic.value_or(photo(2, *a.albumMid)),
+                                                .count = a.songNum});
+                             }
+                         }
+                         return out;
+                     });
+        if (r && client.logged_in()) {
+            sync_collection_cache();
+            std::unordered_set<std::string> ids;
+            ids.reserve(r->size());
+            for (const auto &card : *r) {
+                ids.insert(card.id);
+            }
+            saved_albums_ = std::move(ids);
+            saved_albums_at_ = Clock::now();
+        }
+        co_return r;
     }
 
     Task<Result<void>> Qq::follow(std::string mid, bool on) {
-        co_return written(co_await client.call({{"Concern.ConcernSystemServer", "cgi_concern_user_v2",
-                                                 std::format(R"({{"opertype":{},"source":0,"encrypt_singerid":1,"userinfo":{{"usertype":1,"userid":"{}"}}}})", on ? 0 : 1, mid)}},
-                                               Comm::app, net::Retry::never))
-            .transform([](const auto &) {});
+        auto r = written(co_await client.call({{"Concern.ConcernSystemServer", "cgi_concern_user_v2",
+                                                std::format(R"({{"opertype":{},"source":0,"encrypt_singerid":1,"userinfo":{{"usertype":1,"userid":"{}"}}}})", on ? 0 : 1, mid)}},
+                                              Comm::app, net::Retry::never))
+                     .transform([](const auto &) {});
+        sync_collection_cache();
+        if (r && followed_artists_) {
+            if (on) {
+                followed_artists_->insert(std::move(mid));
+            } else {
+                followed_artists_->erase(mid);
+            }
+        }
+        co_return r;
     }
 
     Result<PeoplePage> parse_people(const Reply &reply, int from) {
@@ -1787,6 +1831,16 @@ namespace lyren::qq {
                           }
                           return std::move(*out);
                       });
+        }
+        if (out && client.logged_in()) {
+            sync_collection_cache();
+            std::unordered_set<std::string> ids;
+            ids.reserve(out->size());
+            for (const auto &card : *out) {
+                ids.insert(card.id);
+            }
+            followed_artists_ = std::move(ids);
+            followed_artists_at_ = Clock::now();
         }
         co_return out;
     }
@@ -2037,6 +2091,7 @@ namespace lyren::qq {
         renewal_.reset();
         renew_after_ = {};
         client.session.clear();
+        sync_collection_cache();
         if (client.on_session) {
             client.on_session();
         }

@@ -46,6 +46,7 @@
 #include "core/utf8.hpp"
 #include "ncm/netease.hpp"
 #include "net/http.hpp"
+#include "qishui/qishui.hpp"
 #include "qq/qq.hpp"
 #include "sys/creds.hpp"
 #include "sys/paths.hpp"
@@ -918,6 +919,111 @@ static int qq_command(const std::vector<std::string> &args) {
     return rc;
 }
 
+static int qishui_command(std::span<const std::string> args) {
+    Loop loop;
+    net::Http http;
+    qishui::Qishui qs(loop, http);
+    int rc = 0;
+    auto fail = [&](std::string_view e) {
+        std::println(stderr, "error: {}", e);
+        rc = 1;
+    };
+    auto arg = [&](size_t i) {
+        return i < args.size() ? std::string_view(args[i]) : std::string_view{};
+    };
+    auto read_file_or_value = [](std::string_view input) -> std::string {
+        if (!input.empty() && std::filesystem::is_regular_file(input)) {
+            std::ifstream in{std::filesystem::path(input)};
+            return std::string{std::istreambuf_iterator<char>(in), {}};
+        }
+        return std::string(input);
+    };
+
+    auto run = [&]() -> Task<void> {
+        const auto cmd = args.at(1);
+        creds::Credentials credentials;
+        if (cmd != "check" || arg(2).empty()) {
+            if (auto saved = co_await creds::load(loop)) {
+                credentials = creds::from_json(*saved);
+                qs.session() = credentials["qishui"];
+            }
+        }
+        if (cmd == "check") {
+            std::string settings_json;
+            const std::string first = read_file_or_value(arg(2));
+            const auto first_non_ws = first.find_first_not_of(" \t\r\n");
+            if (first_non_ws != std::string::npos && first[first_non_ws] == '{') {
+                settings_json = first;
+            } else {
+                StringMap<std::string> settings = qs.session();
+                settings.erase("user_id");
+                if (!first.empty()) {
+                    settings["signer_url"] = first;
+                }
+                if (!arg(3).empty()) {
+                    settings.erase("cookie_jar");
+                    settings["cookie"] = read_file_or_value(arg(3));
+                }
+                settings_json = glz::write_json(settings).value_or("{}");
+            }
+            const auto result = co_await qs.check_session(std::move(settings_json));
+            auto badge = [](SessionCheck::State s) {
+                return s == SessionCheck::State::ok ? "[OK]  " : s == SessionCheck::State::skipped ? "[SKIP]" : s == SessionCheck::State::failed ? "[FAIL]" : "[....]";
+            };
+            std::println("{} signing service : {}", badge(result.signer.state), result.signer.detail);
+            std::println("{} device identity : {}", badge(result.identity.state), result.identity.detail.empty() ? "-" : result.identity.detail);
+            std::println("{} account session : {}", badge(result.account.state), result.account.detail.empty() ? "-" : result.account.detail);
+            if (!result.ok()) {
+                rc = 1;
+            }
+            co_return;
+        }
+        auto ready = co_await qs.initialize();
+        if (!ready) {
+            co_return fail(ready.error());
+        }
+        if (cmd == "search") {
+            if (auto r = co_await search_command(qs, args.subspan(2)); !r) {
+                fail(r.error());
+            }
+        } else if (cmd == "url") {
+            Quality q = arg(3) == "higher"     ? Quality::higher
+                        : arg(3) == "exhigh"   ? Quality::exhigh
+                        : arg(3) == "lossless" ? Quality::lossless
+                        : arg(3) == "hires"    ? Quality::hires
+                                               : Quality::standard;
+            auto r = co_await qs.stream({.id = args.at(2), .source = Source::qishui}, q);
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{}{}\n{}", r->level, r->trial ? "  trial" : "", r->url);
+        } else if (cmd == "lyrics") {
+            auto r = co_await qs.lyrics({.id = args.at(2), .source = Source::qishui});
+            if (!r) {
+                co_return fail(r.error());
+            }
+            for (const auto &line : *r) {
+                std::println("{:7.2f}  {}{}", line.time, line.text, line.translation.empty() ? "" : "  /  " + line.translation);
+            }
+        } else if (cmd == "account") {
+            auto r = co_await qs.account();
+            if (!r) {
+                co_return fail(r.error());
+            }
+            std::println("{} ({})", r->name, r->id);
+        } else {
+            fail("unknown qishui command " + cmd);
+        }
+    };
+    auto main_task = [&]() -> Task<void> {
+        co_await run();
+        loop.quit();
+    };
+    spawn(main_task());
+    loop.run();
+    return rc;
+}
+
 int main(int argc, char **argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
     std::erase_if(args, [](const std::string &a) {
@@ -933,6 +1039,9 @@ int main(int argc, char **argv) {
     if (args.size() >= 2 && args[0] == "qq") {
         return qq_command(args);
     }
+    if (args.size() >= 2 && args[0] == "qishui") {
+        return qishui_command(args);
+    }
     for (const char *cmd : {"search", "url", "lyrics", "login", "account", "new-songs", "new-albums", "saved-playlists", "comments", "replies", "post-comment", "call"}) {
         if (!args.empty() && args[0] == cmd) {
             return ncm_command(args);
@@ -946,6 +1055,7 @@ int main(int argc, char **argv) {
         "       lyren-probe [qq] post-comment <song|album|playlist> <id> <text file> [reply id]\n"
         "       lyren-probe [qq] new-songs [area] | new-albums [area] [offset] | saved-playlists\n"
         "       lyren-probe call <uri> [fields] [weapi|clientlog]\n"
-        "       lyren-probe qq search|url|lyrics|album|artist|playlist|top|recommend|guess|radar|new-songs|new-albums|saved-playlists|categories|square|similar|comments|call ...");
+        "       lyren-probe qq search|url|lyrics|album|artist|playlist|top|recommend|guess|radar|new-songs|new-albums|saved-playlists|categories|square|similar|comments|call ...\n"
+        "       lyren-probe qishui check [signer_url|json] [cookie|cookie_file] | search <query> [kind] [offset] | url <id> [quality] | lyrics <id> | account");
     return 2;
 }

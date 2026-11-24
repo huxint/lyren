@@ -60,6 +60,37 @@ namespace lyren {
         });
     }
 
+    void ProfileView::ensure_own_playlists(Source source) {
+        if (!playlists_dirty_ && playlists_source_ == source) {
+            return;
+        }
+        playlists_dirty_ = false;
+        playlists_source_ = source;
+        own_made_.clear();
+        own_saved_.clear();
+        own_preview_.clear();
+        const auto &shelf = library_.shelf(source);
+        if (!shelf.liked.id.empty()) {
+            own_made_.push_back(shelf.liked);
+        }
+        for (const auto &playlist : shelf.playlists) {
+            (playlist.owned ? own_made_ : own_saved_).push_back(playlist);
+        }
+        for (const auto &playlist : shelf.playlists) {
+            if (playlist.owned && own_preview_.size() < 8) {
+                own_preview_.push_back(playlist);
+            }
+        }
+        for (const auto &playlist : shelf.playlists) {
+            if (!playlist.owned && own_preview_.size() < 8) {
+                own_preview_.push_back(playlist);
+            }
+        }
+        if (own_preview_.empty() && !shelf.liked.id.empty()) {
+            own_preview_.push_back(shelf.liked);
+        }
+    }
+
     float ProfileView::follow_width(ui::Ui &ui) {
         float w = 0;
         for (std::string_view label : {"Follow", "Following", "Mutual"}) {
@@ -768,21 +799,9 @@ namespace lyren {
 
         // 4. Playlists preview (owned first, then saved; bounded to one row so we never copy the whole library).
         if (caps.library) {
+            ensure_own_playlists(card.source);
             const auto limit = std::min<size_t>(static_cast<size_t>(CardGrid::columns(col_w, 150.f)), 8);
-            std::inplace_vector<Card, 8> preview;
-            for (const auto &playlist : lib.playlists) {
-                if (playlist.owned && preview.size() < limit) {
-                    preview.push_back(playlist);
-                }
-            }
-            for (const auto &playlist : lib.playlists) {
-                if (!playlist.owned && preview.size() < limit) {
-                    preview.push_back(playlist);
-                }
-            }
-            if (preview.empty() && !lib.liked.id.empty()) {
-                preview.push_back(lib.liked);
-            }
+            const auto preview = std::span<const Card>(own_preview_).first(std::min(own_preview_.size(), limit));
             const size_t total_lists = lib.playlists.empty() ? preview.size() : lib.playlists.size();
             if (!preview.empty()) {
                 shelf_row("overview-playlists", lyren::tr("Playlists"), preview, total_lists, false, page->section_since, [&] {
@@ -1218,18 +1237,7 @@ namespace lyren {
         if (self) {
             // The account's own come from its library, the liked songs first.
             const auto &shelf = library_.shelf(card.source);
-            if (playlists_dirty_ || playlists_source_ != card.source) {
-                playlists_dirty_ = false;
-                playlists_source_ = card.source;
-                own_made_.clear();
-                own_saved_.clear();
-                if (!shelf.liked.id.empty()) {
-                    own_made_.push_back(shelf.liked);
-                }
-                for (const auto &playlist : shelf.playlists) {
-                    (playlist.owned ? own_made_ : own_saved_).push_back(playlist);
-                }
-            }
+            ensure_own_playlists(card.source);
             made = own_made_;
             saved = own_saved_;
             if (made.empty() && saved.empty()) {
@@ -1309,7 +1317,7 @@ namespace lyren {
 
         const float top = bar.bottom() + 16;
         if (res.cards.empty()) {
-            if (!res.loaded && !res.loading && env_.signed_in(card.source)) {
+            if (!res.loaded && !res.loading && res.error.empty() && env_.signed_in(card.source)) {
                 spawn(library_.load_collection(card.source));
             }
             const Rect room{r.x, top, r.w, 300};
@@ -1389,7 +1397,10 @@ namespace lyren {
             if (first_row <= last_row) {
                 const size_t end_i = std::min(list.items.size(), (last_row + 1) * cols);
                 for (size_t i = first_row * cols; i < end_i; ++i) {
-                    Rect cell{r.x + static_cast<float>(i % cols) * (cell_w + gap), top + static_cast<float>(i / cols) * step, cell_w, row_h};
+                    const ui::Id pid = ui.id(list.items[i].id);
+                    const float c = ui.spring(ui::sub_id(pid, 0xc0), static_cast<float>(i % cols), CardGrid::reflow_ms);
+                    const float rw = ui.spring(ui::sub_id(pid, 0xc1), static_cast<float>(i / cols), CardGrid::reflow_ms);
+                    Rect cell{r.x + c * (cell_w + gap), top + rw * step, cell_w, row_h};
                     if (cell.bottom() < clip.y || cell.y > clip.bottom()) {
                         continue;
                     }

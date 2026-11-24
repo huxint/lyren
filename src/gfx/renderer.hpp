@@ -128,6 +128,9 @@ namespace lyren::gfx {
         void release_swapchain(Target &t);
         void ensure_capacity(Target::Slot &s, size_t count);
         void record_uploads(VkCommandBuffer cmd);
+        size_t live_staging_bytes() const;
+        void compact_staging(size_t extra_bytes = 0);
+        void free_staging();
         void poll_completed();
         void retire(std::move_only_function<void()> release);
         VkPipeline pipeline_for(VkFormat format);

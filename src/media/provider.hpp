@@ -56,6 +56,26 @@ namespace lyren {
         std::move_only_function<Task<Result<std::vector<Track>>>(std::string, std::string)> heartbeat;
     };
 
+    // Step-by-step diagnostics for imported platform connections (signing service, device identity, account session).
+    struct SessionCheck {
+        enum class State : uint8_t {
+            pending,
+            ok,
+            skipped,
+            failed
+        };
+        struct Step {
+            State state = State::pending;
+            std::string detail;
+        };
+        Step signer;
+        Step identity;
+        Step account;
+        bool ok() const {
+            return signer.state == State::ok && identity.state == State::ok && (account.state == State::ok || account.state == State::skipped);
+        }
+    };
+
     // The shared platform contract; adapters supply their optional features without changing the shell.
     class Provider {
     public:
@@ -138,6 +158,7 @@ namespace lyren {
         virtual Task<Result<QrCode>> qr_start();
         virtual Task<Result<QrStatus>> qr_poll();
         virtual Task<Result<void>> import_session(std::string json);
+        virtual Task<SessionCheck> check_session(std::string json);
         virtual Task<Result<Account>> account() = 0;
         virtual Task<void> logout() = 0;
     };

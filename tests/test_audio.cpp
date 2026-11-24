@@ -9,7 +9,9 @@
 #include "audio/decoder.hpp"
 #include "audio/meter.hpp"
 #include "audio/output.hpp"
+#include "audio/player.hpp"
 #include "audio/spool.hpp"
+#include "http_server.hpp"
 
 using namespace lyren::audio;
 
@@ -337,5 +339,136 @@ TEST_CASE("truncated FLAC streams surface a decode error and chained Ogg streams
         const auto samples = decode_all(*decoder);
         CHECK(decoder->error.empty());
         CHECK(std::abs(static_cast<double>(samples.size() / 2) - 44100.0) < 2200.0);
+    }
+}
+
+TEST_CASE("MP4 decoder bounds box recursion, surfaces corrupt AAC tails, and rejects out-of-range seeks") {
+    auto close_file = [](FILE *stream) {
+        std::fclose(stream);
+    };
+
+    SUBCASE("deeply nested sinf boxes do not overflow the stack") {
+        constexpr int depth = 120000;
+        const size_t total = static_cast<size_t>(depth) * 8 + 8;
+        std::vector<uint8_t> nested(total, 0);
+        auto put32 = [&](size_t off, uint32_t v) {
+            nested[off + 0] = static_cast<uint8_t>((v >> 24) & 0xff);
+            nested[off + 1] = static_cast<uint8_t>((v >> 16) & 0xff);
+            nested[off + 2] = static_cast<uint8_t>((v >> 8) & 0xff);
+            nested[off + 3] = static_cast<uint8_t>(v & 0xff);
+        };
+        auto put4cc = [&](size_t off, const char *s) {
+            for (int i = 0; i < 4; ++i) {
+                nested[off + i] = static_cast<uint8_t>(s[i]);
+            }
+        };
+        for (int i = 0; i < depth; ++i) {
+            const size_t off = static_cast<size_t>(i) * 8;
+            put32(off, static_cast<uint32_t>(total - off));
+            put4cc(off + 4, i == 0 ? "moov" : i == 1 ? "trak" : i == 2 ? "mdia" : i == 3 ? "minf" : i == 4 ? "stbl" : "sinf");
+        }
+        put32(static_cast<size_t>(depth) * 8, 8);
+        put4cc(static_cast<size_t>(depth) * 8 + 4, "free");
+
+        std::unique_ptr<FILE, decltype(close_file)> file(std::tmpfile(), close_file);
+        REQUIRE(file);
+        REQUIRE(std::fwrite(nested.data(), 1, nested.size(), file.get()) == nested.size());
+        REQUIRE(std::fflush(file.get()) == 0);
+        auto spool = Spool::file("/proc/self/fd/" + std::to_string(fileno(file.get())));
+        std::string error;
+        auto decoder = open_decoder(*spool, error);
+        CHECK_FALSE(decoder);
+    }
+
+    SUBCASE("corrupted AAC tail reports a decode error instead of silent EOF") {
+        std::ifstream input(LYREN_TEST_DATA "/tone.m4a", std::ios::binary);
+        std::string bytes{std::istreambuf_iterator<char>(input), {}};
+        REQUIRE(bytes.size() > 2048);
+        for (size_t i = bytes.size() / 2; i < bytes.size(); ++i) {
+            bytes[i] = '\xff';
+        }
+        std::unique_ptr<FILE, decltype(close_file)> file(std::tmpfile(), close_file);
+        REQUIRE(file);
+        REQUIRE(std::fwrite(bytes.data(), 1, bytes.size(), file.get()) == bytes.size());
+        REQUIRE(std::fflush(file.get()) == 0);
+        auto spool = Spool::file("/proc/self/fd/" + std::to_string(fileno(file.get())));
+        std::string error;
+        auto decoder = open_decoder(*spool, error);
+        REQUIRE_MESSAGE(decoder, error);
+        const auto samples = decode_all(*decoder);
+        CHECK(samples.size() / decoder->format.channels < decoder->length);
+        CHECK_FALSE(decoder->error.empty());
+    }
+
+    SUBCASE("all decoders reject out-of-range seeks") {
+        for (const char *name : {"/tone.flac", "/tone.mp3", "/tone.ogg", "/tone.m4a"}) {
+            CAPTURE(name);
+            auto spool = Spool::file(std::string(LYREN_TEST_DATA) + name);
+            std::string error;
+            auto decoder = open_decoder(*spool, error);
+            REQUIRE_MESSAGE(decoder, error);
+            CHECK_FALSE(decoder->seek(UINT64_MAX / 2));
+        }
+    }
+}
+
+TEST_CASE("Player resets pending seek on load failure and Spool reuses persistent disk cache") {
+    SUBCASE("failed load clears pending seek position") {
+        lyren::Loop loop;
+        lyren::net::Http http;
+        Player player(loop, http);
+        player.on_change = [&] {
+            if (player.state() == Player::State::failed) {
+                loop.quit();
+            }
+        };
+        const auto guard = loop.after(std::chrono::seconds(2), [&] {
+            loop.quit();
+        });
+        player.open_file("/nonexistent/lyren-missing-audio-file.flac", false);
+        player.seek(12.5);
+        if (player.state() != Player::State::failed) {
+            loop.run();
+        }
+        loop.cancel(guard);
+        CHECK(player.state() == Player::State::failed);
+        CHECK(player.position() == doctest::Approx(0.0));
+    }
+
+    SUBCASE("Spool caches completed streams on disk and evicts oldest entries above limit") {
+        std::ifstream input(LYREN_TEST_DATA "/tone.mp3", std::ios::binary);
+        const std::string audio_bytes{std::istreambuf_iterator<char>(input), {}};
+        REQUIRE(audio_bytes.size() > 1024);
+
+        std::atomic<int> hits{0};
+        lyren::test::Server server([&](std::string_view) {
+            ++hits;
+            return lyren::test::ok(audio_bytes);
+        });
+
+        Spool::set_cache_limit(static_cast<uint64_t>(audio_bytes.size()) * 2);
+        lyren::net::Http http;
+        auto fetch_all = [&](std::string key) {
+            auto spool = Spool::url(http, server.url() + "/track.mp3", std::move(key));
+            std::string out(audio_bytes.size(), '\0');
+            REQUIRE(spool->read_exact(0, out.data(), out.size()));
+            CHECK(out == audio_bytes);
+        };
+
+        fetch_all("test:cache:song-1");
+        CHECK(hits == 1);
+        // Second play of song-1 hits the on-disk cache with zero HTTP traffic.
+        fetch_all("test:cache:song-1");
+        CHECK(hits == 1);
+
+        // Shrink budget to hold only 1 file and cache song-2, evicting song-1.
+        Spool::set_cache_limit(static_cast<uint64_t>(audio_bytes.size()) + 512);
+        fetch_all("test:cache:song-2");
+        CHECK(hits == 2);
+        fetch_all("test:cache:song-2");
+        CHECK(hits == 2);
+        fetch_all("test:cache:song-1");
+        CHECK(hits == 3);
+        Spool::set_cache_limit(0);
     }
 }

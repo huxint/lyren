@@ -3,6 +3,7 @@
 #include <curl/curl.h>
 
 #include <cctype>
+#include <cstdio>
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -168,18 +169,21 @@ namespace lyren::net {
             const std::string key = cookie_key(entry);
             return prev.contains(key) && !next.contains(key);
         });
+        std::unordered_map<std::string, size_t> index;
+        index.reserve(entries_.size() + after.entries_.size());
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            index.emplace(cookie_key(entries_[i]), i);
+        }
         // Apply cookies added or updated by this response without clobbering sibling concurrent updates.
         for (const auto &entry : after.entries_) {
             const std::string key = cookie_key(entry);
             if (auto it = prev.find(key); it != prev.end() && it->second == entry) {
                 continue;
             }
-            auto existing = std::ranges::find_if(entries_, [&](const std::string &cur) {
-                return cookie_key(cur) == key;
-            });
-            if (existing != entries_.end()) {
-                *existing = entry;
+            if (auto existing = index.find(key); existing != index.end()) {
+                entries_[existing->second] = entry;
             } else {
+                index.emplace(key, entries_.size());
                 entries_.push_back(entry);
             }
         }
@@ -194,6 +198,7 @@ namespace lyren::net {
         Response resp;
         std::string post;
         uint64_t offset = 0, total = 0, at = 0;
+        size_t max_bytes = 32u << 20;
         bool started = false, keep_cookies = false;
         std::chrono::steady_clock::time_point due;
         std::array<char, CURL_ERROR_SIZE> error{};
@@ -262,6 +267,10 @@ namespace lyren::net {
     static size_t on_write(char *p, size_t, size_t n, void *ud) {
         auto *t = static_cast<Http::Transfer *>(ud);
         if (t->done) {
+            if (n > t->max_bytes || t->resp.body.size() > t->max_bytes - n) {
+                std::snprintf(t->error.data(), t->error.size(), "Maximum file size exceeded");
+                return 0;
+            }
             t->resp.body.append(p, n);
             return n;
         }
@@ -357,7 +366,8 @@ namespace lyren::net {
         }
         curl_easy_setopt(t->easy, CURLOPT_ACCEPT_ENCODING, "");
         curl_easy_setopt(t->easy, CURLOPT_TIMEOUT, 30L);
-        curl_easy_setopt(t->easy, CURLOPT_MAXFILESIZE_LARGE, curl_off_t{32} << 20);
+        t->max_bytes = req.max_bytes;
+        curl_easy_setopt(t->easy, CURLOPT_MAXFILESIZE_LARGE, static_cast<curl_off_t>(req.max_bytes));
         if (req.body) {
             t->post = std::move(*req.body);
             curl_easy_setopt(t->easy, CURLOPT_POSTFIELDSIZE, static_cast<long>(t->post.size()));

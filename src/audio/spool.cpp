@@ -5,14 +5,114 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <format>
+#include <numeric>
 
+#include "core/crypto.hpp"
 #include "core/log.hpp"
 #include "sys/paths.hpp"
 
 namespace lyren::audio {
+
+    namespace {
+        std::atomic<uint64_t> max_cache_bytes{512ull << 20};
+        std::mutex cache_prune_mutex;
+
+        std::filesystem::path audio_cache_dir() {
+            auto dir = paths::cache_dir() / "audio";
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            return dir;
+        }
+
+        int open_temp_spool(const std::filesystem::path &dir, bool keep_path, std::string &out_path) {
+            if (!keep_path) {
+                int fd = ::open(dir.c_str(), O_TMPFILE | O_RDWR | O_CLOEXEC, 0600);
+                if (fd >= 0) {
+                    return fd;
+                }
+            }
+            std::string tmpl = (dir / ".tmp.XXXXXX").string();
+            int fd = ::mkostemp(tmpl.data(), O_CLOEXEC);
+            if (fd < 0) {
+                return -1;
+            }
+            if (keep_path) {
+                out_path = std::move(tmpl);
+            } else {
+                ::unlink(tmpl.c_str());
+            }
+            return fd;
+        }
+
+        void prune_audio_cache(const std::filesystem::path &dir, uint64_t limit, const std::filesystem::path &keep = {}) {
+            std::lock_guard lk(cache_prune_mutex);
+            std::error_code ec;
+            struct Entry {
+                std::filesystem::file_time_type mtime;
+                uint64_t size;
+                std::filesystem::path path;
+            };
+            std::vector<Entry> files;
+            uint64_t total = 0;
+            const auto now = std::filesystem::file_time_type::clock::now();
+            for (const auto &de : std::filesystem::directory_iterator(dir, ec)) {
+                if (!de.is_regular_file(ec)) {
+                    continue;
+                }
+                const auto name = de.path().filename().string();
+                const auto mtime = de.last_write_time(ec);
+                if (name.starts_with(".tmp.")) {
+                    if (!ec && now - mtime > std::chrono::hours(1)) {
+                        std::filesystem::remove(de.path(), ec);
+                    }
+                    continue;
+                }
+                const uint64_t sz = de.file_size(ec);
+                if (ec) {
+                    continue;
+                }
+                total += sz;
+                if (de.path() != keep) {
+                    files.push_back({mtime, sz, de.path()});
+                }
+            }
+            if (total <= limit) {
+                return;
+            }
+            std::ranges::sort(files, {}, &Entry::mtime);
+            const uint64_t target = std::max(keep.empty() ? uint64_t{0}
+                                                          : total - std::accumulate(files.begin(), files.end(), uint64_t{0},
+                                                                                    [](uint64_t a, const Entry &e) {
+                                                                                        return a + e.size;
+                                                                                    }),
+                                             limit * 7 / 8);
+            for (const auto &f : files) {
+                if (total <= target) {
+                    break;
+                }
+                if (std::filesystem::remove(f.path, ec)) {
+                    total -= std::min(total, f.size);
+                }
+            }
+        }
+    } // namespace
+
+    void Spool::set_cache_limit(uint64_t bytes) {
+        max_cache_bytes.store(bytes, std::memory_order_relaxed);
+        if (bytes == 0) {
+            prune_audio_cache(audio_cache_dir(), 0);
+        }
+    }
+
+    uint64_t Spool::cache_limit() {
+        return max_cache_bytes.load(std::memory_order_relaxed);
+    }
 
     void Ranges::add(uint64_t b, uint64_t e) {
         if (b >= e) {
@@ -75,11 +175,31 @@ namespace lyren::audio {
         return s;
     }
 
-    std::shared_ptr<Spool> Spool::url(net::Http &http, std::string url) {
+    std::shared_ptr<Spool> Spool::url(net::Http &http, std::string url, std::string cache_key) {
         std::shared_ptr<Spool> s(new Spool);
+        const uint64_t limit = cache_limit();
+        const bool persist = !cache_key.empty() && limit > 0;
+        const auto dir = persist ? audio_cache_dir() : paths::cache_dir();
+        if (persist) {
+            const auto cached = dir / crypto::md5_hex(cache_key);
+            int cfd = ::open(cached.c_str(), O_RDONLY | O_CLOEXEC);
+            struct stat st{};
+            if (cfd >= 0 && fstat(cfd, &st) == 0 && st.st_size > 0) {
+                ::futimens(cfd, nullptr);
+                s->fd_ = cfd;
+                s->size_ = static_cast<uint64_t>(st.st_size);
+                s->have_.add(0, s->size_);
+                log::debug("audio cache hit: {} ({} bytes)", cache_key, s->size_);
+                return s;
+            }
+            if (cfd >= 0) {
+                ::close(cfd);
+            }
+            s->cache_path_ = cached.string();
+        }
         s->http_ = &http;
         s->url_ = std::move(url);
-        s->fd_ = ::open(paths::cache_dir().c_str(), O_TMPFILE | O_RDWR | O_CLOEXEC, 0600);
+        s->fd_ = open_temp_spool(dir, persist, s->tmp_path_);
         if (s->fd_ < 0) {
             s->error_ = std::format("cache file: {}", std::strerror(errno));
             s->size_ = 0;
@@ -96,6 +216,9 @@ namespace lyren::audio {
         }
         if (fd_ >= 0) {
             ::close(fd_);
+        }
+        if (!tmp_path_.empty()) {
+            ::unlink(tmp_path_.c_str());
         }
     }
 
@@ -148,6 +271,9 @@ namespace lyren::audio {
         // Bytes from a cancelled request are still the right bytes.
         for (size_t done = 0; done < d.size();) {
             ssize_t n = ::pwrite(fd_, d.data() + done, d.size() - done, static_cast<off_t>(offset + done));
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
             if (n <= 0) {
                 std::lock_guard lk(m_);
                 error_ = std::format("cache write: {}", std::strerror(errno));
@@ -156,54 +282,90 @@ namespace lyren::audio {
             }
             done += static_cast<size_t>(n);
         }
-        std::lock_guard lk(m_);
-        have_.add(offset, offset + d.size());
-        if (req == req_) {
-            pos_ = offset + d.size();
+        bool promote_now = false;
+        {
+            std::lock_guard lk(m_);
+            have_.add(offset, offset + d.size());
+            if (req == req_) {
+                pos_ = offset + d.size();
+            }
+            promote_now = error_.empty() && size_ != unknown && size_ > 0 && !tmp_path_.empty() && have_.available(0) == size_;
         }
+        if (promote_now) {
+            promote_cache();
+        }
+        std::lock_guard lk(m_);
         if (waiting_) {
             cv_.notify_all();
         }
     }
 
-    void Spool::on_done(uint64_t req, long status, std::string error) {
-        std::lock_guard lk(m_);
-        if (req != req_ || closed_) {
-            return;
-        }
-        http_id_ = 0;
-        if (error.empty() && pos_ == start_) {
-            error = "empty response";
-        }
-        if (!error.empty()) {
-            if (pos_ > start_) {
-                retries_ = 0;
-            }
-            log::warn("download at {}: {}", pos_, error);
-            // Network trouble is worth retrying, after 0.5, 1 and 2 s; an answer like 403 (an expired link) is not.
-            if (status >= 400 || ++retries_ > 3) {
-                status_ = status;
-                error_ = std::move(error);
-                cv_.notify_all();
+    void Spool::promote_cache() {
+        std::filesystem::path promoted;
+        uint64_t limit = 0;
+        {
+            std::lock_guard lk(m_);
+            if (tmp_path_.empty() || cache_path_.empty()) {
                 return;
             }
-            fetch(pos_, std::chrono::milliseconds(250 << retries_));
-            return;
+            limit = cache_limit();
+            if (size_ == 0 || size_ == unknown || size_ > limit) {
+                return;
+            }
+            if (std::rename(tmp_path_.c_str(), cache_path_.c_str()) != 0) {
+                return;
+            }
+            tmp_path_.clear();
+            promoted = cache_path_;
         }
-        retries_ = 0;
-        if (size_ == unknown) {
-            size_ = pos_; // no length was given, so the body ran to the end
+        prune_audio_cache(promoted.parent_path(), limit, promoted);
+    }
+
+    void Spool::on_done(uint64_t req, long status, std::string error) {
+        bool completed = false;
+        {
+            std::lock_guard lk(m_);
+            if (req != req_ || closed_) {
+                return;
+            }
+            http_id_ = 0;
+            if (error.empty() && pos_ == start_) {
+                error = "empty response";
+            }
+            if (!error.empty()) {
+                if (pos_ > start_) {
+                    retries_ = 0;
+                }
+                log::warn("download at {}: {}", pos_, error);
+                // Network trouble is worth retrying, after 0.5, 1 and 2 s; an answer like 403 (an expired link) is not.
+                if (status >= 400 || ++retries_ > 3) {
+                    status_ = status;
+                    error_ = std::move(error);
+                    cv_.notify_all();
+                    return;
+                }
+                fetch(pos_, std::chrono::milliseconds(250 << retries_));
+                return;
+            }
+            retries_ = 0;
+            if (size_ == unknown) {
+                size_ = pos_; // no length was given, so the body ran to the end
+            }
+            auto g = have_.gap(read_pos_, size_);
+            if (g.first >= g.second) {
+                g = have_.gap(0, size_);
+            }
+            if (g.first < g.second) {
+                fetch(g.first);
+            } else {
+                log::debug("download complete: {} bytes", size_);
+                completed = error_.empty() && size_ > 0 && have_.total() == size_;
+            }
+            cv_.notify_all();
         }
-        auto g = have_.gap(read_pos_, size_);
-        if (g.first >= g.second) {
-            g = have_.gap(0, size_);
+        if (completed) {
+            promote_cache();
         }
-        if (g.first < g.second) {
-            fetch(g.first);
-        } else {
-            log::debug("download complete: {} bytes", size_);
-        }
-        cv_.notify_all();
     }
 
     size_t Spool::read(uint64_t off, void *buf, size_t n) {
@@ -215,7 +377,10 @@ namespace lyren::audio {
             }
             if (uint64_t a = have_.available(off)) {
                 lk.unlock();
-                ssize_t r = ::pread(fd_, buf, std::min<uint64_t>(n, a), static_cast<off_t>(off));
+                ssize_t r;
+                do {
+                    r = ::pread(fd_, buf, std::min<uint64_t>(n, a), static_cast<off_t>(off));
+                } while (r < 0 && errno == EINTR);
                 return r > 0 ? static_cast<size_t>(r) : 0;
             }
             if (!error_.empty()) {

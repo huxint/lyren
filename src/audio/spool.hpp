@@ -36,8 +36,10 @@ namespace lyren::audio {
     public:
         static constexpr uint64_t unknown = UINT64_MAX;
 
+        static void set_cache_limit(uint64_t bytes);
+        static uint64_t cache_limit();
         static std::shared_ptr<Spool> file(const std::string &path);
-        static std::shared_ptr<Spool> url(net::Http &http, std::string url);
+        static std::shared_ptr<Spool> url(net::Http &http, std::string url, std::string cache_key = {});
         ~Spool();
 
         // Blocks until bytes at off are present. Returns 0 at the end, after close() or on failure.
@@ -58,10 +60,12 @@ namespace lyren::audio {
         void on_head(uint64_t req, uint64_t offset, uint64_t total);
         void on_data(uint64_t req, uint64_t offset, std::span<const std::byte> d);
         void on_done(uint64_t req, long status, std::string error);
+        void promote_cache();
 
         int fd_ = -1;
         net::Http *http_ = nullptr;
         std::string url_;
+        std::string tmp_path_, cache_path_;
         mutable std::mutex m_;
         std::condition_variable cv_;
         Ranges have_;

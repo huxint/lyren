@@ -24,8 +24,18 @@ namespace lyren {
             bool image = false;
             std::optional<QrStatus> status;
             std::string error;
-            std::string settings; // pasted connection settings
+            std::string settings; // pasted or composed connection settings
+            std::string signer_url;
+            std::string signer_token;
+            std::string cookie;
+            std::string device_id;
+            std::string iid;
+            std::string fp;
+            bool show_advanced = false;
+            bool show_guide = false;
             bool importing = false;
+            bool checking = false;
+            std::optional<SessionCheck> check;
 
             bool has_code() const {
                 return image || (size > 0 && !modules.empty());
@@ -40,12 +50,16 @@ namespace lyren {
         SignIn &sign_in() {
             return sign_in_;
         }
+        bool signer_connected(Source source) const;
+        bool unpack_json_settings(std::string_view json_text);
+        std::string compose_settings() const;
         // Shows the platform's sign-in; one that takes a QR code starts fetching it.
         void begin(Source source);
         // Back to the list of accounts. A late answer cannot sign anyone in.
         void cancel();
         void refresh_code();
         void import_settings();
+        void test_settings();
         void sign_out(Source source);
         // Synchronously writes any unsaved session changes before shutdown.
         void flush();
@@ -55,6 +69,7 @@ namespace lyren {
         Task<void> initialize(Source source);
         Task<void> scan();
         Task<void> import(Source source);
+        Task<void> check(Source source);
         // The session is in: the account's data replaces whatever was there.
         Task<void> arrived(Source source, uint64_t gen);
         void save(bool immediate = false);

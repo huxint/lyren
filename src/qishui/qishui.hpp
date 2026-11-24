@@ -1,4 +1,5 @@
 #pragma once
+#include <optional>
 #include <unordered_set>
 
 #include "media/provider.hpp"
@@ -11,6 +12,7 @@ namespace lyren::qishui {
         std::string cursor;
     };
 
+    Result<std::string> parse_cookie_input(std::string_view raw);
     Result<SearchPage> parse_search(const Json &response, SearchKind kind);
     Result<CommentPage> parse_comments(const Json &response, std::string_view user_id, std::string_view root = {});
 
@@ -27,6 +29,7 @@ namespace lyren::qishui {
         }
         Task<Result<void>> initialize() override;
         Task<Result<void>> import_session(std::string json) override;
+        Task<SessionCheck> check_session(std::string json) override;
         void cancel_login() override {
             ++client.generation;
         }
@@ -87,6 +90,7 @@ namespace lyren::qishui {
             uint64_t revision;
             int index;
         };
+        void sync_collection_cache();
         Result<Page> begin_page(std::string name, std::string identity, int offset);
         Result<void> finish_page(const Page &page, std::string next, Batch &batch);
         Task<Result<Json>> track_data(std::string id);
@@ -107,6 +111,9 @@ namespace lyren::qishui {
         int64_t first_use_ = 0;
         Json::array_t played_media_;
         std::string lyric_id_, lyric_text_, lyric_type_, liked_playlist_id_;
+        std::string collection_uid_;
+        std::optional<std::unordered_set<std::string>> saved_albums_, followed_artists_;
+        Clock::time_point saved_albums_at_{}, followed_artists_at_{};
     };
 
 } // namespace lyren::qishui

@@ -1,6 +1,7 @@
 #include <vorbis/vorbisfile.h>
 
 #include <algorithm>
+#include <limits>
 
 #include "audio/decoder.hpp"
 #include "audio/spool.hpp"
@@ -40,13 +41,19 @@ namespace lyren::audio {
                     return 0;
                 }
                 size_t ch = format.channels, done = 0;
+                int holes = 0;
                 while (done < frames) {
                     float **pcm = nullptr;
                     int section = 0;
                     long n = ov_read_float(&vf_, &pcm, static_cast<int>(frames - done), &section);
                     if (n == OV_HOLE) {
+                        if (++holes > 64) {
+                            error = "corrupt vorbis stream";
+                            break;
+                        }
                         continue;
                     }
+                    holes = 0;
                     if (n < 0) {
                         error = "corrupt vorbis stream";
                         break;
@@ -71,6 +78,9 @@ namespace lyren::audio {
             }
 
             bool seek(uint64_t frame) override {
+                if (frame > static_cast<uint64_t>(std::numeric_limits<ogg_int64_t>::max()) || (length > 0 && frame > length)) {
+                    return false;
+                }
                 error.clear();
                 return ov_pcm_seek(&vf_, static_cast<ogg_int64_t>(frame)) == 0;
             }
@@ -84,7 +94,11 @@ namespace lyren::audio {
             }
             static int seek_cb(void *ud, ogg_int64_t off, int whence) {
                 auto *d = static_cast<Vorbis *>(ud);
-                int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(d->pos_) : static_cast<int64_t>(d->s_.size());
+                const auto size = static_cast<int64_t>(d->s_.size());
+                const int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(d->pos_) : whence == SEEK_END ? size : -1;
+                if (base < 0 || off < -base || off > size - base) {
+                    return -1;
+                }
                 d->pos_ = static_cast<uint64_t>(base + off);
                 return 0;
             }

@@ -165,6 +165,7 @@ namespace lyren::audio {
                 }
                 log::warn("playback failed: {}", error);
                 state_ = State::failed;
+                pending_seek_.reset();
                 error_ = error;
                 out_.set_active(false);
                 changed();

@@ -1,5 +1,6 @@
 #include "app/model/accounts.hpp"
 
+#include <glaze/glaze.hpp>
 #include <qrencode.h>
 
 #include <format>
@@ -150,9 +151,87 @@ namespace lyren {
         }
     }
 
+    bool Accounts::signer_connected(Source source) const {
+        if (env_.signed_in(source) || !env_.provider(source).capabilities.session_import) {
+            return false;
+        }
+        const auto &session = env_.provider(source).session();
+        const auto it = session.find("signer_url");
+        return it != session.end() && !it->second.empty();
+    }
+
+    bool Accounts::unpack_json_settings(std::string_view json_text) {
+        const auto first = json_text.find_first_not_of(" \t\r\n");
+        if (first == json_text.npos || json_text[first] != '{') {
+            return false;
+        }
+        const auto last = json_text.find_last_not_of(" \t\r\n");
+        if (json_text[last] != '}') {
+            return false;
+        }
+        StringMap<std::string> map;
+        if (glz::read_json(map, json_text.substr(first, last - first + 1))) {
+            return false;
+        }
+        auto get_val = [&](std::string_view key) -> std::string {
+            const auto it = map.find(key);
+            return it == map.end() ? std::string{} : it->second;
+        };
+        sign_in_.signer_url = get_val("signer_url");
+        sign_in_.signer_token = get_val("signer_token");
+        sign_in_.cookie = !get_val("cookie").empty() ? get_val("cookie") : get_val("cookie_jar");
+        sign_in_.device_id = get_val("device_id");
+        sign_in_.iid = get_val("iid");
+        sign_in_.fp = get_val("fp");
+        if (!sign_in_.device_id.empty() || !sign_in_.iid.empty() || !sign_in_.fp.empty()) {
+            sign_in_.show_advanced = true;
+        }
+        sign_in_.error.clear();
+        sign_in_.check.reset();
+        sign_in_.settings = compose_settings();
+        return true;
+    }
+
+    std::string Accounts::compose_settings() const {
+        if (sign_in_.signer_url.empty() && sign_in_.signer_token.empty() && sign_in_.cookie.empty() && sign_in_.device_id.empty() && sign_in_.iid.empty() && sign_in_.fp.empty()) {
+            return sign_in_.settings;
+        }
+        StringMap<std::string> out;
+        out["signer_url"] = sign_in_.signer_url;
+        if (!sign_in_.signer_token.empty()) {
+            out["signer_token"] = sign_in_.signer_token;
+        }
+        if (!sign_in_.cookie.empty()) {
+            out["cookie"] = sign_in_.cookie;
+        }
+        if (!sign_in_.device_id.empty()) {
+            out["device_id"] = sign_in_.device_id;
+        }
+        if (!sign_in_.iid.empty()) {
+            out["iid"] = sign_in_.iid;
+        }
+        if (!sign_in_.fp.empty()) {
+            out["fp"] = sign_in_.fp;
+        }
+        return glz::write_json(out).value_or("{}");
+    }
+
     void Accounts::begin(Source source) {
         sign_in_ = {.source = source, .since = env_.now()};
-        if (env_.provider(source).capabilities.qr_login) {
+        auto &p = env_.provider(source);
+        if (p.capabilities.session_import) {
+            const auto &s = p.session();
+            auto get_val = [&](std::string_view key) -> std::string {
+                const auto it = s.find(key);
+                return it == s.end() ? std::string{} : it->second;
+            };
+            sign_in_.signer_url = get_val("signer_url");
+            sign_in_.signer_token = get_val("signer_token");
+            sign_in_.cookie = get_val("cookie_jar");
+            if (!sign_in_.signer_url.empty()) {
+                sign_in_.settings = compose_settings();
+            }
+        } else if (p.capabilities.qr_login) {
             spawn(scan());
         }
     }
@@ -174,11 +253,32 @@ namespace lyren {
 
     void Accounts::import_settings() {
         if (sign_in_.source && !sign_in_.importing) {
+            sign_in_.settings = compose_settings();
             spawn(import(*sign_in_.source));
         }
     }
 
+    void Accounts::test_settings() {
+        if (sign_in_.source && !sign_in_.importing && !sign_in_.checking) {
+            sign_in_.settings = compose_settings();
+            spawn(check(*sign_in_.source));
+        }
+    }
+
     void Accounts::sign_out(Source source) {
+        if (!env_.signed_in(source) && signer_connected(source)) {
+            spawn([](Accounts *self, Source source) -> Task<void> {
+                self->library_.reset(source);
+                co_await self->env_.provider(source).logout();
+                self->save(true);
+                if (source == self->browser_.active()) {
+                    self->browser_.ensure();
+                }
+                self->env_.notify(std::string(lyren::tr("Disconnected signing service")), "log-out");
+                self->env_.redraw();
+            }(this, source));
+            return;
+        }
         spawn(library_.sign_out(source));
     }
 
@@ -219,6 +319,21 @@ namespace lyren {
             co_return env_.redraw();
         }
         co_await arrived(source, gen);
+    }
+
+    Task<void> Accounts::check(Source source) {
+        const uint64_t gen = ++gen_;
+        sign_in_.checking = true;
+        sign_in_.error.clear();
+        sign_in_.check = SessionCheck{};
+        env_.redraw();
+        auto result = co_await env_.provider(source).check_session(sign_in_.settings);
+        if (gen != gen_) {
+            co_return;
+        }
+        sign_in_.checking = false;
+        sign_in_.check = std::move(result);
+        env_.redraw();
     }
 
     Task<void> Accounts::scan() {

@@ -70,7 +70,7 @@ namespace lyren::ui {
             size_t start = 0, word = 0;
             float used = 0;
             for (size_t i = 0; i < clusters.size(); ++i) {
-                if (clusters[i].byte > 0 && paragraph[clusters[i].byte - 1] == ' ') {
+                if (clusters[i].byte > 0 && (paragraph[clusters[i].byte - 1] == ' ' || paragraph[clusters[i].byte - 1] == '\t')) {
                     word = i;
                 }
                 used += clusters[i].width;

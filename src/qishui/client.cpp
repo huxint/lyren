@@ -6,6 +6,7 @@
 #include <format>
 
 #include "core/crypto.hpp"
+#include "core/i18n.hpp"
 
 namespace lyren::qishui {
 
@@ -107,7 +108,7 @@ namespace lyren::qishui {
                 }
                 return std::unexpected("Sign in to Qishui Music and try again");
             }
-            return std::unexpected(message.empty() ? std::format("Qishui Music request failed ({})", code) : std::move(message));
+            return std::unexpected(message.empty() ? lyren::trf("Qishui Music request failed ({})", code) : std::move(message));
         }
         return value;
     }
@@ -118,7 +119,7 @@ namespace lyren::qishui {
                 return std::unexpected("Network connection failed");
             }
             if (response.status < 200 || response.status >= 300) {
-                return std::unexpected(std::format("Qishui Music request failed (HTTP {})", response.status));
+                return std::unexpected(lyren::trf("Qishui Music request failed (HTTP {})", response.status));
             }
             if (response.verification == net::Verification::captcha) {
                 return std::unexpected("Complete Qishui Music verification in the official app, then reconnect your session");
@@ -149,12 +150,25 @@ namespace lyren::qishui {
         if (!get("signer_token").empty()) {
             request.headers.push_back("Authorization: Bearer " + get("signer_token"));
         }
-        auto result = received(co_await net::fetch_retry(loop_, http_, std::move(request), net::Retry::network));
-        if (result && !boolean(field(*result, "ok"))) {
-            const auto error = string(field(*result, "error"));
+        auto response = co_await net::fetch_retry(loop_, http_, std::move(request), net::Retry::network);
+        if (!response.error.empty()) {
+            co_return std::unexpected("Could not connect to the Qishui signing service; check signer_url and ensure it is running");
+        }
+        if (response.status == 401 || response.status == 403) {
+            co_return std::unexpected(lyren::trf("Qishui signing service rejected the access token (HTTP {})", response.status));
+        }
+        if (response.status < 200 || response.status >= 300) {
+            co_return std::unexpected(lyren::trf("Qishui signing service request failed (HTTP {})", response.status));
+        }
+        Json value;
+        if (glz::read_json(value, response.body) || !value.is_object()) {
+            co_return std::unexpected("Qishui signing service returned an invalid response");
+        }
+        if (!boolean(field(value, "ok"))) {
+            const auto error = string(field(value, "error"));
             co_return std::unexpected(error.empty() ? "Qishui Music signer rejected the request" : error);
         }
-        co_return result;
+        co_return value;
     }
 
     Task<Result<void>> Client::initialize() {

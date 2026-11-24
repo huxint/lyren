@@ -76,7 +76,8 @@ namespace lyren {
             load_chart(page, page->chart_tab);
         } else if (section == Section::collection && (library_.own(page->who) || page->who.owned)) {
             const auto &shelf = library_.shelf(page->who.source);
-            if (!shelf.collection[0].loaded && !shelf.collection[0].loading && env_.signed_in(page->who.source)) {
+            const auto &res = shelf.collection[static_cast<size_t>(page->collection_tab)];
+            if (!res.loaded && !res.loading && env_.signed_in(page->who.source)) {
                 spawn(library_.load_collection(page->who.source));
             }
         }
@@ -108,7 +109,8 @@ namespace lyren {
         if (self && provider.features.recent_plays && env_.signed_in(who.source)) {
             load_recent(page);
         }
-        if (self && (caps.collect_albums || caps.follow_artists) && !shelf.collection[0].loaded && !shelf.collection[0].loading && env_.signed_in(who.source)) {
+        if (self && (caps.collect_albums || caps.follow_artists) && !shelf.collection[0].loaded && !shelf.collection[0].loading && shelf.collection[0].error.empty() &&
+            shelf.collection[1].error.empty() && env_.signed_in(who.source)) {
             spawn(library_.load_collection(who.source));
         }
         if (!self && caps.profile_playlists) {
@@ -210,11 +212,21 @@ namespace lyren {
     }
 
     Task<void> Social::fetch_recent(std::shared_ptr<Page> page) {
-        const auto &shelf = library_.shelf(page->who.source);
+        auto &shelf = library_.shelf(page->who.source);
         const uint64_t account_gen = shelf.account_gen;
-        auto r = co_await env_.provider(page->who).features.recent_plays();
-        if (account_gen != shelf.account_gen) {
-            co_return;
+        Result<std::vector<Track>> r;
+        if (shelf.recent_plays_loaded && env_.now() - shelf.recent_plays_at < 60.0) {
+            r = shelf.recent_plays;
+        } else {
+            r = co_await env_.provider(page->who).features.recent_plays();
+            if (account_gen != shelf.account_gen) {
+                co_return;
+            }
+            if (r) {
+                shelf.recent_plays = *r;
+                shelf.recent_plays_at = env_.now();
+                shelf.recent_plays_loaded = true;
+            }
         }
         auto &recent = page->recent;
         recent.loading = false;

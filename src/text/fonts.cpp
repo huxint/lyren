@@ -117,9 +117,13 @@ namespace lyren::text {
 
     Fonts::~Fonts() {
         for (auto &f : faces_) {
-            if (f.size) {
+            if (f.hb) {
                 hb_font_destroy(f.hb);
+            }
+            if (f.ft) {
                 FT_Done_Face(f.ft);
+            }
+            if (f.size && f.data) {
                 munmap(const_cast<uint8_t *>(f.data), f.size);
             }
         }
@@ -127,34 +131,52 @@ namespace lyren::text {
     }
 
     void Fonts::open(Face &f) {
+        static const uint8_t failed_sentinel = 0;
         int fd = ::open(f.path.c_str(), O_RDONLY | O_CLOEXEC);
         struct stat st{};
-        if (fd < 0 || fstat(fd, &st) < 0) {
+        if (fd < 0 || fstat(fd, &st) < 0 || st.st_size <= 0) {
             log::warn("cannot open font {}", f.path);
             if (fd >= 0) {
                 close(fd);
             }
-            f.data = reinterpret_cast<const uint8_t *>("");
+            f.size = 0;
+            f.data = &failed_sentinel;
+            f.hb = hb_font_get_empty();
+            f.upem = 1000;
             return;
         }
-        f.size = static_cast<size_t>(st.st_size);
-        f.data = static_cast<const uint8_t *>(mmap(nullptr, f.size, PROT_READ, MAP_PRIVATE, fd, 0));
+        const auto len = static_cast<size_t>(st.st_size);
+        void *mapped = mmap(nullptr, len, PROT_READ, MAP_PRIVATE, fd, 0);
         close(fd);
-        FT_New_Memory_Face(ft_, f.data, FT_Long(f.size), f.index, &f.ft);
+        if (mapped == MAP_FAILED) {
+            log::warn("cannot map font {}", f.path);
+            f.size = 0;
+            f.data = &failed_sentinel;
+            f.hb = hb_font_get_empty();
+            f.upem = 1000;
+            return;
+        }
+        f.size = len;
+        f.data = static_cast<const uint8_t *>(mapped);
+        if (FT_New_Memory_Face(ft_, f.data, FT_Long(f.size), f.index, &f.ft) != 0) {
+            log::warn("invalid font {}", f.path);
+            f.ft = nullptr;
+        }
         hb_blob_t *blob = hb_blob_create(reinterpret_cast<const char *>(f.data), static_cast<unsigned>(f.size), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
         // Fontconfig packs a variable font's named instance (from 1) above the face index. FreeType takes the pair as
         // it is; HarfBuzz is told the instance separately, so that advances follow the weight.
         const unsigned instance = static_cast<unsigned>(f.index) >> 16;
         hb_face_t *face = hb_face_create(blob, static_cast<unsigned>(f.index) & 0xffff);
         f.hb = hb_font_create(face);
-        f.upem = static_cast<float>(hb_face_get_upem(face));
+        const unsigned upem = hb_face_get_upem(face);
+        f.upem = static_cast<float>(upem > 0 ? upem : 1000u);
         hb_font_set_scale(f.hb, static_cast<int>(f.upem), static_cast<int>(f.upem));
         if (instance > 0 && instance < 0x8000) {
             hb_font_set_var_named_instance(f.hb, instance - 1);
         }
         hb_face_destroy(face);
         hb_blob_destroy(blob);
-        if (f.ft) {
+        if (f.ft && f.upem > 0) {
             f.ascender = static_cast<float>(f.ft->ascender) / f.upem;
             f.descender = -static_cast<float>(f.ft->descender) / f.upem;
         }
@@ -168,25 +190,36 @@ namespace lyren::text {
     }
 
     uint16_t Fonts::face_for(char32_t cp, bool emoji, int weight) const {
-        if (emoji && color_ >= 0 && faces_[static_cast<size_t>(color_)].coverage.has(cp)) {
-            return static_cast<uint16_t>(color_);
+        const int w = std::clamp(weight, 0, weights - 1);
+        const uint32_t key = (static_cast<uint32_t>(cp) << 3) | (static_cast<uint32_t>(w) << 1) | (emoji ? 1u : 0u);
+        const size_t slot = (key * 2654435761u) & (lookup_cache_.size() - 1);
+        const uint64_t cached = lookup_cache_[slot];
+        if ((cached >> 63) && static_cast<uint32_t>((cached >> 16) & 0x0fffffffu) == key) {
+            return static_cast<uint16_t>(cached & 0xffffu);
         }
-        const auto &chain = chains_[static_cast<size_t>(std::clamp(weight, 0, weights - 1))];
+        auto store = [&](uint16_t res) {
+            lookup_cache_[slot] = (1ull << 63) | (static_cast<uint64_t>(key) << 16) | res;
+            return res;
+        };
+        if (emoji && color_ >= 0 && faces_[static_cast<size_t>(color_)].coverage.has(cp)) {
+            return store(static_cast<uint16_t>(color_));
+        }
+        const auto &chain = chains_[static_cast<size_t>(w)];
         for (uint16_t i : chain) {
             if (faces_[i].coverage.has(cp)) {
-                return i;
+                return store(i);
             }
         }
         // Whatever only the colour face has.
         if (color_ >= 0 && faces_[static_cast<size_t>(color_)].coverage.has(cp)) {
-            return static_cast<uint16_t>(color_);
+            return store(static_cast<uint16_t>(color_));
         }
-        return chain.front();
+        return store(chain.front());
     }
 
     void Fonts::trim() {
         for (auto &f : faces_) {
-            if (f.size) {
+            if (f.size && f.data) {
                 madvise(const_cast<uint8_t *>(f.data), f.size, MADV_DONTNEED);
             }
         }

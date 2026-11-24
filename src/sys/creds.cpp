@@ -11,8 +11,10 @@
 #include <glaze/glaze.hpp>
 
 #include <cctype>
+#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <condition_variable>
 #include <cstring>
 #include <format>
 #include <fstream>
@@ -37,6 +39,31 @@ namespace lyren::creds {
         };
 
         std::mutex blob_mutex;
+        std::condition_variable blob_cv;
+        uint64_t next_seq = 0;
+        uint64_t written_seq = 0;
+        size_t active_writers = 0;
+
+        uint64_t claim_write_seq() {
+            std::lock_guard lock(blob_mutex);
+            return ++next_seq;
+        }
+
+        bool write_all(int fd, std::string_view data) {
+            size_t off = 0;
+            while (off < data.size()) {
+                const ssize_t n = ::write(fd, data.data() + off, data.size() - off);
+                if (n > 0) {
+                    off += static_cast<size_t>(n);
+                    continue;
+                }
+                if (n < 0 && errno == EINTR) {
+                    continue;
+                }
+                return false;
+            }
+            return true;
+        }
 
         // One non-blocking varlink call on the loop with a bounded timeout; the reply ends with a NUL byte.
         struct Call {
@@ -182,7 +209,7 @@ namespace lyren::creds {
             sockaddr_un addr{.sun_family = AF_UNIX, .sun_path = "/run/systemd/io.systemd.Credentials"};
             std::string request = std::format(R"({{"method":"io.systemd.Credentials.{}","parameters":{}}})", method, params);
             request += '\0';
-            if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) < 0 || write(fd, request.data(), request.size()) != static_cast<ssize_t>(request.size())) {
+            if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) < 0 || !write_all(fd, request)) {
                 const int err = errno;
                 close(fd);
                 return std::unexpected(std::format("systemd-creds: {}", std::strerror(err)));
@@ -191,6 +218,9 @@ namespace lyren::creds {
             std::array<char, 4096> buf;
             while (reply.empty() || reply.back() != '\0') {
                 const ssize_t n = read(fd, buf.data(), buf.size());
+                if (n < 0 && errno == EINTR) {
+                    continue;
+                }
                 if (n <= 0) {
                     const int err = n < 0 ? errno : 0;
                     close(fd);
@@ -203,19 +233,23 @@ namespace lyren::creds {
             return parse_reply(reply);
         }
 
-        Result<void> write_blob(const Params &r) {
+        Result<void> write_blob(const Params &r, uint64_t seq) {
             std::lock_guard lock(blob_mutex);
+            if (seq < written_seq) {
+                return {};
+            }
             auto path = paths::state_dir() / "credentials", tmp = path;
             tmp += ".tmp";
             int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
             std::string blob = r.blob.value_or("") + "\n";
-            bool ok = fd >= 0 && write(fd, blob.data(), blob.size()) == static_cast<ssize_t>(blob.size()) && fsync(fd) == 0;
+            bool ok = fd >= 0 && write_all(fd, blob) && fsync(fd) == 0;
             if (fd >= 0) {
                 close(fd);
             }
             if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
                 return std::unexpected(std::format("Could not save credentials: {}", std::strerror(errno)));
             }
+            written_seq = std::max(written_seq, seq);
             return {};
         }
 
@@ -232,6 +266,7 @@ namespace lyren::creds {
             };
             Loop &loop;
             Params params;
+            uint64_t seq;
             std::shared_ptr<Shared> shared;
 
             bool await_ready() const noexcept {
@@ -241,7 +276,7 @@ namespace lyren::creds {
                 shared = std::make_shared<Shared>();
                 shared->efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
                 if (shared->efd < 0) {
-                    shared->result = write_blob(params);
+                    shared->result = write_blob(params, seq);
                     loop.defer([h] {
                         h.resume();
                     });
@@ -253,8 +288,18 @@ namespace lyren::creds {
                     loop.unwatch(s->efd);
                     h.resume();
                 });
-                std::thread([s = shared, p = std::move(params)] {
-                    s->result = write_blob(p);
+                {
+                    std::lock_guard lock(blob_mutex);
+                    ++active_writers;
+                }
+                std::thread([s = shared, p = std::move(params), seq = seq] {
+                    s->result = write_blob(p, seq);
+                    {
+                        std::lock_guard lock(blob_mutex);
+                        if (--active_writers == 0) {
+                            blob_cv.notify_all();
+                        }
+                    }
                     const uint64_t one = 1;
                     static_cast<void>(write(s->efd, &one, sizeof one));
                 }).detach();
@@ -281,15 +326,27 @@ namespace lyren::creds {
     }
 
     Task<Result<void>> save(Loop &loop, std::string plaintext) {
+        const uint64_t seq = claim_write_seq();
         auto encrypted = co_await call(loop, "Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext)));
         if (!encrypted) {
             co_return std::unexpected(encrypted.error());
         }
-        co_return co_await SaveBlob{loop, std::move(*encrypted), nullptr};
+        co_return co_await SaveBlob{loop, std::move(*encrypted), seq, nullptr};
     }
 
     Result<void> save_sync(std::string_view plaintext) {
-        return call_sync("Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext))).and_then(write_blob);
+        const uint64_t seq = claim_write_seq();
+        auto encrypted = call_sync("Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext)));
+        {
+            std::unique_lock lock(blob_mutex);
+            blob_cv.wait(lock, [] {
+                return active_writers == 0;
+            });
+        }
+        if (!encrypted) {
+            return std::unexpected(encrypted.error());
+        }
+        return write_blob(*encrypted, seq);
     }
 
     std::string to_json(const Credentials &c) {

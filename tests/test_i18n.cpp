@@ -66,5 +66,7 @@ TEST_CASE("common English UI tokens stay untranslated and contextual Chinese cop
     CHECK(trf("{}/{} connected", 2, 5) == "2/5 connected");
     CHECK(trf("Here for {}", trf("{} years", 5)) == "5 years");
     CHECK(tr("Added to liked songs") == "已喜欢");
+    CHECK(tr("Could not connect to the Qishui signing service; check signer_url and ensure it is running") == "无法连接汽水签名服务，请检查服务地址并确认服务已启动");
+    CHECK(trf("Qishui signing service request failed (HTTP {})", 404) == "汽水签名服务请求失败 (HTTP 404)");
     set_language(before);
 }

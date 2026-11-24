@@ -11,6 +11,19 @@
 
 namespace lyren {
 
+    namespace {
+        std::string stream_cache_key(const Track &t, const Stream &s) {
+            std::string out = std::format("{}:{}:{}", key(t), s.level, s.trial ? "trial" : "full");
+            if (s.decrypt_key) {
+                out += ':';
+                for (uint8_t b : *s.decrypt_key) {
+                    std::format_to(std::back_inserter(out), "{:02x}", b);
+                }
+            }
+            return out;
+        }
+    } // namespace
+
     Playback::Playback(Env &env, audio::Player &player, bool silent, SavedState &saved)
     : env_(env),
       player_(player),
@@ -24,6 +37,7 @@ namespace lyren {
       muted_(saved.muted),
       recent_(std::move(saved.recent)) {
         rng_ ^= static_cast<uint64_t>(std::time(nullptr));
+        audio::Spool::set_cache_limit(silent_ ? 0 : (static_cast<uint64_t>(std::max(0, env_.config.playback.cache_size)) << 20));
         sort_history();
         env_.images.prefetch(queue_);
         player_.on_change = [this] {
@@ -123,6 +137,7 @@ namespace lyren {
     }
 
     void Playback::config_changed() {
+        audio::Spool::set_cache_limit(silent_ ? 0 : (static_cast<uint64_t>(std::max(0, env_.config.playback.cache_size)) << 20));
         apply_gain();
     }
 
@@ -648,7 +663,8 @@ namespace lyren {
                 co_return env_.redraw();
             }
             s = std::move(*r);
-            spool = audio::Spool::url(env_.http, s.url);
+            const std::string cache_key = silent_ ? std::string{} : stream_cache_key(t, s);
+            spool = audio::Spool::url(env_.http, s.url, cache_key);
         }
         fetching_ = false;
         clip_start_ = s.trial_start;
@@ -679,8 +695,9 @@ namespace lyren {
             co_return;
         }
         log::debug("prefetch: {}", t.title);
+        const std::string cache_key = silent_ ? std::string{} : stream_cache_key(t, *p);
         prefetch_.key = key(t);
-        prefetch_.spool = audio::Spool::url(env_.http, p->url);
+        prefetch_.spool = audio::Spool::url(env_.http, p->url, cache_key);
         prefetch_.stream = std::move(*p);
     }
 
@@ -737,7 +754,8 @@ namespace lyren {
 
     void Playback::on_player() {
         const auto s = player_.state();
-        if (s != last_state_) {
+        const uint64_t event_id = ++player_event_;
+        if (s != std::exchange(last_state_, s)) {
             if (s == State::playing && !counted_ && current()) {
                 counted_ = true;
                 if (failures_ > 1) {
@@ -790,7 +808,9 @@ namespace lyren {
                 }
             }
         }
-        last_state_ = s;
+        if (event_id != player_event_) {
+            return;
+        }
         if (s == State::playing || s == State::paused) {
             last_pos_ = player_.position();
         }
