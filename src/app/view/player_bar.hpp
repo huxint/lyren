@@ -33,7 +33,8 @@ namespace lyren {
         void string(ui::Ui &ui, ui::Rect r, float above, float stage);
         void tools(ui::Ui &ui, ui::Rect r, float stage);
 
-        bool dragging_ = false;
+        bool dragging_ = false, dragged_ = false;
+        float press_x_ = 0;
         float drag_v_ = 0; // normalized song position, [0, 1]
         audio::Follower meter_;
         double meter_time_ = 0, pluck_time_ = -10;

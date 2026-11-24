@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include <png.h>
 
 #include "gfx/image.hpp"
 
@@ -94,4 +95,53 @@ TEST_CASE("GIF pictures decode their first frame with transparency, cropped as c
     Image truncated = decode_fit(std::span<const uint8_t>(data).first(10), 64, error);
     CHECK(truncated.w == 0);
     CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("streaming PNG decode matches exact crop, premultiplied alpha, and box downscale") {
+    std::vector<uint8_t> raw(8 * 4 * 4);
+    for (uint32_t y = 0; y < 4; ++y) {
+        for (uint32_t x = 0; x < 8; ++x) {
+            uint8_t *p = &raw[(y * 8 + x) * 4];
+            p[0] = static_cast<uint8_t>(30 * x + 10);
+            p[1] = static_cast<uint8_t>(50 * y + 20);
+            p[2] = static_cast<uint8_t>(20 * (x + y));
+            p[3] = static_cast<uint8_t>(63 * (y + 1));
+        }
+    }
+    png_image writer{};
+    writer.version = PNG_IMAGE_VERSION;
+    writer.width = 8;
+    writer.height = 4;
+    writer.format = PNG_FORMAT_RGBA;
+    png_alloc_size_t len = 0;
+    REQUIRE(png_image_write_to_memory(&writer, nullptr, &len, 0, raw.data(), 0, nullptr));
+    std::vector<uint8_t> encoded(len);
+    REQUIRE(png_image_write_to_memory(&writer, encoded.data(), &len, 0, raw.data(), 0, nullptr));
+    encoded.resize(len);
+
+    Image expected_crop{4, 4, std::vector<uint8_t>(4 * 4 * 4)};
+    for (uint32_t y = 0; y < 4; ++y) {
+        for (uint32_t x = 0; x < 4; ++x) {
+            const uint8_t *s = &raw[(y * 8 + (x + 2)) * 4];
+            uint8_t *d = &expected_crop.px[(y * 4 + x) * 4];
+            for (int c = 0; c < 3; ++c) {
+                d[c] = static_cast<uint8_t>((s[c] * s[3] + 127) / 255);
+            }
+            d[3] = s[3];
+        }
+    }
+    const Image expected_2x2 = downscale(expected_crop, 2, 2);
+
+    std::string error;
+    const Image sq4 = decode_square(encoded, 4, error);
+    REQUIRE(error.empty());
+    CHECK(sq4.w == 4);
+    CHECK(sq4.h == 4);
+    CHECK(sq4.px == expected_crop.px);
+
+    const Image sq2 = decode_square(encoded, 2, error);
+    REQUIRE(error.empty());
+    CHECK(sq2.w == 2);
+    CHECK(sq2.h == 2);
+    CHECK(sq2.px == expected_2x2.px);
 }

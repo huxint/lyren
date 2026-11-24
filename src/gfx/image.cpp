@@ -3,14 +3,25 @@
 #include <gif_lib.h>
 #include <png.h>
 #include <turbojpeg.h>
+#include <webp/decode.h>
 #include <webp/demux.h>
 
+#include <csetjmp>
+#include <cstring>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <numbers>
 
 namespace lyren::gfx {
+
+    static constexpr uint32_t max_image_dim = 8192;
+    static constexpr uint64_t max_image_pixels = 32ull << 20;
+
+    static bool valid_dimensions(int w, int h) {
+        return w > 0 && h > 0 && static_cast<uint32_t>(w) <= max_image_dim && static_cast<uint32_t>(h) <= max_image_dim &&
+               static_cast<uint64_t>(w) * static_cast<uint64_t>(h) <= max_image_pixels;
+    }
 
     static Image crop_square(Image img) {
         uint32_t s = std::min(img.w, img.h);
@@ -31,6 +42,11 @@ namespace lyren::gfx {
         Image img;
         if (tj3DecompressHeader(tj, data.data(), data.size()) == 0) {
             int w = tj3Get(tj, TJPARAM_JPEGWIDTH), h = tj3Get(tj, TJPARAM_JPEGHEIGHT);
+            if (!valid_dimensions(w, h)) {
+                error = "Image dimensions are too large";
+                tj3Destroy(tj);
+                return img;
+            }
             // The smallest DCT scaling that still covers the target.
             int n = 0, side = whole ? std::max(w, h) : std::min(w, h);
             tjscalingfactor *f = tj3GetScalingFactors(&n);
@@ -55,31 +71,250 @@ namespace lyren::gfx {
         return img;
     }
 
-    static Image decode_png(std::span<const uint8_t> data, std::string &error) {
-        png_image p{};
-        p.version = PNG_IMAGE_VERSION;
-        Image img;
-        if (png_image_begin_read_from_memory(&p, data.data(), data.size())) {
-            p.format = PNG_FORMAT_RGBA;
-            img.w = p.width, img.h = p.height;
-            img.px.resize(PNG_IMAGE_SIZE(p));
-            if (!png_image_finish_read(&p, nullptr, img.px.data(), 0, nullptr)) {
-                img = {};
+    namespace {
+        struct PngState {
+            std::span<const uint8_t> data;
+            size_t at = 0;
+            uint32_t target = 1;
+            bool whole = false;
+            Image img;
+            std::string error;
+            std::vector<uint8_t> row;
+            std::vector<float> acc;
+            struct Span {
+                uint32_t i0 = 0, i1 = 0;
+                float w0 = 0, w1 = 0;
+            };
+            std::vector<Span> xspans;
+        };
+
+        void premultiply_rgba(uint8_t *px, size_t count) {
+            for (size_t i = 0; i < count; i += 4) {
+                const uint32_t a = px[i + 3];
+                px[i + 0] = static_cast<uint8_t>((px[i + 0] * a + 127) / 255);
+                px[i + 1] = static_cast<uint8_t>((px[i + 1] * a + 127) / 255);
+                px[i + 2] = static_cast<uint8_t>((px[i + 2] * a + 127) / 255);
             }
         }
-        if (!img.w) {
-            error = p.message;
-        }
-        png_image_free(&p);
-        for (size_t i = 0; i < img.px.size(); i += 4) {
-            for (int c = 0; c < 3; ++c) {
-                img.px[i + c] = static_cast<uint8_t>((img.px[i + c] * img.px[i + 3] + 127) / 255);
+
+        void read_png_stream(png_structp png, png_infop info, PngState &st) {
+            png_set_read_fn(png, &st, [](png_structp p, png_bytep out, png_size_t n) {
+                auto &s = *static_cast<PngState *>(png_get_io_ptr(p));
+                if (s.data.size() - s.at < n) {
+                    png_error(p, "Truncated PNG image");
+                }
+                std::memcpy(out, s.data.data() + s.at, n);
+                s.at += n;
+            });
+            png_read_info(png, info);
+            const uint32_t w = png_get_image_width(png, info), h = png_get_image_height(png, info);
+            if (!valid_dimensions(static_cast<int>(w), static_cast<int>(h))) {
+                png_error(png, "Image dimensions are too large");
+            }
+            png_set_expand(png);
+            png_set_strip_16(png);
+            png_set_gray_to_rgb(png);
+            png_set_add_alpha(png, 0xff, PNG_FILLER_AFTER);
+            const int passes = png_set_interlace_handling(png);
+            png_read_update_info(png, info);
+
+            if (passes > 1) {
+                if (static_cast<uint64_t>(w) * h > (4ull << 20)) {
+                    png_error(png, "Interlaced PNG is too large");
+                }
+                st.img = {w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 4)};
+                for (int pass = 0; pass < passes; ++pass) {
+                    for (uint32_t y = 0; y < h; ++y) {
+                        png_read_row(png, st.img.px.data() + static_cast<size_t>(y) * w * 4, nullptr);
+                    }
+                }
+                premultiply_rgba(st.img.px.data(), st.img.px.size());
+                return;
+            }
+
+            // Stream non-interlaced PNGs one scanline at a time directly into the cropped & box-downsampled target.
+            const uint32_t cw = st.whole ? w : std::min(w, h), ch = st.whole ? h : cw;
+            const uint32_t x0 = (w - cw) / 2, y0 = (h - ch) / 2;
+            uint32_t out_w = cw, out_h = ch;
+            if (!st.whole && cw > st.target) {
+                out_w = out_h = st.target;
+            } else if (st.whole && (cw > st.target || ch > st.target)) {
+                const float k = static_cast<float>(st.target) / static_cast<float>(std::max(cw, ch));
+                out_w = std::max(1u, static_cast<uint32_t>(std::lround(cw * k)));
+                out_h = std::max(1u, static_cast<uint32_t>(std::lround(ch * k)));
+            }
+
+            st.row.resize(static_cast<size_t>(w) * 4);
+            st.img = {out_w, out_h, std::vector<uint8_t>(static_cast<size_t>(out_w) * out_h * 4)};
+            if (out_w == cw && out_h == ch) {
+                for (uint32_t y = 0; y < y0 + ch; ++y) {
+                    png_read_row(png, st.row.data(), nullptr);
+                    if (y < y0) {
+                        continue;
+                    }
+                    uint8_t *src = st.row.data() + static_cast<size_t>(x0) * 4;
+                    premultiply_rgba(src, static_cast<size_t>(cw) * 4);
+                    std::copy_n(src, static_cast<size_t>(cw) * 4, st.img.px.data() + static_cast<size_t>(y - y0) * out_w * 4);
+                }
+                return;
+            }
+
+            const double sx = static_cast<double>(cw) / out_w, sy = static_cast<double>(ch) / out_h;
+            st.xspans.resize(cw);
+            for (uint32_t cx = 0; cx < cw; ++cx) {
+                const uint32_t i0 = std::min(out_w - 1, static_cast<uint32_t>(cx / sx));
+                const double split = static_cast<double>(i0 + 1) * sx;
+                if (i0 + 1 < out_w && split < cx + 1.0) {
+                    st.xspans[cx] = {i0, i0 + 1, static_cast<float>(split - cx), static_cast<float>(cx + 1.0 - split)};
+                } else {
+                    st.xspans[cx] = {i0, i0, 1.f, 0.f};
+                }
+            }
+            st.acc.assign(static_cast<size_t>(out_w) * out_h * 4, 0.f);
+            for (uint32_t y = 0; y < y0 + ch; ++y) {
+                png_read_row(png, st.row.data(), nullptr);
+                if (y < y0) {
+                    continue;
+                }
+                const uint32_t cy = y - y0;
+                const uint32_t j0 = std::min(out_h - 1, static_cast<uint32_t>(cy / sy));
+                const double ysplit = static_cast<double>(j0 + 1) * sy;
+                uint32_t j1 = j0;
+                float wy0 = 1.f, wy1 = 0.f;
+                if (j0 + 1 < out_h && ysplit < cy + 1.0) {
+                    j1 = j0 + 1;
+                    wy0 = static_cast<float>(ysplit - cy);
+                    wy1 = static_cast<float>(cy + 1.0 - ysplit);
+                }
+                uint8_t *src = st.row.data() + static_cast<size_t>(x0) * 4;
+                premultiply_rgba(src, static_cast<size_t>(cw) * 4);
+                float *row0 = st.acc.data() + static_cast<size_t>(j0) * out_w * 4;
+                float *row1 = st.acc.data() + static_cast<size_t>(j1) * out_w * 4;
+                for (uint32_t cx = 0; cx < cw; ++cx) {
+                    const auto &xs = st.xspans[cx];
+                    const uint8_t *p = src + static_cast<size_t>(cx) * 4;
+                    const float w00 = wy0 * xs.w0;
+                    for (int c = 0; c < 4; ++c) {
+                        row0[xs.i0 * 4 + c] += p[c] * w00;
+                    }
+                    if (xs.w1 > 0.f) {
+                        const float w01 = wy0 * xs.w1;
+                        for (int c = 0; c < 4; ++c) {
+                            row0[xs.i1 * 4 + c] += p[c] * w01;
+                        }
+                    }
+                    if (wy1 > 0.f) {
+                        const float w10 = wy1 * xs.w0;
+                        for (int c = 0; c < 4; ++c) {
+                            row1[xs.i0 * 4 + c] += p[c] * w10;
+                        }
+                        if (xs.w1 > 0.f) {
+                            const float w11 = wy1 * xs.w1;
+                            for (int c = 0; c < 4; ++c) {
+                                row1[xs.i1 * 4 + c] += p[c] * w11;
+                            }
+                        }
+                    }
+                }
+            }
+            const float inv_area = static_cast<float>(1.0 / (sx * sy));
+            for (size_t i = 0; i < st.acc.size(); ++i) {
+                st.img.px[i] = static_cast<uint8_t>(std::clamp(std::lround(st.acc[i] * inv_area), 0l, 255l));
             }
         }
-        return img;
+
+        bool run_png(png_structp png, png_infop info, PngState *st) {
+            if (setjmp(png_jmpbuf(png))) {
+                return false;
+            }
+            read_png_stream(png, info, *st);
+            return true;
+        }
+    } // namespace
+
+    static Image decode_png(std::span<const uint8_t> data, uint32_t size, bool whole, std::string &error) {
+        PngState st{.data = data, .target = std::max(size, 1u), .whole = whole};
+        png_structp png = png_create_read_struct(
+            PNG_LIBPNG_VER_STRING, &st,
+            [](png_structp p, png_const_charp msg) {
+                auto *s = static_cast<PngState *>(png_get_error_ptr(p));
+                if (s && s->error.empty() && msg) {
+                    s->error = msg;
+                }
+                longjmp(png_jmpbuf(p), 1);
+            },
+            [](png_structp, png_const_charp) {});
+        if (!png) {
+            error = "Out of memory";
+            return {};
+        }
+        png_infop info = png_create_info_struct(png);
+        if (!info) {
+            png_destroy_read_struct(&png, nullptr, nullptr);
+            error = "Out of memory";
+            return {};
+        }
+        const bool ok = run_png(png, info, &st);
+        png_destroy_read_struct(&png, &info, nullptr);
+        if (!ok) {
+            error = st.error.empty() ? "Invalid PNG image" : std::move(st.error);
+            return {};
+        }
+        return std::move(st.img);
     }
 
-    static Image decode_webp(std::span<const uint8_t> data, std::string &error) {
+    static Image decode_webp(std::span<const uint8_t> data, uint32_t size, bool whole, std::string &error) {
+        WebPBitstreamFeatures features{};
+        if (WebPGetFeatures(data.data(), data.size(), &features) != VP8_STATUS_OK) {
+            error = "Invalid WebP image";
+            return {};
+        }
+        if (!valid_dimensions(features.width, features.height)) {
+            error = "Image dimensions are too large";
+            return {};
+        }
+        if (!features.has_animation) {
+            WebPDecoderConfig config;
+            if (!WebPInitDecoderConfig(&config)) {
+                error = "Invalid WebP image";
+                return {};
+            }
+            int out_w = features.width, out_h = features.height;
+            const int side = whole ? std::max(out_w, out_h) : std::min(out_w, out_h);
+            const int target = static_cast<int>(std::max(size, 1u)) * 2;
+            if (side > std::max(target, 256)) {
+                if (!whole && out_w != out_h) {
+                    const int s = std::min(out_w, out_h);
+                    config.options.use_cropping = 1;
+                    config.options.crop_left = (out_w - s) / 2;
+                    config.options.crop_top = (out_h - s) / 2;
+                    config.options.crop_width = s;
+                    config.options.crop_height = s;
+                    out_w = out_h = target;
+                } else {
+                    const double k = static_cast<double>(target) / side;
+                    out_w = std::max(1, static_cast<int>(std::lround(out_w * k)));
+                    out_h = std::max(1, static_cast<int>(std::lround(out_h * k)));
+                }
+                config.options.use_scaling = 1;
+                config.options.scaled_width = out_w;
+                config.options.scaled_height = out_h;
+            }
+            Image img{static_cast<uint32_t>(out_w), static_cast<uint32_t>(out_h), std::vector<uint8_t>(static_cast<size_t>(out_w) * out_h * 4)};
+            config.output.colorspace = MODE_rgbA;
+            config.output.u.RGBA.rgba = img.px.data();
+            config.output.u.RGBA.stride = out_w * 4;
+            config.output.u.RGBA.size = img.px.size();
+            config.output.is_external_memory = 1;
+            const VP8StatusCode status = WebPDecode(data.data(), data.size(), &config);
+            WebPFreeDecBuffer(&config.output);
+            if (status != VP8_STATUS_OK) {
+                error = "Failed to decode WebP image";
+                return {};
+            }
+            return img;
+        }
+
         const WebPData source{data.data(), data.size()};
         WebPAnimDecoderOptions options;
         WebPAnimDecoderOptionsInit(&options);
@@ -91,20 +326,24 @@ namespace lyren::gfx {
         }
         WebPAnimInfo info;
         WebPAnimDecoderGetInfo(decoder, &info);
-        uint8_t *px;
-        int timestamp;
         Image img;
-        // Covers stay still: use the first composited canvas for animated WebP too.
-        if (WebPAnimDecoderGetNext(decoder, &px, &timestamp)) {
-            img = {info.canvas_width, info.canvas_height, {px, px + static_cast<size_t>(info.canvas_width) * info.canvas_height * 4}};
+        if (!valid_dimensions(static_cast<int>(info.canvas_width), static_cast<int>(info.canvas_height))) {
+            error = "Image dimensions are too large";
         } else {
-            error = "Failed to decode WebP image";
+            uint8_t *px = nullptr;
+            int timestamp = 0;
+            // Covers stay still: use the first composited canvas for animated WebP too.
+            if (WebPAnimDecoderGetNext(decoder, &px, &timestamp)) {
+                img = {info.canvas_width, info.canvas_height, {px, px + static_cast<size_t>(info.canvas_width) * info.canvas_height * 4}};
+            } else {
+                error = "Failed to decode WebP image";
+            }
         }
         WebPAnimDecoderDelete(decoder);
         return img;
     }
 
-    // The first frame on the logical screen; what it leaves uncovered stays transparent.
+    // The first frame on the logical screen; later animation frames are never read into memory.
     static Image decode_gif(std::span<const uint8_t> data, std::string &error) {
         struct Reader {
             std::span<const uint8_t> data;
@@ -126,30 +365,88 @@ namespace lyren::gfx {
             error = GifErrorString(code);
             return img;
         }
-        // A truncated file still has its first frame.
-        if (DGifSlurp(gif) == GIF_ERROR && gif->ImageCount == 0) {
-            error = GifErrorString(gif->Error);
-        } else if (gif->ImageCount > 0 && gif->SWidth > 0 && gif->SHeight > 0) {
-            const SavedImage &frame = gif->SavedImages[0];
-            const ColorMapObject *map = frame.ImageDesc.ColorMap ? frame.ImageDesc.ColorMap : gif->SColorMap;
-            GraphicsControlBlock gcb{.TransparentColor = NO_TRANSPARENT_COLOR};
-            DGifSavedExtensionToGCB(gif, 0, &gcb);
-            img = {static_cast<uint32_t>(gif->SWidth), static_cast<uint32_t>(gif->SHeight), {}};
-            img.px.resize(static_cast<size_t>(img.w) * img.h * 4);
-            const GifImageDesc &d = frame.ImageDesc;
-            for (int y = 0; map && y < d.Height; ++y) {
-                for (int x = 0; x < d.Width; ++x) {
-                    int sx = d.Left + x, sy = d.Top + y, index = frame.RasterBits[static_cast<size_t>(y) * d.Width + x];
-                    if (sx >= gif->SWidth || sy >= gif->SHeight || index == gcb.TransparentColor || index >= map->ColorCount) {
-                        continue;
-                    }
-                    uint8_t *o = &img.px[(static_cast<size_t>(sy) * img.w + sx) * 4];
-                    const GifColorType &c = map->Colors[index];
-                    o[0] = c.Red, o[1] = c.Green, o[2] = c.Blue, o[3] = 255;
+        if (!valid_dimensions(gif->SWidth, gif->SHeight)) {
+            error = "Image dimensions are too large";
+            DGifCloseFile(gif, &code);
+            return img;
+        }
+        GraphicsControlBlock gcb{.TransparentColor = NO_TRANSPARENT_COLOR};
+        bool got_frame = false;
+        GifRecordType rec = TERMINATE_RECORD_TYPE;
+        while (DGifGetRecordType(gif, &rec) != GIF_ERROR && rec != TERMINATE_RECORD_TYPE) {
+            if (rec == EXTENSION_RECORD_TYPE) {
+                int ext_code = 0;
+                GifByteType *ext = nullptr;
+                if (DGifGetExtension(gif, &ext_code, &ext) == GIF_ERROR) {
+                    break;
                 }
+                while (ext) {
+                    if (ext_code == GRAPHICS_EXT_FUNC_CODE) {
+                        DGifExtensionToGCB(ext[0], ext + 1, &gcb);
+                    }
+                    if (DGifGetExtensionNext(gif, &ext) == GIF_ERROR) {
+                        break;
+                    }
+                }
+            } else if (rec == IMAGE_DESC_RECORD_TYPE) {
+                if (DGifGetImageDesc(gif) == GIF_ERROR) {
+                    break;
+                }
+                const GifImageDesc &d = gif->Image;
+                if (d.Width <= 0 || d.Height <= 0 || static_cast<uint32_t>(d.Width) > max_image_dim || static_cast<uint32_t>(d.Height) > max_image_dim) {
+                    error = "Invalid GIF frame";
+                    break;
+                }
+                const ColorMapObject *map = d.ColorMap ? d.ColorMap : gif->SColorMap;
+                img = {static_cast<uint32_t>(gif->SWidth), static_cast<uint32_t>(gif->SHeight), std::vector<uint8_t>(static_cast<size_t>(gif->SWidth) * gif->SHeight * 4)};
+                std::vector<GifPixelType> line(static_cast<size_t>(d.Width));
+                auto put_row = [&](int y) {
+                    const int sy = d.Top + y;
+                    if (!map || sy < 0 || sy >= gif->SHeight) {
+                        return;
+                    }
+                    for (int x = 0; x < d.Width; ++x) {
+                        const int sx = d.Left + x, index = line[static_cast<size_t>(x)];
+                        if (sx < 0 || sx >= gif->SWidth || index == gcb.TransparentColor || index >= map->ColorCount) {
+                            continue;
+                        }
+                        uint8_t *o = &img.px[(static_cast<size_t>(sy) * img.w + static_cast<size_t>(sx)) * 4];
+                        const GifColorType &c = map->Colors[index];
+                        o[0] = c.Red, o[1] = c.Green, o[2] = c.Blue, o[3] = 255;
+                    }
+                };
+                bool line_ok = false;
+                if (d.Interlace) {
+                    constexpr int starts[]{0, 4, 2, 1}, steps[]{8, 8, 4, 2};
+                    for (int pass = 0; pass < 4; ++pass) {
+                        for (int y = starts[pass]; y < d.Height; y += steps[pass]) {
+                            if (DGifGetLine(gif, line.data(), d.Width) == GIF_ERROR) {
+                                pass = 4;
+                                break;
+                            }
+                            line_ok = true;
+                            put_row(y);
+                        }
+                    }
+                } else {
+                    for (int y = 0; y < d.Height; ++y) {
+                        if (DGifGetLine(gif, line.data(), d.Width) == GIF_ERROR) {
+                            break;
+                        }
+                        line_ok = true;
+                        put_row(y);
+                    }
+                }
+                if (line_ok) {
+                    got_frame = true;
+                } else {
+                    img = {};
+                }
+                break;
             }
-        } else {
-            error = "Empty GIF image";
+        }
+        if (!got_frame && error.empty()) {
+            error = gif->Error ? GifErrorString(gif->Error) : "Empty GIF image";
         }
         DGifCloseFile(gif, &code);
         return img;
@@ -159,7 +456,7 @@ namespace lyren::gfx {
         bool png = data.size() > 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G';
         bool webp = data.size() >= 12 && std::equal(data.begin(), data.begin() + 4, "RIFF") && std::equal(data.begin() + 8, data.begin() + 12, "WEBP");
         bool gif = data.size() >= 6 && std::equal(data.begin(), data.begin() + 3, "GIF");
-        return png ? decode_png(data, error) : webp ? decode_webp(data, error) : gif ? decode_gif(data, error) : decode_jpeg(data, size, whole, error);
+        return png ? decode_png(data, size, whole, error) : webp ? decode_webp(data, size, whole, error) : gif ? decode_gif(data, error) : decode_jpeg(data, size, whole, error);
     }
 
     Image decode_square(std::span<const uint8_t> data, uint32_t size, std::string &error) {

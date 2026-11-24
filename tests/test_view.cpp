@@ -316,6 +316,7 @@ TEST_CASE("settings switches categories cleanly across narrow, medium and ultraw
         REQUIRE(playback_tab != nullptr);
         const auto playback = scene.click(*playback_tab, w, h);
         CHECK(drew(playback, "Audio quality"));
+        CHECK(drew(playback, "FLAC · 16-bit"));
         CHECK(drew(playback, "Skip previews"));
         CHECK_FALSE(drew(playback, "Accent color"));
 
@@ -325,6 +326,17 @@ TEST_CASE("settings switches categories cleanly across narrow, medium and ultraw
         CHECK(drew(lyrics, "Desktop lyrics"));
         CHECK(drew(lyrics, "Floating lyrics"));
         CHECK(drew(lyrics, "Dynamic Island"));
+
+        const auto *services_tab = scene.find("Services");
+        REQUIRE(services_tab != nullptr);
+        const auto services = scene.click(*services_tab, w, h);
+        CHECK(drew(services, "NetEase Music"));
+        CHECK(drew(services, "QQ Music"));
+        CHECK(drew(services, "Qishui Music"));
+        if (h >= 760) {
+            CHECK(drew(services, "Kugou Music"));
+            CHECK(drew(services, "Bodian Music"));
+        }
 
         const auto *general_tab = scene.find("General");
         REQUIRE(general_tab != nullptr);
@@ -349,10 +361,165 @@ TEST_CASE("profile layout adapts cleanly across narrow, medium and ultrawide win
         scene.draw(w, h);
         const auto runs = scene.draw(w, h);
         CHECK(drew(runs, "Mira Chen"));
+        CHECK(drew(runs, "Overview"));
+        CHECK(drew(runs, "Collection"));
+        CHECK(drew(runs, "People"));
         CHECK(drew(runs, "Following"));
         CHECK(drew(runs, "Followers"));
         if (w >= 1180) {
             CHECK(drew(runs, "On repeat"));
         }
     }
+}
+
+TEST_CASE("profile overview, collection, people tabs and stat shortcuts work cleanly") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    scene.shell.browser.open_own_profile();
+    scene.draw();
+    const auto overview = scene.draw();
+    REQUIRE(scene.shell.browser.route().profile != nullptr);
+    CHECK(scene.shell.browser.route().profile->section == Social::Section::overview);
+    CHECK_FALSE(drew(overview, "QQ Music"));
+    CHECK_FALSE(drew(overview, "Qishui"));
+    CHECK_FALSE(drew(overview, "Bodian"));
+    CHECK(drew(overview, "Daily mix"));
+    CHECK(drew(overview, "Recently played"));
+    CHECK(drew(overview, "Mixtape 1"));
+    CHECK(drew(overview, "On repeat"));
+
+    // Clicking the Followers stat jumps straight into the People section on the Followers sub-tab.
+    const auto *followers_stat = scene.find("Followers");
+    REQUIRE(followers_stat != nullptr);
+    const auto fans = scene.click(*followers_stat);
+    CHECK(scene.shell.browser.route().profile->section == Social::Section::people);
+    CHECK(scene.shell.browser.route().profile->people_tab == 1);
+    CHECK(drew(fans, "Tom"));
+
+    // Switching to the Collection tab shows saved albums and lets the user toggle to followed artists.
+    const auto *col_tab = scene.find("Collection");
+    REQUIRE(col_tab != nullptr);
+    const auto albums = scene.click(*col_tab);
+    CHECK(scene.shell.browser.route().profile->section == Social::Section::collection);
+    CHECK(drew(albums, "Harbour Tapes"));
+
+    const auto *artists_btn = scene.find("Artists");
+    REQUIRE(artists_btn != nullptr);
+    const auto artists = scene.click(*artists_btn);
+    CHECK(scene.shell.browser.route().profile->collection_tab == 1);
+    CHECK(drew(artists, "YOASOBI"));
+
+    // Switching platforms while on own profile stays on own profile when signed in on the target service.
+    spawn(scene.shell.library.load(Source::qq));
+    scene.shell.browser.switch_platform(Source::qq);
+    const auto switched = scene.draw();
+    CHECK(scene.shell.browser.active() == Source::qq);
+    CHECK(scene.shell.browser.route().page == Page::profile);
+    CHECK(scene.shell.browser.route().card.source == Source::qq);
+    CHECK(scene.shell.browser.route().card.owned);
+    CHECK(drew(switched, "Mira Chen"));
+}
+
+TEST_CASE("profile and settings morph shared components across window resizes and settle idle") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene({.motion = 1.0, .queue = {test::Service::song(0)}, .current = 0});
+
+    // 1. Profile "On repeat" morphs smoothly from the right studio rail into the narrow inline column.
+    scene.shell.browser.open_own_profile();
+    for (int i = 0; i < 6; ++i) {
+        scene.draw(1180, 760);
+    }
+    CHECK_FALSE(scene.ui.animating());
+    const auto *wide_rep = scene.find("On repeat");
+    REQUIRE(wide_rep != nullptr);
+    const float wide_x = wide_rep->box.x;
+
+    // Cross the breakpoint into a narrow viewport and sample mid-flight (100ms later).
+    scene.draw_dt(760, 600, 0.016);
+    CHECK(scene.ui.animating());
+    scene.draw_dt(760, 600, 0.09);
+    const auto *mid_rep = scene.find("On repeat");
+    REQUIRE(mid_rep != nullptr);
+    const float mid_x = mid_rep->box.x;
+
+    // Settle in the narrow viewport.
+    for (int i = 0; i < 6; ++i) {
+        scene.draw(760, 600);
+    }
+    CHECK_FALSE(scene.ui.animating());
+    const auto *narrow_rep = scene.find("On repeat");
+    REQUIRE(narrow_rep != nullptr);
+    const float narrow_x = narrow_rep->box.x;
+    CHECK(wide_x > narrow_x + 200);
+    CHECK(mid_x < wide_x);
+    CHECK(mid_x > narrow_x);
+
+    // 2. Settings morphs smoothly between left rail and top tabs, and every tab settles to zero idle animation.
+    scene.shell.browser.open(Page::settings);
+    for (int i = 0; i < 6; ++i) {
+        scene.draw(1180, 760);
+    }
+    CHECK_FALSE(scene.ui.animating());
+    const auto *wide_title = scene.find("Settings");
+    REQUIRE(wide_title != nullptr);
+    const float wide_title_x = wide_title->box.x;
+
+    scene.draw_dt(760, 600, 0.016);
+    CHECK(scene.ui.animating());
+    scene.draw_dt(760, 600, 0.09);
+    const auto *mid_title = scene.find("Settings");
+    REQUIRE(mid_title != nullptr);
+    const float mid_title_x = mid_title->box.x;
+
+    for (int i = 0; i < 6; ++i) {
+        scene.draw(760, 600);
+    }
+    CHECK_FALSE(scene.ui.animating());
+    const auto *narrow_title = scene.find("Settings");
+    REQUIRE(narrow_title != nullptr);
+    const float narrow_title_x = narrow_title->box.x;
+    CHECK(mid_title_x != wide_title_x);
+    CHECK(mid_title_x != narrow_title_x);
+
+    // Every settings category must settle completely idle when paused (zero background CPU/GPU burn).
+    for (int i = 0; i < 6; ++i) {
+        scene.draw(1180, 760);
+    }
+    for (std::string_view tab : {"Playback", "Lyrics", "Services", "General", "Appearance"}) {
+        const auto *btn = scene.find(tab);
+        REQUIRE(btn != nullptr);
+        scene.click(*btn, 1180, 760);
+        for (int i = 0; i < 6; ++i) {
+            scene.draw(1180, 760);
+        }
+        CAPTURE(tab);
+        CHECK_FALSE(scene.ui.animating());
+    }
+}
+
+TEST_CASE("unliking a song on the liked songs page defers list erasure until the frame finishes") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    scene.shell.browser.open(Page::liked);
+    scene.draw();
+    const auto before = scene.draw();
+    REQUIRE(scene.shell.browser.route().list != nullptr);
+    const size_t initial_count = scene.shell.browser.route().list->tracks.size();
+    REQUIRE(initial_count >= 2);
+    CHECK(drew(before, "Night Train"));
+
+    const ui::Painter::Run *row_heart = nullptr;
+    for (const auto &run : scene.painter.runs()) {
+        if (run.icon && run.text == "heart-fill" && run.box.x > 800 && run.box.y > 220 && run.box.y < 640) {
+            row_heart = &run;
+            break;
+        }
+    }
+    REQUIRE(row_heart != nullptr);
+    scene.click(*row_heart);
+    CHECK(std::ranges::any_of(scene.service.calls, [](std::string_view c) {
+        return c.starts_with("like ") && c.ends_with(" false");
+    }));
+    CHECK(scene.shell.browser.route().list->tracks.size() == initial_count - 1);
+    scene.draw();
 }

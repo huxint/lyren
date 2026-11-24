@@ -488,3 +488,53 @@ TEST_CASE("Bodian search continues when total only counts the current page") {
     REQUIRE(end);
     CHECK(end->next_offset == -1);
 }
+
+TEST_CASE("Bodian public profiles, other user playlists, and comment user IDs") {
+    auto comments = bodian::parse_comments(
+        reply(R"({"comment_total":1,"more":false,"comment_list":[{"id":20,"uid":88,"userInfo":{"nickname":"路人"},"content":"好听","likeCount":1,"like":0}]})"), "42");
+    REQUIRE(comments);
+    REQUIRE(comments->comments.size() == 1);
+    CHECK(comments->comments.front().user_id == "88");
+    CHECK_FALSE(comments->comments.front().owned);
+
+    bool fetched_collected = false;
+    test::Server server([&](std::string_view request) {
+        if (request.starts_with("GET /ucenter/users/pub/88?")) {
+            return test::ok(R"({"code":200,"data":{"id":88,"nickname":"路人","headImg":"https://example/avatar.jpg","signature":"听歌","followCount":12,"fansCount":34,"vip":1}})");
+        }
+        if (request.starts_with("GET /service/playlist/fond?")) {
+            CHECK(request.contains("userId=88"));
+            return test::ok(R"({"code":200,"data":{"id":500,"name":"路人喜欢的音乐","musicCount":9}})");
+        }
+        if (request.starts_with("GET /service/playlist/userCreate?")) {
+            CHECK(request.contains("userId=88"));
+            return test::ok(R"({"code":200,"data":{"playLists":[{"id":501,"name":"公开歌单","musicCount":3}]}})");
+        }
+        if (request.starts_with("GET /service/user/collection/list?")) {
+            fetched_collected = true;
+        }
+        return test::ok(R"({"code":200,"data":{}})");
+    });
+    Loop loop;
+    net::Http http;
+    bodian::Bodian provider(loop, http, server.url() + '/');
+    provider.session() = {{"uid", "42"}, {"token", "session"}, {"devid", "device"}};
+    CHECK(provider.capabilities.profiles);
+    CHECK(provider.capabilities.profile_playlists);
+
+    const auto prof = run(loop, provider.profile("88"));
+    REQUIRE(prof);
+    CHECK(prof->id == "88");
+    CHECK(prof->name == "路人");
+    CHECK(prof->signature == "听歌");
+    CHECK(prof->follows == 12);
+    CHECK(prof->fans == 34);
+    CHECK(prof->vip);
+
+    const auto lists = run(loop, provider.user_playlists("88"));
+    REQUIRE(lists);
+    CHECK(lists->first.id == "5:500");
+    REQUIRE(lists->second.size() == 1);
+    CHECK(lists->second[0].id == "5:501");
+    CHECK_FALSE(fetched_collected);
+}

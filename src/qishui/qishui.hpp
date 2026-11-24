@@ -34,6 +34,7 @@ namespace lyren::qishui {
             return client.logged_in();
         }
         Task<Result<Account>> account() override;
+        Task<Result<Profile>> profile(std::string uid) override;
         Task<void> logout() override;
 
         Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) override;

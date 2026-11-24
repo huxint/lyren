@@ -27,6 +27,7 @@ namespace lyren::audio {
         Format format;
         uint64_t length = 0; // frames, 0 if unknown
         std::string_view codec;
+        std::string error; // non-empty when read() stopped on a broken or truncated stream
     };
 
     // Picks the decoder by the file's magic bytes. Blocks while the header downloads.

@@ -361,7 +361,9 @@ namespace lyren {
             const auto [hot, down] = ui.feel(id, it);
             const Rect disc = at.inset(down * 1.5f);
             p.rect(disc, white.with_alpha(0.08f + 0.1f * hot), disc.h / 2, white.with_alpha(0.08f), 1);
-            p.icon("chevron-down", ui::center(at, 20 - down * 1.2f, 20 - down * 1.2f), white.with_alpha(0.72f + 0.28f * hot));
+            p.set_zoom((20 - down * 1.2f) / 20.f, at.x + at.w / 2, at.y + at.h / 2);
+            p.icon("chevron-down", ui::center(at, 20, 20), white.with_alpha(0.72f + 0.28f * hot));
+            p.set_zoom(1);
             if (it.hovered && !it.held) {
                 ui.tooltip(id, at, lyren::tr("Close"));
             }

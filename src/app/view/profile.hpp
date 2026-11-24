@@ -1,17 +1,18 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <vector>
 
+#include "app/view/draw.hpp"
 #include "app/view/part.hpp"
 
 namespace lyren {
 
-    // A listener's page: who they are and the people around them, what they post, what they play most, and the
-    // playlists they keep.
+    // A listener's page: hero header and interactive metrics, personal music hub, posts, listening ranking,
+    // playlists, collection, and social circle.
     class ProfileView : public Part {
     public:
-        explicit ProfileView(Shell &shell)
-        : Part(shell) {}
+        explicit ProfileView(Shell &shell);
 
         void draw(ui::Ui &ui, ui::Rect r);
         // A follow button for someone: as wide as its widest state, or its icon alone in a rect too narrow for words.
@@ -26,22 +27,34 @@ namespace lyren {
         // The parts of the page, each laid out down from r's top inside the page's scrolling view; they return their
         // height.
         float header(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, bool self);
-        float stats(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who);
+        float stats(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, bool self);
         // pinned: how far the tabs have come to rest at the top of the view, 0..1.
         void tabs(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, float pinned);
         float section(ui::Ui &ui, ui::Rect r, const Listener &page, bool self);
+        float overview(ui::Ui &ui, ui::Rect r, const Listener &page);
         float posts(ui::Ui &ui, ui::Rect r, const Listener &page, bool self);
         float chart(ui::Ui &ui, ui::Rect r, const Listener &page);
         float playlists(ui::Ui &ui, ui::Rect r, const Listener &page, bool self);
-        float people(ui::Ui &ui, ui::Rect r, const Listener &page, bool fans, bool self);
-        // What they listen to and whom they follow, beside the timeline when there is room. It fills what r holds.
-        float rail(ui::Ui &ui, ui::Rect r, const Listener &page);
+        float collection(ui::Ui &ui, ui::Rect r, const Listener &page);
+        float people(ui::Ui &ui, ui::Rect r, const Listener &page, bool self);
+        // What they listen to and whom they follow, beside the main column when there is room. It fills what r holds.
+        float rail(ui::Ui &ui, ui::Rect r, const Listener &page, bool include_repeat = true);
+        // Framed "On repeat" track card, shared between the studio rail and the narrow overview.
+        float repeat_height(const Listener &page, size_t max_rows) const;
+        float repeat_card(ui::Ui &ui, ui::Rect r, const Listener &page, size_t max_rows);
         void person(ui::Ui &ui, ui::Rect r, Source source, const Person &person);
         // Turns the page to a section, its top in sight.
         void show(ui::Ui &ui, const Listener &page, Section section);
 
         uint64_t visit_ = 0;                 // the visit the page was last laid out for
+        int section_dir_ = 1;                // -1 or +1 for directional tab slide
+        bool wide_ = true;                   // hysteresis state for two-column studio rail
+        bool compact_ = false;               // hysteresis state for compact header
+        SharedSlot repeat_slot_;             // shared-element flight for "On repeat" (rail <-> inline)
         float content_h_ = 0, header_h_ = 0; // as last laid out
+        Source playlists_source_ = Source::netease;
+        bool playlists_dirty_ = true;
+        std::vector<Card> own_made_, own_saved_;
     };
 
 } // namespace lyren

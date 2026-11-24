@@ -112,22 +112,26 @@ namespace lyren {
             }
         }
         // Rows glide to a new place when the list changes under them; a list that arrives anew starts in place.
+        std::optional<Track> toggled_like;
         ui.push_id(ui::sub_id(id, std::bit_cast<uint64_t>(since)));
-        for (int i = first; i <= last && i < count; ++i) {
+        for (int i = first; i <= last && i < count && i < static_cast<int>(tracks.size()); ++i) {
             const float in = ui.cascade(since, i - first);
             Fade fade(p, in);
             const float y = ui.spring(ui::sub_id(item_id(ui, tracks[static_cast<size_t>(i)]), 0x70), static_cast<float>(i) * row_h, pace::glide);
-            row(ui, {r.x, r.y + y - off + (1 - in) * 12, r.w, row_h}, tracks, i);
+            row(ui, {r.x, r.y + y - off + (1 - in) * 12, r.w, row_h}, tracks, i, toggled_like);
         }
         ui.pop_id();
         if (off > 0.5f && t.surface.a > 0.9f) {
             p.gradient({r.x, r.y, r.w, 12}, t.surface.with_alpha(0.9f), t.surface.with_alpha(0));
         }
         ui.end_scroll();
+        if (toggled_like) {
+            library_.toggle_like(std::move(*toggled_like));
+        }
         return last + 10 >= count;
     }
 
-    void Tracks::row(ui::Ui &ui, Rect r, const std::vector<Track> &tracks, int i) {
+    void Tracks::row(ui::Ui &ui, Rect r, const std::vector<Track> &tracks, int i, std::optional<Track> &toggled_like) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto &picked = browser_.selection();
@@ -202,8 +206,29 @@ namespace lyren {
                 return;
             }
         } else {
-            if (pointed || library_.liked(track)) {
-                heart(ui, ui.id("like"), ui::center(c.like, 32, 32), track, 16);
+            if ((pointed || library_.liked(track)) && provider(track).capabilities.likes) {
+                const ui::Id like_id = ui.id("like");
+                const Rect like_r = ui::center(c.like, 32, 32);
+                const bool liked = library_.liked(track);
+                const auto like_it = ui.interact(like_id, like_r);
+                if (like_it.hovered) {
+                    ui.cursor = wl::Cursor::pointer;
+                }
+                const auto [lhot, ldown] = ui.feel(like_id, like_it);
+                if (lhot > 0) {
+                    const Rect lbg = like_r.inset(ldown * 1.5f);
+                    p.rect(lbg, t.fill((1.25f + 0.65f * ldown) * lhot), t.round(std::min(lbg.w, lbg.h)));
+                }
+                const float zoom = (heart_size(ui, track, 16) - ldown * 1.2f) / 16.f;
+                p.set_zoom(zoom, like_r.x + 16, like_r.y + 16);
+                p.icon(liked ? "heart-fill" : "heart", ui::center(like_r, 16, 16), liked ? t.accent : t.text_dim.mix(t.text, lhot));
+                p.set_zoom(1);
+                if (like_it.hovered && !like_it.held) {
+                    ui.tooltip(like_id, like_r, lyren::tr(liked ? "Unlike" : "Like"));
+                }
+                if (like_it.clicked) {
+                    toggled_like = track;
+                }
             }
             ui.label(c.duration, mmss(track.duration), number, Align::right);
         }

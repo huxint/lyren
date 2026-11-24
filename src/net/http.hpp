@@ -22,6 +22,8 @@ namespace lyren::net {
         std::string netscape() const;
         std::string header(std::string_view host, std::string_view path = "/", bool secure = true) const;
         std::string get(std::string_view name, std::string_view host, std::string_view path = "/") const;
+        // Applies only the cookie additions, updates, and deletions between before and after.
+        void merge(const CookieJar &before, const CookieJar &after);
 
     private:
         friend class Http;

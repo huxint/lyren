@@ -391,11 +391,15 @@ namespace lyren::audio {
                     std::copy_n(buf_.data() + head_, k, out + done * ch);
                     head_ += k, done += k / ch;
                 }
+                if (done == 0 && bad_) {
+                    error = "corrupt or truncated mp4 stream";
+                }
                 return done;
             }
 
             // A fresh decoder starts one packet early: the packet before the target primes the overlap-add.
             bool seek(uint64_t frame) override {
+                error.clear(), bad_ = false;
                 uint64_t k = frame / frame_size_, start = k ? k - 1 : 0;
                 next_ = std::min<uint64_t>(start, t_.sizes.size());
                 skip_ = static_cast<size_t>(frame - start * frame_size_) * format.channels;
@@ -425,9 +429,11 @@ namespace lyren::audio {
                 while (next_ < t_.sizes.size()) {
                     packet_.resize(t_.sizes[next_]);
                     if (!s_.read_exact(t_.offsets[next_], packet_.data(), packet_.size())) {
+                        bad_ = true;
                         return false;
                     }
                     if (cipher_ && !decrypt(next_)) {
+                        bad_ = true;
                         return false;
                     }
                     ++next_;
@@ -499,6 +505,7 @@ namespace lyren::audio {
             std::vector<float> buf_;
             size_t head_ = 0, skip_ = 0;
             uint64_t next_ = 0, frame_size_ = 1024;
+            bool bad_ = false;
         };
 
     } // namespace

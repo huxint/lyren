@@ -410,34 +410,35 @@ namespace lyren {
     }
 
     void DesktopLyrics::floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color,
-                                      ui::Color rest, float focus) {
+                                      ui::Color rest, float focus, uint8_t features, float outline_scale) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         // Long lines shrink to fit, down to 70%, before they are cut short.
-        const float font = std::max(size * 0.7f, std::min(size, size * max_width / std::max(p.measure(text, {.size = size}), 1.f)));
-        const float x = center - std::min(p.measure(text, {.size = font}), max_width) / 2;
-        // The outline is eight offset copies under the text, so it reads over any wallpaper.
-        const float outline = std::max(1.f, font / 22), soft = font * 0.7f;
-        // The outline follows the same lift as the text.
+        const float font = std::max(size * 0.7f, std::min(size, size * max_width / std::max(p.measure(text, {.size = size, .features = features}), 1.f)));
+        const float x = center - std::min(p.measure(text, {.size = font, .features = features}), max_width) / 2;
+        // Soft 4-direction halo keeps words readable over bright wallpapers without thick cartoon strokes.
+        const float outline = std::max(1.f, font / 24), soft = font * 0.7f;
         const bool sung = live && !live->words.empty();
         float front = 0;
         lyric_lifts_.clear();
         if (sung) {
             const double now = playback_.timeline().to_song(playback_.position());
-            front = lyric_sung_x(p, *live, text, font, soft, now);
+            front = lyric_sung_x(p, *live, text, font, soft, now, features);
             if (t.motion > 0) {
-                fill_lyric_wave(lyric_lifts_, p.shape(live->text, {.size = font}), *live, text, font, now, focus);
+                fill_lyric_wave(lyric_lifts_, p.shape(live->text, {.size = font, .features = features}), *live, text, font, now, focus);
             }
         }
         p.set_lifts(lyric_lifts_);
-        for (int i = 0; i < 8; ++i) {
-            const float angle = static_cast<float>(i) * tau / 8;
-            p.text(x + outline * std::cos(angle), baseline + outline * std::sin(angle), text, {.size = font, .color = t.lyric_outline, .silhouette = true}, max_width);
+        if (const ui::Color stroke = t.lyric_outline.with_alpha(0.65f * outline_scale); stroke.a > 0.01f) {
+            static constexpr std::array<std::pair<float, float>, 4> dirs{{{-0.707f, -0.707f}, {0.707f, -0.707f}, {-0.707f, 0.707f}, {0.707f, 0.707f}}};
+            for (const auto &[dx, dy] : dirs) {
+                p.text(x + outline * dx, baseline + outline * dy, text, {.size = font, .color = stroke, .features = features, .silhouette = true}, max_width);
+            }
         }
         if (sung) {
-            p.set_wipe(x + front, soft, rest);
+            p.set_wipe(x + front, soft, rest.with_alpha(0.64f));
         }
-        p.text(x, baseline, text, {.size = font, .color = color}, max_width);
+        p.text(x, baseline, text, {.size = font, .color = color, .features = features}, max_width);
         p.set_lifts({});
         p.clear_wipe();
     }
@@ -508,8 +509,8 @@ namespace lyren {
         const double prepare = 0.65 * t.motion;
         const float ready = following && prepare > 0 ? smooth01(1 - static_cast<float>((following->time - now) / prepare)) : 0;
         const Pose singing{-0.16f * finished, 1 - finished, 1 - 0.04f * finished, 1 - finished};
-        const Pose waiting{1 - 0.3f * finished - 0.045f * ready, 0.48f + 0.16f * ready, 0.9f + 0.025f * ready, 0.18f * ready};
-        auto draw = [&](const ShownLine &shown, const LyricLine *live, Pose pose) {
+        const Pose waiting{1 - 0.3f * finished - 0.045f * ready, 0.42f + 0.2f * ready, 0.74f + 0.04f * ready, 0.14f * ready};
+        auto draw = [&](const ShownLine &shown, const LyricLine *live, Pose pose, bool active) {
             if (pose.alpha <= 0) {
                 return;
             }
@@ -517,11 +518,15 @@ namespace lyren {
             const float top = panel.y + tools_height + pad + row_height * pose.y;
             const float baseline = top + line_height * 0.76f;
             p.set_zoom(pose.scale, center, baseline);
-            // Word offsets belong to the original lyric, not the saved copy used for fading out.
-            floating_text(ui, center, baseline, live ? std::string_view(live->text) : std::string_view(shown.text), live, size, max_width, shown.timed ? sung : t.lyric_text,
-                          t.lyric_text, pose.focus);
+            // Active line leads in semibold + highlight; waiting line stays regular, smaller and quieter.
+            const uint8_t weight = active ? text::semibold : 0;
+            const ui::Color lead_color = active ? (shown.timed || line ? sung : t.lyric_text) : t.lyric_text;
+            const float halo = active ? 1.f : 0.45f;
+            floating_text(ui, center, baseline, live ? std::string_view(live->text) : std::string_view(shown.text), active ? live : nullptr, size, max_width, lead_color,
+                          t.lyric_text, pose.focus, weight, halo);
             if (!shown.sub.empty()) {
-                floating_text(ui, center, top + line_height + sub * 1.1f, shown.sub, nullptr, sub, max_width, t.lyric_text.with_alpha(0.85f), t.lyric_text, 0);
+                floating_text(ui, center, top + line_height + sub * 1.1f, shown.sub, nullptr, sub, max_width, t.lyric_text.with_alpha(active ? 0.8f : 0.65f), t.lyric_text, 0, 0,
+                              halo * 0.7f);
             }
             p.set_zoom(1);
         };
@@ -536,21 +541,21 @@ namespace lyren {
         ui.push_clip({area.x, panel.y + tools_height, area.w, panel.h - tools_height});
         if (c.advance) {
             if (change < 1) {
-                draw(c.prev[0], at > 0 ? &playback_.lyrics()[static_cast<size_t>(at - 1)] : nullptr, depart(c.from[0]));
+                draw(c.prev[0], at > 0 ? &playback_.lyrics()[static_cast<size_t>(at - 1)] : nullptr, depart(c.from[0]), true);
             }
             c.pose[0] = c.from[1].mix(singing, enter);
-            c.pose[1] = Pose{1.16f, 0, 0.86f, 0}.mix(waiting, queued);
+            c.pose[1] = Pose{1.16f, 0, 0.70f, 0}.mix(waiting, queued);
         } else {
             for (size_t i = 0; i < c.shown.size(); ++i) {
                 if (change < 1) {
-                    draw(c.prev[i], nullptr, depart(c.from[i]));
+                    draw(c.prev[i], nullptr, depart(c.from[i]), i == 0);
                 }
                 const Pose to = i == 0 ? singing : waiting;
                 c.pose[i] = Pose{to.y + 0.12f, 0, to.scale * 0.97f, 0}.mix(to, i == 0 ? enter : queued);
             }
         }
-        draw(c.shown[0], line, c.pose[0]);
-        draw(c.shown[1], following, c.pose[1]);
+        draw(c.shown[0], line, c.pose[0], true);
+        draw(c.shown[1], following, c.pose[1], false);
         ui.pop_clip();
         if (playback_.playing()) {
             if ((timed && finished < 1) || (following && now >= following->time - prepare)) {

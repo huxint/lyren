@@ -224,6 +224,7 @@ namespace lyren::audio {
                     if (dec->length) {
                         frame = std::min(frame, dec->length);
                     }
+                    dec->error.clear();
                     if (!dec->seek(frame)) {
                         log::warn("seek to {} failed", frame);
                     }
@@ -258,7 +259,11 @@ namespace lyren::audio {
             if (!n) {
                 done = true;
                 out_.finish();
-                if (std::string e = spool->error(); !e.empty()) {
+                std::string e = spool->error();
+                if (e.empty()) {
+                    e = std::move(dec->error);
+                }
+                if (!e.empty()) {
                     fail(gen, std::move(e));
                 }
                 continue;

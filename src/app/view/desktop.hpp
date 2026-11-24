@@ -64,7 +64,7 @@ namespace lyren {
         void lyric_frames(ui::Ui &ui, int line, bool timed);
         // A line of floating lyrics, outlined; a word-timed live line lights up from color to rest as it is sung.
         void floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color, ui::Color rest,
-                           float focus);
+                           float focus, uint8_t features = 0, float outline_scale = 1.f);
 
         // Floating lyrics: offset from the screen's centre, height above the bottom, click-through.
         float dl_x_ = 0, dl_bottom_ = 48;

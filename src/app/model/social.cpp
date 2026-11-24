@@ -34,19 +34,25 @@ namespace lyren {
 
     std::vector<Social::Section> Social::sections(const Card &who) const {
         const auto &caps = env_.provider(who).capabilities;
+        const bool self = library_.own(who) || who.owned;
         std::vector<Section> out;
+        if (self) {
+            out.push_back(Section::overview);
+        }
         if (caps.posts) {
             out.push_back(Section::posts);
         }
         if (caps.ranking) {
             out.push_back(Section::chart);
         }
-        if (library_.own(who) ? caps.library : caps.profile_playlists) {
+        if (self ? caps.library : caps.profile_playlists) {
             out.push_back(Section::playlists);
         }
+        if (self && (caps.collect_albums || caps.follow_artists)) {
+            out.push_back(Section::collection);
+        }
         if (caps.people) {
-            out.push_back(Section::follows);
-            out.push_back(Section::fans);
+            out.push_back(Section::people);
         }
         return out;
     }
@@ -64,10 +70,15 @@ namespace lyren {
     void Social::show(const std::shared_ptr<Page> &page, Section section) {
         page->section = section;
         page->section_since = env_.now();
-        if (section == Section::follows || section == Section::fans) {
-            load_people(page, section == Section::fans);
+        if (section == Section::people) {
+            load_people(page, page->people_tab != 0);
         } else if (section == Section::chart) {
             load_chart(page, page->chart_tab);
+        } else if (section == Section::collection && (library_.own(page->who) || page->who.owned)) {
+            const auto &shelf = library_.shelf(page->who.source);
+            if (!shelf.collection[0].loaded && !shelf.collection[0].loading && env_.signed_in(page->who.source)) {
+                spawn(library_.load_collection(page->who.source));
+            }
         }
         env_.redraw();
     }
@@ -75,7 +86,9 @@ namespace lyren {
     Task<void> Social::load_profile(std::shared_ptr<Page> page) {
         const Card &who = page->who;
         const auto &shelf = library_.shelf(who.source);
-        const auto &caps = env_.provider(who).capabilities;
+        auto &provider = env_.provider(who);
+        const auto &caps = provider.capabilities;
+        const bool self = library_.own(who) || who.owned;
         const uint64_t account_gen = shelf.account_gen;
         page->loading = true;
         page->error.clear();
@@ -92,7 +105,13 @@ namespace lyren {
         if (caps.ranking) {
             load_chart(page, 0);
         }
-        if (!library_.own(who) && caps.profile_playlists) {
+        if (self && provider.features.recent_plays && env_.signed_in(who.source)) {
+            load_recent(page);
+        }
+        if (self && (caps.collect_albums || caps.follow_artists) && !shelf.collection[0].loaded && !shelf.collection[0].loading && env_.signed_in(who.source)) {
+            spawn(library_.load_collection(who.source));
+        }
+        if (!self && caps.profile_playlists) {
             spawn(load_playlists(page));
         }
         // A platform without listener pages still has the account's name and picture.
@@ -101,7 +120,7 @@ namespace lyren {
             page->info = Profile{.id = who.id, .name = who.title, .avatar = who.cover};
             co_return;
         }
-        auto r = co_await env_.provider(who).profile(who.id);
+        auto r = co_await provider.profile(who.id);
         if (account_gen != shelf.account_gen) {
             co_return;
         }
@@ -180,6 +199,36 @@ namespace lyren {
         env_.redraw();
     }
 
+    void Social::load_recent(std::shared_ptr<Page> page) {
+        auto &recent = page->recent;
+        if (recent.loading || recent.loaded || !env_.provider(page->who).features.recent_plays) {
+            return;
+        }
+        recent.loading = true;
+        recent.error.clear();
+        spawn(fetch_recent(std::move(page)));
+    }
+
+    Task<void> Social::fetch_recent(std::shared_ptr<Page> page) {
+        const auto &shelf = library_.shelf(page->who.source);
+        const uint64_t account_gen = shelf.account_gen;
+        auto r = co_await env_.provider(page->who).features.recent_plays();
+        if (account_gen != shelf.account_gen) {
+            co_return;
+        }
+        auto &recent = page->recent;
+        recent.loading = false;
+        recent.loaded = true;
+        recent.since = env_.now();
+        if (r) {
+            env_.images.prefetch(*r);
+            recent.tracks = std::move(*r);
+        } else {
+            recent.error = r.error();
+        }
+        env_.redraw();
+    }
+
     Task<void> Social::load_playlists(std::shared_ptr<Page> page) {
         Listing &listing = page->playlists;
         listing.loading = true;
@@ -194,6 +243,8 @@ namespace lyren {
         }
         std::vector<Card> cards;
         if (!r->first.id.empty()) {
+            // A listener's liked playlist belongs with the ones they created, never with saved ones.
+            r->first.owned = true;
             cards.push_back(std::move(r->first));
         }
         cards.append_range(std::views::as_rvalue(r->second));

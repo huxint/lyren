@@ -22,13 +22,17 @@ namespace lyren {
         struct Chart : Fetch {
             Ranking ranking;
         };
+        struct Recent : Fetch {
+            std::vector<Track> tracks;
+        };
         // The parts of a listener's page.
         enum class Section : uint8_t {
+            overview,
             posts,
             chart,
             playlists,
-            follows,
-            fans
+            collection,
+            people
         };
         // A listener's identity, social lists and music, kept while the page stays in the history.
         struct Page {
@@ -36,13 +40,16 @@ namespace lyren {
             std::optional<Profile> info;
             bool loading = false;
             std::string error;
-            Section section = Section::posts;
+            Section section = Section::overview;
             double section_since = -10, since = -10;
             int posts_tab = 0;            // the account's own page: its posts, or the feed of the people it follows
             int chart_tab = 0;            // the week or all time
+            int collection_tab = 0;       // 0 = albums, 1 = artists
+            int people_tab = 0;           // 0 = follows, 1 = fans
             std::array<People, 2> people; // follows, fans
             std::shared_ptr<Posts> posts = std::make_shared<Posts>();
             std::array<Chart, 2> charts;
+            Recent recent; // cloud recent plays on platforms that expose them
             Listing playlists;
             int created = 0; // how many of the playlists they made; the rest they saved
         };
@@ -65,6 +72,7 @@ namespace lyren {
         void show(const std::shared_ptr<Page> &page, Section section);
         void load_people(std::shared_ptr<Page> page, bool fans);
         void load_chart(std::shared_ptr<Page> page, int tab);
+        void load_recent(std::shared_ptr<Page> page);
         // author: whose timeline; empty for the feed of the people the account follows.
         void load_posts(std::shared_ptr<Posts> list, Source source, std::string author);
         // The feed of the people the account on the platform follows.
@@ -97,6 +105,7 @@ namespace lyren {
         Task<void> load_profile(std::shared_ptr<Page> page);
         Task<void> fetch_people(std::shared_ptr<Page> page, bool fans, uint64_t gen);
         Task<void> fetch_chart(std::shared_ptr<Page> page, int tab);
+        Task<void> fetch_recent(std::shared_ptr<Page> page);
         Task<void> load_playlists(std::shared_ptr<Page> page);
         Task<void> fetch_posts(std::shared_ptr<Posts> list, Source source, std::string author, uint64_t gen);
         // The account's own pages show what it has just posted.

@@ -110,11 +110,11 @@ namespace lyren::ui {
         }
         // A hairline between things.
         Color line(float k = 1) const {
-            return border.with_alpha(0.7f * k);
+            return border.with_alpha(0.55f * k);
         }
         // A quiet 1px structural edge around sheets, cards and floating consoles.
         Color surface_edge(float k = 1) const {
-            return text.with_alpha((dark ? 0.075f : 0.08f) * k);
+            return text.with_alpha((dark ? 0.05f : 0.045f) * k);
         }
         // Readable on the accent, which follows the cover and can be light.
         Color on_accent() const {

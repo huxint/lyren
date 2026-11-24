@@ -37,9 +37,9 @@ namespace lyren {
         const Layout l = layout(strip);
         // A refined floating console on the window; on the stage, a frosted glass pane over the cover.
         if (const float lift = smooth01(1 - 2 * stage); lift > 0 && !t.dark) {
-            p.shadow({l.card.x, l.card.y + 1, l.card.w, l.card.h}, t.radius_l(), 10, t.shadow.with_alpha(0.4f * lift));
+            p.shadow(l.card, t.radius_l(), 10, t.shadow.with_alpha(0.35f * lift), true);
         }
-        p.rect(l.card, t.surface, t.radius_l(), t.surface_edge().mix(t.line(), stage), 1);
+        p.rect(l.card, t.surface, t.radius_l(), t.surface_edge(0.8f).mix(t.line(), stage), 1);
         const Rect centre = ui::center(l.centre, std::min(l.centre.w, 600.f), l.centre.h);
         transport(ui, {centre.x, l.card.y + 8, centre.w, 36});
         string(ui, {centre.x, l.card.y + 46, centre.w, 20}, l.card.y - 6, stage);
@@ -77,13 +77,17 @@ namespace lyren {
             {
                 // The triangle's weight sits left of its box, so it stands a little right of the centre.
                 Fade fade(p, 1 - morph);
-                Rect glyph = ui::center(disc, 15 - 5 * morph, 15 - 5 * morph);
+                p.set_zoom((15 - 5 * morph) / 15.f, disc.x + disc.w / 2, disc.y + disc.h / 2);
+                Rect glyph = ui::center(disc, 15, 15);
                 glyph.x += 1;
                 p.icon("play-fill", glyph, t.bg);
+                p.set_zoom(1);
             }
             {
                 Fade fade(p, morph);
-                p.icon("pause-fill", ui::center(disc, 10 + 5 * morph, 10 + 5 * morph), t.bg);
+                p.set_zoom((10 + 5 * morph) / 15.f, disc.x + disc.w / 2, disc.y + disc.h / 2);
+                p.icon("pause-fill", ui::center(disc, 15, 15), t.bg);
+                p.set_zoom(1);
             }
             if (const float ring = ui.anim(ui.id("play-ring"), playback_.waiting() ? 1 : 0, 200); ring > 0.01f) {
                 Fade fade(p, ring);
@@ -126,8 +130,11 @@ namespace lyren {
         const float pointer = (ui.input().x - r.x) / r.w;
         if (it.pressed && pointer >= from && pointer <= to) {
             dragging_ = true;
+            dragged_ = false;
+            press_x_ = ui.input().x;
         }
         if (dragging_ && (it.pressed || it.held)) {
+            dragged_ |= std::abs(ui.input().x - press_x_) > 3.f;
             drag_v_ = std::clamp(pointer, from, to);
         }
         const bool released = dragging_ && !ui.is_active(id);
@@ -140,23 +147,27 @@ namespace lyren {
         if (reaching) {
             ui.cursor = wl::Cursor::pointer;
         }
-        const float hot = ui.anim(ui.id("string-hover"), reaching ? 1.f : 0.f, 150);
+        const float hot = ui.spring(ui.id("string-hover"), reaching ? 1.f : 0.f, 190, 0.28f);
+        const float press = ui.spring(ui.id("string-press"), dragging_ ? 1.f : 0.f, 170, 0.36f);
+        const float hot_clamped = std::clamp(hot, 0.f, 1.f);
         const bool held = dragging_ || released;
-        const float value = ui.spring(ui.id("progress-v"), held ? drag_v_ : clock.progress(position), held ? 0 : 240);
+        const bool direct_drag = (dragging_ || released) && dragged_;
+        const float value = ui.spring(ui.id("progress-v"), held ? drag_v_ : clock.progress(position), direct_drag ? 0.f : 250.f, direct_drag ? 0.f : 0.22f);
         const float filled = std::clamp(r.w * (value - from), 0.f, width);
-        const float thickness = 2.5f + 1.5f * hot;
+        const float thickness = 1.8f + 1.1f * std::clamp(hot, 0.f, 1.25f);
 
-        // While the music sounds the played part is a calm acoustic wave that swells subtly with it, and letting go plucks the string.
+        // While the music sounds the played part is a taut acoustic string that swells with the audio, and letting go plucks it.
         const bool wave = env_.config.interface.progress == ProgressStyle::wave && t.motion > 0;
-        meter_.follow(playback_.player().levels(), static_cast<float>(ui.now - meter_time_));
+        const float dt = meter_time_ > 0 ? static_cast<float>(ui.now - meter_time_) : 0.f;
+        meter_.follow(playback_.player().levels(), dt);
         meter_time_ = ui.now;
-        const float live = ui.anim(ui.id("string-live"), playback_.playing() && !playback_.player().buffering() && wave ? 1.f : 0.f, 500, ease::standard);
-        const float amplitude = ui.spring(ui.id("string-amplitude"), (1.4f + 0.4f * stage + 1.15f * meter_.all()) * live, 240);
-        const float phase = -static_cast<float>(std::fmod(ui.now * 0.65, 1.0)) * 2 * std::numbers::pi_v<float>;
+        const float live = ui.anim(ui.id("string-live"), playback_.playing() && !playback_.player().buffering() && wave ? 1.f : 0.f, 460, ease::standard);
+        const float amplitude = ui.spring(ui.id("string-amplitude"), (2.3f + 0.8f * stage + 1.9f * meter_.all()) * live, 220, 0.16f);
+        const float phase = -static_cast<float>(std::fmod(ui.now * 0.7, 1.0)) * 2 * std::numbers::pi_v<float>;
         ui::Pluck pluck;
         const float age = t.motion > 0 ? static_cast<float>((ui.now - pluck_time_) / t.motion) : 1.f;
-        if (wave && age < 0.65f) {
-            pluck = {r.w * (pluck_at_ - from), 5 * std::exp(-age * 7.5f) * std::sin(age * 28), 30};
+        if (t.motion > 0 && age >= 0 && age < 0.78f) {
+            pluck = {r.w * (pluck_at_ - from), 8.5f * std::exp(-age * 6.2f) * std::sin(age * 31.f), 34.f};
             ui.keep_animating();
         }
         if (amplitude > 0.01f && filled > 0) {
@@ -169,7 +180,7 @@ namespace lyren {
         for (float x = sx + width + 4; x + 3 <= r.right(); x += 7) {
             p.rect({x, cy - 1, 3, 2}, t.text.with_alpha(0.12f), 1);
         }
-        p.wave({sx, cy - thickness / 2, width, thickness}, filled, amplitude, 42, phase, t.accent, t.text.with_alpha(0.14f), pluck);
+        p.wave({sx, cy - thickness / 2, width, thickness}, filled, std::max(0.f, amplitude), 42, phase, t.accent, t.text.with_alpha(0.15f), pluck);
         // What has been fetched ahead of the song.
         if (const audio::Spool *spool = playback_.player().spool(); spool && file_duration > 0) {
             const auto [have, size] = spool->progress();
@@ -188,11 +199,11 @@ namespace lyren {
         // The chorus, marked under the string.
         if (const auto [chorus_from, chorus_to] = playback_.highlight(); chorus_to > chorus_from && duration > 0) {
             const float left = r.x + r.w * clock.fraction(chorus_from), right = r.x + r.w * clock.fraction(chorus_to);
-            p.rect({left, cy + 4, std::max(right - left, 2.f), 2}, t.accent.with_alpha(0.3f + 0.15f * hot), 1);
+            p.rect({left, cy + 4, std::max(right - left, 2.f), 2}, t.accent.with_alpha(0.3f + 0.15f * hot_clamped), 1);
         }
         if (seekable) {
-            // A bead rides the string where the song stands, and grows under the pointer.
-            const float bead = 5 + 6 * hot;
+            // An elastic bead rides the string where the song stands, swelling under the pointer and rebounding on release.
+            const float bead = std::max(3.5f, 4.4f + 6.0f * hot + 2.2f * press);
             const auto pin = [](float x) {
                 x = std::clamp(x, 0.f, 1.f);
                 return x * x * (3 - 2 * x);
@@ -200,13 +211,13 @@ namespace lyren {
             const float u = (filled - pluck.at) / pluck.spread;
             const float lift = pluck.lift * std::exp(-u * u) * pin((filled - thickness / 2) / (2 * pluck.spread)) * pin((width - thickness / 2 - filled) / (2 * pluck.spread));
             const Rect knob{sx + filled - bead / 2, cy - lift - bead / 2, bead, bead};
-            if (hot > 0) {
-                p.shadow(knob, bead / 2, 8, t.shadow.with_alpha(hot));
+            if (hot_clamped > 0.01f) {
+                p.shadow(knob, bead / 2, 8, t.shadow.with_alpha(hot_clamped));
             }
-            p.rect(knob, t.accent.mix(white, hot), bead / 2);
+            p.rect(knob, t.accent.mix(white, hot_clamped), bead / 2);
         }
         const double song = held ? drag_v_ * duration : clock.to_song(position);
-        ui.label(elapsed, mmss(song), t.style(type::micro, t.faint().mix(t.text, 0.5f * hot), text::tabular_nums));
+        ui.label(elapsed, mmss(song), t.style(type::micro, t.faint().mix(t.text, 0.5f * hot_clamped), text::tabular_nums));
         ui.label(total, whole, numbers, Align::right);
         // The next frame is due when the string has moved a pixel or the clock a second.
         if (playback_.playing() && duration > 0) {

@@ -270,7 +270,7 @@ namespace lyren::gfx {
         VkSwapchainCreateInfoKHR ci{
             .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
             .surface = t.surface,
-            .minImageCount = std::max(caps.minImageCount, 2u),
+            .minImageCount = std::max(caps.minImageCount, 3u),
             .imageFormat = t.format,
             .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
             .imageExtent = extent,

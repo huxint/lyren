@@ -138,16 +138,39 @@ namespace lyren::qishui {
             return result;
         }
 
-        Result<Account> account_info(const Json &response) {
+        Result<Profile> profile_info(const Json &response) {
             const auto &info = field(response, "my_info");
-            Account result{.id = string(field(info, "id")), .name = string(field(info, "nickname")), .avatar = image(field(info, "larger_avatar_url"))};
+            Profile result{.id = string(field(info, "id")),
+                           .name = string(field(info, "nickname")),
+                           .avatar = image(field(info, "larger_avatar_url")),
+                           .background = image(field(info, "bg_url")),
+                           .signature = string(field(info, "signature"))};
             if (result.name.empty()) {
                 result.name = string(field(info, "public_name"));
             }
+            if (result.avatar.empty()) {
+                result.avatar = image(field(info, "medium_avatar_url"));
+            }
+            if (result.background.empty()) {
+                result.background = image(field(info, "cover_url"));
+            }
+            if (const auto &v = field(info, "count_following"); !v.is_null()) {
+                result.follows = count(v);
+            }
+            if (const auto &v = field(info, "count_follower"); !v.is_null()) {
+                result.fans = count(v);
+            }
+            result.vip = boolean(field(info, "is_vip")) || number(field(field(info, "vip_info"), "vip_status")) > 0;
             if (result.id.empty()) {
                 return std::unexpected("Sign in to Qishui Music and try again");
             }
             return result;
+        }
+
+        Result<Account> account_info(const Json &response) {
+            return profile_info(response).transform([](Profile p) {
+                return Account{.id = std::move(p.id), .name = std::move(p.name), .avatar = std::move(p.avatar)};
+            });
         }
 
         Json media(std::string id) {
@@ -247,13 +270,14 @@ namespace lyren::qishui {
                 comment.id = std::string(root) + ':' + comment.id;
             }
             const auto &user = field(item, "user");
+            comment.user_id = string(field(user, "id"));
             comment.user = string(field(user, "nickname"));
             comment.avatar = image(field(user, "medium_avatar_url"));
             comment.text = string(field(item, "content"));
             comment.likes = count(field(item, "count_digged"));
             comment.replies = count(field(item, "count_reply"));
             comment.liked = boolean(field(item, "user_digged"));
-            comment.owned = boolean(field(item, "can_delete")) || (!user_id.empty() && string(field(user, "id")) == user_id);
+            comment.owned = boolean(field(item, "can_delete")) || (!user_id.empty() && comment.user_id == user_id);
             comment.reply = string(field(field(item, "reply_to"), "content"));
             comment.reply_user = string(field(field(field(item, "reply_to"), "user"), "nickname"));
             const auto images = array(field(item, "image_list"));
@@ -287,7 +311,9 @@ namespace lyren::qishui {
                         .comment_likes = true,
                         .comment_post = true,
                         .comment_delete = true,
-                        .session_import = true};
+                        .session_import = true,
+                        .profiles = true,
+                        .profile_playlists = true};
         radio_title = "For You";
         release_categories[0] = {{"", "All"}};
         reload_after_edit = true;
@@ -397,6 +423,18 @@ namespace lyren::qishui {
             }
         }
         co_return result;
+    }
+
+    Task<Result<Profile>> Qishui::profile(std::string uid) {
+        if (!uid.empty() && uid != client.get("user_id")) {
+            // Another listener's public playlists are available; their name and avatar come from the source item.
+            co_return Profile{.id = std::move(uid)};
+        }
+        auto response = co_await client.call("/luna/pc/me");
+        if (!response) {
+            co_return std::unexpected(response.error());
+        }
+        co_return profile_info(*response);
     }
 
     Task<void> Qishui::logout() {
@@ -931,6 +969,25 @@ namespace lyren::qishui {
 
     Task<Result<std::pair<Card, std::vector<Card>>>> Qishui::user_playlists(std::string uid) {
         using Library = std::pair<Card, std::vector<Card>>;
+        if (!uid.empty() && uid != client.get("user_id")) {
+            co_return co_await read_pages(client, "/luna/pc/user/playlist", "playlists", {{"user_id", std::move(uid)}, {"scene", "aweme_user_profile"}},
+                                          Library{Card{.source = Source::qishui, .commentable = false}, {}}, [](std::span<const Json> items, Library &out) -> Result<void> {
+                                              for (const auto &item : items) {
+                                                  auto parsed = card(item, CardKind::playlist);
+                                                  if (!parsed) {
+                                                      return std::unexpected(parsed.error());
+                                                  }
+                                                  if (number(field(item, "type")) == 1) {
+                                                      out.first = std::move(*parsed);
+                                                      out.first.owned = out.first.collectable = out.first.commentable = false;
+                                                  } else {
+                                                      parsed->owned = true;
+                                                      out.second.push_back(std::move(*parsed));
+                                                  }
+                                              }
+                                              return {};
+                                          });
+        }
         auto result = co_await read_pages(client, "/luna/pc/me/playlist", "playlists", {}, Library{Card{.source = Source::qishui, .commentable = false}, {}},
                                           [](std::span<const Json> items, Library &out) -> Result<void> {
                                               for (const auto &item : items) {

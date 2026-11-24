@@ -1,5 +1,7 @@
 #pragma once
+#include <cstddef>
 #include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -37,6 +39,11 @@ namespace lyren::wl {
         wl_data_offer *selection_ = nullptr;
         wl_data_offer *drag_ = nullptr;
         std::unordered_map<wl_data_offer *, std::string> mimes_; // best text type each offer advertises
+        struct Outgoing {
+            std::shared_ptr<const std::string> bytes;
+            size_t offset = 0;
+        };
+        std::unordered_map<int, Outgoing> sending_;
     };
 
 } // namespace lyren::wl

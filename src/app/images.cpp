@@ -37,6 +37,7 @@ namespace lyren {
 
     Images::~Images() {
         loader_->owner = nullptr;
+        loop_.cancel(evict_timer_);
         for (auto &[key, e] : entries_) {
             if (e.request) {
                 http_.cancel(e.request);
@@ -95,6 +96,7 @@ namespace lyren {
                     }
                 });
             }
+            schedule_evict();
         }
         return e;
     }
@@ -191,6 +193,7 @@ namespace lyren {
         e.tex = renderer_.create_texture(img.w, img.h, VK_FORMAT_R8G8B8A8_UNORM, false);
         renderer_.upload(e.tex, 0, 0, img.w, img.h, img.px.data(), img.w * 4);
         bytes_ += e.bytes;
+        schedule_evict();
     }
 
     void Images::pump() {
@@ -292,10 +295,25 @@ namespace lyren {
             }
             redraw_();
         }
+        schedule_evict();
         pump();
     }
 
+    void Images::schedule_evict() {
+        if (evict_timer_ || (bytes_ <= budget && entries_.size() <= max_entries)) {
+            return;
+        }
+        // When the main window is hidden or occluded, Wayland withholds frame callbacks while desktop lyrics or
+        // track changes can still load art; sweep on a short timer so the cache never outgrows its budget.
+        evict_timer_ = loop_.after(60ms, [this] {
+            evict_timer_ = 0;
+            end_frame();
+        });
+    }
+
     void Images::end_frame() {
+        loop_.cancel(evict_timer_);
+        evict_timer_ = 0;
         ++frame_;
         if (bytes_ <= budget && entries_.size() <= max_entries) {
             return;
@@ -317,6 +335,7 @@ namespace lyren {
             }
             erase(it);
         }
+        schedule_evict();
     }
 
     void Images::prefetch(std::span<const Card> cards) {

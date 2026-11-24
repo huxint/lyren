@@ -374,12 +374,13 @@ namespace lyren::qishui {
 
     Task<Result<Json>> Client::send(net::Request request, net::Retry retry) {
         const auto gen = generation;
+        net::CookieJar baseline = request.cookie_jar.value_or(net::CookieJar{});
         auto response = co_await net::fetch_retry(loop_, http_, std::move(request), retry);
         if (generation != gen) {
             co_return std::unexpected("Qishui Music session changed; retry the action");
         }
         if (!response.cookies.empty()) {
-            cookies_ = std::move(response.cookie_jar);
+            cookies_.merge(baseline, response.cookie_jar);
             session["cookie_jar"] = cookies_.netscape();
             if (on_session) {
                 on_session();

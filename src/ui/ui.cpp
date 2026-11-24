@@ -220,7 +220,7 @@ namespace lyren::ui {
             s.motion.advance(s.target, static_cast<float>(now - s.time), response, bounce);
         }
         s.target = target, s.time = now, s.frame = frame_;
-        if (response == 0 || (std::abs(s.motion.value - target) < 0.001f && std::abs(s.motion.velocity) < 0.01f)) {
+        if (response == 0 || (std::abs(s.motion.value - target) < 0.005f && std::abs(s.motion.velocity) < 0.05f)) {
             s.motion = {target};
         } else {
             animating_ = true;

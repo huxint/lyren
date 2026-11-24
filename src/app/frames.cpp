@@ -50,11 +50,17 @@ namespace lyren {
         if (ui.needs_redraw()) {
             request();
         } else if (ui.animating()) {
-            auto due = frame_start + std::chrono::nanoseconds(max_fps > 0 ? 1'000'000'000 / max_fps : 0);
-            if (Clock::now() >= due) {
+            // When the previous render skipped presenting an identical frame, no wl_surface_frame is in flight to
+            // pace us; fall back to a timer instead of re-entering loop_.defer() in a tight spin.
+            constexpr auto lead = std::chrono::nanoseconds(1'500'000);
+            constexpr auto unpaced_fallback = std::chrono::nanoseconds(1'000'000'000 / 120);
+            const auto period = max_fps > 0 ? std::chrono::nanoseconds(1'000'000'000 / max_fps) : (pending_() ? std::chrono::nanoseconds(0) : unpaced_fallback);
+            const auto due = frame_start + (period > lead && pending_() ? period - lead : period);
+            if (pending_() && Clock::now() >= due) {
                 request();
             } else {
-                pace_timer_ = loop_.at(due, [this] {
+                const auto wake = std::max(due, Clock::now() + std::chrono::milliseconds(1));
+                pace_timer_ = loop_.at(wake, [this] {
                     pace_timer_ = 0;
                     request();
                 });

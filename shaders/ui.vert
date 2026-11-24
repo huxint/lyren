@@ -12,6 +12,8 @@ void main() {
     vec4 r = p.rect;
     if (p.info.x == KIND_SHADOW) {
         r += vec4(-3.0, -3.0, 6.0, 6.0) * p.params.y;
+    } else if (p.info.x != KIND_GLYPH) {
+        r += vec4(-1.0, -1.0, 2.0, 2.0);
     }
     vec2 pos = r.xy + c * r.zw;
     v_pos = pos;

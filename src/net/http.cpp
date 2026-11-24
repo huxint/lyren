@@ -21,14 +21,33 @@ namespace lyren::net {
             if (entry.starts_with("#HttpOnly_")) {
                 entry.remove_prefix(10);
             }
-            CookieFields fields;
+            CookieFields fields{};
             for (size_t i = 0; i < 6; ++i) {
                 auto tab = entry.find('\t');
+                if (tab == entry.npos) {
+                    return {};
+                }
                 fields[i] = entry.substr(0, tab);
                 entry.remove_prefix(tab + 1);
             }
             fields.back() = entry;
             return fields;
+        }
+
+        std::string cookie_key(std::string_view entry) {
+            const auto f = cookie_fields(entry);
+            std::string key;
+            key.reserve(f[0].size() + f[1].size() + f[2].size() + f[5].size() + 3);
+            for (unsigned char c : f[0]) {
+                key.push_back(static_cast<char>(std::tolower(c)));
+            }
+            key.push_back('\t');
+            key.append(f[1]);
+            key.push_back('\t');
+            key.append(f[2]);
+            key.push_back('\t');
+            key.append(f[5]);
+            return key;
         }
 
         bool matches(const CookieFields &fields, std::string_view host, std::string_view path, bool secure, int64_t now) {
@@ -132,6 +151,38 @@ namespace lyren::net {
             }
         }
         return std::string(value);
+    }
+
+    void CookieJar::merge(const CookieJar &before, const CookieJar &after) {
+        std::unordered_map<std::string, std::string_view> prev, next;
+        prev.reserve(before.entries_.size());
+        next.reserve(after.entries_.size());
+        for (const auto &entry : before.entries_) {
+            prev.emplace(cookie_key(entry), entry);
+        }
+        for (const auto &entry : after.entries_) {
+            next.emplace(cookie_key(entry), entry);
+        }
+        // Remove cookies that existed before this request and were cleared by the response.
+        std::erase_if(entries_, [&](const std::string &entry) {
+            const std::string key = cookie_key(entry);
+            return prev.contains(key) && !next.contains(key);
+        });
+        // Apply cookies added or updated by this response without clobbering sibling concurrent updates.
+        for (const auto &entry : after.entries_) {
+            const std::string key = cookie_key(entry);
+            if (auto it = prev.find(key); it != prev.end() && it->second == entry) {
+                continue;
+            }
+            auto existing = std::ranges::find_if(entries_, [&](const std::string &cur) {
+                return cookie_key(cur) == key;
+            });
+            if (existing != entries_.end()) {
+                *existing = entry;
+            } else {
+                entries_.push_back(entry);
+            }
+        }
     }
 
     struct Http::Transfer {
@@ -306,6 +357,7 @@ namespace lyren::net {
         }
         curl_easy_setopt(t->easy, CURLOPT_ACCEPT_ENCODING, "");
         curl_easy_setopt(t->easy, CURLOPT_TIMEOUT, 30L);
+        curl_easy_setopt(t->easy, CURLOPT_MAXFILESIZE_LARGE, curl_off_t{32} << 20);
         if (req.body) {
             t->post = std::move(*req.body);
             curl_easy_setopt(t->easy, CURLOPT_POSTFIELDSIZE, static_cast<long>(t->post.size()));

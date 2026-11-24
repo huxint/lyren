@@ -1,6 +1,7 @@
 #include "wl/clipboard.hpp"
 
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 
@@ -69,6 +70,7 @@ namespace lyren::wl {
 
     Clipboard::Clipboard(Display &display)
     : display_(display) {
+        signal(SIGPIPE, SIG_IGN);
         if (!display_.data_device_manager) {
             return;
         }
@@ -77,6 +79,11 @@ namespace lyren::wl {
     }
 
     Clipboard::~Clipboard() {
+        for (auto &[fd, _] : sending_) {
+            display_.loop.unwatch(fd);
+            close(fd);
+        }
+        sending_.clear();
         if (source_) {
             wl_data_source_destroy(source_);
         }
@@ -140,12 +147,53 @@ namespace lyren::wl {
     }
 
     void Clipboard::send(int fd) {
-        for (size_t off = 0; off < text_.size();) {
-            ssize_t n = write(fd, text_.data() + off, text_.size() - off);
-            if (n <= 0) {
-                break;
+        const int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        }
+        size_t off = 0;
+        while (off < text_.size()) {
+            const ssize_t n = write(fd, text_.data() + off, text_.size() - off);
+            if (n > 0) {
+                off += static_cast<size_t>(n);
+                continue;
             }
-            off += static_cast<size_t>(n);
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                sending_[fd] = {std::make_shared<const std::string>(text_), off};
+                display_.loop.watch(fd, EPOLLOUT, [this, fd](uint32_t events) {
+                    auto it = sending_.find(fd);
+                    if (it == sending_.end()) {
+                        return;
+                    }
+                    auto &out = it->second;
+                    bool keep_waiting = false;
+                    if (!(events & (EPOLLERR | EPOLLHUP))) {
+                        while (out.offset < out.bytes->size()) {
+                            const ssize_t k = write(fd, out.bytes->data() + out.offset, out.bytes->size() - out.offset);
+                            if (k > 0) {
+                                out.offset += static_cast<size_t>(k);
+                                continue;
+                            }
+                            if (k < 0 && errno == EINTR) {
+                                continue;
+                            }
+                            keep_waiting = k < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+                            break;
+                        }
+                    }
+                    if (keep_waiting && out.offset < out.bytes->size()) {
+                        return;
+                    }
+                    sending_.erase(it);
+                    display_.loop.unwatch(fd);
+                    close(fd);
+                });
+                return;
+            }
+            break;
         }
         close(fd);
     }

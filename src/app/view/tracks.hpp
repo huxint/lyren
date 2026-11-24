@@ -17,7 +17,7 @@ namespace lyren {
         void menu(ui::Ui &ui, float x, float y, const std::vector<Track> &tracks, int i);
 
     private:
-        void row(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, int i);
+        void row(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, int i, std::optional<Track> &toggled_like);
     };
 
 } // namespace lyren

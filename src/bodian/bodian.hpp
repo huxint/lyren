@@ -32,6 +32,7 @@ namespace lyren::bodian {
         Task<Result<QrCode>> qr_start() override;
         Task<Result<QrStatus>> qr_poll() override;
         Task<Result<Account>> account() override;
+        Task<Result<Profile>> profile(std::string uid) override;
         Task<void> logout() override;
 
         Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) override;

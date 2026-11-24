@@ -72,11 +72,14 @@ void main() {
             o = p.color * cov;
         }
     } else if (kind == KIND_SHADOW) {
-        float a = rounded_box_shadow(local, half_size, p.params.y, p.radii.x);
+        float mask = 1.0;
         if ((p.info.z & FLAG_CUTOUT) != 0u) {
-            a *= clamp(0.5 + sd_rrect(local, half_size, p.radii), 0.0, 1.0);
+            mask = clamp(0.5 + sd_rrect(local, half_size, p.radii), 0.0, 1.0);
+            if (mask <= 0.0) {
+                discard;
+            }
         }
-        o = p.color * a;
+        o = p.color * (rounded_box_shadow(local, half_size, p.params.y, p.radii.x) * mask);
     } else if (kind == KIND_GLYPH) {
         vec4 c = p.color;
         // A horizontal wipe: colour left of params.x, color2 right of it, blended over ±params.y.
@@ -125,6 +128,9 @@ void main() {
         o = mix(p.color2, p.color, played) * clamp(0.5 - (d - th * 0.5), 0.0, 1.0);
     } else {
         float cov = clamp(0.5 - sd_rrect(local, half_size, p.radii), 0.0, 1.0);
-        o = texture(textures[nonuniformEXT(p.info.y)], v_uv) * p.color * cov;
+        vec2 sz = max(p.rect.zw, vec2(1.0));
+        vec2 pad = min(vec2(0.5) / sz, vec2(0.5));
+        vec2 uv = mix(p.uv.xy, p.uv.zw, clamp((v_pos - p.rect.xy) / sz, pad, vec2(1.0) - pad));
+        o = texture(textures[nonuniformEXT(p.info.y)], uv) * p.color * cov;
     }
 }

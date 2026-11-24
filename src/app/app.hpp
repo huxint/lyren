@@ -91,7 +91,7 @@ namespace lyren {
         Images images_;
         Shell shell_;
 
-        Clock::time_point start_ = Clock::now();
+        Clock::time_point start_ = Clock::now(), last_input_ = start_;
         uint64_t frame_hash_ = 0;
         uint32_t resize_edges_ = 0; // pointer is in the resize band outside the geometry
         uint32_t last_press_time_ = 0, last_press_button_ = 0;

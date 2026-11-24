@@ -224,9 +224,9 @@ namespace lyren {
         const Page on = browser.route().page;
         // The page is an architectural sheet with a whisper wash of its own colour at the top.
         if (!t.dark) {
-            p.shadow({area.x, area.y + 1, area.w, area.h}, t.radius_l(), 10, t.shadow.with_alpha(0.4f));
+            p.shadow(area, t.radius_l(), 10, t.shadow.with_alpha(0.35f), true);
         }
-        p.rect(area, t.surface, t.radius_l(), t.surface_edge(), 1);
+        p.rect(area, t.surface, t.radius_l(), t.surface_edge(0.8f), 1);
         const float enter = ui.progress(browser.entered, ui::pace::glide);
         if (on != Page::search && on != Page::settings && on != Page::profile) {
             const float hue = pages.hue(ui);

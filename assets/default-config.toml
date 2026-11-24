@@ -13,7 +13,7 @@ device = "integrated"
 
 [render]
 # Animation frame limit. 0 follows the display refresh rate.
-max_fps = 60
+max_fps = 0
 
 [playback]
 # standard | higher | exhigh | lossless | hires. Availability depends on your account.

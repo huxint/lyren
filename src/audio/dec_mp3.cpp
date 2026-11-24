@@ -42,6 +42,9 @@ namespace lyren::audio {
                 if (mpg123_getformat(h_, &rate, &ch, &enc) != MPG123_OK) {
                     return false;
                 }
+                // Lock the output layout so mid-stream mono/stereo switches convert cleanly instead of changing stride.
+                mpg123_format_none(h_);
+                mpg123_format(h_, rate, ch, MPG123_ENC_FLOAT_32);
                 format = {static_cast<uint32_t>(rate), static_cast<uint32_t>(ch)};
                 int64_t len = mpg123_length64(h_);
                 length = len > 0 ? static_cast<uint64_t>(len) : 0;
@@ -54,12 +57,16 @@ namespace lyren::audio {
                 for (;;) {
                     int rc = mpg123_read(h_, out, frames * stride, &done);
                     if (done || rc != MPG123_NEW_FORMAT) {
+                        if (!done && rc != MPG123_DONE) {
+                            error = mpg123_plain_strerror(rc);
+                        }
                         return done / stride;
                     }
                 }
             }
 
             bool seek(uint64_t frame) override {
+                error.clear();
                 return mpg123_seek64(h_, static_cast<int64_t>(frame), SEEK_SET) >= 0;
             }
 

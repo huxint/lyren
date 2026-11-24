@@ -74,6 +74,7 @@ namespace lyren {
         const Entry *other_tier(std::string_view url, uint32_t px, uint32_t flags, bool larger);
         void erase(CacheMap<Cached>::iterator it);
         void pump();
+        void schedule_evict();
         // transient: the download failed in the network or on the server, not in the image itself.
         void complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &image, float hue, float luma, const std::string &error, bool transient);
 
@@ -88,6 +89,7 @@ namespace lyren {
         std::shared_ptr<Loader> loader_;
         int in_flight_ = 0, background_in_flight_ = 0;
         bool pump_scheduled_ = false;
+        Loop::TimerId evict_timer_ = 0;
         uint64_t ticket_ = 0;
         uint64_t frame_ = 1;
         size_t bytes_ = 0;

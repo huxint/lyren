@@ -309,6 +309,40 @@ TEST_CASE("cover eviction discards old covers and preserves visible covers") {
     CHECK(images.get("visible", side).tex == visible);
 }
 
+TEST_CASE("cover cache sweeps over-budget textures on a timer when the main window stops drawing") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    net::Http http;
+    Images images(
+        g.loop, http, g.renderer, [] {},
+        [] {
+            return 0.;
+        });
+    const gfx::Image image{512, 512, std::vector<uint8_t>(512 * 512 * 4, 255)};
+    images.put("hidden-0", 512, image);
+    images.end_frame();
+    // Main window stops calling end_frame(); 39 more 1 MiB covers arrive (~40 MiB > 24 MiB budget).
+    for (int i = 1; i < 40; ++i) {
+        images.put("hidden-" + std::to_string(i), 512, image);
+    }
+    auto keep_active = g.loop.after(70ms, [&] {
+        images.get("hidden-39", 512);
+    });
+    auto stop = g.loop.after(200ms, [&] {
+        g.loop.quit();
+    });
+    g.loop.run();
+    g.loop.cancel(keep_active);
+    g.loop.cancel(stop);
+    CHECK_FALSE(images.get("hidden-0", 512).ready);
+    CHECK(images.get("hidden-39", 512).ready);
+    int resident = 0;
+    for (int i = 0; i < 40; ++i) {
+        resident += images.get("hidden-" + std::to_string(i), 512).ready;
+    }
+    CHECK(resident <= 24);
+}
+
 TEST_CASE("cover preloads finish without being drawn and survive page switches") {
     gfx::select_driver(GpuChoice::integrated);
     Graphics g;

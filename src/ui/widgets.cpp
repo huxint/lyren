@@ -68,8 +68,10 @@ namespace lyren::ui {
         if (hot > 0) {
             p_->rect(bg, t.fill((1.25f + 0.65f * down) * hot), t.round(std::min(bg.w, bg.h)));
         }
-        float s = icon_size - down * 1.2f;
-        p_->icon(icon, center(r, s, s), active ? t.accent : t.text_dim.mix(t.text, hot));
+        const float zoom = (icon_size - down * 1.2f) / icon_size;
+        p_->set_zoom(zoom, r.x + r.w / 2, r.y + r.h / 2);
+        p_->icon(icon, center(r, icon_size, icon_size), active ? t.accent : t.text_dim.mix(t.text, hot));
+        p_->set_zoom(1);
         if (it.hovered && !it.held) {
             tooltip(id, r, tip);
         }
@@ -135,8 +137,10 @@ namespace lyren::ui {
                 value = v;
             }
         }
-        float hot = anim(id, it.hovered || it.held ? 1 : 0, 150);
-        float th = 3 + 1.5f * hot;
+        float hot = spring(sub_id(id, 0x51), it.hovered || it.held ? 1.f : 0.f, 180, 0.25f);
+        float press = spring(sub_id(id, 0x52), it.held ? 1.f : 0.f, 160, 0.34f);
+        float hot_clamped = std::clamp(hot, 0.f, 1.f);
+        float th = 2.6f + 1.4f * hot_clamped;
         float cy = r.y + r.h / 2;
         float sx0 = r.x + r.w * std::clamp(style.span_from, 0.f, 1.f), sx1 = r.x + r.w * std::clamp(style.span_to, style.span_from, 1.f);
         float filled = std::clamp(r.x + r.w * value - sx0, 0.f, sx1 - sx0);
@@ -147,7 +151,7 @@ namespace lyren::ui {
         for (float x = sx1 + 4; x + 3 <= r.right(); x += 7) {
             p_->rect({x, cy - 1, 3, 2}, t.text.with_alpha(0.10f), 1);
         }
-        Color fill = style.accent ? t.accent : t.text_dim.mix(t.text, hot);
+        Color fill = style.accent ? t.accent : t.text_dim.mix(t.text, hot_clamped);
         bool flowing = style.wave > 0 && filled > 0 && t.motion > 0;
         float phase = flowing ? -static_cast<float>(std::fmod(now * 1.4, 1.0)) * tau : 0;
         p_->wave({sx0, cy - th / 2, sx1 - sx0, th}, filled, style.wave, 26, phase, fill, t.text.with_alpha(0.14f));
@@ -167,12 +171,12 @@ namespace lyren::ui {
                 float mid_x = (x0 + x1) / 2;
                 x0 = mid_x - 1.5f, x1 = mid_x + 1.5f;
             }
-            p_->rect({x0, cy + th / 2 + 2.5f, x1 - x0, 2.5f}, t.accent.with_alpha(0.30f + 0.18f * hot), 1.25f);
+            p_->rect({x0, cy + th / 2 + 2.5f, x1 - x0, 2.5f}, t.accent.with_alpha(0.30f + 0.18f * hot_clamped), 1.25f);
         }
-        float knob = 11 * hot;
+        float knob = 10.5f * hot + 1.8f * press;
         if (knob > 0.5f) {
             Rect k{sx0 + filled - knob / 2, cy - knob / 2, knob, knob};
-            p_->shadow(k, knob / 2, 8, t.shadow);
+            p_->shadow(k, knob / 2, 8, t.shadow.with_alpha(hot_clamped));
             p_->rect(k, white, knob / 2);
         }
         return changed;

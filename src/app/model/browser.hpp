@@ -121,8 +121,9 @@ namespace lyren {
         void open(Page page, const Card &card);
         void open(const Card &card); // the page for a card
         void open_profile(Source source, std::string id, std::string name, std::string avatar);
-        // False when the platform on show has no account signed in.
+        // False when the platform has no account signed in.
         bool open_own_profile();
+        bool open_own_profile(Source source);
         bool back();
         bool forward();
         void switch_platform(Source source);

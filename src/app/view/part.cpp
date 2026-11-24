@@ -158,7 +158,25 @@ namespace lyren {
             return false;
         }
         const bool liked = library_.liked(track);
-        if (ui.icon_button(id, r, liked ? "heart-fill" : "heart", heart_size(ui, track, size), liked, lyren::tr(liked ? "Unlike" : "Like"))) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const auto it = ui.interact(id, r);
+        if (it.hovered) {
+            ui.cursor = wl::Cursor::pointer;
+        }
+        const auto [hot, down] = ui.feel(id, it);
+        if (hot > 0) {
+            const Rect bg = r.inset(down * 1.5f);
+            p.rect(bg, t.fill((1.25f + 0.65f * down) * hot), t.round(std::min(bg.w, bg.h)));
+        }
+        const float zoom = (heart_size(ui, track, size) - down * 1.2f) / size;
+        p.set_zoom(zoom, r.x + r.w / 2, r.y + r.h / 2);
+        p.icon(liked ? "heart-fill" : "heart", ui::center(r, size, size), liked ? t.accent : t.text_dim.mix(t.text, hot));
+        p.set_zoom(1);
+        if (it.hovered && !it.held) {
+            ui.tooltip(id, r, lyren::tr(liked ? "Unlike" : "Like"));
+        }
+        if (it.clicked) {
             library_.toggle_like(track);
         }
         return true;
@@ -178,7 +196,7 @@ namespace lyren {
             p.shadow({cov.x, cov.y + 6, cov.w, cov.h}, radius, 18, t.shadow.with_alpha(0.65f * hot));
         }
         cover(ui, cov, c.cover, radius, round ? "user" : c.kind == CardKind::album ? "disc-album" : "list-music");
-        p.rect(cov, {}, radius, t.surface_edge(0.8f + 0.5f * hot), 1);
+        p.rect(cov, {}, radius, t.surface_edge(0.55f + 0.35f * hot), 1);
         if (hot > 0 && !round) {
             // A quiet shade gathers under the play disc, which glides into place.
             p.gradient({cov.x, cov.y + cov.h * 0.55f, cov.w, cov.h * 0.45f}, {0, 0, 0, 0}, {0, 0, 0, 0.24f * hot}, radius);
@@ -198,14 +216,24 @@ namespace lyren {
         return it.clicked;
     }
 
-    int Part::card_grid(ui::Ui &ui, Rect r, ui::Id id, const std::vector<Card> &cards, bool round, double since) {
+    int Part::card_grid(ui::Ui &ui, Rect r, ui::Id id, std::span<const Card> cards, bool round, double since) {
         const CardGrid g(ui, id, r.w, round ? 130 : 150);
         const Rect clip = ui.clip();
+        const float step = g.ch + CardGrid::gap;
+        const auto ucols = static_cast<size_t>(g.cols);
+        size_t first = 0, limit = cards.size();
+        if (!g.reflowing && step > 0) {
+            const int r0 = std::max(0, static_cast<int>(std::floor((clip.y - clip.h - r.y) / step)));
+            const int r1 = std::max(0, static_cast<int>(std::ceil((clip.bottom() + clip.h - r.y) / step)) + 1);
+            first = std::min(cards.size(), static_cast<size_t>(r0) * ucols);
+            limit = std::min(cards.size(), static_cast<size_t>(r1) * ucols);
+        }
         int clicked = -1, shown = 0;
         ui.push_id(id);
-        for (size_t i = 0; i < cards.size(); ++i) {
+        for (size_t i = first; i < limit; ++i) {
             const ui::Id item = item_id(ui, cards[i]);
-            Rect c = g.cell(r.x, r.y, i, item);
+            Rect c = g.reflowing ? g.cell(r.x, r.y, i, item)
+                                 : Rect{r.x + static_cast<float>(i % ucols) * (g.cw + CardGrid::gap), r.y + static_cast<float>(i / ucols) * step, g.cw, g.ch};
             if (c.bottom() < clip.y || c.y > clip.bottom()) {
                 if (c.bottom() >= clip.y - clip.h && c.y <= clip.bottom() + clip.h) {
                     env_.images.prefetch(cards[i].cover, static_cast<uint32_t>(Images::tier(c.w * ui.painter().scale())));

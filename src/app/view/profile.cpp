@@ -21,7 +21,7 @@ namespace lyren {
     namespace control = ui::control;
 
     namespace {
-        // The page is an editorial column: the timeline and, when there is room for both, a framed studio rail beside it.
+        // The page is an editorial column: the main content and, when there is room for both, a framed studio rail beside it.
         constexpr float rail_gap = 32, rail_min = 276, rail_max = 324, page_w = PostFeed::column + rail_gap + rail_max;
         constexpr float tabs_h = 46, section_gap = 20;
 
@@ -43,7 +43,22 @@ namespace lyren {
         Person person_of(const Profile &who) {
             return {.id = who.id, .name = who.name, .avatar = who.avatar, .signature = who.signature, .fans = who.fans, .followed = who.followed, .follows_me = who.follows_me};
         }
+
+        ui::Color studio_card_fill(const ui::Theme &t) {
+            return t.dark ? t.fill(0.78f) : t.bg.mix(t.surface, 0.38f);
+        }
+
+        float studio_card_radius(const ui::Theme &t) {
+            return t.radius_l() * 0.8f;
+        }
     } // namespace
+
+    ProfileView::ProfileView(Shell &shell)
+    : Part(shell) {
+        library_.subscribe([this](const Library::Event &) {
+            playlists_dirty_ = true;
+        });
+    }
 
     float ProfileView::follow_width(ui::Ui &ui) {
         float w = 0;
@@ -87,6 +102,9 @@ namespace lyren {
     }
 
     void ProfileView::show(ui::Ui &ui, const Listener &page, Section section) {
+        if (section != page->section) {
+            section_dir_ = section > page->section ? 1 : -1;
+        }
         social_.show(page, section);
         const ui::Id scroll = scroll_id(ui, "profile");
         ui.scroll_to(scroll, std::min(ui.scroll_offset(scroll), header_h_));
@@ -108,6 +126,7 @@ namespace lyren {
         if (visit_ != browser_.route().serial) {
             visit_ = browser_.route().serial;
             content_h_ = 0;
+            repeat_slot_.reset();
         }
         Profile who = page->info ? *page->info : Profile{.id = card.id};
         if (who.name.empty()) {
@@ -122,27 +141,26 @@ namespace lyren {
         }
 
         const float off = ui.begin_scroll(scroll_id(ui, "profile"), r, std::max(content_h_, r.h));
-        // Their background, or their picture, washes the top of the page; the fade-to-surface runs at full opacity so
-        // it dissolves imperceptibly into the canvas without a hard lower seam.
+        // Their background, or their picture, washes the top of the page with gentle parallax.
         {
-            const float scroll_fade = 1 - smooth01(off / 180);
+            const float scroll_fade = 1 - smooth01(off / 200);
             if (scroll_fade > 0.01f) {
-                const Rect band{r.x, r.y, r.w, 260};
+                const Rect band{r.x, r.y - std::min(off * 0.22f, 44.f), r.w, 260};
                 const std::string &art = who.background.empty() ? who.avatar : who.background;
                 bool drew_art = false;
                 if (!art.empty()) {
                     if (const auto &image = env_.images.get(art, 128, true); image.ready) {
                         const float k = ui.progress(image.ready_at, 480, ease::standard);
                         {
-                            Fade wash(p, k * (t.dark ? 0.32f : 0.18f) * scroll_fade);
+                            Fade wash(p, k * (t.dark ? 0.30f : 0.17f) * scroll_fade);
                             p.image(band, image.tex, t.radius_l(), white, cover_uv(1, band.w / band.h));
                         }
-                        p.gradient(band, t.surface.with_alpha(0.08f), t.surface, t.radius_l());
+                        p.gradient(band, t.surface.with_alpha(0.06f), t.surface, t.radius_l());
                         drew_art = true;
                     }
                 }
                 if (!drew_art) {
-                    p.gradient(band, t.accent.with_alpha((t.dark ? 0.10f : 0.06f) * scroll_fade), t.surface.with_alpha(0), t.radius_l());
+                    p.gradient(band, t.accent.with_alpha((t.dark ? 0.11f : 0.065f) * scroll_fade), t.surface.with_alpha(0), t.radius_l());
                 }
             }
         }
@@ -171,13 +189,14 @@ namespace lyren {
         {
             const float in = ui.progress(page->section_since, pace::arrive);
             Fade fade(p, in);
-            height = section(ui, {body.x, r.y + header_h_ + tabs_h + section_gap - off + (1 - in) * 10, body.w, 0}, page, self);
+            const float slide_x = (1 - in) * 16.f * static_cast<float>(section_dir_);
+            height = section(ui, {body.x + slide_x, r.y + header_h_ + tabs_h + section_gap - off + (1 - in) * 6, body.w, 0}, page, self);
         }
         if (pinned > 0) {
             p.gradient({r.x, strip.bottom(), r.w, 10}, t.shadow.with_alpha(0.16f * pinned), t.shadow.with_alpha(0));
         }
         ui.pop_clip();
-        if (const float next = header_h_ + tabs_h + section_gap + height + 28; next != content_h_) {
+        if (const float next = header_h_ + tabs_h + section_gap + height + 28; std::abs(next - content_h_) > 0.5f) {
             content_h_ = next;
             ui.redraw();
         }
@@ -189,25 +208,37 @@ namespace lyren {
         const auto &t = ui.theme();
         const Card &card = page->who;
         const auto &caps = provider(card).capabilities;
-        const bool compact = r.w < 600;
+        if (r.w < 588) {
+            compact_ = true;
+        } else if (r.w > 612) {
+            compact_ = false;
+        }
+        const bool compact = compact_;
         // The head arrives as one: the picture a little small at first, settling to its size.
         const float in = ui.progress(page->since, pace::arrive);
         Fade fade(p, in);
-        const float d = compact ? 72.f : 100.f;
-        const Rect face{r.x, r.y + 30, d, d};
+
+        const float head_top = r.y + 24;
+        const float d = ui.spring(ui.id("profile-face-d"), compact ? 74.f : 100.f, 280);
+        const Rect face{r.x, head_top, d, d};
         {
-            const float size = d * (0.94f + 0.06f * in);
-            const Rect portrait = ui::center(face, size, size);
-            p.shadow({portrait.x, portrait.y + 6, portrait.w, portrait.h}, size / 2, 24, t.shadow.with_alpha(0.55f));
-            // A ring of the page's own colour sets the picture off from the wash behind it.
-            p.rect(portrait.inset(-4), t.surface, size / 2 + 4, t.surface_edge(0.8f), 1);
-            cover(ui, portrait, who.avatar, size / 2, "user");
-            p.rect(portrait, {}, size / 2, t.surface_edge(1.0f), 1);
-            const auto it = ui.interact(ui.id("profile-face"), face);
-            if (it.hovered && !who.avatar.empty()) {
+            const ui::Id fid = ui.id("profile-face");
+            const auto it = ui.interact(fid, face);
+            const bool clickable = !who.avatar.empty();
+            if (it.hovered && clickable) {
                 ui.cursor = wl::Cursor::pointer;
             }
-            if (it.clicked && !who.avatar.empty()) {
+            const auto [hot, down] = clickable ? ui.feel(fid, it, pace::quick) : ui::Feel{};
+            const float size = d * (0.94f + 0.06f * in) - down * 1.4f;
+            Rect portrait = ui::center(face, size, size);
+            portrait.y -= 1.5f * hot * (1.f - down);
+            p.shadow({portrait.x, portrait.y + 5 + 2.f * hot, portrait.w, portrait.h}, size / 2, 18 + 6 * hot, t.shadow.with_alpha(0.42f + 0.14f * hot));
+            cover(ui, portrait, who.avatar, size / 2, "user");
+            if (hot > 0.01f) {
+                p.rect(portrait, white.with_alpha((t.dark ? 0.055f : 0.075f) * hot), size / 2);
+            }
+            p.rect(portrait, {}, size / 2, t.surface_edge(1.0f).mix(t.text.with_alpha(t.dark ? 0.26f : 0.16f), hot), 1);
+            if (it.clicked && clickable) {
                 shell_.dialogs.show_picture(ui, who.avatar, 1);
             }
         }
@@ -233,6 +264,10 @@ namespace lyren {
             items.push_back({"refresh-cw", std::string(lyren::tr("Refresh")), [this] {
                                  if (auto &route = browser_.route(); route.page == Page::profile) {
                                      route.profile = social_.open(route.card);
+                                     const auto &c = provider(route.card).capabilities;
+                                     if ((library_.own(route.card) || route.card.owned) && (c.collect_albums || c.follow_artists) && env_.signed_in(route.card.source)) {
+                                         spawn(library_.load_collection(route.card.source));
+                                     }
                                  }
                              }});
             ui.open_menu(more.x, more.bottom() + 6, std::move(items));
@@ -253,19 +288,22 @@ namespace lyren {
             right -= w + 8;
         }
 
-        // Their name, and beside it what the service makes of them.
+        // Their name, and beside it their level, VIP, and platform badge.
         const float tx = face.right() + (compact ? 16.f : 24.f), room = right - tx - 8;
         const auto name_style = t.style(compact ? type::title : type::display, t.text, text::semibold);
         struct Badge {
             std::string text;
             bool lit;
         };
-        std::inplace_vector<Badge, 2> badges;
+        std::inplace_vector<Badge, 3> badges;
         if (who.level >= 0) {
             badges.push_back({std::format("Lv.{}", who.level), false});
         }
         if (who.vip) {
             badges.push_back({"VIP", true});
+        }
+        if (!self) {
+            badges.push_back({std::string(lyren::tr(platform(card.source).short_name)), false});
         }
         const auto badge_style = t.style(type::micro, {}, text::medium);
         float badges_w = 0;
@@ -281,7 +319,7 @@ namespace lyren {
             for (const auto &badge : badges) {
                 const float w = std::ceil(p.measure(badge.text, badge_style)) + 14;
                 const Rect pill{x, top + (name_h - 20) / 2 + 1, w, 20};
-                p.rect(pill, badge.lit ? t.accent.with_alpha(0.14f) : t.fill(1.6f), 10, badge.lit ? t.accent.with_alpha(0.24f) : t.surface_edge(0.8f), 1);
+                p.rect(pill, badge.lit ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 10);
                 ui.label(pill, badge.text, t.style(type::micro, badge.lit ? t.accent : t.text_dim, text::medium), Align::center);
                 x += w + 6;
             }
@@ -337,40 +375,62 @@ namespace lyren {
             y += 19;
         }
         y = std::max(y, face.bottom()) + 22;
-        y += stats(ui, {r.x, y, r.w, 0}, page, who);
+        y += stats(ui, {r.x, y, r.w, 0}, page, who, self);
         return y + 14 - r.y;
     }
 
-    float ProfileView::stats(ui::Ui &ui, Rect r, const Listener &page, const Profile &who) {
+    float ProfileView::stats(ui::Ui &ui, Rect r, const Listener &page, const Profile &who, bool self) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const auto &caps = provider(page->who).capabilities;
-        // The people around them, what they have posted and how much they have played; the ones that lead somewhere
-        // open their part of the page.
+        const auto &lib = library_.shelf(page->who.source);
+        // Interactive metric strip: social circle, posts, listening volume, and library counts.
         struct Stat {
-            std::string_view label;
+            std::string_view label, icon;
             int value;
             std::optional<Section> opens;
+            int tab = -1;
+            std::optional<Page> opens_page;
         };
         std::inplace_vector<Stat, 4> all;
-        if (caps.people) {
-            all.push_back({lyren::tr_ctx("nav", "Following"), social_.count(*page, false), Section::follows});
-            all.push_back({lyren::tr("Followers"), social_.count(*page, true), Section::fans});
+        if (caps.people || who.follows >= 0) {
+            all.push_back({lyren::tr_ctx("nav", "Following"), "users", social_.count(*page, false), caps.people ? std::optional(Section::people) : std::nullopt, 0, std::nullopt});
+        }
+        if (caps.people || who.fans >= 0) {
+            all.push_back({lyren::tr("Followers"), "heart", social_.count(*page, true), caps.people ? std::optional(Section::people) : std::nullopt, 1, std::nullopt});
         }
         if (caps.posts) {
-            all.push_back({lyren::tr("Posts"), who.posts, Section::posts});
+            all.push_back({lyren::tr("Posts"), "message-square", who.posts, Section::posts, 0, std::nullopt});
         }
         if (who.listened >= 0) {
-            all.push_back({lyren::tr("Songs played"), who.listened, caps.ranking ? std::optional(Section::chart) : std::nullopt});
+            all.push_back({lyren::tr("Songs played"), "headphones", who.listened, caps.ranking ? std::optional(Section::chart) : std::nullopt, -1, std::nullopt});
         }
-        if (all.empty()) {
+        if (self) {
+            if (all.size() < 4 && caps.likes) {
+                const int liked = lib.liked.count > 0 ? lib.liked.count : lib.playlists_loaded ? static_cast<int>(lib.liked_ids.size()) : -1;
+                all.push_back({lyren::tr("Liked songs"), "heart", liked, std::nullopt, -1, Page::liked});
+            }
+            if (all.size() < 4 && caps.library) {
+                const int lists = lib.playlists_loaded ? static_cast<int>(lib.playlists.size()) + (!lib.liked.id.empty() ? 1 : 0) : -1;
+                all.push_back({lyren::tr("Playlists"), "list-music", lists, Section::playlists, -1, std::nullopt});
+            }
+            if (all.size() < 4 && (caps.collect_albums || caps.follow_artists)) {
+                const bool ready = lib.collection[0].loaded && lib.collection[1].loaded;
+                const int saved = ready ? static_cast<int>(lib.collection[0].cards.size() + lib.collection[1].cards.size()) : -1;
+                all.push_back({lyren::tr("Collection"), "star", saved, Section::collection, -1, std::nullopt});
+            }
+        } else if (all.size() < 4 && caps.profile_playlists && (who.playlists >= 0 || page->playlists.loaded)) {
+            const int lists = who.playlists >= 0 ? who.playlists : static_cast<int>(page->playlists.cards.size());
+            all.push_back({lyren::tr("Playlists"), "list-music", lists, Section::playlists, -1, std::nullopt});
+        }
+        if (all.size() < 2) {
             return 0;
         }
         const bool tight = r.w < 460;
-        constexpr float h = 64;
-        const float radius = t.radius_l() * 0.75f;
+        constexpr float h = 62;
+        const float radius = t.radius_l() * 0.72f;
         const Rect bar{r.x, r.y, r.w, h};
-        p.rect(bar, t.dark ? t.fill(0.72f) : t.bg.mix(t.surface, 0.42f), radius, t.surface_edge(0.85f), 1);
+        p.rect(bar, t.dark ? t.fill(0.72f) : t.bg.mix(t.surface, 0.36f), radius);
         const float cell = bar.w / static_cast<float>(all.size());
         float x = bar.x;
         for (size_t i = 0; i < all.size(); ++i) {
@@ -378,10 +438,10 @@ namespace lyren {
             const ui::Id id = ui::sub_id(ui.id("profile-stat"), i);
             const Rect slot{x, bar.y, cell, h};
             if (i > 0) {
-                p.rect({x, bar.y + 14, 1, h - 28}, t.line(0.65f));
+                p.rect({x, bar.y + 15, 1, h - 30}, t.line(0.55f));
             }
             float hot = 0;
-            if (stat.opens) {
+            if (stat.opens || stat.opens_page) {
                 const Rect hit = slot.inset(4);
                 const auto it = ui.interact(id, hit);
                 const auto feel = ui.feel(id, it, pace::quick);
@@ -393,22 +453,27 @@ namespace lyren {
                     ui.cursor = wl::Cursor::pointer;
                 }
                 if (it.clicked) {
-                    if (*stat.opens == Section::posts) {
-                        page->posts_tab = 0;
+                    if (stat.opens) {
+                        if (*stat.opens == Section::posts && stat.tab >= 0) {
+                            page->posts_tab = stat.tab;
+                        } else if (*stat.opens == Section::people && stat.tab >= 0) {
+                            page->people_tab = stat.tab;
+                        }
+                        show(ui, page, *stat.opens);
+                    } else if (stat.opens_page) {
+                        browser_.open(*stat.opens_page);
                     }
-                    show(ui, page, *stat.opens);
                 }
             }
-            // A follow made here rolls the count over; clear vertical separation prevents any numeral/label touch.
-            const float pad_x = tight ? 10.f : 18.f;
-            const Rect value{slot.x + pad_x, bar.y + 9, std::max(0.f, slot.w - 2 * pad_x), 26};
+            const float pad_x = tight ? 10.f : 16.f;
+            const Rect value{slot.x + pad_x, bar.y + 7, std::max(0.f, slot.w - 2 * pad_x), 24};
             const auto num_style = t.style(tight ? type::lead : type::title, t.text.mix(t.accent, 0.35f * hot), text::semibold | text::tabular_nums);
             if (stat.value < 0) {
                 ui.label(value, "—", num_style);
             } else {
                 rolling_count(ui, ui::sub_id(id, 0xc7), value, stat.value, stat_number, num_style);
             }
-            ui.label({slot.x + pad_x, bar.y + 38, std::max(0.f, slot.w - 2 * pad_x), 18}, stat.label, t.style(type::caption, t.text_dim.mix(t.text, 0.55f * hot)));
+            ui.label({slot.x + pad_x, bar.y + 37, std::max(0.f, slot.w - 2 * pad_x), 18}, stat.label, t.style(type::caption, t.text_dim.mix(t.text, 0.55f * hot)));
             x += cell;
         }
         return h;
@@ -421,15 +486,15 @@ namespace lyren {
             std::string_view label, icon;
         };
         // In the order of Section.
-        static constexpr std::array<Tab, 5> all{
-            {{"Posts", "message-square"}, {"Most played", "headphones"}, {"Playlists", "list-music"}, {"Following", "users"}, {"Followers", "heart"}}};
+        static constexpr std::array<Tab, 6> all{
+            {{"Overview", "user"}, {"Posts", "message-square"}, {"Most played", "headphones"}, {"Playlists", "list-music"}, {"Collection", "star"}, {"People", "users"}}};
         const auto sections = social_.sections(page->who);
         std::inplace_vector<std::string_view, all.size()> labels;
         const auto style = t.style(type::lead, {}, text::medium);
         float needed = 28 * static_cast<float>(sections.size() - 1);
         for (const Section part : sections) {
             const auto &tab = all[static_cast<size_t>(part)];
-            labels.push_back(part == Section::follows ? lyren::tr_ctx("nav", tab.label) : lyren::tr(tab.label));
+            labels.push_back(lyren::tr(tab.label));
             needed += p.measure(labels.back(), style);
         }
         const auto at = std::ranges::find(sections, page->section);
@@ -464,118 +529,172 @@ namespace lyren {
 
     float ProfileView::section(ui::Ui &ui, Rect r, const Listener &page, bool self) {
         switch (page->section) {
+            case Section::overview:
+                return overview(ui, r, page);
             case Section::posts:
                 return posts(ui, r, page, self);
             case Section::chart:
                 return chart(ui, r, page);
             case Section::playlists:
                 return playlists(ui, r, page, self);
-            case Section::follows:
-                return people(ui, r, page, false, self);
-            case Section::fans:
-                return people(ui, r, page, true, self);
+            case Section::collection:
+                return collection(ui, r, page);
+            case Section::people:
+                return people(ui, r, page, self);
         }
         return 0;
     }
 
-    float ProfileView::posts(ui::Ui &ui, Rect r, const Listener &page, bool self) {
-        const auto &t = ui.theme();
-        const Card &card = page->who;
-        const auto &caps = provider(card).capabilities;
-        Rect column = r;
-        float beside = 0;
-        if (r.w >= 540 + rail_gap + rail_min && (caps.ranking || caps.people)) {
-            // The framed studio rail stays in sight while the timeline scrolls past it.
-            const float rw = std::clamp(r.w - PostFeed::column - rail_gap, rail_min, rail_max);
-            const Rect clip = ui.clip();
-            Rect side = ui::cut_right(column, rw);
-            ui::cut_right(column, rail_gap);
-            side.y = std::max(side.y, clip.y + section_gap);
-            side.h = clip.bottom() - side.y - 12;
-            beside = rail(ui, side, page);
-        }
-        const float feed_w = std::min(column.w, PostFeed::column);
-        float y = column.y;
-        // The account's own page also holds the feed of the people it follows.
-        const bool feed = self && page->posts_tab == 1;
-        if (self) {
-            const std::array<std::string_view, 2> labels{lyren::tr("My posts"), lyren::tr("Following feed")};
-            int tab = page->posts_tab;
-            if (ui.segmented(ui.id("profile-feed"), {column.x, y, std::min(280.f, feed_w - 48), control::medium}, labels, tab)) {
-                page->posts_tab = tab;
-                show(ui, page, Section::posts);
-            }
-            const Rect again{column.x + feed_w - control::medium, y, control::medium, control::medium};
-            if (const auto &list = feed ? social_.feed(card.source) : page->posts; list->loading) {
-                ui.spinner(ui::center(again, 16, 16), t.text_dim, 2);
-            } else if (ui.icon_button(ui.id("profile-refresh"), again, "refresh-cw", 16, false, lyren::tr("Refresh"))) {
-                social_.reload_posts(page, feed);
-            }
-            y += control::medium + 18;
-            if (caps.post_write) {
-                y += shell_.feed.prompt(ui, {column.x, y, feed_w, 0}, card.source) + 6;
-            }
-        }
-        const auto list = feed ? social_.feed(card.source) : page->posts;
-        y += shell_.feed.draw(ui, {column.x, y, feed_w, 0}, list, card.source, feed ? std::string() : card.id, feed);
-        return std::max(y - r.y, beside);
-    }
-
-    float ProfileView::rail(ui::Ui &ui, Rect r, const Listener &page) {
+    float ProfileView::overview(ui::Ui &ui, Rect r, const Listener &page) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Card &card = page->who;
-        const auto &caps = provider(card).capabilities;
+        const auto &prov = provider(card);
+        const auto &caps = prov.capabilities;
+        auto &lib = library_.shelf(card.source);
+        const ui::Color card_fill = studio_card_fill(t);
+        const float radius = studio_card_radius(t);
+
+        constexpr float rail_bp = 540 + rail_gap + rail_min;
+        if (r.w >= rail_bp + 12) {
+            wide_ = true;
+        } else if (r.w < rail_bp - 12) {
+            wide_ = false;
+        }
+        const bool has_rail = wide_ && (caps.ranking || caps.people);
+        const float rail_k = ui.spring(ui.id("profile-rail-k"), has_rail ? 1.f : 0.f, 300);
+        const float rw = std::clamp(r.w - PostFeed::column - rail_gap, rail_min, rail_max);
+        const float wide_col_w = std::min(std::max(280.f, r.w - rw - rail_gap), PostFeed::column);
+        const float col_w = std::lerp(r.w, wide_col_w, rail_k);
+
+        const Rect clip = ui.clip();
+        const Rect side{r.right() - rw, std::max(r.y, clip.y + section_gap), rw, std::max(0.f, clip.bottom() - std::max(r.y, clip.y + section_gap) - 12)};
         const auto &follows = page->people[0];
-        const bool faces = caps.people && !follows.items.empty();
-        const float radius = t.radius_l() * 0.8f;
-        const ui::Color card_fill = t.dark ? t.fill(0.78f) : t.bg.mix(t.surface, 0.38f);
+        const bool has_faces = caps.people && (follows.loading || !follows.items.empty());
+        const auto wide_repeat_rows = static_cast<size_t>(std::clamp(static_cast<int>((side.bottom() - side.y - 46 - (has_faces ? 160.f : 24.f)) / 56), 1, 5));
+        const float wide_repeat_h = caps.ranking ? repeat_height(page, wide_repeat_rows) : 0.f;
+        const float inline_repeat_h = caps.ranking ? repeat_height(page, 4) : 0.f;
+
         float y = r.y;
+        bool drew_any = false;
 
-        auto card_header = [&](Rect box, ui::Id id, std::string_view title, std::string_view note, Section opens) {
-            const auto style = t.style(type::label, t.text, text::semibold);
-            const float w = std::ceil(p.measure(title, style)) + 1;
-            ui.label({box.x + 16, box.y + 12, w, 24}, title, style);
-            ui.label({box.x + 16 + w + 8, box.y + 12, std::max(0.f, box.w - w - 64), 24}, note, t.style(type::caption, t.faint(), text::tabular_nums));
-            if (ui.icon_button(id, {box.right() - 36, box.y + 10, 28, 28}, "chevron-right", 16, false, lyren::tr("See all"))) {
-                show(ui, page, opens);
+        // 1. Compact quick-access shortcut strip tailored to this platform's features.
+        const bool cloud_recent = bool(prov.features.recent_plays) && (page->recent.loading || !page->recent.tracks.empty());
+        const auto &recent_tracks = cloud_recent ? page->recent.tracks : playback_.history(card.source);
+        {
+            struct Shortcut {
+                std::string_view id, icon, label;
+                Page target;
+            };
+            std::inplace_vector<Shortcut, 5> shortcuts;
+            if (caps.likes) {
+                shortcuts.push_back({"quick-liked", "heart-fill", lyren::tr("Liked songs"), Page::liked});
             }
-            p.rect({box.x + 16, box.y + 45, box.w - 32, 1}, t.line(0.7f));
-        };
+            if (prov.features.daily.songs) {
+                shortcuts.push_back({"quick-daily", "disc-3", lyren::tr("Daily mix"), Page::daily});
+            }
+            if (prov.features.radar) {
+                shortcuts.push_back({"quick-radar", "sparkles", lyren::tr("Radar"), Page::radar});
+            }
+            if (caps.radio) {
+                shortcuts.push_back({"quick-fm", "radio", lyren::tr(prov.radio_title), Page::fm});
+            }
+            if (prov.features.cloud && shortcuts.size() < 4) {
+                shortcuts.push_back({"quick-cloud", "cloud", lyren::tr("My cloud"), Page::cloud});
+            }
+            if (shortcuts.size() < 2) {
+                shortcuts.push_back({"quick-recent", "history", lyren::tr("Recently played"), Page::recent});
+            }
+            if (!shortcuts.empty()) {
+                constexpr float chip_h = 34, gap = 8;
+                float cx = r.x, cy = y;
+                std::optional<Page> open_page;
+                for (const auto &s : shortcuts) {
+                    const float cw = std::min(col_w, ui.chip_width(s.label, true));
+                    if (cx > r.x && cx + cw > r.x + col_w) {
+                        cx = r.x;
+                        cy += chip_h + gap;
+                    }
+                    const Rect pill{cx, cy, cw, chip_h};
+                    const ui::Id id = ui.id(s.id);
+                    const auto it = ui.interact(id, pill);
+                    if (it.hovered) {
+                        ui.cursor = wl::Cursor::pointer;
+                    }
+                    const auto [hot, down] = ui.feel(id, it, pace::quick);
+                    const Rect face = pill.inset(down);
+                    p.rect(face, card_fill.mix(t.fill(1.45f), hot), face.h / 2);
+                    p.icon(s.icon, {face.x + 12, face.y + (face.h - 14) / 2, 14, 14}, t.text_dim.mix(t.accent, 0.35f + 0.65f * hot));
+                    ui.label({face.x + 31, face.y, std::max(0.f, face.w - 43), face.h}, s.label, t.style(type::label, t.text_dim.mix(t.text, 0.65f + 0.35f * hot), text::medium));
+                    if (it.clicked) {
+                        open_page = s.target;
+                    }
+                    cx += cw + gap;
+                }
+                y = cy + chip_h + 18;
+                drew_any = true;
+                if (open_page) {
+                    if (*open_page == Page::recent) {
+                        lib.recent_tab = cloud_recent ? 1 : 0;
+                    }
+                    browser_.open(*open_page);
+                }
+            }
+        }
 
+        // 2. Reserve smoothly animated inline space for "On repeat" as the rail collapses; the card itself is drawn
+        // last through repeat_slot_ so it physically glides between the right rail and this slot across window resizes.
+        const float inline_repeat_y = y;
         if (caps.ranking) {
-            auto &chart = page->charts[static_cast<size_t>(page->chart_tab)];
-            auto &tracks = chart.ranking.tracks;
-            constexpr float head_h = 46, row_h = 52;
-            const auto max_rows = static_cast<size_t>(std::clamp(static_cast<int>((r.bottom() - y - head_h - (faces ? 160.f : 24.f)) / row_h), 1, 5));
-            const size_t shown = !chart.loaded ? std::min<size_t>(max_rows, 3) : std::min(tracks.size(), max_rows);
-            const float body_h = !chart.loaded ? static_cast<float>(shown) * row_h + 12 : tracks.empty() ? 52.f : static_cast<float>(shown) * row_h + 12;
-            const Rect box{r.x, y, r.w, head_h + body_h};
-            p.rect(box, card_fill, radius, t.surface_edge(0.9f), 1);
-            card_header(box, ui.id("rail-chart"), lyren::tr("On repeat"), lyren::tr(page->chart_tab ? "All time" : "This week"), Section::chart);
+            y += (inline_repeat_h + 20.f) * (1 - rail_k);
+            drew_any = true;
+        }
 
-            float ry = box.y + head_h + 6;
-            if (!chart.loaded) {
+        // 3. Recently played songs (cloud when the service exposes it, otherwise this device's history).
+        if ((cloud_recent && page->recent.loading && recent_tracks.empty()) || !recent_tracks.empty()) {
+            constexpr float head_h = 46, row_h = 50;
+            const size_t shown = recent_tracks.empty() ? 3 : std::min<size_t>(recent_tracks.size(), 4);
+            const Rect box{r.x, y, col_w, head_h + static_cast<float>(shown) * row_h + 10};
+            p.rect(box, card_fill, radius);
+            {
+                const auto style = t.style(type::label, t.text, text::semibold);
+                const auto title = lyren::tr("Recently played");
+                const float w = std::ceil(p.measure(title, style)) + 1;
+                ui.label({box.x + 16, box.y + 12, w, 24}, title, style);
+                float right = box.right() - 10;
+                if (ui.icon_button(ui.id("overview-recent-all"), {right - 28, box.y + 9, 28, 28}, "chevron-right", 16, false, lyren::tr("See all"))) {
+                    lib.recent_tab = cloud_recent ? 1 : 0;
+                    browser_.open(Page::recent);
+                }
+                right -= 32;
+                if (!recent_tracks.empty() && box.w >= 340) {
+                    const auto play_lbl = lyren::tr("Play all");
+                    const float pw = ui.button_width(play_lbl, true);
+                    if (ui.button(ui.id("overview-recent-play"), {right - pw, box.y + 9, pw, control::small}, play_lbl, ui::ButtonKind::tonal, "play-fill")) {
+                        playback_.play(recent_tracks, 0);
+                    }
+                    right -= pw + 10;
+                }
+                ui.label({box.x + 16 + w + 8, box.y + 12, std::max(0.f, right - (box.x + 16 + w + 8)), 24}, lyren::tr(cloud_recent ? "Cloud" : "This device"),
+                         t.style(type::caption, t.faint()));
+                p.rect({box.x + 16, box.y + head_h - 1, box.w - 32, 1}, t.line(0.7f));
+            }
+            float ry = box.y + head_h + 5;
+            if (recent_tracks.empty()) {
                 for (size_t i = 0; i < shown; ++i) {
                     const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
-                    ui.skeleton({box.x + 16, ry + 7, 38, 38}, t.radius_s());
-                    ui.skeleton({box.x + 66, ry + 13, (box.w - 86) * (0.5f + 0.4f * k), 10}, 5);
-                    ui.skeleton({box.x + 66, ry + 31, (box.w - 86) * (0.3f + 0.3f * (1 - k)), 9}, 4.5f);
+                    ui.skeleton({box.x + 16, ry + 6, 38, 38}, t.radius_s());
+                    ui.skeleton({box.x + 66, ry + 12, (box.w - 86) * (0.45f + 0.35f * k), 10}, 5);
+                    ui.skeleton({box.x + 66, ry + 30, (box.w - 86) * (0.28f + 0.25f * (1 - k)), 9}, 4.5f);
                     ry += row_h;
                 }
-            } else if (tracks.empty()) {
-                const bool hidden = chart.error == "This listening ranking is private";
-                p.icon(hidden ? "lock" : "headphones", {box.x + 16, ry + 11, 14, 14}, t.faint());
-                ui.label({box.x + 38, ry + 8, box.w - 54, 20},
-                         lyren::tr(hidden                ? "Their ranking is private"
-                                   : chart.error.empty() ? "Nothing played yet"
-                                                         : chart.error),
-                         t.style(type::caption, t.text_dim));
             } else {
-                ui.push_id(ui.id("rail-songs"));
+                const bool show_time = box.w >= 420;
+                const double since = std::max(page->section_since, cloud_recent ? page->recent.since : page->since);
+                ui.push_id(ui.id("overview-recent"));
                 for (size_t i = 0; i < shown; ++i) {
-                    const Track &track = tracks[i];
-                    const float in = ui.cascade(std::max(page->section_since, chart.since), static_cast<int>(i));
+                    const Track &track = recent_tracks[i];
+                    const float in = ui.cascade(since, static_cast<int>(i));
                     Fade fade(p, in);
                     const Rect row{box.x + 8, ry + (1 - in) * 8, box.w - 16, row_h};
                     const ui::Id id = item_id(ui, track);
@@ -584,9 +703,7 @@ namespace lyren {
                     if (hot > 0) {
                         p.rect(row.inset(down, 2 + down), t.fill(hot), t.radius_s());
                     }
-                    ui.label({row.x + 4, row.y, 18, row.h}, std::to_string(i + 1),
-                             t.style(type::caption, i < 3 ? t.accent.with_alpha(0.85f) : t.faint(), text::semibold | text::tabular_nums), Align::center);
-                    const Rect art{row.x + 26, row.y + 7, 38, 38};
+                    const Rect art{row.x + 8, row.y + 6, 38, 38};
                     const bool on = playback_.is_current(track);
                     const float veil = std::max(hot, on ? 1.f : 0.f);
                     cover(ui, art, track.cover, t.radius_s(), veil > 0.5f ? "" : "music");
@@ -601,9 +718,13 @@ namespace lyren {
                             p.icon(on && playback_.playing() ? "pause-fill" : "play-fill", glyph, white.with_alpha(veil));
                         }
                     }
-                    const float tx = art.right() + 12, tw = row.right() - tx - 8;
-                    p.text(tx, row.y + 23, track.title, t.style(type::label, on ? t.accent : t.text, text::medium), tw);
-                    p.text(tx, row.y + 41, track.artist, t.style(type::caption, t.text_dim), tw);
+                    const float time_w = show_time && track.duration > 0 ? 48.f : 0.f;
+                    const float tx = art.right() + 12, tw = std::max(0.f, row.right() - tx - time_w - 12);
+                    p.text(tx, row.y + 22, track.title, t.style(type::label, on ? t.accent : t.text, text::medium), tw);
+                    p.text(tx, row.y + 40, track.artist, t.style(type::caption, t.text_dim), tw);
+                    if (time_w > 0) {
+                        ui.label({row.right() - time_w - 8, row.y, time_w, row.h}, mmss(track.duration), t.style(type::caption, t.faint(), text::tabular_nums), Align::right);
+                    }
                     if (it.hovered) {
                         ui.cursor = wl::Cursor::pointer;
                     }
@@ -611,17 +732,289 @@ namespace lyren {
                         if (on) {
                             playback_.toggle();
                         } else {
-                            playback_.play(tracks, static_cast<int>(i));
+                            playback_.play(recent_tracks, static_cast<int>(i));
                         }
                     }
                     if (it.right_clicked) {
-                        shell_.tracks.menu(ui, it.px, it.py, tracks, static_cast<int>(i));
+                        shell_.tracks.menu(ui, it.px, it.py, recent_tracks, static_cast<int>(i));
                     }
                     ry += row_h;
                 }
                 ui.pop_id();
             }
-            y = box.bottom() + 16;
+            y = box.bottom() + 22;
+            drew_any = true;
+        }
+
+        // Zero-copy one-row shelf preview (Playlists, Saved albums, Followed artists) with a "See all" action.
+        auto shelf_row = [&](std::string_view key, std::string_view title, std::span<const Card> all_cards, size_t total_count, bool round, double since, auto on_all) {
+            if (all_cards.empty()) {
+                return;
+            }
+            const float min_w = round ? 130.f : 150.f;
+            const auto limit = static_cast<size_t>(CardGrid::columns(col_w, min_w));
+            const auto slice = all_cards.first(std::min(all_cards.size(), limit));
+            section_heading(ui, r.x, y, col_w - 36, title, std::to_string(total_count));
+            if (ui.icon_button(ui::sub_id(ui.id(key), 0xaa), {r.x + col_w - 28, y - 1, 28, 28}, "chevron-right", 16, false, lyren::tr("See all"))) {
+                on_all();
+            }
+            y += 38;
+            if (const int i = card_grid(ui, {r.x, y, col_w, 0}, ui.id(key), slice, round, since); i >= 0) {
+                browser_.open(slice[static_cast<size_t>(i)]);
+            }
+            y += CardGrid::settled_height(col_w, slice.size(), min_w) + 24;
+            drew_any = true;
+        };
+
+        // 4. Playlists preview (owned first, then saved; bounded to one row so we never copy the whole library).
+        if (caps.library) {
+            const auto limit = std::min<size_t>(static_cast<size_t>(CardGrid::columns(col_w, 150.f)), 8);
+            std::inplace_vector<Card, 8> preview;
+            for (const auto &playlist : lib.playlists) {
+                if (playlist.owned && preview.size() < limit) {
+                    preview.push_back(playlist);
+                }
+            }
+            for (const auto &playlist : lib.playlists) {
+                if (!playlist.owned && preview.size() < limit) {
+                    preview.push_back(playlist);
+                }
+            }
+            if (preview.empty() && !lib.liked.id.empty()) {
+                preview.push_back(lib.liked);
+            }
+            const size_t total_lists = lib.playlists.empty() ? preview.size() : lib.playlists.size();
+            if (!preview.empty()) {
+                shelf_row("overview-playlists", lyren::tr("Playlists"), preview, total_lists, false, page->section_since, [&] {
+                    show(ui, page, Section::playlists);
+                });
+            } else if (!lib.playlists_loaded && lib.error.empty()) {
+                section_heading(ui, r.x, y, col_w, lyren::tr("Playlists"));
+                y += 38;
+                const float h = CardGrid::settled_height(col_w, static_cast<size_t>(CardGrid::columns(col_w, 150)), 150);
+                page_status(ui, {r.x, y, col_w, h}, true, "", false, Placeholder::cards);
+                y += h + 24;
+                drew_any = true;
+            }
+        }
+
+        // 5. Collection previews: saved albums and followed artists, each a single tidy row when present.
+        if (caps.collect_albums && !lib.collection[0].cards.empty()) {
+            shelf_row("overview-albums", lyren::tr("Albums"), lib.collection[0].cards, lib.collection[0].cards.size(), false,
+                      std::max(page->section_since, lib.collection[0].since), [&] {
+                          page->collection_tab = 0;
+                          show(ui, page, Section::collection);
+                      });
+        }
+        if (caps.follow_artists && !lib.collection[1].cards.empty()) {
+            shelf_row("overview-artists", lyren::tr("Artists"), lib.collection[1].cards, lib.collection[1].cards.size(), true,
+                      std::max(page->section_since, lib.collection[1].since), [&] {
+                          page->collection_tab = 1;
+                          show(ui, page, Section::collection);
+                      });
+        }
+
+        // Right studio rail (Following card): fades & slides cleanly as the rail appears or collapses.
+        float beside = 0;
+        if (rail_k > 0.01f) {
+            Fade fade(p, rail_k);
+            ui::Enabled live(ui, has_rail, 1);
+            const Rect shifted{side.x + (1 - rail_k) * 18.f, side.y, side.w, side.h};
+            beside = rail(ui, shifted, page, false) * rail_k;
+        }
+
+        // Shared-element "On repeat" card drawn last so it glides smoothly above the reflowing layout.
+        if (caps.ranking) {
+            const Rect target = has_rail ? Rect{side.x, side.y, side.w, wide_repeat_h} : Rect{r.x, inline_repeat_y, col_w, inline_repeat_h};
+            const Rect flight = repeat_slot_.resolve(ui, target, has_rail ? 1 : 0, 340);
+            const bool flying = repeat_slot_.morphing(ui, 340);
+            if (flying) {
+                p.shadow({flight.x, flight.y + 8, flight.w, flight.h}, studio_card_radius(t), 24, t.shadow.with_alpha(0.35f));
+            }
+            const size_t rows = flying ? std::max<size_t>(wide_repeat_rows, 4) : (has_rail ? wide_repeat_rows : 4);
+            repeat_card(ui, flight, page, rows);
+        }
+
+        if (!drew_any && beside <= 0) {
+            const Rect room{r.x, y, col_w, 240};
+            empty(ui, room, "music", lyren::tr("Nothing here yet"));
+            y += room.h;
+        }
+        return std::max(y - r.y, beside);
+    }
+
+    float ProfileView::posts(ui::Ui &ui, Rect r, const Listener &page, bool self) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const Card &card = page->who;
+        const auto &caps = provider(card).capabilities;
+        constexpr float rail_bp = 540 + rail_gap + rail_min;
+        if (r.w >= rail_bp + 12) {
+            wide_ = true;
+        } else if (r.w < rail_bp - 12) {
+            wide_ = false;
+        }
+        const bool has_rail = wide_ && (caps.ranking || caps.people);
+        const float rail_k = ui.spring(ui.id("profile-rail-k"), has_rail ? 1.f : 0.f, 300);
+        const float rw = std::clamp(r.w - PostFeed::column - rail_gap, rail_min, rail_max);
+        const float wide_col_w = std::min(std::max(280.f, r.w - rw - rail_gap), PostFeed::column);
+        const float feed_w = std::lerp(std::min(r.w, PostFeed::column), wide_col_w, rail_k);
+
+        float beside = 0;
+        if (rail_k > 0.01f) {
+            // The framed studio rail stays in sight while the timeline scrolls past it.
+            const Rect clip = ui.clip();
+            const float sy = std::max(r.y, clip.y + section_gap);
+            const Rect side{r.right() - rw + (1 - rail_k) * 18.f, sy, rw, std::max(0.f, clip.bottom() - sy - 12)};
+            Fade fade(p, rail_k);
+            ui::Enabled live(ui, has_rail, 1);
+            beside = rail(ui, side, page, true) * rail_k;
+        }
+        float y = r.y;
+        // The account's own page also holds the feed of the people it follows.
+        const bool feed = self && page->posts_tab == 1;
+        if (self) {
+            const std::array<std::string_view, 2> labels{lyren::tr("My posts"), lyren::tr("Following feed")};
+            int tab = page->posts_tab;
+            if (ui.segmented(ui.id("profile-feed"), {r.x, y, std::min(280.f, feed_w - 48), control::medium}, labels, tab)) {
+                page->posts_tab = tab;
+                show(ui, page, Section::posts);
+            }
+            const Rect again{r.x + feed_w - control::medium, y, control::medium, control::medium};
+            if (const auto &list = feed ? social_.feed(card.source) : page->posts; list->loading) {
+                ui.spinner(ui::center(again, 16, 16), t.text_dim, 2);
+            } else if (ui.icon_button(ui.id("profile-refresh"), again, "refresh-cw", 16, false, lyren::tr("Refresh"))) {
+                social_.reload_posts(page, feed);
+            }
+            y += control::medium + 18;
+            if (caps.post_write) {
+                y += shell_.feed.prompt(ui, {r.x, y, feed_w, 0}, card.source) + 6;
+            }
+        }
+        const auto list = feed ? social_.feed(card.source) : page->posts;
+        y += shell_.feed.draw(ui, {r.x, y, feed_w, 0}, list, card.source, feed ? std::string() : card.id, feed);
+        return std::max(y - r.y, beside);
+    }
+
+    float ProfileView::repeat_height(const Listener &page, size_t max_rows) const {
+        const auto &chart = page->charts[static_cast<size_t>(page->chart_tab)];
+        const auto &tracks = chart.ranking.tracks;
+        constexpr float head_h = 46, row_h = 54;
+        const size_t shown = !chart.loaded ? std::min<size_t>(max_rows, 3) : std::min(tracks.size(), max_rows);
+        const float body_h = !chart.loaded ? static_cast<float>(shown) * row_h + 12 : tracks.empty() ? 52.f : static_cast<float>(shown) * row_h + 12;
+        return head_h + body_h;
+    }
+
+    float ProfileView::repeat_card(ui::Ui &ui, Rect r, const Listener &page, size_t max_rows) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        auto &chart = page->charts[static_cast<size_t>(page->chart_tab)];
+        auto &tracks = chart.ranking.tracks;
+        constexpr float head_h = 46, row_h = 54;
+        const size_t shown = !chart.loaded ? std::min<size_t>(max_rows, 3) : std::min(tracks.size(), max_rows);
+        const float natural_h = repeat_height(page, max_rows);
+        const Rect box{r.x, r.y, r.w, r.h > 0 ? r.h : natural_h};
+        p.rect(box, studio_card_fill(t), studio_card_radius(t));
+        ui.push_clip(box);
+        {
+            const auto style = t.style(type::label, t.text, text::semibold);
+            const auto title = lyren::tr("On repeat");
+            const float w = std::ceil(p.measure(title, style)) + 1;
+            ui.label({box.x + 16, box.y + 12, w, 24}, title, style);
+            ui.label({box.x + 16 + w + 8, box.y + 12, std::max(0.f, box.w - w - 64), 24}, lyren::tr(page->chart_tab ? "All time" : "This week"),
+                     t.style(type::caption, t.faint(), text::tabular_nums));
+            if (ui.icon_button(ui.id("rail-chart"), {box.right() - 36, box.y + 10, 28, 28}, "chevron-right", 16, false, lyren::tr("See all"))) {
+                show(ui, page, Section::chart);
+            }
+            p.rect({box.x + 16, box.y + 45, box.w - 32, 1}, t.line(0.7f));
+        }
+
+        float ry = box.y + head_h + 6;
+        if (!chart.loaded) {
+            for (size_t i = 0; i < shown; ++i) {
+                const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
+                ui.skeleton({box.x + 16, ry + 9, 38, 38}, t.radius_s());
+                ui.skeleton({box.x + 66, ry + 15, (box.w - 86) * (0.5f + 0.4f * k), 10}, 5);
+                ui.skeleton({box.x + 66, ry + 33, (box.w - 86) * (0.3f + 0.3f * (1 - k)), 9}, 4.5f);
+                ry += row_h;
+            }
+        } else if (tracks.empty()) {
+            const bool hidden = chart.error == "This listening ranking is private";
+            p.icon(hidden ? "lock" : "headphones", {box.x + 16, ry + 11, 14, 14}, t.faint());
+            ui.label({box.x + 38, ry + 8, box.w - 54, 20},
+                     lyren::tr(hidden                ? "Their ranking is private"
+                               : chart.error.empty() ? "Nothing played yet"
+                                                     : chart.error),
+                     t.style(type::caption, t.text_dim));
+        } else {
+            ui.push_id(ui.id("rail-songs"));
+            for (size_t i = 0; i < shown; ++i) {
+                const Track &track = tracks[i];
+                const float in = ui.cascade(std::max(page->section_since, chart.since), static_cast<int>(i));
+                Fade fade(p, in);
+                const Rect row{box.x + 8, ry + (1 - in) * 8, box.w - 16, row_h};
+                const ui::Id id = item_id(ui, track);
+                const auto it = ui.interact(id, row);
+                const auto [hot, down] = ui.feel(id, it, pace::quick);
+                if (hot > 0) {
+                    p.rect(row.inset(down, 2 + down), t.fill(hot), t.radius_s());
+                }
+                ui.label({row.x + 4, row.y, 18, row.h - 4}, std::to_string(i + 1),
+                         t.style(type::caption, i < 3 ? t.accent.with_alpha(0.85f) : t.faint(), text::semibold | text::tabular_nums), Align::center);
+                const Rect art{row.x + 26, row.y + 8, 38, 38};
+                const bool on = playback_.is_current(track);
+                const float veil = std::max(hot, on ? 1.f : 0.f);
+                cover(ui, art, track.cover, t.radius_s(), veil > 0.5f ? "" : "music");
+                p.rect(art, {}, t.radius_s(), t.surface_edge(0.8f), 1);
+                if (veil > 0) {
+                    p.rect(art, ui::Color{0, 0, 0, 0.42f * veil}, t.radius_s());
+                    if (on && playback_.playing() && hot < 0.5f) {
+                        ui.equalizer(ui::sub_id(id, 1), ui::center(art, 13, 13), white, true);
+                    } else {
+                        Rect glyph = ui::center(art, 13, 13);
+                        glyph.x += on && playback_.playing() ? 0 : 1;
+                        p.icon(on && playback_.playing() ? "pause-fill" : "play-fill", glyph, white.with_alpha(veil));
+                    }
+                }
+                const float tx = art.right() + 12, tw = row.right() - tx - 8;
+                p.text(tx, row.y + 23, track.title, t.style(type::label, on ? t.accent : t.text, text::medium), tw);
+                p.text(tx, row.y + 41, track.artist, t.style(type::caption, t.text_dim), tw);
+                if (it.hovered) {
+                    ui.cursor = wl::Cursor::pointer;
+                }
+                if (it.clicked) {
+                    if (on) {
+                        playback_.toggle();
+                    } else {
+                        playback_.play(tracks, static_cast<int>(i));
+                    }
+                }
+                if (it.right_clicked) {
+                    shell_.tracks.menu(ui, it.px, it.py, tracks, static_cast<int>(i));
+                }
+                ry += row_h;
+            }
+            ui.pop_id();
+        }
+        ui.pop_clip();
+        return box.h;
+    }
+
+    float ProfileView::rail(ui::Ui &ui, Rect r, const Listener &page, bool include_repeat) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const Card &card = page->who;
+        const auto &caps = provider(card).capabilities;
+        const auto &follows = page->people[0];
+        const bool faces = caps.people && (follows.loading || !follows.items.empty());
+        const float radius = studio_card_radius(t);
+        const ui::Color card_fill = studio_card_fill(t);
+        float y = r.y;
+
+        if (caps.ranking) {
+            constexpr float head_h = 46, row_h = 56;
+            const auto max_rows = static_cast<size_t>(std::clamp(static_cast<int>((r.bottom() - y - head_h - (faces ? 160.f : 24.f)) / row_h), 1, 5));
+            y += (include_repeat ? repeat_card(ui, {r.x, y, r.w, 0}, page, max_rows) : repeat_height(page, max_rows)) + 16;
         }
 
         if (faces && y + 106 <= r.bottom()) {
@@ -629,14 +1022,36 @@ namespace lyren {
             constexpr float head_h = 46, person_h = 48;
             const float avail = r.bottom() - y - head_h - 14;
             const bool list_mode = avail >= person_h * 2;
-            const size_t rows = list_mode ? std::min<size_t>({follows.items.size(), static_cast<size_t>(avail / person_h), 4}) : 0;
-            const float body_h = list_mode ? static_cast<float>(rows) * person_h + 12 : 62.f;
+            const size_t rows = follows.items.empty() ? 3 : list_mode ? std::min<size_t>({follows.items.size(), static_cast<size_t>(avail / person_h), 4}) : 0;
+            const float body_h = list_mode || follows.items.empty() ? static_cast<float>(rows) * person_h + 12 : 62.f;
             const Rect box{r.x, y, r.w, head_h + body_h};
-            p.rect(box, card_fill, radius, t.surface_edge(0.9f), 1);
-            card_header(box, ui.id("rail-people"), lyren::tr_ctx("nav", "Following"), count >= 0 ? stat_number(count) : std::string(), Section::follows);
+            p.rect(box, card_fill, radius);
+            {
+                const auto style = t.style(type::label, t.text, text::semibold);
+                const auto title = lyren::tr_ctx("nav", "Following");
+                const float w = std::ceil(p.measure(title, style)) + 1;
+                ui.label({box.x + 16, box.y + 12, w, 24}, title, style);
+                if (count >= 0) {
+                    ui.label({box.x + 16 + w + 8, box.y + 12, std::max(0.f, box.w - w - 64), 24}, stat_number(count), t.style(type::caption, t.faint(), text::tabular_nums));
+                }
+                if (ui.icon_button(ui.id("rail-people"), {box.right() - 36, box.y + 10, 28, 28}, "chevron-right", 16, false, lyren::tr("See all"))) {
+                    page->people_tab = 0;
+                    show(ui, page, Section::people);
+                }
+                p.rect({box.x + 16, box.y + 45, box.w - 32, 1}, t.line(0.7f));
+            }
 
             ui.push_id(ui.id("rail-faces"));
-            if (list_mode) {
+            if (follows.items.empty()) {
+                float py = box.y + head_h + 6;
+                for (size_t i = 0; i < rows; ++i) {
+                    const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
+                    ui.skeleton({box.x + 16, py + 7, 34, 34}, 17);
+                    ui.skeleton({box.x + 62, py + 12, (box.w - 82) * (0.42f + 0.35f * k), 10}, 5);
+                    ui.skeleton({box.x + 62, py + 29, (box.w - 82) * (0.28f + 0.25f * (1 - k)), 9}, 4.5f);
+                    py += person_h;
+                }
+            } else if (list_mode) {
                 float py = box.y + head_h + 6;
                 for (size_t i = 0; i < rows; ++i) {
                     const Person &who = follows.items[i];
@@ -798,17 +1213,25 @@ namespace lyren {
 
     float ProfileView::playlists(ui::Ui &ui, Rect r, const Listener &page, bool self) {
         const Card &card = page->who;
-        std::vector<Card> made, saved;
+        std::span<const Card> made, saved;
         double since = page->section_since;
         if (self) {
             // The account's own come from its library, the liked songs first.
             const auto &shelf = library_.shelf(card.source);
-            if (!shelf.liked.id.empty()) {
-                made.push_back(shelf.liked);
+            if (playlists_dirty_ || playlists_source_ != card.source) {
+                playlists_dirty_ = false;
+                playlists_source_ = card.source;
+                own_made_.clear();
+                own_saved_.clear();
+                if (!shelf.liked.id.empty()) {
+                    own_made_.push_back(shelf.liked);
+                }
+                for (const auto &playlist : shelf.playlists) {
+                    (playlist.owned ? own_made_ : own_saved_).push_back(playlist);
+                }
             }
-            for (const auto &playlist : shelf.playlists) {
-                (playlist.owned ? made : saved).push_back(playlist);
-            }
+            made = own_made_;
+            saved = own_saved_;
             if (made.empty() && saved.empty()) {
                 const Rect room{r.x, r.y, r.w, 300};
                 if (!page_status(ui, room, !shelf.playlists_loaded && shelf.error.empty(), shelf.error, false, Placeholder::cards)) {
@@ -825,14 +1248,15 @@ namespace lyren {
                 }
                 return room.h;
             }
-            const auto split = static_cast<std::ptrdiff_t>(std::clamp(page->created, 0, static_cast<int>(listing.cards.size())));
-            made.assign(listing.cards.begin(), listing.cards.begin() + split);
-            saved.assign(listing.cards.begin() + split, listing.cards.end());
+            const auto split = static_cast<size_t>(std::clamp(page->created, 0, static_cast<int>(listing.cards.size())));
+            const std::span<const Card> all(listing.cards);
+            made = all.first(split);
+            saved = all.subspan(split);
             since = std::max(since, listing.since);
         }
         float y = r.y;
         std::optional<Card> picked;
-        auto shelf = [&](std::string_view key, std::string_view title, const std::vector<Card> &cards) {
+        auto shelf = [&](std::string_view key, std::string_view title, std::span<const Card> cards) {
             if (cards.empty()) {
                 return;
             }
@@ -851,45 +1275,133 @@ namespace lyren {
         return y - r.y;
     }
 
-    float ProfileView::people(ui::Ui &ui, Rect r, const Listener &page, bool fans, bool self) {
+    float ProfileView::collection(ui::Ui &ui, Rect r, const Listener &page) {
+        const auto &t = ui.theme();
+        const Card &card = page->who;
+        const auto &caps = provider(card).capabilities;
+        const bool has_albums = caps.collect_albums, has_artists = caps.follow_artists;
+        if (page->collection_tab == 0 && !has_albums && has_artists) {
+            page->collection_tab = 1;
+        } else if (page->collection_tab == 1 && !has_artists && has_albums) {
+            page->collection_tab = 0;
+        }
+        const bool artists = page->collection_tab == 1;
+        const auto &lib = library_.shelf(card.source);
+        const Listing &res = lib.collection[static_cast<size_t>(page->collection_tab)];
+
+        const Rect bar{r.x, r.y, r.w, control::medium};
+        const Rect again{bar.right() - control::medium, bar.y, control::medium, control::medium};
+        if (res.loading) {
+            ui.spinner(ui::center(again, 16, 16), t.text_dim, 2);
+        } else if (env_.signed_in(card.source) && ui.icon_button(ui.id("profile-collection-refresh"), again, "refresh-cw", 16, false, lyren::tr("Refresh"))) {
+            spawn(library_.load_collection(card.source));
+        }
+        if (has_albums && has_artists) {
+            const std::array<std::string_view, 2> labels{lyren::tr("Albums"), lyren::tr("Artists")};
+            if (int tab = page->collection_tab; ui.segmented(ui.id("profile-collection-tabs"), {bar.x, bar.y, std::min(232.f, bar.w - control::medium - 16), bar.h}, labels, tab)) {
+                page->collection_tab = tab;
+                show(ui, page, Section::collection);
+            }
+        } else {
+            section_heading(ui, bar.x, bar.y + 4, bar.w - control::medium - 16, lyren::tr(artists ? "Artists" : "Albums"),
+                            res.cards.empty() ? std::string() : std::to_string(res.cards.size()));
+        }
+
+        const float top = bar.bottom() + 16;
+        if (res.cards.empty()) {
+            if (!res.loaded && !res.loading && env_.signed_in(card.source)) {
+                spawn(library_.load_collection(card.source));
+            }
+            const Rect room{r.x, top, r.w, 300};
+            if (!page_status(ui, room, res.loading || (!res.loaded && res.error.empty() && env_.signed_in(card.source)), res.error, !env_.signed_in(card.source),
+                             artists ? Placeholder::faces : Placeholder::cards)) {
+                empty(ui, room, artists ? "users" : "disc-album", lyren::tr(artists ? "No followed artists yet" : "No saved albums yet"));
+            }
+            return top - r.y + room.h;
+        }
+        const double since = std::max(page->section_since, res.since);
+        if (const int i = card_grid(ui, {r.x, top, r.w, 0}, ui.id(artists ? "profile-artists" : "profile-albums"), res.cards, artists, since); i >= 0) {
+            browser_.open(res.cards[static_cast<size_t>(i)]);
+        }
+        return top - r.y + CardGrid::settled_height(r.w, res.cards.size(), artists ? 130.f : 150.f) + 8;
+    }
+
+    float ProfileView::people(ui::Ui &ui, Rect r, const Listener &page, bool self) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Card &card = page->who;
+        const Rect bar{r.x, r.y, r.w, control::medium};
+        const std::array<std::string_view, 2> labels{lyren::tr_ctx("nav", "Following"), lyren::tr("Followers")};
+        const float seg_w = std::min(232.f, bar.w);
+        if (int tab = page->people_tab; ui.segmented(ui.id("profile-people-tabs"), {bar.x, bar.y, seg_w, bar.h}, labels, tab)) {
+            page->people_tab = tab;
+            show(ui, page, Section::people);
+        }
+        const bool fans = page->people_tab != 0;
+        if (const int count = social_.count(*page, fans); count >= 0 && bar.w - seg_w > 140) {
+            const std::string summary = fans ? lyren::trf("{} followers", stat_number(count)) : lyren::trf("Following {} people", stat_number(count));
+            ui.label({bar.x + seg_w + 16, bar.y, bar.w - seg_w - 16, bar.h}, summary, t.style(type::caption, t.faint(), text::tabular_nums), Align::right);
+        }
+
+        const float top = bar.bottom() + 16;
         auto &list = page->people[fans];
         if (list.items.empty()) {
             if (list.open()) {
                 social_.load_people(page, fans);
             }
-            const Rect room{r.x, r.y, r.w, 300};
+            const Rect room{r.x, top, r.w, 300};
             if (!list.error.empty() && !env_.signed_in(card.source)) {
                 // Some services show who follows whom only to those signed in.
                 page_status(ui, room, false, "", true);
             } else if (!page_status(ui, room, list.loading || (list.more && list.error.empty()), list.error, false, Placeholder::faces)) {
                 empty(ui, room, "users", lyren::tr(fans ? (self ? "No fans yet" : "No fans to show") : (self ? "You are not following anyone yet" : "Not following anyone yet")));
             }
-            return room.h;
+            return top - r.y + room.h;
         }
-        // In as many columns as fit, a page more as the last rows come near.
-        constexpr float gap = 12, row_h = 72;
+        // In as many columns as fit, smoothly reflowing across column changes like CardGrid.
+        constexpr float gap = 12, row_h = 72, step = row_h + gap;
         const auto cols = static_cast<size_t>(std::max(1, static_cast<int>((r.w + gap) / (320 + gap))));
-        const float cell_w = (r.w - gap * static_cast<float>(cols - 1)) / static_cast<float>(cols);
+        const float anim_cols = ui.spring(ui.id(fans ? "fans-cols" : "follows-cols"), static_cast<float>(cols), CardGrid::reflow_ms);
+        const bool reflowing = std::abs(anim_cols - static_cast<float>(cols)) > 0.01f;
+        const float cell_w = (r.w + gap) / anim_cols - gap;
         const size_t rows = (list.items.size() + cols - 1) / cols;
         const Rect clip = ui.clip();
         const double since = std::max(page->section_since, list.since);
         int shown = 0;
         ui.push_id(ui.id(fans ? "fans" : "follows"));
-        for (size_t i = 0; i < list.items.size(); ++i) {
-            Rect cell{r.x + static_cast<float>(i % cols) * (cell_w + gap), r.y + static_cast<float>(i / cols) * (row_h + gap), cell_w, row_h};
-            if (cell.bottom() < clip.y || cell.y > clip.bottom()) {
-                continue;
+        if (reflowing) {
+            for (size_t i = 0; i < list.items.size(); ++i) {
+                const ui::Id pid = ui.id(list.items[i].id);
+                const float c = ui.spring(ui::sub_id(pid, 0xc0), static_cast<float>(i % cols), CardGrid::reflow_ms);
+                const float rw = ui.spring(ui::sub_id(pid, 0xc1), static_cast<float>(i / cols), CardGrid::reflow_ms);
+                Rect cell{r.x + c * (cell_w + gap), top + rw * step, cell_w, row_h};
+                if (cell.bottom() < clip.y || cell.y > clip.bottom()) {
+                    continue;
+                }
+                const float in = ui.cascade(since, shown++);
+                Fade fade(p, in);
+                cell.y += (1 - in) * 10;
+                person(ui, cell, card.source, list.items[i]);
             }
-            const float in = ui.cascade(since, shown++);
-            Fade fade(p, in);
-            cell.y += (1 - in) * 10;
-            person(ui, cell, card.source, list.items[i]);
+        } else if (rows > 0 && clip.bottom() >= top) {
+            const auto first_row = static_cast<size_t>(std::max(0, static_cast<int>(std::floor((clip.y - top - 12.f) / step))));
+            const auto last_row = std::min(rows - 1, static_cast<size_t>(std::max(0, static_cast<int>(std::floor((clip.bottom() - top) / step)))));
+            if (first_row <= last_row) {
+                const size_t end_i = std::min(list.items.size(), (last_row + 1) * cols);
+                for (size_t i = first_row * cols; i < end_i; ++i) {
+                    Rect cell{r.x + static_cast<float>(i % cols) * (cell_w + gap), top + static_cast<float>(i / cols) * step, cell_w, row_h};
+                    if (cell.bottom() < clip.y || cell.y > clip.bottom()) {
+                        continue;
+                    }
+                    const float in = ui.cascade(since, shown++);
+                    Fade fade(p, in);
+                    cell.y += (1 - in) * 10;
+                    person(ui, cell, card.source, list.items[i]);
+                }
+            }
         }
         ui.pop_id();
-        const float end = r.y + static_cast<float>(rows) * (row_h + gap);
+        const float end = top + static_cast<float>(rows) * (row_h + gap);
         const Rect foot{r.x, end, r.w, 56};
         if (list.loading) {
             ui.spinner(ui::center(foot, 20, 20), t.text_dim, 2);
@@ -908,7 +1420,7 @@ namespace lyren {
         const ui::Id id = ui.id("card");
         // Held on its follow button, the card stays lit.
         const float hot = ui.anim(id, ui.pointing(r) ? 1 : 0, pace::quick);
-        p.rect(r, t.fill(0.7f + 0.8f * hot), t.radius, t.surface_edge(0.75f + 0.45f * hot), 1);
+        p.rect(r, t.fill(0.7f + 0.8f * hot), t.radius);
         const Rect face{r.x + 14, r.y + (r.h - 44) / 2, 44, 44};
         cover(ui, face, person.avatar, 22, "user");
         const auto &account = library_.shelf(source).account;

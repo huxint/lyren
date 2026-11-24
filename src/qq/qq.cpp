@@ -1551,6 +1551,9 @@ namespace lyren::qq {
                 if (d.v_playlist) {
                     for (const auto &p : *d.v_playlist) {
                         if (p.dirId == 201) {
+                            out.first.count = p.songNum;
+                            out.first.count_kind = p.songNum > 0 ? Card::Count::songs : Card::Count::none;
+                            out.first.cover = p.dirPicUrl.value_or("");
                             continue;
                         }
                         if (!p.dirId || p.dirName.value_or("").empty()) {

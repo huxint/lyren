@@ -35,6 +35,7 @@ int main(int argc, char **argv) {
     mallopt(M_ARENA_MAX, 2);
 
     // Signals arrive through the loop; threads created later inherit the blocked mask.
+    signal(SIGPIPE, SIG_IGN);
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);

@@ -297,3 +297,45 @@ TEST_CASE("meter followers use their whole range at any loudness and settle at r
     late.follow({0.3f, 0.3f, 0.3f, 0.3f}, -1);
     CHECK(late.all() >= 0);
 }
+
+TEST_CASE("truncated FLAC streams surface a decode error and chained Ogg streams decode across sections") {
+    auto close_file = [](FILE *stream) {
+        std::fclose(stream);
+    };
+
+    {
+        std::ifstream input(LYREN_TEST_DATA "/tone.flac", std::ios::binary);
+        std::string bytes{std::istreambuf_iterator<char>(input), {}};
+        REQUIRE(bytes.size() > 4096);
+        bytes.resize(bytes.size() * 2 / 3);
+        std::unique_ptr<FILE, decltype(close_file)> file(std::tmpfile(), close_file);
+        REQUIRE(file);
+        REQUIRE(std::fwrite(bytes.data(), 1, bytes.size(), file.get()) == bytes.size());
+        REQUIRE(std::fflush(file.get()) == 0);
+        auto spool = Spool::file("/proc/self/fd/" + std::to_string(fileno(file.get())));
+        std::string error;
+        auto decoder = open_decoder(*spool, error);
+        REQUIRE_MESSAGE(decoder, error);
+        const auto samples = decode_all(*decoder);
+        CHECK(samples.size() / decoder->format.channels < decoder->length);
+        CHECK_FALSE(decoder->error.empty());
+    }
+
+    {
+        std::ifstream input(LYREN_TEST_DATA "/tone.ogg", std::ios::binary);
+        std::string single{std::istreambuf_iterator<char>(input), {}};
+        REQUIRE_FALSE(single.empty());
+        std::string chained = single + single;
+        std::unique_ptr<FILE, decltype(close_file)> file(std::tmpfile(), close_file);
+        REQUIRE(file);
+        REQUIRE(std::fwrite(chained.data(), 1, chained.size(), file.get()) == chained.size());
+        REQUIRE(std::fflush(file.get()) == 0);
+        auto spool = Spool::file("/proc/self/fd/" + std::to_string(fileno(file.get())));
+        std::string error;
+        auto decoder = open_decoder(*spool, error);
+        REQUIRE_MESSAGE(decoder, error);
+        const auto samples = decode_all(*decoder);
+        CHECK(decoder->error.empty());
+        CHECK(std::abs(static_cast<double>(samples.size() / 2) - 44100.0) < 2200.0);
+    }
+}

@@ -54,6 +54,7 @@ namespace lyren::test {
 
         Service() {
             capabilities.library = capabilities.likes = capabilities.playlist_edit = true;
+            capabilities.collect_albums = capabilities.follow_artists = true;
             capabilities.profiles = capabilities.people = capabilities.follow_users = true;
             capabilities.posts = capabilities.post_write = capabilities.ranking = capabilities.profile_playlists = true;
             capabilities.comments = {true, true, true, true};
@@ -64,6 +65,9 @@ namespace lyren::test {
             };
             features.radar = []() -> Task<Result<std::vector<Track>>> {
                 co_return std::vector<Track>{song(2), song(3), song(4)};
+            };
+            features.recent_plays = []() -> Task<Result<std::vector<Track>>> {
+                co_return std::vector<Track>{song(4), song(1), song(0)};
             };
         }
 
@@ -182,6 +186,18 @@ namespace lyren::test {
         Task<Result<std::vector<std::string>>> liked_ids(std::string) override {
             co_return std::vector<std::string>{"song-1"};
         }
+        Task<Result<std::vector<Card>>> collected_albums() override {
+            co_return std::vector<Card>{
+                {.kind = CardKind::album, .id = "alb-1", .title = "Harbour Tapes", .subtitle = "Mira Chen", .count = 10, .count_kind = Card::Count::songs},
+                {.kind = CardKind::album, .id = "alb-2", .title = "Midnight Lines", .subtitle = "Low Tide", .count = 8, .count_kind = Card::Count::songs},
+            };
+        }
+        Task<Result<std::vector<Card>>> followed_artists() override {
+            co_return std::vector<Card>{
+                {.kind = CardKind::artist, .id = "art-1", .title = "YOASOBI", .count = 14, .count_kind = Card::Count::albums},
+                {.kind = CardKind::artist, .id = "art-2", .title = "Low Tide", .count = 4, .count_kind = Card::Count::albums},
+            };
+        }
         Task<Result<void>> like(Track track, bool on) override {
             calls.push_back(std::format("like {} {}", track.id, on));
             co_return Result<void>{};
@@ -280,6 +296,7 @@ namespace lyren::test {
         Language language = Language::en;
         bool signed_in = true;
         bool dark = true;
+        double motion = 0;
         std::vector<Track> queue;
         int current = -1;
     };
@@ -309,7 +326,11 @@ namespace lyren::test {
 
         // A frame of a window w by h, a second after the one before; returns what it drew.
         std::span<const ui::Painter::Run> draw(float w = 1180, float h = 760) {
-            return draw(w, h, pointer_);
+            return draw(w, h, pointer_, 1.0);
+        }
+        // A frame advanced by dt seconds, for testing in-flight transitions when motion > 0.
+        std::span<const ui::Painter::Run> draw_dt(float w, float h, double dt) {
+            return draw(w, h, pointer_, dt);
         }
         // The pointer comes to rest at (x, y).
         void point(float x, float y) {
@@ -377,7 +398,7 @@ namespace lyren::test {
     private:
         static Config configure(const Options &options) {
             Config config;
-            config.theme.motion = 0;
+            config.theme.motion = options.motion;
             config.theme.mode = options.dark ? ThemeMode::dark : ThemeMode::light;
             config.interface.language = options.language;
             return config;
@@ -408,8 +429,8 @@ namespace lyren::test {
             state.current = options.current;
             return state;
         }
-        std::span<const ui::Painter::Run> draw(float w, float h, ui::FrameInput &input) {
-            now += 1;
+        std::span<const ui::Painter::Run> draw(float w, float h, ui::FrameInput &input, double dt = 1.0) {
+            now += dt;
             painter.begin(1, 0, 0);
             ui.begin(painter, theme_, w, h, now, input);
             ui::Rect area{0, 0, w, h};

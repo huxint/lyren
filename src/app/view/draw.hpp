@@ -80,6 +80,38 @@ namespace lyren {
         return {std::lerp(a.x, b.x, k), std::lerp(a.y, b.y, k), std::lerp(a.w, b.w, k), std::lerp(a.h, b.h, k)};
     }
 
+    // Shared-element layout morph: glides a component from its previous rect to its new target whenever its layout
+    // mode flips (e.g. side rail <-> inline column), while ordinary window resizing stays immediate without lag.
+    struct SharedSlot {
+        ui::Rect current{};
+        ui::Rect from{};
+        double since = -10;
+        int mode = -1;
+
+        ui::Rect resolve(ui::Ui &ui, ui::Rect target, int next_mode, float ms = 320) {
+            if (mode < 0) {
+                mode = next_mode;
+                current = from = target;
+                return target;
+            }
+            if (next_mode != mode) {
+                mode = next_mode;
+                from = current;
+                since = ui.now;
+            }
+            const float k = ui.progress(since, ms, ui::ease::emphasized);
+            current = k < 1 ? mix(from, target, k) : target;
+            return current;
+        }
+        bool morphing(ui::Ui &ui, float ms = 320) const {
+            return mode >= 0 && ui.progress(since, ms, ui::ease::emphasized) < 1;
+        }
+        void reset() {
+            mode = -1;
+            since = -10;
+        }
+    };
+
     // Where the wipe of a word-timed line stands at time within text, one of its wrapped lines: px from the start
     // of text, a soft edge's width before it while it is unsung and past its end once sung.
     inline float lyric_sung_x(ui::Painter &p, const LyricLine &line, std::string_view text, float size, float soft, double time, uint8_t features = 0) {
@@ -238,11 +270,13 @@ namespace lyren {
         ui::Id id;
         int cols;
         float cw, ch;
+        bool reflowing = false;
         CardGrid(ui::Ui &ui, ui::Id id, float width, float min_w = 150)
         : ui(ui),
           id(id) {
             cols = columns(width, min_w);
             const float count = ui.spring(ui::sub_id(id, 0xc0), static_cast<float>(cols), reflow_ms);
+            reflowing = std::abs(count - static_cast<float>(cols)) > 0.01f;
             cw = (width + gap) / count - gap;
             ch = cw + caption;
         }

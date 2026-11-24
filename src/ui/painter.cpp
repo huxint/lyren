@@ -50,22 +50,33 @@ namespace lyren::ui {
     }
 
     void Painter::rect(Rect r, Color fill, float radius, Color border, float border_width) {
-        float x0 = snap(r.x + ox_), y0 = snap(r.y + oy_), x1 = snap(r.right() + ox_), y1 = snap(r.bottom() + oy_);
-        if (x1 <= x0 || y1 <= y0) {
+        if (r.w <= 0 || r.h <= 0 || (fill.a * alpha_ <= 1.f / 512.f && (border_width <= 0 || border.a * alpha_ <= 1.f / 512.f))) {
             return;
+        }
+        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_;
+        float x1 = (r.right() + ox_) * scale_, y1 = (r.bottom() + oy_) * scale_;
+        // Keep 1px hairlines crisp on physical pixel rows/columns while letting surfaces and controls glide smoothly.
+        if (radius == 0 && border_width == 0) {
+            if (r.h <= 1.f && r.w > 2.f) {
+                y0 = snap(r.y + oy_);
+                y1 = y0 + std::max(1.f, std::round(r.h * scale_));
+            } else if (r.w <= 1.f && r.h > 2.f) {
+                x0 = snap(r.x + ox_);
+                x1 = x0 + std::max(1.f, std::round(r.w * scale_));
+            }
         }
         auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
         premul(p.color, fill);
         premul(p.color2, border);
         p.radii.fill(radius * scale_);
-        p.params[0] = border_width > 0 ? std::max(1.f, std::round(border_width * scale_)) : 0;
+        p.params[0] = border_width > 0 ? std::max(1.f, border_width * scale_) : 0;
     }
 
     void Painter::rect(Rect r, Color fill, const std::array<float, 4> &radii) {
-        float x0 = snap(r.x + ox_), y0 = snap(r.y + oy_), x1 = snap(r.right() + ox_), y1 = snap(r.bottom() + oy_);
-        if (x1 <= x0 || y1 <= y0) {
+        if (r.w <= 0 || r.h <= 0 || fill.a * alpha_ <= 1.f / 512.f) {
             return;
         }
+        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_, x1 = (r.right() + ox_) * scale_, y1 = (r.bottom() + oy_) * scale_;
         auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
         premul(p.color, fill);
         std::ranges::transform(radii, p.radii.begin(), [this](float radius) {
@@ -74,10 +85,10 @@ namespace lyren::ui {
     }
 
     void Painter::gradient(Rect r, Color top, Color bottom, float radius) {
-        float x0 = snap(r.x + ox_), y0 = snap(r.y + oy_), x1 = snap(r.right() + ox_), y1 = snap(r.bottom() + oy_);
-        if (x1 <= x0 || y1 <= y0) {
+        if (r.w <= 0 || r.h <= 0 || std::max(top.a, bottom.a) * alpha_ <= 1.f / 512.f) {
             return;
         }
+        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_, x1 = (r.right() + ox_) * scale_, y1 = (r.bottom() + oy_) * scale_;
         auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
         premul(p.color, top);
         premul(p.color2, bottom);
@@ -86,10 +97,10 @@ namespace lyren::ui {
     }
 
     void Painter::hgradient(Rect r, Color left, Color right, float radius) {
-        float x0 = snap(r.x + ox_), y0 = snap(r.y + oy_), x1 = snap(r.right() + ox_), y1 = snap(r.bottom() + oy_);
-        if (x1 <= x0 || y1 <= y0) {
+        if (r.w <= 0 || r.h <= 0 || std::max(left.a, right.a) * alpha_ <= 1.f / 512.f) {
             return;
         }
+        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_, x1 = (r.right() + ox_) * scale_, y1 = (r.bottom() + oy_) * scale_;
         auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
         premul(p.color, left);
         premul(p.color2, right);
@@ -98,6 +109,9 @@ namespace lyren::ui {
     }
 
     void Painter::shadow(Rect r, float radius, float blur, Color color, bool cutout) {
+        if (r.w <= 0 || r.h <= 0 || color.a * alpha_ <= 1.f / 512.f) {
+            return;
+        }
         auto &p = emit(gfx::Kind::shadow, (r.x + ox_) * scale_, (r.y + oy_) * scale_, (r.right() + ox_) * scale_, (r.bottom() + oy_) * scale_);
         premul(p.color, color);
         p.radii.fill(radius * scale_);
@@ -108,12 +122,16 @@ namespace lyren::ui {
     }
 
     void Painter::icon(std::string_view name, Rect r, Color color) {
+        if (color.a * alpha_ <= 1.f / 512.f) {
+            return;
+        }
         int size = static_cast<int>(std::lround(std::min(r.w, r.h) * scale_));
         const auto &e = atlas_.icon(name, size);
         if (!e.w) {
             return;
         }
-        float x0 = snap(r.x + ox_ + (r.w - size / scale_) / 2), y0 = snap(r.y + oy_ + (r.h - size / scale_) / 2);
+        float x0 = zoom_ == 1 ? snap(r.x + ox_ + (r.w - size / scale_) / 2) : (r.x + ox_ + (r.w - size / scale_) / 2) * scale_;
+        float y0 = zoom_ == 1 ? snap(r.y + oy_ + (r.h - size / scale_) / 2) : (r.y + oy_ + (r.h - size / scale_) / 2) * scale_;
         auto &p = emit_zoomed(gfx::Kind::glyph, x0, y0, e.w, e.h);
         premul(p.color, color);
         float inv = 1.f / static_cast<float>(atlas_.size());
@@ -125,7 +143,10 @@ namespace lyren::ui {
     }
 
     void Painter::image(Rect r, gfx::TextureId tex, float radius, Color tint, Rect uv) {
-        float x0 = snap(r.x + ox_), y0 = snap(r.y + oy_), x1 = snap(r.right() + ox_), y1 = snap(r.bottom() + oy_);
+        if (r.w <= 0 || r.h <= 0 || tint.a * alpha_ <= 1.f / 512.f) {
+            return;
+        }
+        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_, x1 = (r.right() + ox_) * scale_, y1 = (r.bottom() + oy_) * scale_;
         auto &p = emit(gfx::Kind::image, x0, y0, x1, y1);
         premul(p.color, tint);
         p.radii.fill(radius * scale_);

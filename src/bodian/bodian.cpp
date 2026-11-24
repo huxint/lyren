@@ -117,6 +117,11 @@ namespace lyren::bodian {
             std::optional<Number> id;
             Str nickname, headImg;
         };
+        struct PubUser {
+            std::optional<Number> id;
+            Str nickname, headImg, signature, intro, desc, background, bgImg;
+            std::optional<int> followCount, fansCount, vip;
+        };
         struct Login {
             std::optional<Number> id, bid;
             Str token;
@@ -666,6 +671,7 @@ namespace lyren::bodian {
         capabilities.comments = {true, false, false};
         capabilities.comment_sort = capabilities.comment_replies = capabilities.comment_likes = capabilities.comment_post = true;
         capabilities.qr_login = true;
+        capabilities.profiles = capabilities.profile_playlists = true;
         reload_after_edit = true;
     }
 
@@ -1037,8 +1043,56 @@ namespace lyren::bodian {
             co_return std::unexpected("Sign in to continue");
         }
         const auto reply = co_await client.call({.path = "ucenter/users/pub/" + client.get("uid"), .sign = true});
-        co_return write_result(reply).transform([this] {
-            return Account{.id = client.get("uid"), .name = client.get("nickname").empty() ? "Bodian Music" : client.get("nickname"), .avatar = client.get("avatar")};
+        co_return write_result(reply).transform([this, &reply] {
+            Envelope<PubUser> parsed;
+            std::string name, avatar;
+            if (!glz::read<lax>(parsed, reply.body) && parsed.data) {
+                name = take(parsed.data->nickname);
+                avatar = take(parsed.data->headImg);
+            }
+            if (name.empty()) {
+                name = client.get("nickname").empty() ? "Bodian Music" : client.get("nickname");
+            }
+            if (avatar.empty()) {
+                avatar = client.get("avatar");
+            }
+            return Account{.id = client.get("uid"), .name = std::move(name), .avatar = std::move(avatar)};
+        });
+    }
+
+    Task<Result<Profile>> Bodian::profile(std::string uid) {
+        const auto reply = co_await client.call({.path = "ucenter/users/pub/" + uid, .sign = true});
+        co_return write_result(reply).transform([this, uid = std::move(uid), &reply] {
+            Profile out{.id = uid};
+            Envelope<PubUser> parsed;
+            if (!glz::read<lax>(parsed, reply.body) && parsed.data) {
+                auto &u = *parsed.data;
+                out.name = take(u.nickname);
+                out.avatar = take(u.headImg);
+                out.signature = take(u.signature, u.intro);
+                if (out.signature.empty()) {
+                    out.signature = take(u.desc);
+                }
+                out.background = take(u.background, u.bgImg);
+                if (u.followCount && *u.followCount >= 0) {
+                    out.follows = *u.followCount;
+                }
+                if (u.fansCount && *u.fansCount >= 0) {
+                    out.fans = *u.fansCount;
+                }
+                if (u.vip && *u.vip > 0) {
+                    out.vip = true;
+                }
+            }
+            if (uid == client.get("uid")) {
+                if (out.name.empty()) {
+                    out.name = client.get("nickname").empty() ? "Bodian Music" : client.get("nickname");
+                }
+                if (out.avatar.empty()) {
+                    out.avatar = client.get("avatar");
+                }
+            }
+            return out;
         });
     }
 
@@ -1060,12 +1114,16 @@ namespace lyren::bodian {
     }
 
     Task<Result<std::pair<Card, std::vector<Card>>>> Bodian::user_playlists(std::string uid) {
+        const bool own = uid.empty() || uid == client.get("uid");
         auto liked = co_await liked_playlist(uid);
-        co_return co_await and_then(std::move(liked), [this, uid = std::move(uid)](Card liked) -> Task<Result<std::pair<Card, std::vector<Card>>>> {
+        co_return co_await and_then(std::move(liked), [this, uid = std::move(uid), own](Card liked) -> Task<Result<std::pair<Card, std::vector<Card>>>> {
             auto created = parse<Page<Playlist, "playLists">>(co_await client.call({.path = "service/playlist/userCreate", .query = {{"userId", uid}}, .sign = true}));
             co_return co_await and_then(std::move(created),
-                                        [this, liked = std::move(liked)](Page<Playlist, "playLists"> created) mutable -> Task<Result<std::pair<Card, std::vector<Card>>>> {
-                                            auto saved = co_await collected_playlists();
+                                        [this, liked = std::move(liked), own](Page<Playlist, "playLists"> created) mutable -> Task<Result<std::pair<Card, std::vector<Card>>>> {
+                                            Result<std::vector<Card>> saved(std::in_place);
+                                            if (own) {
+                                                saved = co_await collected_playlists();
+                                            }
                                             co_return std::move(saved).transform([&](std::vector<Card> saved) {
                                                 std::vector<Card> playlists;
                                                 playlists.reserve((created.items ? created.items->size() : 0) + saved.size());
@@ -1281,6 +1339,7 @@ namespace lyren::bodian {
                     id = std::to_string(*comment.parentId) + ':' + id;
                 }
                 out.comments.push_back({.id = std::move(id),
+                                        .user_id = comment.uid ? std::to_string(comment.uid) : "",
                                         .user = comment.userInfo ? take(comment.nickname, comment.userInfo->nickname) : take(comment.nickname),
                                         .avatar = comment.userInfo ? take(comment.headImg, comment.userInfo->headImg) : take(comment.headImg),
                                         .text = take(comment.content),

@@ -449,3 +449,47 @@ TEST_CASE("Qishui SEO playback follows player info and passes its key to the str
     CHECK(lyrics->front().text == "音乐");
     CHECK(metadata_reads == 1);
 }
+
+TEST_CASE("Qishui profiles, other user playlists, and comment user IDs") {
+    test::Server api([](std::string_view request) {
+        if (request.starts_with("GET /luna/pc/me?")) {
+            return test::ok(
+                R"({"my_info":{"id":"7","nickname":"自己","larger_avatar_url":{"urls":["https://example/me"],"uri":"a.jpg"},"bg_url":{"urls":["https://example/bg"],"uri":"b.jpg"},"signature":"晚安","count_following":15,"count_follower":99,"is_vip":true}})");
+        }
+        if (request.starts_with("GET /luna/pc/user/playlist?")) {
+            CHECK(request.contains("user_id=99"));
+            return test::ok(R"({"playlists":[{"id":"l99","title":"Ta喜欢的","type":1},{"id":"p99","title":"夜间歌单","type":0}],"has_more":false})");
+        }
+        if (request.starts_with("GET /luna/pc/comments?")) {
+            return test::ok(R"({"comments":[{"id":"c1","content":"好听","user":{"id":"99","nickname":"听友"},"count_digged":2}],"has_more":false,"count":1})");
+        }
+        return test::ok(R"({})");
+    });
+    Context c(api.url());
+    CHECK(c.service.capabilities.profiles);
+    CHECK(c.service.capabilities.profile_playlists);
+
+    const auto self_profile = run(c.loop, c.service.profile("7"));
+    REQUIRE(self_profile);
+    CHECK(self_profile->name == "自己");
+    CHECK(self_profile->signature == "晚安");
+    CHECK(self_profile->follows == 15);
+    CHECK(self_profile->fans == 99);
+    CHECK(self_profile->vip);
+
+    const auto other_profile = run(c.loop, c.service.profile("99"));
+    REQUIRE(other_profile);
+    CHECK(other_profile->id == "99");
+
+    const auto other_lists = run(c.loop, c.service.user_playlists("99"));
+    REQUIRE(other_lists);
+    CHECK(other_lists->first.id == "l99");
+    REQUIRE(other_lists->second.size() == 1);
+    CHECK(other_lists->second[0].id == "p99");
+    CHECK(other_lists->second[0].owned);
+
+    const auto page = run(c.loop, c.service.comments(Subject::song, "song", true, 0, ""));
+    REQUIRE(page);
+    REQUIRE(page->comments.size() == 1);
+    CHECK(page->comments[0].user_id == "99");
+}

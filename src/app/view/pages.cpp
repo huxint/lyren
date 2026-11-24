@@ -146,10 +146,12 @@ namespace lyren {
         if (hot > 0) {
             p.shadow({card.x, card.y + 6, card.w, card.h}, t.radius_l(), 20, t.shadow.with_alpha(0.45f * hot));
         }
-        const ui::Color paper = t.dark ? t.fill(1.05f + 0.35f * hot) : t.bg.mix(t.surface, 0.38f + 0.32f * hot);
+        const ui::Color paper = t.dark ? t.fill(1.05f + 0.35f * hot) : t.bg.mix(t.surface, 0.32f + 0.36f * hot);
         p.rect(card, paper, t.radius_l());
-        p.gradient(card, tint.with_alpha((t.dark ? 0.14f : 0.11f) + 0.05f * hot), tint.with_alpha(t.dark ? 0.02f : 0.01f), t.radius_l());
-        p.rect(card, {}, t.radius_l(), t.surface_edge(1.0f).mix(tint.with_alpha(0.4f), 0.3f + 0.45f * hot), 1);
+        p.gradient(card, tint.with_alpha((t.dark ? 0.13f : 0.09f) + 0.045f * hot), tint.with_alpha(t.dark ? 0.02f : 0.015f), t.radius_l());
+        if (hot > 0.01f) {
+            p.rect(card, {}, t.radius_l(), tint.with_alpha(0.18f * hot), 1);
+        }
 
         if (icon.empty()) {
             const auto num_style = t.style(36, t.text, text::semibold | text::tabular_nums);
@@ -159,12 +161,12 @@ namespace lyren {
                 const auto badge_style = t.style(type::micro, tint, text::medium | text::tabular_nums);
                 const float bw = std::ceil(p.measure(badge, badge_style)) + 14;
                 const Rect pill{card.x + 20 + nw + 10, card.y + 24, bw, 20};
-                p.rect(pill, tint.with_alpha(t.dark ? 0.14f : 0.12f), 10, tint.with_alpha(0.24f), 1);
+                p.rect(pill, tint.with_alpha(t.dark ? 0.15f : 0.11f), 10);
                 ui.label(pill, badge, badge_style, Align::center);
             }
         } else {
             const Rect emblem{card.x + 20, card.y + 18, 38, 38};
-            p.rect(emblem, tint.with_alpha(t.dark ? 0.16f : 0.12f), 11, tint.with_alpha(0.26f), 1);
+            p.rect(emblem, tint.with_alpha(t.dark ? 0.16f : 0.11f), 11);
             p.icon(icon, ui::center(emblem, 19, 19), tint);
         }
 
@@ -173,7 +175,7 @@ namespace lyren {
         ui.label({card.x + 20, card.y + 93, text_w, 18}, subtitle, t.style(type::caption, t.text_dim));
 
         const Rect disc = Rect{card.right() - 50, card.bottom() - 50, 34, 34}.inset(-1.f * hot);
-        p.rect(disc, t.fill(1.35f).mix(tint, hot), disc.w / 2, t.surface_edge(0.9f).with_alpha(1 - hot), 1);
+        p.rect(disc, t.fill(1.25f).mix(tint, hot), disc.w / 2);
         const ui::Color on_tint = tint.luminance() > 0.6f ? ink : white;
         Rect glyph = ui::center(disc, 14, 14);
         if (action_icon == "play-fill") {
@@ -496,13 +498,17 @@ namespace lyren {
             const ui::Color fg = t.on_accent();
             {
                 Fade fade(p, 1 - morph);
-                Rect glyph = ui::center(pr, 18 - 5 * morph, 18 - 5 * morph);
+                p.set_zoom((18 - 5 * morph) / 18.f, pr.x + pr.w / 2, pr.y + pr.h / 2);
+                Rect glyph = ui::center(pr, 18, 18);
                 glyph.x += 1;
                 p.icon("play-fill", glyph, fg);
+                p.set_zoom(1);
             }
             {
                 Fade fade(p, morph);
-                p.icon("pause-fill", ui::center(pr, 13 + 5 * morph, 13 + 5 * morph), fg);
+                p.set_zoom((13 + 5 * morph) / 18.f, pr.x + pr.w / 2, pr.y + pr.h / 2);
+                p.icon("pause-fill", ui::center(pr, 18, 18), fg);
+                p.set_zoom(1);
             }
             if (it.clicked) {
                 if (on_air) {

@@ -212,6 +212,31 @@ TEST_CASE("imported Cookie jars retain scope, expiry and signing header order") 
     CHECK(restored.header("api.example.test", "/luna/pc/me") == jar.header("api.example.test", "/luna/pc/me"));
 }
 
+TEST_CASE("concurrent cookie responses merge deltas without clobbering sibling updates") {
+    const auto baseline = net::CookieJar::from_netscape(".example.test\tTRUE\t/\tFALSE\t0\tcommon\tshared\n"
+                                                        "api.example.test\tFALSE\t/\tFALSE\t0\tstale\told\n");
+    const auto after_a = net::CookieJar::from_netscape(".example.test\tTRUE\t/\tFALSE\t0\tcommon\tshared\n"
+                                                       "api.example.test\tFALSE\t/\tFALSE\t0\ttoken_a\tone\n");
+    const auto after_b = net::CookieJar::from_netscape(".example.test\tTRUE\t/\tFALSE\t0\tcommon\tshared\n"
+                                                       "api.example.test\tFALSE\t/\tFALSE\t0\tstale\told\n"
+                                                       "#HttpOnly_api.example.test\tFALSE\t/\tTRUE\t0\ttoken_b\ttwo\n");
+    for (bool a_first : {true, false}) {
+        CAPTURE(a_first);
+        net::CookieJar merged = baseline;
+        if (a_first) {
+            merged.merge(baseline, after_a);
+            merged.merge(baseline, after_b);
+        } else {
+            merged.merge(baseline, after_b);
+            merged.merge(baseline, after_a);
+        }
+        CHECK(merged.get("common", "api.example.test") == "shared");
+        CHECK(merged.get("token_a", "api.example.test") == "one");
+        CHECK(merged.get("token_b", "api.example.test") == "two");
+        CHECK(merged.get("stale", "api.example.test").empty());
+    }
+}
+
 TEST_CASE("chunked audio downloads expose the exact bytes and final size") {
     std::string body(4097, '\0');
     for (size_t i = 0; i < body.size(); ++i) {

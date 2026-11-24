@@ -1,5 +1,7 @@
 #include <vorbis/vorbisfile.h>
 
+#include <algorithm>
+
 #include "audio/decoder.hpp"
 #include "audio/spool.hpp"
 
@@ -23,6 +25,9 @@ namespace lyren::audio {
                 }
                 open_ = true;
                 vorbis_info *vi = ov_info(&vf_, -1);
+                if (!vi || vi->channels <= 0 || vi->rate <= 0) {
+                    return false;
+                }
                 format = {static_cast<uint32_t>(vi->rate), static_cast<uint32_t>(vi->channels)};
                 ogg_int64_t n = ov_pcm_total(&vf_, -1);
                 length = n > 0 ? static_cast<uint64_t>(n) : 0;
@@ -31,20 +36,33 @@ namespace lyren::audio {
             }
 
             size_t read(float *out, size_t frames) override {
+                if (!error.empty()) {
+                    return 0;
+                }
                 size_t ch = format.channels, done = 0;
                 while (done < frames) {
-                    float **pcm;
-                    int section;
+                    float **pcm = nullptr;
+                    int section = 0;
                     long n = ov_read_float(&vf_, &pcm, static_cast<int>(frames - done), &section);
                     if (n == OV_HOLE) {
                         continue;
                     }
-                    if (n <= 0) {
+                    if (n < 0) {
+                        error = "corrupt vorbis stream";
                         break;
                     }
+                    if (n == 0) {
+                        break;
+                    }
+                    vorbis_info *vi = ov_info(&vf_, section);
+                    if (!vi || vi->channels <= 0 || static_cast<uint32_t>(vi->rate) != format.rate) {
+                        error = "vorbis stream sample rate changed";
+                        break;
+                    }
+                    size_t src = static_cast<size_t>(vi->channels);
                     for (long i = 0; i < n; ++i) {
                         for (size_t c = 0; c < ch; ++c) {
-                            out[(done + static_cast<size_t>(i)) * ch + c] = pcm[c][i];
+                            out[(done + static_cast<size_t>(i)) * ch + c] = pcm[std::min(c, src - 1)][i];
                         }
                     }
                     done += static_cast<size_t>(n);
@@ -53,6 +71,7 @@ namespace lyren::audio {
             }
 
             bool seek(uint64_t frame) override {
+                error.clear();
                 return ov_pcm_seek(&vf_, static_cast<ogg_int64_t>(frame)) == 0;
             }
 

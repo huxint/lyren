@@ -41,7 +41,7 @@ namespace lyren {
             GpuChoice device = GpuChoice::integrated;
         } gpu;
         struct Render {
-            int max_fps = 60;
+            int max_fps = 0;
         } render;
         struct Playback {
             Quality quality = Quality::lossless;

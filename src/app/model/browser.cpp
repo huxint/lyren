@@ -133,11 +133,15 @@ namespace lyren {
     }
 
     bool Browser::open_own_profile() {
-        const auto &account = shelf().account;
+        return open_own_profile(active_);
+    }
+
+    bool Browser::open_own_profile(Source source) {
+        const auto &account = library_.shelf(source).account;
         if (!account) {
             return false;
         }
-        open(Page::profile, {.kind = CardKind::user, .source = active_, .id = account->id, .title = account->name, .cover = account->avatar, .owned = true});
+        open(Page::profile, {.kind = CardKind::user, .source = source, .id = account->id, .title = account->name, .cover = account->avatar, .owned = true});
         return true;
     }
 
@@ -242,6 +246,9 @@ namespace lyren {
             return env_.redraw();
         }
         Page page = route_.page;
+        if (page == Page::profile && route_.card.owned && open_own_profile(source)) {
+            return;
+        }
         if (page == Page::playlist || page == Page::album || page == Page::artist || page == Page::similar || page == Page::profile || !supports(page, source)) {
             page = Page::recommend;
         }

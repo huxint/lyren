@@ -170,7 +170,7 @@ namespace lyren {
                         return;
                     }
                     note_input();
-                    request_redraw();
+                    frames_.request();
                 },
             .close =
                 [this] {
@@ -293,12 +293,23 @@ namespace lyren {
 
     // Once input stops for a while, give back font pages and freed heap; glyphs live in the atlas.
     void App::note_input() {
-        loop_.cancel(idle_timer_);
-        idle_timer_ = loop_.after(5s, [this] {
-            idle_timer_ = 0;
-            fonts_->trim();
-            malloc_trim(0);
-        });
+        last_input_ = Clock::now();
+        if (idle_timer_) {
+            return;
+        }
+        auto arm = [this](this auto &&self, Clock::duration delay) -> void {
+            idle_timer_ = loop_.after(delay, [this, self] {
+                idle_timer_ = 0;
+                const auto elapsed = Clock::now() - last_input_;
+                if (elapsed < 5s) {
+                    self(5s - elapsed);
+                    return;
+                }
+                fonts_->trim();
+                malloc_trim(0);
+            });
+        };
+        arm(5s);
     }
 
     void App::render() {
@@ -345,9 +356,9 @@ namespace lyren {
         bool floating = window_->client_side() && m > 0;
         float radius = floating ? theme_.radius_l() : 0;
         if (floating) {
-            p.shadow({0, 6, w, h}, radius, 20, theme_.shadow);
+            p.shadow({0, 0, w, h}, radius, 22, theme_.shadow, true);
         }
-        p.rect({0, 0, w, h}, theme_.bg, radius, floating ? theme_.border : ui::Color{}, floating ? 1 : 0);
+        p.rect({0, 0, w, h}, theme_.bg, radius, floating ? theme_.surface_edge(1.1f) : ui::Color{}, floating ? 1 : 0);
 
         ui_.window_radius = radius;
         ui_.toast_bottom = PlayerBar::height + 12;
@@ -633,7 +644,7 @@ namespace lyren {
                 break;
         }
         note_input();
-        request_redraw();
+        frames_.request();
     }
 
     void App::on_key(const wl::KeyEvent &e) {
@@ -658,7 +669,7 @@ namespace lyren {
         input_.delete_before += e.delete_before;
         input_.delete_after += e.delete_after;
         note_input();
-        request_redraw();
+        frames_.request();
     }
 
     static void write_png(const std::string &path, const uint8_t *bgra, uint32_t w, uint32_t h) {

@@ -54,3 +54,17 @@ TEST_CASE("contextual translations disambiguate identical English keys") {
     CHECK(short_number(1234567) == "1.2M");
     set_language(before);
 }
+
+TEST_CASE("common English UI tokens stay untranslated and contextual Chinese copy stays concise") {
+    const Language before = language();
+    set_language(Language::zh);
+    CHECK(tr("Settings") == "Settings");
+    CHECK(tr("Dark") == "Dark");
+    CHECK(tr("Light") == "Light");
+    CHECK(tr("Language") == "Language");
+    CHECK(tr("Open") == "Open");
+    CHECK(trf("{}/{} connected", 2, 5) == "2/5 connected");
+    CHECK(trf("Here for {}", trf("{} years", 5)) == "5 years");
+    CHECK(tr("Added to liked songs") == "已喜欢");
+    set_language(before);
+}
