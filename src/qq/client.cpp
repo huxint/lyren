@@ -2,6 +2,7 @@
 
 #include <glaze/glaze.hpp>
 
+#include <charconv>
 #include <format>
 #include <iterator>
 
@@ -55,7 +56,9 @@ namespace lyren::qq {
         if (gen != session_gen) {
             co_return Reply{.error = "QQ Music session changed; retry the action"};
         }
-        if (retry == net::Retry::never) {
+        // A 2001 response failed authentication before running the operation; replay single-part writes once with the
+        // renewed session, while keeping transport retries disabled.
+        if (retry == net::Retry::never && parts.size() > 1) {
             co_return reply;
         }
         reply = co_await request(parts, comm, retry);
@@ -69,8 +72,14 @@ namespace lyren::qq {
         // The signature covers these exact bytes, so the body is built once and sent as is.
         std::string body = comm == Comm::app ? R"({"comm":{"ct":20,"cv":1770,"tmeAppID":"qqmusic"})" : R"({"comm":{"ct":19,"cv":1,"tmeAppID":"qqmusic"})";
         if (comm == Comm::app && logged_in()) {
+            uint64_t uin = 0;
+            const std::string &raw = get("musicid");
+            auto parsed = std::from_chars(raw.data(), raw.data() + raw.size(), uin);
+            if (parsed.ec != std::errc{} || parsed.ptr != raw.data() + raw.size()) {
+                uin = 0;
+            }
             body.pop_back();
-            std::format_to(std::back_inserter(body), R"(,"uin":{},"g_tk":{}}})", get("musicid"), hash33(get("musickey"), 5381));
+            std::format_to(std::back_inserter(body), R"(,"uin":{},"g_tk":{}}})", uin, hash33(get("musickey"), 5381));
         }
         std::string what;
         for (size_t i = 0; i < parts.size(); ++i) {
@@ -78,7 +87,7 @@ namespace lyren::qq {
             std::format_to(std::back_inserter(what), "{}{}.{}", i ? ", " : "", parts[i].module, parts[i].method);
         }
         body += '}';
-        std::string url = comm == Comm::linux ? "https://u.y.qq.com/cgi-bin/musicu.fcg" : "https://u.y.qq.com/cgi-bin/musics.fcg?sign=" + sign(body);
+        std::string url = comm == Comm::linux ? base_url_ + "musicu.fcg" : base_url_ + "musics.fcg?sign=" + sign(body);
         net::Request req{.url = std::move(url), .body = std::move(body), .headers = {"Content-Type: application/json", "Referer: https://y.qq.com/", "Origin: https://y.qq.com"}};
         if (logged_in()) {
             req.headers.push_back(std::format("Cookie: uin={0}; qqmusic_uin={0}; qqmusic_key={1}; qqmusic_version=17; qqmusic_miniversion=70; "

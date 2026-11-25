@@ -325,8 +325,9 @@ namespace lyren::qq {
         struct QDirectory {
             int dirId = 0;
             uint64_t tid = 0;
-            Str dirName, dirPicUrl;
+            Str dirName, picUrl, bigpicUrl, albumPicUrl, dirPicUrl;
             int songNum = 0;
+            bool invalid = false;
         };
         struct QDirectories {
             Vec<QDirectory> v_playlist;
@@ -345,11 +346,13 @@ namespace lyren::qq {
             bool hasmore = false;
         };
         struct QAlbumFavorite {
-            Str albumMid, albumName, pic, singerName;
-            int songNum = 0;
+            Str mid, name, logo;
+            Vec<QSinger> v_singer;
+            int songnum = 0;
         };
         struct QAlbumFavorites {
             Vec<QAlbumFavorite> v_list;
+            int total = 0, hasmore = 0;
         };
         // Someone in a follow list, named by the encrypted account ID that profile requests take.
         struct QRelationUser {
@@ -363,11 +366,13 @@ namespace lyren::qq {
             bool HasMore = false;
         };
         struct QFollowSinger {
+            Str MID, Name, AvatarUrl;
             Str SingerMid, SingerName, SingerPic;
         };
         struct QFollowed {
             Vec<QFollowSinger> List;
             int Total = 0;
+            std::optional<bool> HasMore;
         };
         struct QWriteResult {
             int dirId = 0, retCode = 0;
@@ -444,12 +449,33 @@ namespace lyren::qq {
             return mid.empty() ? "" : std::format("https://y.gtimg.cn/music/photo_new/T00{}R300x300M000{}.jpg", kind, mid);
         }
 
+        std::string_view nonempty(const Str &s) {
+            return s && !s->empty() ? std::string_view(*s) : std::string_view{};
+        }
+
+        std::string first_nonempty(std::initializer_list<std::string_view> values) {
+            for (std::string_view value : values) {
+                if (!value.empty()) {
+                    return std::string(value);
+                }
+            }
+            return {};
+        }
+
+        template <class Fallback>
+        std::string nonempty_or(const Str &s, Fallback &&fallback) {
+            if (s && !s->empty()) {
+                return *s;
+            }
+            return std::forward<Fallback>(fallback)();
+        }
+
         Card playlist_card(const QPlaylistBasic &p) {
             return {.source = Source::qq,
                     .id = std::to_string(p.tid),
                     .title = p.title.value_or(""),
                     .subtitle = p.creator ? p.creator->nick.value_or("") : "",
-                    .cover = p.cover ? p.cover->medium_url.value_or(p.cover->default_url.value_or("")) : "",
+                    .cover = p.cover ? first_nonempty({nonempty(p.cover->medium_url), nonempty(p.cover->default_url)}) : "",
                     .count = p.song_cnt,
                     .count_kind = Card::Count::songs,
                     .collectable = true};
@@ -457,7 +483,7 @@ namespace lyren::qq {
 
         Track track(const QSong &s) {
             Track t{.id = std::to_string(s.id), .mid = s.mid.value_or(""), .source = Source::qq};
-            t.title = s.title.value_or(s.name.value_or(""));
+            t.title = first_nonempty({nonempty(s.title), nonempty(s.name)});
             t.alias = s.subtitle.value_or("");
             if (s.file) {
                 t.media = s.file->media_mid.value_or("");
@@ -471,7 +497,7 @@ namespace lyren::qq {
                 }
             }
             if (s.album) {
-                t.album = s.album->title.value_or(s.album->name.value_or(""));
+                t.album = first_nonempty({nonempty(s.album->title), nonempty(s.album->name)});
                 t.album_id = s.album->mid.value_or("");
             }
             t.cover = t.album_id.empty() ? photo(1, t.artist_id) : photo(2, t.album_id);
@@ -581,7 +607,7 @@ namespace lyren::qq {
                     .subtitle = std::move(year),
                     .cover = std::move(cover),
                     .count = count,
-                    .count_kind = Card::Count::songs};
+                    .count_kind = count > 0 ? Card::Count::songs : Card::Count::none};
         }
 
         std::string trimmed(const Str &s) {
@@ -870,8 +896,8 @@ namespace lyren::qq {
         return feedback(reply).transform([](const auto &) {});
     }
 
-    Qq::Qq(Loop &loop, net::Http &http)
-    : client(loop, http),
+    Qq::Qq(Loop &loop, net::Http &http, std::string base_url)
+    : client(loop, http, std::move(base_url)),
       loop_(loop),
       http_(http) {
         capabilities = {.toplists = true,
@@ -929,7 +955,13 @@ namespace lyren::qq {
     }
 
     Task<Result<std::vector<Track>>> Qq::fm() {
-        co_return parse_radio(co_await client.call({{"music.radioProxy.MbTrackRadioSvr", "get_radio_track", R"({"id":99,"num":5,"from":0,"scene":0,"song_ids":[]})"}}));
+        auto reply = co_await client.call({{"music.radioProxy.MbTrackRadioSvr", "get_radio_track", R"({"id":99,"num":5,"from":0,"scene":0,"song_ids":[]})"}});
+        if (!client.logged_in() && reply.error.empty()) {
+            if (auto r = parse<One<QRadio>>(reply); r && r->req_0 && r->req_0->code == 1000) {
+                co_return std::unexpected("Sign in to QQ Music and try again");
+            }
+        }
+        co_return parse_radio(reply);
     }
 
     Task<Result<std::vector<Track>>> Qq::radar() {
@@ -970,18 +1002,29 @@ namespace lyren::qq {
         Result<std::vector<Dislike>> out(std::in_place);
         std::string cursor;
         bool more = true;
+        constexpr int max_pages = 100;
         for (int page = 1; out && more; ++page) {
+            if (page > max_pages) {
+                co_return std::unexpected("QQ Music returned too many dislike pages");
+            }
             std::string param = std::format(R"({{"Cmd":{},"Page":{}}})", dislike_commands[index], page);
             if (!cursor.empty()) {
                 param.pop_back();
                 std::format_to(std::back_inserter(param), R"(,"{}":{}}})", dislike_cursors[index], glz::write_json(glz::escape_bytes_t{cursor}).value());
             }
-            out = parse_dislikes(co_await client.call({{"music.feedback.FeedbackBlack", "GetDislikeList", std::move(param)}}), kind).transform([&](DislikesPage r) {
-                more = !r.items.empty();
-                cursor = std::move(r.cursor);
-                out->insert(out->end(), std::make_move_iterator(r.items.begin()), std::make_move_iterator(r.items.end()));
-                return std::move(*out);
-            });
+            out = parse_dislikes(co_await client.call({{"music.feedback.FeedbackBlack", "GetDislikeList", std::move(param)}}), kind)
+                      .and_then([&](DislikesPage r) -> Result<std::vector<Dislike>> {
+                          if (r.items.empty()) {
+                              more = false;
+                              return std::move(*out);
+                          }
+                          if (r.cursor.empty() || r.cursor == cursor) {
+                              return std::unexpected("QQ Music returned a repeated dislike page");
+                          }
+                          cursor = std::move(r.cursor);
+                          out->insert(out->end(), std::make_move_iterator(r.items.begin()), std::make_move_iterator(r.items.end()));
+                          return std::move(*out);
+                      });
         }
         co_return out;
     }
@@ -1032,7 +1075,10 @@ namespace lyren::qq {
                                                  .source = Source::qq,
                                                  .id = a.singerMID.value_or(""),
                                                  .title = a.singerName.value_or(""),
-                                                 .cover = a.singerPic.value_or(photo(1, a.singerMID.value_or(""))),
+                                                 .cover = nonempty_or(a.singerPic,
+                                                                      [&] {
+                                                                          return photo(1, a.singerMID.value_or(""));
+                                                                      }),
                                                  .count = a.songNum,
                                                  .count_kind = Card::Count::songs});
                         }
@@ -1076,58 +1122,91 @@ namespace lyren::qq {
             std::to_array<File>({{"F000", "flac", "lossless"}, {"M800", "mp3", "exhigh"}, {"M500", "mp3", "standard"}, {"C400", "m4a", "aac96"}, {"RS02", "mp3", "standard"}});
         // QQ's confirmed formats have no 192 kbps or Hi-Res tier; use the next supported tier below the request.
         size_t first = quality >= Quality::lossless ? 0 : quality == Quality::exhigh ? 1 : 2;
+        const std::string mid_json = glz::write_json(t.mid).value();
+        const std::string detail = std::format(R"({{"song_mid":{}}})", mid_json);
+        std::optional<QSong> prefetched;
+        if (t.media.empty()) {
+            // Song MID and media MID can differ; requesting vkeys with song MID can yield a 404 URL.
+            auto resolved = parse_data<QDetail>(co_await client.call({{"music.pf_song_detail_svr", "get_song_detail", detail}}));
+            if (!resolved) {
+                co_return std::unexpected(resolved.error());
+            }
+            if (!resolved->track_info || !resolved->track_info->file || resolved->track_info->file->media_mid.value_or("").empty()) {
+                co_return std::unexpected("QQ Music returned no playback details for this song");
+            }
+            t.media = *resolved->track_info->file->media_mid;
+            prefetched = std::move(*resolved->track_info);
+        }
         std::string mids, types, names;
         for (size_t i = first; i < files.size(); ++i) {
             std::string_view sep = i == first ? "" : ",";
-            std::format_to(std::back_inserter(mids), "{}\"{}\"", sep, t.mid);
+            std::format_to(std::back_inserter(mids), "{}{}", sep, mid_json);
             std::format_to(std::back_inserter(types), "{}{}", sep, t.type);
-            std::format_to(std::back_inserter(names), "{}\"{}{}.{}\"", sep, files[i].prefix, t.media, files[i].ext);
+            std::format_to(std::back_inserter(names), "{}{}", sep, glz::write_json(std::format("{}{}.{}", files[i].prefix, t.media, files[i].ext)).value());
         }
         std::string uin = client.logged_in() ? client.get("musicid") : "0";
-        std::string vkey = std::format(R"({{"uin":"{}","guid":"{}","songmid":[{}],"songtype":[{}],"filename":[{}],"ctx":0}})", uin, guid_, mids, types, names);
-        // The details carry the loudness.
-        std::string detail = std::format(R"({{"song_mid":"{}"}})", t.mid);
-        co_return parse<Two<QVkey, QDetail>>(co_await client.call({{"music.vkey.GetVkey", "UrlGetVkey", vkey}, {"music.pf_song_detail_svr", "get_song_detail", detail}}))
-            .and_then([&](auto r) -> Result<Stream> {
-                return take_data(r.req_0).and_then([&](auto v) -> Result<Stream> {
-                    if (!v.sip || v.sip->empty() || !v.midurlinfo) {
-                        return std::unexpected("This song is unavailable (membership or licensing restriction)");
-                    }
-                    for (size_t i = first; i < files.size(); ++i) {
-                        std::string name = std::format("{}{}.{}", files[i].prefix, t.media, files[i].ext);
-                        auto u = std::ranges::find_if(*v.midurlinfo, [&](const QUrl &x) {
-                            return x.filename == name && x.result == 0 && x.purl && !x.purl->empty();
-                        });
-                        if (u == v.midurlinfo->end()) {
-                            continue;
-                        }
-                        std::string host = v.sip->front();
-                        if (host.starts_with("http://")) {
-                            host.insert(4, "s");
-                        }
-                        // The RS02 preview file always holds the song's first 60 s, whatever the detail's try_begin/b_30s
-                        // windows say (they mark the highlight segment QQ's own player offers), so its lyrics need no offset.
-                        Stream s{.url = host + *u->purl, .level = files[i].level, .trial = std::string_view(files[i].prefix) == "RS02"};
-                        auto d = take_data(r.req_1);
-                        if (d && d->track_info) {
-                            const QSong &song = *d->track_info;
-                            if (song.file && song.file->try_end > song.file->try_begin) {
-                                s.highlight_from = song.file->try_begin / 1000.0, s.highlight_to = song.file->try_end / 1000.0;
-                            }
-                            // A clip's loudness is not the song's.
-                            if (song.volume && !s.trial) {
-                                s.gain = song.volume->gain, s.peak = song.volume->peak;
-                            }
-                        }
-                        return s;
-                    }
+        std::string vkey = std::format(R"({{"uin":{},"guid":{},"songmid":[{}],"songtype":[{}],"filename":[{}],"ctx":0}})", glz::write_json(uin).value(),
+                                       glz::write_json(guid_).value(), mids, types, names);
+        // The details carry the loudness; reuse the prefetched detail when media MID was resolved above.
+        std::vector<Rpc> parts{{"music.vkey.GetVkey", "UrlGetVkey", std::move(vkey)}};
+        if (!prefetched) {
+            parts.push_back({"music.pf_song_detail_svr", "get_song_detail", detail});
+        }
+        co_return parse<Two<QVkey, QDetail>>(co_await client.call(std::move(parts))).and_then([&](auto r) -> Result<Stream> {
+            if (!client.logged_in() && r.req_0 && (r.req_0->code == 104009 || r.req_0->code == 1000)) {
+                return std::unexpected("Sign in to QQ Music and try again");
+            }
+            return take_data(r.req_0).and_then([&](auto v) -> Result<Stream> {
+                if (!v.sip || v.sip->empty() || !v.midurlinfo) {
                     return std::unexpected("This song is unavailable (membership or licensing restriction)");
+                }
+                auto sip = std::ranges::find_if(*v.sip, [](const std::string &h) {
+                    return !h.empty();
                 });
+                if (sip == v.sip->end()) {
+                    return std::unexpected("This song is unavailable (membership or licensing restriction)");
+                }
+                for (size_t i = first; i < files.size(); ++i) {
+                    std::string name = std::format("{}{}.{}", files[i].prefix, t.media, files[i].ext);
+                    auto u = std::ranges::find_if(*v.midurlinfo, [&](const QUrl &x) {
+                        return x.filename == name && x.result == 0 && x.purl && !x.purl->empty();
+                    });
+                    if (u == v.midurlinfo->end()) {
+                        continue;
+                    }
+                    std::string host = *sip;
+                    if (host.starts_with("http://")) {
+                        host.insert(4, "s");
+                    }
+                    // The RS02 preview file always holds the song's first 60 s, whatever the detail's try_begin/b_30s
+                    // windows say (they mark the highlight segment QQ's own player offers), so its lyrics need no offset.
+                    Stream s{.url = host + *u->purl, .level = files[i].level, .trial = std::string_view(files[i].prefix) == "RS02"};
+                    const QSong *song = prefetched ? &*prefetched : nullptr;
+                    Result<QDetail> fetched_detail;
+                    if (!song) {
+                        fetched_detail = take_data(r.req_1);
+                        if (fetched_detail && fetched_detail->track_info) {
+                            song = &*fetched_detail->track_info;
+                        }
+                    }
+                    if (song) {
+                        if (song->file && song->file->try_end > song->file->try_begin) {
+                            s.highlight_from = song->file->try_begin / 1000.0, s.highlight_to = song->file->try_end / 1000.0;
+                        }
+                        // A clip's loudness is not the song's.
+                        if (song->volume && !s.trial) {
+                            s.gain = song->volume->gain, s.peak = song->volume->peak;
+                        }
+                    }
+                    return s;
+                }
+                return std::unexpected("This song is unavailable (membership or licensing restriction)");
             });
+        });
     }
 
     Task<Result<Track>> Qq::song_detail(std::string mid) {
-        co_return parse_data<QDetail>(co_await client.call({{"music.pf_song_detail_svr", "get_song_detail", std::format(R"({{"song_mid":"{}"}})", mid)}}))
+        co_return parse_data<QDetail>(co_await client.call({{"music.pf_song_detail_svr", "get_song_detail", std::format(R"({{"song_mid":{}}})", glz::write_json(mid).value())}}))
             .and_then([&](auto d) -> Result<Track> {
                 if (!d.track_info) {
                     return std::unexpected("QQ Music returned no details for this song");
@@ -1156,9 +1235,9 @@ namespace lyren::qq {
             Result<std::vector<Track>> out(std::in_place);
             bool more = true;
             for (int offset = 0; out && more;) {
-                out = parse_playlist(co_await client.call(
-                                         {{"music.musicasset.PlaylistDetailRead", "GetUniformSongDetailInfo",
-                                           std::format(R"({{"uin":"{}","dirid":{},"bPaged":true,"offset":{},"size":100}})", client.get("musicid"), card.id.substr(4), offset)}}))
+                out = parse_playlist(co_await client.call({{"music.musicasset.PlaylistDetailRead", "GetUniformSongDetailInfo",
+                                                            std::format(R"({{"uin":{},"dirid":{},"bPaged":true,"offset":{},"size":100}})",
+                                                                        glz::write_json(client.get("musicid")).value(), card.id.substr(4), offset)}}))
                           .transform([&](PlaylistPage page) {
                               more = !page.tracks.empty() && page.more;
                               offset += static_cast<int>(page.tracks.size());
@@ -1246,13 +1325,17 @@ namespace lyren::qq {
     }
 
     Task<Result<AlbumInfo>> Qq::album(std::string mid) {
+        const std::string mid_json = glz::write_json(mid).value();
+        int total_songs = 0, fetched = 0;
         auto result =
             parse<Two<QAlbumDetail, QSongList>>(
-                co_await client.call({{"music.musichallAlbum.AlbumInfoServer", "GetAlbumDetail", std::format(R"({{"albumMid":"{}"}})", mid)},
-                                      {"music.musichallAlbum.AlbumSongList", "GetAlbumSongList", std::format(R"({{"albumMid":"{}","begin":0,"num":500,"order":2}})", mid)}}))
-                .and_then([](Two<QAlbumDetail, QSongList> r) {
+                co_await client.call({{"music.musichallAlbum.AlbumInfoServer", "GetAlbumDetail", std::format(R"({{"albumMid":{}}})", mid_json)},
+                                      {"music.musichallAlbum.AlbumSongList", "GetAlbumSongList", std::format(R"({{"albumMid":{},"begin":0,"num":500,"order":2}})", mid_json)}}))
+                .and_then([&](Two<QAlbumDetail, QSongList> r) {
                     return take_data(r.req_0).and_then([&](const QAlbumDetail &a) {
                         return take_data(r.req_1).transform([&](const QSongList &s) {
+                            total_songs = s.totalNum;
+                            fetched = s.songList ? static_cast<int>(s.songList->size()) : 0;
                             AlbumInfo out{.tracks = tracks_of(s.songList)};
                             if (a.singer && a.singer->singerList) {
                                 for (const auto &x : *a.singer->singerList) {
@@ -1274,6 +1357,20 @@ namespace lyren::qq {
                         });
                     });
                 });
+        while (result && fetched > 0 && fetched < total_songs) {
+            auto page = parse_data<QSongList>(co_await client.call(
+                {{"music.musichallAlbum.AlbumSongList", "GetAlbumSongList", std::format(R"({{"albumMid":{},"begin":{},"num":500,"order":2}})", mid_json, fetched)}}));
+            if (!page) {
+                co_return std::unexpected(page.error());
+            }
+            if (!page->songList || page->songList->empty()) {
+                break;
+            }
+            fetched += static_cast<int>(page->songList->size());
+            total_songs = std::max(total_songs, page->totalNum);
+            auto part = tracks_of(page->songList);
+            result->tracks.insert(result->tracks.end(), std::make_move_iterator(part.begin()), std::make_move_iterator(part.end()));
+        }
         if (!result || !client.logged_in()) {
             co_return result;
         }
@@ -1290,32 +1387,38 @@ namespace lyren::qq {
     }
 
     Task<Result<ArtistInfo>> Qq::artist(std::string mid) {
+        const std::string mid_json = glz::write_json(mid).value();
         // The details have no counts; the first entry of each list brings its total.
-        auto result = parse<Three<QSingerDetail, QSongList, QAlbumList>>(
-                          co_await client.call({{"music.musichallSinger.SingerInfoInter", "GetSingerDetail",
-                                                 std::format(R"({{"singer_mids":["{}"],"pic":1,"group_singer":0,"wiki_singer":0,"ex_singer":1}})", mid)},
-                                                {"music.musichallSong.SongListInter", "GetSingerSongList", std::format(R"({{"singerMid":"{}","begin":0,"num":1,"order":1}})", mid)},
-                                                {"music.musichallAlbum.AlbumListServer", "GetAlbumList", std::format(R"({{"singerMid":"{}","order":0,"begin":0,"num":1}})", mid)}}))
-                          .and_then([&](Three<QSingerDetail, QSongList, QAlbumList> r) {
-                              return take_data(r.req_0).and_then([&](const QSingerDetail &d) -> Result<ArtistInfo> {
-                                  if (!d.singer_list || d.singer_list->empty()) {
-                                      return std::unexpected("Artist not found");
-                                  }
-                                  const QSingerEntry &e = d.singer_list->front();
-                                  ArtistInfo out{.name = e.basic_info ? e.basic_info->name.value_or("") : ""};
-                                  if (e.ex_info) {
-                                      out.alias = e.ex_info->foreign_name.value_or("");
-                                  }
-                                  out.avatar = e.pic && e.pic->pic ? *e.pic->pic : photo(1, mid);
-                                  if (auto s = take_data(r.req_1)) {
-                                      out.songs = s->totalNum;
-                                  }
-                                  if (auto a = take_data(r.req_2)) {
-                                      out.albums = a->total;
-                                  }
-                                  return out;
-                              });
-                          });
+        auto result =
+            parse<Three<QSingerDetail, QSongList, QAlbumList>>(
+                co_await client.call({{"music.musichallSinger.SingerInfoInter", "GetSingerDetail",
+                                       std::format(R"({{"singer_mids":[{}],"pic":1,"group_singer":0,"wiki_singer":0,"ex_singer":1}})", mid_json)},
+                                      {"music.musichallSong.SongListInter", "GetSingerSongList", std::format(R"({{"singerMid":{},"begin":0,"num":1,"order":1}})", mid_json)},
+                                      {"music.musichallAlbum.AlbumListServer", "GetAlbumList", std::format(R"({{"singerMid":{},"order":0,"begin":0,"num":1}})", mid_json)}}))
+                .and_then([&](Three<QSingerDetail, QSongList, QAlbumList> r) {
+                    return take_data(r.req_0).and_then([&](const QSingerDetail &d) -> Result<ArtistInfo> {
+                        if (!d.singer_list || d.singer_list->empty()) {
+                            return std::unexpected("Artist not found");
+                        }
+                        const QSingerEntry &e = d.singer_list->front();
+                        ArtistInfo out{.name = e.basic_info ? e.basic_info->name.value_or("") : ""};
+                        if (e.ex_info) {
+                            out.alias = e.ex_info->foreign_name.value_or("");
+                        }
+                        out.avatar = e.pic ? nonempty_or(e.pic->pic,
+                                                         [&] {
+                                                             return photo(1, mid);
+                                                         })
+                                           : photo(1, mid);
+                        if (auto s = take_data(r.req_1)) {
+                            out.songs = s->totalNum;
+                        }
+                        if (auto a = take_data(r.req_2)) {
+                            out.albums = a->total;
+                        }
+                        return out;
+                    });
+                });
         if (!result || !client.logged_in()) {
             co_return result;
         }
@@ -1332,16 +1435,16 @@ namespace lyren::qq {
     }
 
     Task<Result<Batch>> Qq::artist_songs(std::string mid, int offset) {
-        co_return parse_data<QSongList>(
-            co_await client.call({{"music.musichallSong.SongListInter", "GetSingerSongList", std::format(R"({{"singerMid":"{}","begin":{},"num":100,"order":1}})", mid, offset)}}))
+        co_return parse_data<QSongList>(co_await client.call({{"music.musichallSong.SongListInter", "GetSingerSongList",
+                                                               std::format(R"({{"singerMid":{},"begin":{},"num":100,"order":1}})", glz::write_json(mid).value(), offset)}}))
             .transform([&](auto d) -> Batch {
                 return Batch{.tracks = tracks_of(d.songList), .total = d.totalNum, .next_offset = offset + 100 < d.totalNum ? offset + 100 : -1};
             });
     }
 
     Task<Result<Batch>> Qq::artist_albums(std::string mid, int offset) {
-        co_return parse_data<QAlbumList>(
-            co_await client.call({{"music.musichallAlbum.AlbumListServer", "GetAlbumList", std::format(R"({{"singerMid":"{}","order":0,"begin":{},"num":30}})", mid, offset)}}))
+        co_return parse_data<QAlbumList>(co_await client.call({{"music.musichallAlbum.AlbumListServer", "GetAlbumList",
+                                                                std::format(R"({{"singerMid":{},"order":0,"begin":{},"num":30}})", glz::write_json(mid).value(), offset)}}))
             .transform([&](auto d) -> Batch {
                 Batch out{.total = d.total};
                 out.next_offset = offset + 30 < d.total ? offset + 30 : -1;
@@ -1355,8 +1458,9 @@ namespace lyren::qq {
     }
 
     Task<Result<std::vector<std::pair<std::string, std::string>>>> Qq::artist_intro(std::string mid) {
-        co_return parse_data<QSingerDetail>(co_await client.call({{"music.musichallSinger.SingerInfoInter", "GetSingerDetail",
-                                                                   std::format(R"({{"singer_mids":["{}"],"pic":0,"group_singer":0,"wiki_singer":1,"ex_singer":1}})", mid)}}))
+        co_return parse_data<QSingerDetail>(
+            co_await client.call({{"music.musichallSinger.SingerInfoInter", "GetSingerDetail",
+                                   std::format(R"({{"singer_mids":[{}],"pic":0,"group_singer":0,"wiki_singer":1,"ex_singer":1}})", glz::write_json(mid).value())}}))
             .transform([&](auto d) -> std::vector<std::pair<std::string, std::string>> {
                 std::vector<std::pair<std::string, std::string>> out;
                 if (!d.singer_list || d.singer_list->empty()) {
@@ -1405,8 +1509,8 @@ namespace lyren::qq {
         if (id.starts_with(top_prefix)) {
             biz = 4, id = id.substr(top_prefix.size());
         }
-        std::string common =
-            std::format(R"("BizType":{},"BizId":"{}","LastCommentSeqNo":{},"PageSize":20,"PageNum":{})", biz, id, glz::write_json(glz::escape_bytes_t{cursor}).value(), page - 1);
+        std::string common = std::format(R"("BizType":{},"BizId":{},"LastCommentSeqNo":{},"PageSize":20,"PageNum":{})", biz, glz::write_json(id).value(),
+                                         glz::write_json(glz::escape_bytes_t{cursor}).value(), page - 1);
         Rpc rpc{"music.globalComment.CommentReadServer", hot ? "GetHotCommentList" : "GetNewCommentList",
                 hot ? std::format(R"({{{},"HotType":1,"WithAirborne":0}})", common) : std::format(R"({{{},"FromCommentId":"","WithHot":0}})", common)};
         co_return parse_comments(co_await client.call({rpc}));
@@ -1547,32 +1651,52 @@ namespace lyren::qq {
         co_return parse_comment_delete(co_await client.call({{"music.globalComment.CommentWriteServer", "DelComment", std::move(param)}}, Comm::app, net::Retry::never));
     }
 
-    Task<Result<std::pair<Card, std::vector<Card>>>> Qq::user_playlists(std::string uid) {
-        co_return co_await and_then(
-            parse_data<QDirectories>(co_await client.call({{"music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", std::format(R"({{"uin":"{}"}})", uid)}})),
-            [&](auto d) -> Task<Result<std::pair<Card, std::vector<Card>>>> {
-                std::pair<Card, std::vector<Card>> out{{.source = Source::qq, .id = "dir:201", .title = "Liked songs", .owned = true}, {}};
-                if (d.v_playlist) {
-                    for (const auto &p : *d.v_playlist) {
-                        if (p.dirId == 201) {
-                            out.first.count = p.songNum;
-                            out.first.count_kind = p.songNum > 0 ? Card::Count::songs : Card::Count::none;
-                            out.first.cover = p.dirPicUrl.value_or("");
-                            continue;
+    Result<std::pair<Card, std::vector<Card>>> parse_user_playlists(const Reply &reply, bool owned) {
+        return parse_data<QDirectories>(reply).transform([owned](auto d) -> std::pair<Card, std::vector<Card>> {
+            std::pair<Card, std::vector<Card>> out{{.source = Source::qq, .id = owned ? "dir:201" : "", .title = "Liked songs", .owned = owned}, {}};
+            if (d.v_playlist) {
+                for (const auto &p : *d.v_playlist) {
+                    std::string cover = first_nonempty({nonempty(p.picUrl), nonempty(p.bigpicUrl), nonempty(p.albumPicUrl), nonempty(p.dirPicUrl)});
+                    if (p.dirId == 201) {
+                        out.first.count = p.songNum;
+                        out.first.count_kind = p.songNum > 0 ? Card::Count::songs : Card::Count::none;
+                        out.first.cover = std::move(cover);
+                        if (!owned && p.tid) {
+                            out.first.id = std::to_string(p.tid);
+                            out.first.collectable = true;
+                            out.first.commentable = true;
                         }
-                        if (!p.dirId || p.dirName.value_or("").empty()) {
-                            co_return std::unexpected("QQ Music returned an invalid playlist directory");
-                        }
-                        out.second.push_back({.source = Source::qq,
-                                              .id = "dir:" + std::to_string(p.dirId),
-                                              .title = *p.dirName,
-                                              .cover = p.dirPicUrl.value_or(""),
-                                              .thread = p.tid ? std::to_string(p.tid) : "",
-                                              .count = p.songNum,
-                                              .count_kind = Card::Count::songs,
-                                              .owned = true,
-                                              .commentable = p.tid != 0});
+                        continue;
                     }
+                    if (p.invalid || !p.dirId || p.dirName.value_or("").empty() || (!owned && !p.tid)) {
+                        log::debug("qq skipping invalid playlist directory (dirId={})", p.dirId);
+                        continue;
+                    }
+                    out.second.push_back({.source = Source::qq,
+                                          .id = owned ? "dir:" + std::to_string(p.dirId) : std::to_string(p.tid),
+                                          .title = *p.dirName,
+                                          .cover = std::move(cover),
+                                          .thread = owned && p.tid ? std::to_string(p.tid) : "",
+                                          .count = p.songNum,
+                                          .count_kind = Card::Count::songs,
+                                          .owned = owned,
+                                          .commentable = p.tid != 0,
+                                          .collectable = !owned});
+                }
+            }
+            return out;
+        });
+    }
+
+    Task<Result<std::pair<Card, std::vector<Card>>>> Qq::user_playlists(std::string uid) {
+        const bool own = uid.empty() || uid == client.get("musicid");
+        const std::string target = uid.empty() ? client.get("musicid") : uid;
+        co_return co_await and_then(
+            parse_user_playlists(co_await client.call({{"music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", std::format(R"({{"uin":{}}})", glz::write_json(target).value())}}),
+                                 own),
+            [this, own](auto out) -> Task<Result<std::pair<Card, std::vector<Card>>>> {
+                if (!own) {
+                    co_return out;
                 }
                 co_return (co_await collected_playlists()).transform([&](auto favorites) -> std::pair<Card, std::vector<Card>> {
                     out.second.insert(out.second.end(), std::make_move_iterator(favorites.begin()), std::make_move_iterator(favorites.end()));
@@ -1701,7 +1825,7 @@ namespace lyren::qq {
 
     Task<Result<void>> Qq::collect(std::string mid, bool on) {
         auto r = written(co_await client.call({{"music.musicasset.AlbumFavWrite", on ? "FavAlbum" : "CancelFavAlbum",
-                                                std::format(R"({{"uin":"{}","v_albumMid":["{}"]}})", client.get("musicid"), mid)}},
+                                                std::format(R"({{"uin":{},"v_albumMid":[{}]}})", glz::write_json(client.get("musicid")).value(), glz::write_json(mid).value())}},
                                               Comm::app, net::Retry::never))
                      .transform([](const auto &) {});
         sync_collection_cache();
@@ -1715,26 +1839,54 @@ namespace lyren::qq {
         co_return r;
     }
 
+    Result<FavoriteAlbumsPage> parse_favorite_albums(const Reply &reply) {
+        return parse_data<QAlbumFavorites>(reply).and_then([](auto d) -> Result<FavoriteAlbumsPage> {
+            FavoriteAlbumsPage out{.total = d.total, .more = d.hasmore != 0};
+            if (d.v_list) {
+                out.albums.reserve(d.v_list->size());
+                for (const auto &a : *d.v_list) {
+                    if (a.mid.value_or("").empty()) {
+                        return std::unexpected("QQ Music returned an invalid saved album");
+                    }
+                    std::string artists;
+                    if (a.v_singer) {
+                        for (const auto &s : *a.v_singer) {
+                            if (const auto name = nonempty(s.name); !name.empty()) {
+                                artists += (artists.empty() ? "" : " / ") + std::string(name);
+                            }
+                        }
+                    }
+                    out.albums.push_back({.kind = CardKind::album,
+                                          .source = Source::qq,
+                                          .id = *a.mid,
+                                          .title = a.name.value_or(""),
+                                          .subtitle = std::move(artists),
+                                          .cover = nonempty_or(a.logo,
+                                                               [&] {
+                                                                   return photo(2, *a.mid);
+                                                               }),
+                                          .count = a.songnum,
+                                          .count_kind = a.songnum > 0 ? Card::Count::songs : Card::Count::none});
+                }
+            }
+            return out;
+        });
+    }
+
     Task<Result<std::vector<Card>>> Qq::collected_albums() {
-        auto r = parse_data<QAlbumFavorites>(co_await client.call({{"music.musicasset.AlbumFavRead", "GetAlbumFavInfo", std::format(R"({{"uin":"{}"}})", client.get("musicid"))}}))
-                     .and_then([&](auto d) -> Result<std::vector<Card>> {
-                         std::vector<Card> out;
-                         if (d.v_list) {
-                             for (const auto &a : *d.v_list) {
-                                 if (a.albumMid.value_or("").empty()) {
-                                     return std::unexpected("QQ Music returned an invalid saved album");
-                                 }
-                                 out.push_back({.kind = CardKind::album,
-                                                .source = Source::qq,
-                                                .id = *a.albumMid,
-                                                .title = a.albumName.value_or(""),
-                                                .subtitle = a.singerName.value_or(""),
-                                                .cover = a.pic.value_or(photo(2, *a.albumMid)),
-                                                .count = a.songNum});
-                             }
-                         }
-                         return out;
-                     });
+        Result<std::vector<Card>> r(std::in_place);
+        bool more = true;
+        const std::string uin = glz::write_json(client.get("musicid")).value();
+        for (int offset = 0; r && more;) {
+            r = parse_favorite_albums(
+                    co_await client.call({{"music.musicasset.AlbumFavRead", "GetAlbumFavInfo", std::format(R"({{"uin":{},"offset":{},"size":100}})", uin, offset)}}))
+                    .transform([&](FavoriteAlbumsPage page) {
+                        offset += static_cast<int>(page.albums.size());
+                        more = !page.albums.empty() && page.more && (page.total <= 0 || offset < page.total);
+                        r->insert(r->end(), std::make_move_iterator(page.albums.begin()), std::make_move_iterator(page.albums.end()));
+                        return std::move(*r);
+                    });
+        }
         if (r && client.logged_in()) {
             sync_collection_cache();
             std::unordered_set<std::string> ids;
@@ -1749,10 +1901,12 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::follow(std::string mid, bool on) {
-        auto r = written(co_await client.call({{"Concern.ConcernSystemServer", "cgi_concern_user_v2",
-                                                std::format(R"({{"opertype":{},"source":0,"encrypt_singerid":1,"userinfo":{{"usertype":1,"userid":"{}"}}}})", on ? 0 : 1, mid)}},
-                                              Comm::app, net::Retry::never))
-                     .transform([](const auto &) {});
+        auto r =
+            written(co_await client.call(
+                        {{"Concern.ConcernSystemServer", "cgi_concern_user_v2",
+                          std::format(R"({{"opertype":{},"source":0,"encrypt_singerid":1,"userinfo":{{"usertype":1,"userid":{}}}}})", on ? 0 : 1, glz::write_json(mid).value())}},
+                        Comm::app, net::Retry::never))
+                .transform([](const auto &) {});
         sync_collection_cache();
         if (r && followed_artists_) {
             if (on) {
@@ -1801,34 +1955,56 @@ namespace lyren::qq {
     }
 
     Task<Result<PeoplePage>> Qq::people(std::string uid, bool fans, std::string cursor) {
-        const int from = cursor.empty() ? 0 : std::stoi(cursor);
+        int from = 0;
+        if (!cursor.empty()) {
+            auto parsed = std::from_chars(cursor.data(), cursor.data() + cursor.size(), from);
+            if (parsed.ec != std::errc{} || parsed.ptr != cursor.data() + cursor.size() || from < 0) {
+                co_return std::unexpected("Invalid pagination cursor");
+            }
+        }
         // The signed-in account's own lists take no host; anyone else is named by the encrypted ID.
         std::string host = uid == client.get("musicid") ? "" : std::format(R"(,"HostUin":{})", glz::write_json(uid).value());
         co_return parse_people(
             co_await client.call({{"music.concern.RelationList", fans ? "GetFansList" : "GetFollowUserList", std::format(R"({{"From":{},"Size":30{}}})", from, host)}}), from);
     }
 
+    Result<FollowedArtistsPage> parse_followed_artists(const Reply &reply, int from) {
+        return parse_data<QFollowed>(reply).and_then([from](const QFollowed &d) -> Result<FollowedArtistsPage> {
+            FollowedArtistsPage out{.total = d.Total};
+            if (!d.List) {
+                return out;
+            }
+            out.artists.reserve(d.List->size());
+            for (const auto &a : *d.List) {
+                std::string mid = first_nonempty({nonempty(a.MID), nonempty(a.SingerMid)});
+                if (mid.empty()) {
+                    return std::unexpected("QQ Music returned an invalid followed artist");
+                }
+                std::string cover = first_nonempty({nonempty(a.AvatarUrl), nonempty(a.SingerPic)});
+                if (cover.empty()) {
+                    cover = photo(1, mid);
+                }
+                out.artists.push_back({.kind = CardKind::artist,
+                                       .source = Source::qq,
+                                       .id = std::move(mid),
+                                       .title = first_nonempty({nonempty(a.Name), nonempty(a.SingerName)}),
+                                       .cover = std::move(cover)});
+            }
+            const int next = from + static_cast<int>(out.artists.size());
+            out.more = !out.artists.empty() && (d.HasMore ? *d.HasMore : next < d.Total);
+            return out;
+        });
+    }
+
     Task<Result<std::vector<Card>>> Qq::followed_artists() {
         Result<std::vector<Card>> out(std::in_place);
         bool more = true;
         for (int from = 0; out && more;) {
-            out = parse_data<QFollowed>(co_await client.call({{"music.concern.RelationList", "GetFollowSingerList", std::format(R"({{"From":{},"Size":100}})", from)}}))
-                      .and_then([&](const QFollowed &d) -> Result<std::vector<Card>> {
-                          more = d.List && !d.List->empty();
-                          if (more) {
-                              for (const auto &a : *d.List) {
-                                  if (a.SingerMid.value_or("").empty()) {
-                                      return std::unexpected("QQ Music returned an invalid followed artist");
-                                  }
-                                  out->push_back({.kind = CardKind::artist,
-                                                  .source = Source::qq,
-                                                  .id = *a.SingerMid,
-                                                  .title = a.SingerName.value_or(""),
-                                                  .cover = a.SingerPic.value_or(photo(1, *a.SingerMid))});
-                              }
-                              from += static_cast<int>(d.List->size());
-                              more = from < d.Total;
-                          }
+            out = parse_followed_artists(co_await client.call({{"music.concern.RelationList", "GetFollowSingerList", std::format(R"({{"From":{},"Size":100}})", from)}}), from)
+                      .transform([&](FollowedArtistsPage page) {
+                          from += static_cast<int>(page.artists.size());
+                          more = page.more;
+                          out->insert(out->end(), std::make_move_iterator(page.artists.begin()), std::make_move_iterator(page.artists.end()));
                           return std::move(*out);
                       });
         }
@@ -2075,7 +2251,8 @@ namespace lyren::qq {
 
     Task<Result<Account>> Qq::account() {
         std::string uid = client.get("musicid");
-        co_return parse_data<QUsers>(co_await client.call({{"userInfo.BaseUserInfoServer", "get_user_baseinfo_v2", std::format(R"({{"vec_uin":["{}"]}})", uid)}}))
+        co_return parse_data<QUsers>(
+            co_await client.call({{"userInfo.BaseUserInfoServer", "get_user_baseinfo_v2", std::format(R"({{"vec_uin":[{}]}})", glz::write_json(uid).value())}}))
             .and_then([&](auto d) -> Result<Account> {
                 if (d.code != 0 || !d.map_userinfo || !d.map_userinfo->contains(uid)) {
                     return std::unexpected("QQ Music returned no account details");

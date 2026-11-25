@@ -32,9 +32,10 @@ namespace lyren::qq {
     // Reads and writes use signed RPC: unsigned searches soon answer with 2001. The Linux login exchange uses musicu.fcg.
     class Client {
     public:
-        Client(Loop &loop, net::Http &http)
+        Client(Loop &loop, net::Http &http, std::string base_url = "https://u.y.qq.com/cgi-bin/")
         : loop_(loop),
-          http_(http) {}
+          http_(http),
+          base_url_(std::move(base_url)) {}
 
         // The login: musicid, musickey and the open-platform tokens; persisted with the credentials.
         StringMap<std::string> session;
@@ -53,6 +54,7 @@ namespace lyren::qq {
         Task<Reply> request(const std::vector<Rpc> &parts, Comm comm, net::Retry retry);
         Loop &loop_;
         net::Http &http_;
+        std::string base_url_;
     };
 
 } // namespace lyren::qq

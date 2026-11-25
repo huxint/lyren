@@ -130,20 +130,41 @@ namespace lyren {
         if (u.contains(".music.126.net/")) {
             return std::format("{}?param={}y{}", std::string_view(u).substr(0, u.find('?')), px, px);
         }
-        // QQ Music has a few sizes of each, named in the path: …/photo_new/T002R300x300M000<mid>.jpg, or …/music_cover/<id>/300.
+        // QQ Music has fixed sizes per CDN: …/photo_new/T00{1,2,3}R300x300M000<mid>.jpg, …/music_cover/<id>/300,
+        // or music-file*.y.qq.com/...?imageView2/4/w/600/h/600. T003 (toplist) covers do not exist at 90 or 800.
         if (auto at = u.find("/photo_new/T"); at != u.npos) {
             size_t r = at + 15, m = u.find('M', r);
             if (r < u.size() && u[r] == 'R' && m != u.npos) {
-                int s = px <= 90 ? 90 : px <= 150 ? 150 : px <= 300 ? 300 : px <= 600 ? 500 : 800;
-                u.replace(r + 1, m - r - 1, std::format("{}x{}", s, s));
+                const std::string_view kind = std::string_view(u).substr(at + 11, 4);
+                if (kind == "T001" || kind == "T002") {
+                    int s = px <= 90 ? 90 : px <= 150 ? 150 : px <= 300 ? 300 : px <= 600 ? 500 : 800;
+                    u.replace(r + 1, m - r - 1, std::format("{}x{}", s, s));
+                } else if (kind == "T003") {
+                    int s = px <= 150 ? 150 : px <= 300 ? 300 : 500;
+                    u.replace(r + 1, m - r - 1, std::format("{}x{}", s, s));
+                }
             }
-        } else if (u.contains("qpic.y.qq.com/music_cover/")) {
+        } else if (u.contains("qpic.y.qq.com/music_cover/") || u.contains("p.qpic.cn/music_cover/")) {
             size_t q = std::min(u.find('?'), u.size()), slash = u.rfind('/', q);
             std::string_view size = std::string_view(u).substr(slash + 1, q - slash - 1);
             if (!size.empty() && std::ranges::all_of(size, [](char c) {
                     return c >= '0' && c <= '9';
                 })) {
                 u.replace(slash + 1, size.size(), std::to_string(px <= 150 ? 150 : px <= 300 ? 300 : 600));
+            }
+        } else if (auto scheme = u.find("://"); scheme != u.npos) {
+            std::string_view host = std::string_view(u).substr(scheme + 3);
+            host = host.substr(0, host.find('/'));
+            if (host.starts_with("music-file") && host.ends_with(".y.qq.com")) {
+                const std::string_view base = std::string_view(u).substr(0, u.find('?'));
+                const std::string_view query = base.size() < u.size() ? std::string_view(u).substr(base.size() + 1) : std::string_view{};
+                const bool pure_image_view = query.starts_with("imageView2/") && std::ranges::all_of(query, [](unsigned char c) {
+                                                 return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '/' || c == '_' || c == '-';
+                                             });
+                if (query.empty() || query == "n=1" || pure_image_view) {
+                    const int s = px <= 150 ? 150 : px <= 300 ? 300 : 600;
+                    return std::format("{}?imageView2/4/w/{}/h/{}", base, s, s);
+                }
             }
         }
         return u;

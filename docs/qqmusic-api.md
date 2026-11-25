@@ -613,6 +613,8 @@ QRC 内容包含行起点、行时长以及词起点、词时长，单位均为�
 | `music.musicasset.PlaylistFavRead` | `GetPlaylistFavInfo_v2` | `uin, offset, size` | 收藏歌单的分页结果 |
 | `music.musicasset.PlaylistDetailRead` | `GetUniformSongDetailInfo` | `uin, dirid, bPaged:true, offset, size` | `list, hasmore, total` |
 
+`GetPlaylistByUin` 返回的目录条目使用 `dirId, tid, dirName, songNum, picUrl, bigpicUrl, albumPicUrl, invalid`（封面字段为 `picUrl`，不是写入参数名 `dirPicUrl`）。
+
 `GetUniformSongDetailInfo.hasmore` 为 JSON 布尔值（`true`／`false`）。
 
 `GetPlaylistFavInfo_v2` 的 `uin` 使用登录返回的 `encryptUin`。成功响应中的 `v_list:[]` 表示空收藏；`80050` 等业务错误分别处理。条目字段为 `tid, name, songnum, logo`，其中 `songnum` 使用小写。
@@ -769,11 +771,11 @@ QRC 内容包含行起点、行时长以及词起点、词时长，单位均为�
 
 | RPC | 参数 |
 | --- | --- |
-| `music.musicasset.AlbumFavRead / GetAlbumFavInfo` | `uin` |
+| `music.musicasset.AlbumFavRead / GetAlbumFavInfo` | `uin, offset, size` |
 | `music.musicasset.AlbumFavWrite / FavAlbum` | `uin, v_albumMid:[mid]` |
 | `music.musicasset.AlbumFavWrite / CancelFavAlbum` | `uin, v_albumMid:[mid]` |
 
-专辑收藏读取和写入的 `uin` 使用当前音乐账号 ID 的十进制字符串。收藏写入遵循第 7.3 节的会话和签名约定。
+专辑收藏读取和写入的 `uin` 使用当前音乐账号 ID 的十进制字符串。`GetAlbumFavInfo` 返回 `total, hasmore, v_list`，条目字段为 `mid, name, logo, v_singer, songnum`。收藏写入遵循第 7.3 节的会话和签名约定。
 
 ### 8.4 封面资源
 
@@ -891,9 +893,9 @@ https://y.qq.com/music/photo_new/T002R300x300M000<albumMid>.jpg?max_age=2592000
 
 `music.globalComment` 与 `GlobalComment` 的大小写按表中原值使用。发布成功、内容可见、审核状态和点赞结果按相应业务响应分别处理。
 
-`UpdateHotComment.uin` 使用当前音乐账号的字符串 ID，`comment_id` 使用读取结果的 `CmId`。操作结果按对应子请求 `code` 判断，写请求不自动重发。
+`UpdateHotComment.uin` 使用当前音乐账号的字符串 ID，`comment_id` 使用读取结果的 `CmId`。操作结果按对应子请求 `code` 判断，网络失败时不自动重发；仅在单子请求被鉴权层以 `2001` 拒绝（业务未执行）时，在会话续期成功后可重放一次。
 
-新评论只传 `BizType`、`BizId`、`Content`，回复再传原样的 `RepliedCmId`；榜单沿用 `BizType:4` 并去掉应用内部的 `top:` 前缀。`Content` 使用 JSON 字符串编码，保留中文、emoji、换行、引号和反斜杠。子请求 `code` 与 `data.SubCode` 均须成功，并检查 `AddedCmId`；`Msg` 用于显示业务拒绝原因，`VerifyUrl` 非空时提示在 QQ 音乐完成验证。写请求单次提交，不因断线自动重发。服务确认接收后刷新列表，不将接收确认解释为所有用户均可见。`IsSelf` 标记自己的评论和回复，删除入口只对这些项显示；确认后调用 `DelComment`，校验子请求 `code` 和 `data.SubCode`，成功后刷新列表和回复数。
+新评论只传 `BizType`、`BizId`、`Content`，回复再传原样的 `RepliedCmId`；榜单沿用 `BizType:4` 并去掉应用内部的 `top:` 前缀。`Content` 使用 JSON 字符串编码，保留中文、emoji、换行、引号和反斜杠。子请求 `code` 与 `data.SubCode` 均须成功，并检查 `AddedCmId`；`Msg` 用于显示业务拒绝原因，`VerifyUrl` 非空时提示在 QQ 音乐完成验证。写请求单次提交，不因断线自动重发（仅单子请求 `2001` 鉴权拒绝在续期后可重放一次）。服务确认接收后刷新列表，不将接收确认解释为所有用户均可见。`IsSelf` 标记自己的评论和回复，删除入口只对这些项显示；确认后调用 `DelComment`，校验子请求 `code` 和 `data.SubCode`，成功后刷新列表和回复数。
 
 ## 11. 账号数据同步
 
@@ -967,7 +969,7 @@ https://y.qq.com/music/photo_new/T002R300x300M000<albumMid>.jpg?max_age=2592000
 | 歌手 `Singers` | `2` | `SingersLastid` | `2` |
 | 风格 `Styles` | `4` | `StyleLastid` | `3` |
 
-`GetDislikeList` 从 `Page:1` 开始；非空页后递增 `Page`，并把该类别最后一项的 `ID` 作为字符串传入对应游标字段。读取到该类别的空列表结束，不根据 `Page` 回显或 `Token` 推导统一分页状态。
+`GetDislikeList` 从 `Page:1` 开始；非空页后递增 `Page`，并把该类别最后一项的 `ID` 作为字符串传入对应游标字段。读取到该类别的空列表结束，不根据 `Page` 回显或 `Token` 推导统一分页状态；若游标不再推进或超出页数上限，客户端显式报错而不重复追加或静默截断。
 
 响应包含 `data.Retcode`、`Songs`、`Singers`、`Styles`。条目字段为字符串 `ID, Name, Img`、整数 `IdType, Time`；`Img` 可以缺省。按原样保留 `ID` 和 `IdType`，取消时不从显示类别重新猜测 ID 类型。
 

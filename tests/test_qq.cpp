@@ -1,13 +1,42 @@
 #include <doctest/doctest.h>
+#include <glaze/glaze.hpp>
+
+#include <atomic>
+#include <optional>
 
 #include "core/i18n.hpp"
+#include "http_server.hpp"
 #include "media/lyrics.hpp"
 #include "media/provider.hpp"
-#include "qq/crypto.hpp"
 #include "qq/auth.hpp"
+#include "qq/crypto.hpp"
 #include "qq/qq.hpp"
 
 using namespace lyren;
+
+namespace {
+    template <class T>
+    T run(Loop &loop, Task<T> task) {
+        std::optional<T> result;
+        const auto timeout = loop.after(5s, [&loop] {
+            loop.quit();
+        });
+        spawn([](Loop *loop, Task<T> task, std::optional<T> *result) -> Task<void> {
+            *result = co_await std::move(task);
+            loop->quit();
+        }(&loop, std::move(task), &result));
+        if (!result) {
+            loop.run();
+        }
+        loop.cancel(timeout);
+        REQUIRE(result.has_value());
+        return std::move(*result);
+    }
+
+    std::string_view http_body(std::string_view request) {
+        return request.substr(request.find("\r\n\r\n") + 4);
+    }
+} // namespace
 
 TEST_CASE("QQ search follows the server page when filtering returns fewer visible rows") {
     auto page = qq::parse_search({.body = R"({"req_0":{"code":0,"data":{
@@ -30,6 +59,37 @@ TEST_CASE("QQ search follows the server page when filtering returns fewer visibl
     REQUIRE(end);
     CHECK(end->cards.size() == 1);
     CHECK(end->next_offset == -1);
+    {
+        auto artist = qq::parse_search({.body = R"({"req_0":{"code":0,"data":{
+            "meta":{"sum":1,"nextpage":-1},
+            "body":{"singer":{"list":[{"singerMID":"0025NhlN2yWrP4","singerName":"周杰伦","singerPic":"","songNum":10}]}}
+        }}})"},
+                                       SearchKind::artists, 20);
+        REQUIRE(artist);
+        REQUIRE(artist->cards.size() == 1);
+        CHECK(artist->cards[0].cover == "https://y.gtimg.cn/music/photo_new/T001R300x300M0000025NhlN2yWrP4.jpg");
+    }
+    {
+        auto album = qq::parse_search({.body = R"({"req_0":{"code":0,"data":{
+            "meta":{"sum":1,"nextpage":-1},
+            "body":{"album":{"list":[{"albumMID":"0041WVfh2vtlJE","albumName":"太阳之子","publicTime":"2026-03-25","singerName":"周杰伦","song_count":0}]}}
+        }}})"},
+                                      SearchKind::albums, 20);
+        REQUIRE(album);
+        REQUIRE(album->cards.size() == 1);
+        CHECK(album->cards[0].count_kind == Card::Count::none);
+    }
+    {
+        auto song = qq::parse_search({.body = R"({"req_0":{"code":0,"data":{
+            "meta":{"sum":1,"nextpage":-1},
+            "body":{"song":{"list":[{"id":1,"mid":"song-mid","title":"","name":"实际歌名","album":{"mid":"alb-mid","title":"","name":"实际专辑"}}]}}
+        }}})"},
+                                     SearchKind::tracks, 20);
+        REQUIRE(song);
+        REQUIRE(song->tracks.size() == 1);
+        CHECK(song->tracks[0].title == "实际歌名");
+        CHECK(song->tracks[0].album == "实际专辑");
+    }
     CHECK_FALSE(qq::parse_search({.body = R"({"req_0":{"code":2001}})"}, SearchKind::playlists, 40));
 }
 
@@ -164,7 +224,16 @@ TEST_CASE("cover sizes per service") {
     CHECK(cover_url("http://p1.music.126.net/a/b.jpg?imageView=1", 128) == "https://p1.music.126.net/a/b.jpg?param=128y128");
     CHECK(cover_url("http://y.gtimg.cn/music/photo_new/T002R180x180M0000041WVfh2vtlJE_1.jpg", 128) == "https://y.gtimg.cn/music/photo_new/T002R150x150M0000041WVfh2vtlJE_1.jpg");
     CHECK(cover_url("https://y.gtimg.cn/music/photo_new/T001R300x300M0000025NhlN2yWrP4.jpg", 512) == "https://y.gtimg.cn/music/photo_new/T001R500x500M0000025NhlN2yWrP4.jpg");
+    CHECK(cover_url("http://y.gtimg.cn/music/photo_new/T003R300x300M000002A28AA3D1uhW.jpg", 64) == "https://y.gtimg.cn/music/photo_new/T003R150x150M000002A28AA3D1uhW.jpg");
+    CHECK(cover_url("http://y.gtimg.cn/music/photo_new/T003R300x300M000002A28AA3D1uhW.jpg", 800) == "https://y.gtimg.cn/music/photo_new/T003R500x500M000002A28AA3D1uhW.jpg");
     CHECK(cover_url("http://qpic.y.qq.com/music_cover/xiabfMZA/300?n=1", 512) == "https://qpic.y.qq.com/music_cover/xiabfMZA/600?n=1");
+    CHECK(cover_url("http://p.qpic.cn/music_cover/xiabfMZA/600?n=1", 128) == "https://p.qpic.cn/music_cover/xiabfMZA/150?n=1");
+    CHECK(cover_url("https://music-file.y.qq.com/songlist/u/abc/cover.jpg?imageView2/4/w/600/h/600", 128) ==
+          "https://music-file.y.qq.com/songlist/u/abc/cover.jpg?imageView2/4/w/150/h/150");
+    CHECK(cover_url("https://music-file6.y.qq.com/songcover/u/abc/cover.png?n=1", 256) == "https://music-file6.y.qq.com/songcover/u/abc/cover.png?imageView2/4/w/300/h/300");
+    CHECK(cover_url("https://music-file.y.qq.com/songlist/u/abc/cover.jpg?sign=keep", 128) == "https://music-file.y.qq.com/songlist/u/abc/cover.jpg?sign=keep");
+    CHECK(cover_url("https://music-file.y.qq.com/songlist/u/abc/cover.jpg?imageView2/4/w/600/h/600&sign=keep", 128) ==
+          "https://music-file.y.qq.com/songlist/u/abc/cover.jpg?imageView2/4/w/600/h/600&sign=keep");
     CHECK(cover_url("https://pic6.y.qq.com/qqmusic/avatar/6f69-1792303394/140", 64) == "https://pic6.y.qq.com/qqmusic/avatar/6f69-1792303394/140");
 }
 
@@ -300,7 +369,7 @@ TEST_CASE("QQ discovery responses keep identities, metadata and totals") {
     {
         const qq::Reply reply{.body = R"({"req_0":{"code":0,"data":{
             "List":[{"Playlist":{"basic":{"tid":8316781333,"title":"Road trip","song_cnt":1038,
-                "cover":{"medium_url":"https://example.com/cover.jpg"},"creator":{"nick":"DJ"}}}}],
+                "cover":{"medium_url":"","default_url":"https://example.com/fallback.jpg"},"creator":{"nick":"DJ"}}}}],
             "HasMore":true,"FromLimit":400
         }}})"};
         auto page = qq::parse_square(reply, 50);
@@ -308,6 +377,7 @@ TEST_CASE("QQ discovery responses keep identities, metadata and totals") {
         REQUIRE(page->cards.size() == 1);
         CHECK(page->cards[0].id == "8316781333");
         CHECK(page->cards[0].source == Source::qq);
+        CHECK(page->cards[0].cover == "https://example.com/fallback.jpg");
         CHECK(page->cards[0].count == 1038);
         CHECK(page->cards[0].subtitle == "DJ");
         CHECK(page->total == 400);
@@ -513,4 +583,351 @@ TEST_CASE("QQ follow lists keep encrypted IDs and page by position") {
     CHECK_FALSE(qq::parse_people({.body = R"({"req_0":{"code":0,"data":{"List":[{"Name":"no ID"}]}}})"}, 0));
     CHECK_FALSE(qq::parse_people({.body = R"({"req_0":{"code":2001}})"}, 0));
     CHECK_FALSE(qq::parse_people({.error = "Network connection failed"}, 0));
+}
+
+TEST_CASE("QQ user playlists read picUrl covers and skip invalid directories") {
+    auto result = qq::parse_user_playlists({.body = R"({"req_0":{"code":0,"data":{"total":5,"bFinish":true,"v_playlist":[
+        {"dirId":201,"dirName":"我喜欢","tid":775578519,"songNum":99,"picUrl":"http://y.gtimg.cn/mediastyle/y/img/cover_love_300.jpg","bigpicUrl":"http://y.gtimg.cn/mediastyle/y/img/cover_love_300.jpg","albumPicUrl":"","invalid":false},
+        {"dirId":54,"dirName":"通勤","tid":869224011,"songNum":163,"picUrl":"https://music-file.y.qq.com/songlist/u/abc/cover.jpg?imageView2/4/w/600/h/600","invalid":false},
+        {"dirId":55,"dirName":"纯专辑图","tid":0,"songNum":12,"picUrl":"","bigpicUrl":"","albumPicUrl":"http://y.gtimg.cn/music/photo_new/T002R500x500M000001ddAmt477PPK.jpg","invalid":false},
+        {"dirId":56,"dirName":"空歌单","tid":9658677874,"songNum":0,"picUrl":"","bigpicUrl":"","albumPicUrl":"","invalid":false},
+        {"dirId":0,"dirName":"无效ID","invalid":false},
+        {"dirId":57,"dirName":"已失效","invalid":true}
+    ]}}})"});
+    REQUIRE(result);
+    const auto &[liked, lists] = *result;
+    CHECK(liked.id == "dir:201");
+    CHECK(liked.count == 99);
+    CHECK(liked.count_kind == Card::Count::songs);
+    CHECK(liked.cover == "http://y.gtimg.cn/mediastyle/y/img/cover_love_300.jpg");
+    REQUIRE(lists.size() == 3);
+    CHECK(lists[0].id == "dir:54");
+    CHECK(lists[0].title == "通勤");
+    CHECK(lists[0].cover == "https://music-file.y.qq.com/songlist/u/abc/cover.jpg?imageView2/4/w/600/h/600");
+    CHECK(lists[0].thread == "869224011");
+    CHECK(lists[0].commentable);
+    CHECK(lists[0].owned);
+    CHECK(lists[1].id == "dir:55");
+    CHECK(lists[1].cover == "http://y.gtimg.cn/music/photo_new/T002R500x500M000001ddAmt477PPK.jpg");
+    CHECK_FALSE(lists[1].commentable);
+    CHECK(lists[2].id == "dir:56");
+    CHECK(lists[2].cover.empty());
+    CHECK_FALSE(qq::parse_user_playlists({.body = R"({"req_0":{"code":2001}})"}));
+}
+
+TEST_CASE("QQ favorite albums parse live schema and pagination") {
+    auto page = qq::parse_favorite_albums({.body = R"({"req_0":{"code":0,"data":{"number":23,"hasmore":1,"total":23,"v_list":[
+        {"id":78837851,"mid":"000aiR9x2ok24A","name":"SO CLOSE TO WHAT","v_singer":[{"id":1,"mid":"s1","name":"Tate McRae"}],"logo":"http://y.gtimg.cn/music/photo_new/T002R150x150M000000aiR9x2ok24A_2.jpg","songnum":21},
+        {"id":61263935,"mid":"003VlITY4TvDLJ","name":"合辑","v_singer":[{"name":"歌手A"},{"name":"歌手B"}],"logo":"","songnum":0}
+    ]}}})"});
+    REQUIRE(page);
+    CHECK(page->total == 23);
+    CHECK(page->more);
+    REQUIRE(page->albums.size() == 2);
+    CHECK(page->albums[0].kind == CardKind::album);
+    CHECK(page->albums[0].id == "000aiR9x2ok24A");
+    CHECK(page->albums[0].title == "SO CLOSE TO WHAT");
+    CHECK(page->albums[0].subtitle == "Tate McRae");
+    CHECK(page->albums[0].cover == "http://y.gtimg.cn/music/photo_new/T002R150x150M000000aiR9x2ok24A_2.jpg");
+    CHECK(page->albums[0].count == 21);
+    CHECK(page->albums[0].count_kind == Card::Count::songs);
+    CHECK(page->albums[1].subtitle == "歌手A / 歌手B");
+    CHECK(page->albums[1].cover == "https://y.gtimg.cn/music/photo_new/T002R300x300M000003VlITY4TvDLJ.jpg");
+    CHECK(page->albums[1].count_kind == Card::Count::none);
+    CHECK_FALSE(qq::parse_favorite_albums({.body = R"({"req_0":{"code":0,"data":{"v_list":[{"name":"no mid"}]}}})"}));
+}
+
+TEST_CASE("QQ followed artists support relation and legacy schemas") {
+    auto relation = qq::parse_followed_artists({.body = R"({"req_0":{"code":0,"data":{"Total":2,"HasMore":true,"List":[
+        {"MID":"0025NhlN2yWrP4","Name":"周杰伦","AvatarUrl":"https://y.gtimg.cn/music/photo_new/T001R300x300M0000025NhlN2yWrP4.jpg"}
+    ]}}})"},
+                                               0);
+    REQUIRE(relation);
+    CHECK(relation->total == 2);
+    CHECK(relation->more);
+    REQUIRE(relation->artists.size() == 1);
+    CHECK(relation->artists[0].id == "0025NhlN2yWrP4");
+    CHECK(relation->artists[0].title == "周杰伦");
+    CHECK(relation->artists[0].cover == "https://y.gtimg.cn/music/photo_new/T001R300x300M0000025NhlN2yWrP4.jpg");
+
+    auto legacy = qq::parse_followed_artists({.body = R"({"req_0":{"code":0,"data":{"Total":1,"List":[
+        {"SingerMid":"001BLpXF2DyJe2","SingerName":"林俊杰","SingerPic":""}
+    ]}}})"},
+                                             0);
+    REQUIRE(legacy);
+    CHECK_FALSE(legacy->more);
+    REQUIRE(legacy->artists.size() == 1);
+    CHECK(legacy->artists[0].id == "001BLpXF2DyJe2");
+    CHECK(legacy->artists[0].title == "林俊杰");
+    CHECK(legacy->artists[0].cover == "https://y.gtimg.cn/music/photo_new/T001R300x300M000001BLpXF2DyJe2.jpg");
+    CHECK_FALSE(qq::parse_followed_artists({.body = R"({"req_0":{"code":0,"data":{"Total":1,"List":[{"Name":"no mid"}]}}})"}, 0));
+}
+
+TEST_CASE("QQ other users playlists use public tids and never leak own favorites") {
+    std::atomic<int> fav_calls = 0;
+    test::Server server([&](std::string_view request) {
+        const auto body = http_body(request);
+        if (body.contains("GetPlaylistFavInfo_v2")) {
+            ++fav_calls;
+            return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"total":1,"hasmore":0,"v_list":[{"tid":999,"name":"OwnFav","songnum":5,"logo":""}]}}})");
+        }
+        return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"v_playlist":[
+            {"dirId":201,"dirName":"我喜欢","tid":1001,"songNum":10,"picUrl":"https://example.com/like.jpg"},
+            {"dirId":54,"dirName":"他人的歌单","tid":2002,"songNum":20,"picUrl":"https://example.com/other.jpg"},
+            {"dirId":55,"dirName":"无公开ID","tid":0,"songNum":5,"picUrl":"https://example.com/private.jpg"}
+        ]}}})");
+    });
+    Loop loop;
+    net::Http http;
+    qq::Qq provider(loop, http, server.url() + '/');
+    provider.session() = {{"musicid", "12345"}, {"musickey", "key"}, {"encrypt_uin", "enc"}};
+    provider.client.refresh_session = [](bool) -> Task<Result<void>> {
+        co_return Result<void>{};
+    };
+
+    auto other = run(loop, provider.user_playlists("67890"));
+    REQUIRE(other);
+    CHECK(fav_calls == 0);
+    CHECK(other->first.id == "1001");
+    CHECK_FALSE(other->first.owned);
+    CHECK(other->first.collectable);
+    REQUIRE(other->second.size() == 1);
+    CHECK(other->second[0].id == "2002");
+    CHECK_FALSE(other->second[0].owned);
+    CHECK(other->second[0].collectable);
+}
+
+TEST_CASE("QQ own user_playlists surfaces favorites failure instead of clearing saved playlists") {
+    test::Server server([](std::string_view request) {
+        const auto body = http_body(request);
+        if (body.contains("GetPlaylistFavInfo_v2")) {
+            return test::ok(R"({"code":0,"req_0":{"code":80050,"data":{"v_list":[],"total":0,"hasmore":0}}})");
+        }
+        return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"v_playlist":[
+            {"dirId":201,"dirName":"我喜欢","tid":1001,"songNum":10,"picUrl":"https://example.com/like.jpg"}
+        ]}}})");
+    });
+    Loop loop;
+    net::Http http;
+    qq::Qq provider(loop, http, server.url() + '/');
+    provider.session() = {{"musicid", "12345"}, {"musickey", "key"}, {"encrypt_uin", "enc"}};
+    provider.client.refresh_session = [](bool) -> Task<Result<void>> {
+        co_return Result<void>{};
+    };
+
+    auto result = run(loop, provider.user_playlists("12345"));
+    CHECK_FALSE(result);
+}
+
+TEST_CASE("QQ client retries single-part 2001 writes once, guards multipart/transport/session changes, and canonicalizes uin") {
+    std::atomic<int> calls = 0;
+    std::string last_body;
+    bool drop = false, multi_2001 = false, change_session = false;
+    SUBCASE("single-part 2001 replays once after renewal") {}
+    SUBCASE("multipart never-retry does not replay") {
+        multi_2001 = true;
+    }
+    SUBCASE("transport failure never replays") {
+        drop = true;
+    }
+    SUBCASE("session change during renewal aborts replay") {
+        change_session = true;
+    }
+
+    test::Server server([&](std::string_view request) {
+        const int n = ++calls;
+        last_body = std::string(http_body(request));
+        if (drop) {
+            return std::string{};
+        }
+        if (n == 1) {
+            return test::ok(R"({"code":0,"req_0":{"code":2001}})");
+        }
+        return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"retCode":0}}})");
+    });
+    Loop loop;
+    net::Http http;
+    qq::Client client(loop, http, server.url() + '/');
+    client.session = {{"musicid", "001"}, {"musickey", "old-key"}};
+    int renewals = 0;
+    client.refresh_session = [&](bool force) -> Task<Result<void>> {
+        if (force) {
+            ++renewals;
+            if (change_session) {
+                ++client.session_gen;
+            } else {
+                client.session["musickey"] = "new-key";
+            }
+        }
+        co_return Result<void>{};
+    };
+
+    std::vector<qq::Rpc> parts{{"mod", "write", "{}"}};
+    if (multi_2001) {
+        parts.push_back({"mod", "write2", "{}"});
+    }
+    auto reply = run(loop, client.call(std::move(parts), qq::Comm::app, net::Retry::never));
+
+    glz::generic parsed;
+    CHECK_FALSE(glz::read_json(parsed, last_body));
+    CHECK(last_body.contains(R"("uin":1,)"));
+
+    if (drop) {
+        CHECK_FALSE(reply.error.empty());
+        CHECK(calls == 1);
+        CHECK(renewals == 0);
+    } else if (multi_2001) {
+        CHECK(reply.needs_login);
+        CHECK(calls == 1);
+        CHECK(renewals == 1);
+    } else if (change_session) {
+        CHECK(reply.error == "QQ Music session changed; retry the action");
+        CHECK(calls == 1);
+        CHECK(renewals == 1);
+    } else {
+        CHECK(reply.error.empty());
+        CHECK_FALSE(reply.needs_login);
+        CHECK(calls == 2);
+        CHECK(renewals == 1);
+    }
+}
+
+TEST_CASE("QQ stream resolves missing media MID, skips empty sip entries, and maps anonymous login errors") {
+    std::atomic<int> detail_calls = 0, vkey_calls = 0;
+    std::string vkey_body;
+    test::Server server([&](std::string_view request) {
+        const auto body = http_body(request);
+        if (body.contains("UrlGetVkey")) {
+            ++vkey_calls;
+            vkey_body = std::string(body);
+            if (body.contains(R"("uin":"0")")) {
+                return test::ok(R"({"code":0,"req_0":{"code":104009,"data":{"sip":[],"midurlinfo":[]}}})");
+            }
+            return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"sip":["","http://cdn.example.com/"],
+                "midurlinfo":[{"filename":"M500real-media.mp3","result":0,"purl":"track.mp3?vkey=1"}]}}})");
+        }
+        ++detail_calls;
+        return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"track_info":{
+            "id":213326626,"mid":"song-mid","file":{"media_mid":"real-media","try_begin":10000,"try_end":30000},
+            "volume":{"gain":-6.5,"peak":0.9}
+        }}}})");
+    });
+    Loop loop;
+    net::Http http;
+    qq::Qq provider(loop, http, server.url() + '/');
+
+    auto anon = run(loop, provider.stream({.id = "213326626", .mid = "song-mid", .media = "real-media", .source = Source::qq}, Quality::standard));
+    REQUIRE_FALSE(anon);
+    CHECK(anon.error() == "Sign in to QQ Music and try again");
+
+    provider.session() = {{"musicid", "123"}, {"musickey", "key"}};
+    provider.client.refresh_session = [](bool) -> Task<Result<void>> {
+        co_return Result<void>{};
+    };
+    auto resolved = run(loop, provider.stream({.id = "213326626", .mid = "song-mid", .source = Source::qq}, Quality::standard));
+    REQUIRE(resolved);
+    CHECK(detail_calls == 1);
+    CHECK(vkey_calls == 2);
+    CHECK(vkey_body.contains("M500real-media.mp3"));
+    CHECK_FALSE(vkey_body.contains("M500song-mid.mp3"));
+    CHECK(resolved->url == "https://cdn.example.com/track.mp3?vkey=1");
+    CHECK(resolved->highlight_from == doctest::Approx(10.0));
+    CHECK(resolved->highlight_to == doctest::Approx(30.0));
+    CHECK(resolved->gain == doctest::Approx(-6.5));
+}
+
+TEST_CASE("QQ fm maps anonymous 1000 to sign-in while preserving authenticated 1000") {
+    test::Server server([](std::string_view) {
+        return test::ok(R"({"code":0,"req_0":{"code":1000,"data":{"tracks":[]}}})");
+    });
+    Loop loop;
+    net::Http http;
+    qq::Qq provider(loop, http, server.url() + '/');
+
+    auto anon = run(loop, provider.fm());
+    REQUIRE_FALSE(anon);
+    CHECK(anon.error() == "Sign in to QQ Music and try again");
+
+    provider.session() = {{"musicid", "123"}, {"musickey", "key"}};
+    provider.client.refresh_session = [](bool) -> Task<Result<void>> {
+        co_return Result<void>{};
+    };
+    auto authed = run(loop, provider.fm());
+    REQUIRE_FALSE(authed);
+    CHECK(authed.error() != "Sign in to QQ Music and try again");
+}
+
+TEST_CASE("QQ album pagination advances by raw server positions across filtered entries") {
+    std::vector<int> begins;
+    test::Server server([&](std::string_view request) {
+        const auto body = http_body(request);
+        if (body.contains("GetAlbumDetail")) {
+            begins.push_back(0);
+            std::string list = R"({},{"songInfo":{"id":1,"mid":"m1","title":"s1"}})";
+            for (int i = 2; i < 500; ++i) {
+                list += std::format(R"(,{{"songInfo":{{"id":{0},"mid":"m{0}","title":"s{0}"}}}})", i);
+            }
+            return test::ok(std::format(
+                R"({{"code":0,"req_0":{{"code":0,"data":{{"basicInfo":{{"albumID":9,"albumName":"Big"}}}}}},"req_1":{{"code":0,"data":{{"totalNum":503,"songList":[{}]}}}}}})",
+                list));
+        }
+        if (body.contains(R"("begin":500)")) {
+            begins.push_back(500);
+            return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"totalNum":503,"songList":[{}]}}})");
+        }
+        if (body.contains(R"("begin":501)")) {
+            begins.push_back(501);
+            return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"totalNum":503,"songList":[
+                {"songInfo":{"id":501,"mid":"m501","title":"s501"}},
+                {"songInfo":{"id":502,"mid":"m502","title":"s502"}}
+            ]}}})");
+        }
+        return test::ok(R"({"code":0,"req_0":{"code":1000}})");
+    });
+    Loop loop;
+    net::Http http;
+    qq::Qq provider(loop, http, server.url() + '/');
+
+    auto info = run(loop, provider.album("alb-mid"));
+    REQUIRE(info);
+    CHECK(begins == std::vector<int>{0, 500, 501});
+    CHECK(info->tracks.size() == 501);
+    CHECK(info->tracks.front().id == "1");
+    CHECK(info->tracks.back().id == "502");
+}
+
+TEST_CASE("QQ dislikes rejects repeated cursors and excessive pages without silent truncation") {
+    bool repeat = true;
+    SUBCASE("repeated cursor fails without duplicating") {}
+    SUBCASE("more than 100 advancing pages fails explicitly") {
+        repeat = false;
+    }
+    std::atomic<int> pages = 0;
+    test::Server server([&](std::string_view) {
+        const int n = ++pages;
+        const int id = repeat ? 1 : n;
+        return test::ok(std::format(R"({{"code":0,"req_0":{{"code":0,"data":{{"Retcode":0,"Songs":[{{"ID":"{}","Name":"s","IdType":1}}]}}}}}})", id));
+    });
+    Loop loop;
+    net::Http http;
+    qq::Qq provider(loop, http, server.url() + '/');
+
+    auto result = run(loop, provider.dislikes(DislikeKind::song));
+    CHECK_FALSE(result);
+    CHECK(pages == (repeat ? 2 : 100));
+}
+
+TEST_CASE("QQ people rejects invalid pagination cursors without issuing a request") {
+    std::atomic<int> calls = 0;
+    test::Server server([&](std::string_view) {
+        ++calls;
+        return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"Total":0,"List":[]}}})");
+    });
+    Loop loop;
+    net::Http http;
+    qq::Qq provider(loop, http, server.url() + '/');
+
+    CHECK_FALSE(run(loop, provider.people("123", false, "not-a-number")));
+    CHECK_FALSE(run(loop, provider.people("123", false, "-5")));
+    CHECK(calls == 0);
 }

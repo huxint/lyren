@@ -21,7 +21,24 @@ namespace lyren::qq {
         bool more = false;
     };
 
+    Result<std::pair<Card, std::vector<Card>>> parse_user_playlists(const Reply &reply, bool owned = true);
     Result<FavoritePlaylistsPage> parse_favorite_playlists(const Reply &reply);
+
+    struct FavoriteAlbumsPage {
+        std::vector<Card> albums;
+        int total = 0;
+        bool more = false;
+    };
+
+    Result<FavoriteAlbumsPage> parse_favorite_albums(const Reply &reply);
+
+    struct FollowedArtistsPage {
+        std::vector<Card> artists;
+        int total = 0;
+        bool more = false;
+    };
+
+    Result<FollowedArtistsPage> parse_followed_artists(const Reply &reply, int from = 0);
     Result<Categories> parse_categories(const Reply &reply);
     Result<Batch> parse_square(const Reply &reply, int offset);
     Result<Batch> parse_category_playlists(const Reply &reply, int offset = 0);
@@ -52,7 +69,7 @@ namespace lyren::qq {
     // their numeric ids with the mids alongside (Track::mid, Track::media).
     class Qq : public Provider {
     public:
-        Qq(Loop &loop, net::Http &http);
+        Qq(Loop &loop, net::Http &http, std::string base_url = "https://u.y.qq.com/cgi-bin/");
 
         Client client;
 
