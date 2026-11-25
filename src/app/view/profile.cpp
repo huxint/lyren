@@ -23,7 +23,11 @@ namespace lyren {
     namespace {
         // The page is an editorial column: the main content and, when there is room for both, a framed studio rail beside it.
         constexpr float rail_gap = 32, rail_min = 276, rail_max = 324, page_w = PostFeed::column + rail_gap + rail_max;
-        constexpr float tabs_h = 46, section_gap = 20;
+        constexpr float tabs_h = 38, section_gap = 20;
+        // The head: the picture's diameter, the room around a count for its hover pill, and how much of a long
+        // signature is worth wrapping for the two lines that show.
+        constexpr float face_wide = 104, face_compact = 72, stat_pad = 10, stat_gap = 4;
+        constexpr size_t about_limit = 480;
 
         // "8 years", or the days of a newer account.
         std::string age(int days) {
@@ -111,9 +115,13 @@ namespace lyren {
             }
             Fade fade(p, alpha);
             ui::Enabled live(ui, following == on, 1);
-            const auto label = bare ? std::string_view{} : lyren::tr(!following ? "Follow" : mutual ? "Mutual" : "Following");
+            const auto label = lyren::tr(!following ? "Follow" : mutual ? "Mutual" : "Following");
             const auto kind = following ? ui::ButtonKind::secondary : prominent ? ui::ButtonKind::primary : ui::ButtonKind::tonal;
-            clicked |= ui.button(ui::sub_id(id, following), r, label, kind, !following ? "user-plus" : mutual ? "arrow-left-right" : "user-check");
+            clicked |= ui.button(ui::sub_id(id, following), r, bare ? std::string_view{} : label, kind,
+                                 !following ? "user-plus"
+                                 : mutual   ? "arrow-left-right"
+                                            : "user-check",
+                                 bare ? label : std::string_view{});
         };
         state(!on, on ? 1 - k : k);
         state(on, on ? k : 1 - k);
@@ -137,8 +145,7 @@ namespace lyren {
             section_dir_ = section > page->section ? 1 : -1;
         }
         social_.show(page, section);
-        const ui::Id scroll = scroll_id(ui, "profile");
-        ui.scroll_to(scroll, std::min(ui.scroll_offset(scroll), header_h_));
+        ui.scroll_to(scroll_, std::min(ui.scroll_offset(scroll_), header_h_));
     }
 
     void ProfileView::draw(ui::Ui &ui, Rect r) {
@@ -161,43 +168,57 @@ namespace lyren {
             rail_follow_rows_ = -1;
             repeat_slot_.reset();
         }
-        Profile who = page->info ? *page->info : Profile{.id = card.id};
-        if (who.name.empty()) {
-            who.name = card.title;
+        // The page's own account of them; until it has one, or where it leaves gaps, the card that led here fills in.
+        std::optional<Profile> patched;
+        if (!page->info || page->info->name.empty() || page->info->avatar.empty()) {
+            patched = page->info ? *page->info : Profile{.id = card.id};
+            if (patched->name.empty()) {
+                patched->name = card.title;
+            }
+            if (patched->avatar.empty()) {
+                patched->avatar = card.cover;
+            }
         }
-        if (who.avatar.empty()) {
-            who.avatar = card.cover;
-        }
+        const Profile &who = patched ? *patched : *page->info;
         Rect body = r.inset(r.w >= 760 ? 36.f : r.w < 480 ? 16.f : 24.f, 0);
         if (body.w > page_w) {
             body = ui::center(body, page_w, body.h);
         }
+        if (body.w < 588) {
+            compact_ = true;
+        } else if (body.w > 612) {
+            compact_ = false;
+        }
 
-        const float off = ui.begin_scroll(scroll_id(ui, "profile"), r, std::max(content_h_, r.h));
-        // Their background, or their picture, washes the top of the page with gentle parallax.
-        {
-            const float scroll_fade = 1 - smooth01(off / 200);
-            if (scroll_fade > 0.01f) {
-                const Rect band{r.x, r.y - std::min(off * 0.22f, 44.f), r.w, 260};
-                const std::string &art = who.background.empty() ? who.avatar : who.background;
-                bool drew_art = false;
-                if (!art.empty()) {
-                    if (const auto &image = env_.images.get(art, 128, true); image.ready) {
-                        const float k = ui.progress(image.ready_at, 480, ease::standard);
-                        {
-                            Fade wash(p, k * (t.dark ? 0.30f : 0.17f) * scroll_fade);
-                            p.image(band, image.tex, t.radius_l(), white, cover_uv(1, band.w / band.h));
-                        }
-                        p.gradient(band, t.surface.with_alpha(0.06f), t.surface, t.radius_l());
-                        drew_art = true;
-                    }
+        scroll_ = scroll_id(ui, "profile");
+        const float off = ui.begin_scroll(scroll_, r, std::max(content_h_, r.h));
+        // Their background washes the top of the page with gentle parallax; without one, the colour of their picture.
+        if (const float scroll_fade = 1 - smooth01(off / 200); scroll_fade > 0.01f) {
+            const float wash_h = header_h_ > 0 ? header_h_ + tabs_h : 228.f;
+            const Rect band{r.x, r.y - std::min(off * 0.22f, 44.f), r.w, wash_h};
+            const auto *image = who.background.empty() ? nullptr : &env_.images.get(who.background, 128, true);
+            if (image && image->ready) {
+                {
+                    Fade wash(p, ui.progress(image->ready_at, 480, ease::standard) * (t.dark ? 0.30f : 0.17f) * scroll_fade);
+                    const float aspect = static_cast<float>(image->w) / static_cast<float>(std::max(image->h, 1u));
+                    p.image(band, image->tex, t.radius_l(), white, cover_uv(aspect, band.w / band.h));
                 }
-                if (!drew_art) {
-                    p.gradient(band, t.accent.with_alpha((t.dark ? 0.11f : 0.065f) * scroll_fade), t.surface.with_alpha(0), t.radius_l());
-                }
+                p.gradient(band, t.surface.with_alpha(0.06f), t.surface, t.radius_l());
+            } else if (!image) {
+                const float hue = who.avatar.empty() ? -1 : cover_hue(who.avatar, (compact_ ? face_compact : face_wide) * p.scale());
+                const ui::Color tint = hue >= 0 ? ui::hsl(hue, 0.5f, 0.5f) : t.accent;
+                p.gradient(band, tint.with_alpha((t.dark ? 0.10f : 0.055f) * scroll_fade), tint.with_alpha(0), t.radius_l());
             }
         }
+        // What the head and tabs remember belongs to this visit: a press, a count mid-roll or the tab mark does not
+        // carry over to whoever's page comes next.
+        ui.push_id(ui.id(visit_));
         header_h_ = header(ui, {body.x, r.y - off, body.w, 0}, page, who, self);
+        if (browser_.route().serial != visit_) {
+            // A click in the head led elsewhere: the rest of this page takes no more of this frame's input.
+            ui.pop_id();
+            return ui.end_scroll();
+        }
         if (social_.sections(card).empty()) {
             // A platform that tells nothing more about its listeners.
             const Rect rest{body.x, r.y + header_h_ - off, body.w, std::max(r.h - header_h_, 240.f)};
@@ -205,6 +226,7 @@ namespace lyren {
                 empty(ui, rest, "user", lyren::tr("No profile content available on this service"));
             }
             content_h_ = header_h_ + rest.h;
+            ui.pop_id();
             return ui.end_scroll();
         }
         // The tabs come to rest at the top of the view, with an opaque surface backing once pinned so the scrolled head
@@ -217,6 +239,7 @@ namespace lyren {
         const float edge = std::lerp(body.x, r.x, pinned);
         p.rect({edge, strip.bottom() - 1, r.w - 2 * (edge - r.x), 1}, t.line());
         tabs(ui, strip, page, who, pinned);
+        ui.pop_id();
         ui.push_clip({r.x, strip.bottom(), r.w, r.bottom() - strip.bottom()});
         float height = 0;
         const float rail_budget_h = std::max(0.f, r.h - tabs_h - section_gap - 12.f);
@@ -242,19 +265,13 @@ namespace lyren {
         const auto &t = ui.theme();
         const Card &card = page->who;
         const auto &caps = provider(card).capabilities;
-        if (r.w < 588) {
-            compact_ = true;
-        } else if (r.w > 612) {
-            compact_ = false;
-        }
         const bool compact = compact_;
         // The head arrives as one: the picture a little small at first, settling to its size.
         const float in = ui.progress(page->since, pace::arrive);
         Fade fade(p, in);
 
-        const float head_top = r.y + 24;
-        const float d = ui.spring(ui.id("profile-face-d"), compact ? 74.f : 100.f, 280);
-        const Rect face{r.x, head_top, d, d};
+        const float d = ui.spring(ui.id("profile-face-d"), compact ? face_compact : face_wide, 280);
+        const Rect face{r.x, r.y + 24, d, d};
         {
             const ui::Id fid = ui.id("profile-face");
             const auto it = ui.interact(fid, face);
@@ -271,118 +288,173 @@ namespace lyren {
             if (hot > 0.01f) {
                 p.rect(portrait, white.with_alpha((t.dark ? 0.055f : 0.075f) * hot), size / 2);
             }
-            p.rect(portrait, {}, size / 2, t.surface_edge(1.0f).mix(t.text.with_alpha(t.dark ? 0.26f : 0.16f), hot), 1);
-            if (it.clicked && clickable) {
+            p.rect(portrait, {}, size / 2, t.surface_edge(1.1f).mix(t.text.with_alpha(t.dark ? 0.26f : 0.16f), hot), 1);
+            if (it.right_clicked) {
+                shell_.dialogs.link_menu(ui, it.px, it.py, card);
+            } else if (it.clicked && clickable) {
                 shell_.dialogs.show_picture(ui, who.avatar, 1);
             }
         }
 
-        // What can be done here stands at the top right: following them, or writing a post of one's own.
-        const float top = face.y + (compact ? 0.f : 4.f), name_h = compact ? 30.f : 40.f;
-        const float button_y = top + (name_h - control::medium) / 2;
-        float right = r.right();
-        if (const Rect more{right - control::medium, button_y, control::medium, control::medium};
-            ui.icon_button(ui.id("profile-more"), more, "ellipsis", 18, false, lyren::tr("More"))) {
-            std::vector<ui::MenuItem> items;
-            if (self) {
-                items.push_back({"user", std::string(lyren::tr("Accounts")), [this, &ui] {
-                                     shell_.account.open(ui);
-                                 }});
-            }
-            if (auto link = share_url(card); !link.empty()) {
-                items.push_back({"link", std::string(lyren::tr("Copy link")), [&ui, link = std::move(link)] {
-                                     ui.copy = link;
-                                     ui.toast(std::string(lyren::tr("Link copied")), "copy");
-                                 }});
-            }
-            items.push_back({"refresh-cw", std::string(lyren::tr("Refresh")), [this] {
-                                 if (auto &route = browser_.route(); route.page == Page::profile) {
-                                     route.profile = social_.open(route.card);
-                                     const auto &c = provider(route.card).capabilities;
-                                     if ((library_.own(route.card) || route.card.owned) && (c.collect_albums || c.follow_artists) && env_.signed_in(route.card.source)) {
-                                         spawn(library_.load_collection(route.card.source));
+        // What can be done here: following them, or writing a post of one's own, and the rest under a menu. Beside the
+        // counts along the foot of the head where both fit on one line; otherwise at the top right, as icons once the
+        // head is compact.
+        const auto counts = stat_list(ui, page, who, self);
+        float counts_w = 0;
+        for (const Stat &stat : counts) {
+            counts_w += stat.w + (counts_w > 0 ? stat_gap : 0);
+        }
+        const bool writes = self && caps.post_write, follows = !self && caps.follow_users;
+        const float tx = face.right() + (compact ? 16.f : 24.f);
+        // The counts' hover pills overhang their text, so the text itself lines up with the portrait and tab strip.
+        const float counts_x = r.x - stat_pad;
+        auto actions_width = [&](bool bare) {
+            const float main = !writes && !follows ? 0 : bare ? control::medium + 6 : writes ? ui.button_width(lyren::tr("New post"), true) : follow_width(ui);
+            return control::medium + (main > 0 ? main + 8 : 0);
+        };
+        const bool at_foot = !compact && !counts.empty() && counts_w + 24 + actions_width(false) <= r.right() - counts_x;
+        const bool bare = compact && !at_foot;
+        const float actions_w = actions_width(bare);
+        auto actions = [&](float y) {
+            float right = r.right();
+            if (const Rect more{right - control::medium, y, control::medium, control::medium};
+                ui.icon_button(ui.id("profile-more"), more, "ellipsis", 18, false, lyren::tr("More"))) {
+                std::vector<ui::MenuItem> items;
+                if (self) {
+                    items.push_back({"user", std::string(lyren::tr("Accounts")), [this, &ui] {
+                                         shell_.account.open(ui);
+                                     }});
+                }
+                if (auto link = share_url(card); !link.empty()) {
+                    items.push_back({"link", std::string(lyren::tr("Copy link")), [&ui, link = std::move(link)] {
+                                         ui.copy = link;
+                                         ui.toast(std::string(lyren::tr("Link copied")), "copy");
+                                     }});
+                }
+                // The menu outlives a turn of the page: it refreshes the visit it was opened on, or nothing.
+                items.push_back({"refresh-cw", std::string(lyren::tr("Refresh")), [this, visit = browser_.route().serial] {
+                                     if (auto &route = browser_.route(); route.page == Page::profile && route.serial == visit) {
+                                         route.profile = social_.open(route.card);
+                                         const auto &c = provider(route.card).capabilities;
+                                         if ((library_.own(route.card) || route.card.owned) && (c.collect_albums || c.follow_artists) && env_.signed_in(route.card.source)) {
+                                             spawn(library_.load_collection(route.card.source));
+                                         }
                                      }
-                                 }
-                             }});
-            ui.open_menu(more.x, more.bottom() + 6, std::move(items));
-        }
-        right -= control::medium + 8;
-        if (self && caps.post_write) {
-            const auto label = compact ? std::string_view{} : lyren::tr("New post");
-            const float w = compact ? control::medium + 6 : ui.button_width(label, true);
-            if (ui.button(ui.id("profile-write"), {right - w, button_y, w, control::medium}, label, ui::ButtonKind::primary, "square-pen")) {
-                shell_.feed.compose(ui, card.source);
+                                 }});
+                ui.open_menu(more.x, more.bottom() + 6, std::move(items));
             }
-            right -= w + 8;
-        } else if (!self && caps.follow_users) {
-            // Until the page says whether they are followed already, the button waits.
-            ui::Enabled known(ui, page->info.has_value());
-            const float w = compact ? control::medium + 6 : follow_width(ui);
-            follow_button(ui, ui.id("profile-follow"), {right - w, button_y, w, control::medium}, card.source, person_of(who), true);
-            right -= w + 8;
-        }
+            right -= control::medium + 8;
+            const float w = actions_w - control::medium - 8;
+            if (writes) {
+                const auto label = lyren::tr("New post");
+                if (ui.button(ui.id("profile-write"), {right - w, y, w, control::medium}, bare ? std::string_view{} : label, ui::ButtonKind::primary, "square-pen",
+                              bare ? label : std::string_view{})) {
+                    shell_.feed.compose(ui, card.source);
+                }
+            } else if (follows) {
+                // Until the page says whether they are followed already, the button waits.
+                ui::Enabled known(ui, page->info.has_value());
+                follow_button(ui, ui.id("profile-follow"), {right - w, y, w, control::medium}, card.source, person_of(who), true);
+            }
+        };
 
         // Their name, and beside it their level, VIP, and platform badge.
-        const float tx = face.right() + (compact ? 16.f : 24.f), room = right - tx - 8;
+        const float top = face.y + (compact ? 0.f : 2.f), name_h = compact ? 30.f : 36.f;
+        if (!at_foot) {
+            actions(top + (name_h - control::medium) / 2);
+        }
+        const float room = std::max(0.f, r.right() - tx - (at_foot ? 0.f : actions_w + 12));
         const auto name_style = t.style(compact ? type::title : type::display, t.text, text::semibold);
+        // VIP is gold whatever the accent: an accent taken from a grey cover would leave it looking like the level.
+        const ui::Color gold = ui::accent_for_hue(0.11f, t.dark);
         struct Badge {
             std::string text;
-            bool lit;
+            std::string_view icon; // as a fact, when the name leaves the badges no room
+            bool vip;
+            float w = 0;
         };
         std::inplace_vector<Badge, 3> badges;
-        if (who.level >= 0) {
-            badges.push_back({std::format("Lv.{}", who.level), false});
-        }
         if (who.vip) {
-            badges.push_back({"VIP", true});
+            badges.push_back({"VIP", "sparkles", true});
+        }
+        if (who.level >= 0) {
+            badges.push_back({std::format("Lv.{}", who.level), "audio-lines", false});
         }
         if (!self) {
-            badges.push_back({std::string(lyren::tr(platform(card.source).short_name)), false});
+            badges.push_back({std::string(lyren::tr(platform(card.source).short_name)), "music", false});
         }
-        const auto badge_style = t.style(type::micro, {}, text::medium);
+        const auto badge_style = t.style(type::micro, t.text_dim, text::semibold);
         float badges_w = 0;
-        for (const auto &badge : badges) {
-            badges_w += std::ceil(p.measure(badge.text, badge_style)) + 20;
+        for (auto &badge : badges) {
+            badge.w = std::ceil(p.measure(badge.text, badge_style)) + 14;
+            badges_w += badge.w + 6;
         }
         const float name_w = std::ceil(p.measure(who.name, name_style)) + 1;
-        // The badges show where the whole name leaves them room.
-        const bool tagged = name_w + 10 + badges_w <= room;
-        ui.label({tx, top, std::min(name_w, room), name_h}, who.name, name_style);
+        const bool tagged = name_w + 4 + badges_w <= room;
+        if (room > 0) {
+            ui.label({tx, top, std::min(name_w, room), name_h}, who.name, name_style);
+        }
         if (tagged) {
             float x = tx + name_w + 10;
             for (const auto &badge : badges) {
-                const float w = std::ceil(p.measure(badge.text, badge_style)) + 14;
-                const Rect pill{x, top + (name_h - 20) / 2 + 1, w, 20};
-                p.rect(pill, badge.lit ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 10);
-                ui.label(pill, badge.text, t.style(type::micro, badge.lit ? t.accent : t.text_dim, text::medium), Align::center);
-                x += w + 6;
+                const Rect pill{x, top + (name_h - 20) / 2 + 1, badge.w, 20};
+                if (badge.vip) {
+                    p.rect(pill, gold.with_alpha(0.14f), 10, gold.with_alpha(0.32f), 1);
+                } else {
+                    p.rect(pill, t.fill(1.5f), 10);
+                }
+                ui.label(pill, badge.text, t.style(type::micro, badge.vip ? gold : t.text_dim, text::semibold), Align::center);
+                x += badge.w + 6;
             }
         }
 
-        // What they say of themselves, in two lines at most.
-        float y = top + name_h + (compact ? 4.f : 8.f);
-        const float text_w = r.right() - tx;
+        // What they say of themselves, in two lines at most, the second cut short where it runs on.
+        float y = top + name_h + (compact ? 2.f : 4.f);
+        const float text_w = std::max(0.f, r.right() - tx);
         if (page->loading && !page->info) {
             ui.skeleton({tx, y + 5, std::min(text_w, 260.f), 10}, 5);
             y += 20;
-        } else {
-            const std::string_view about = !page->info && !page->error.empty() ? lyren::tr(page->error) : std::string_view(who.signature);
+        } else if (text_w > 0) {
+            std::string_view about = !page->info && !page->error.empty() ? lyren::tr(page->error) : std::string_view(who.signature);
+            // Two lines never show more than this of it, however long it runs.
+            if (about.size() > about_limit) {
+                size_t cut = about_limit;
+                while (cut > 0 && (static_cast<unsigned char>(about[cut]) & 0xc0) == 0x80) {
+                    --cut;
+                }
+                about = about.substr(0, cut);
+            }
             const auto style = t.style(type::label, t.text_dim);
-            int lines = 0;
-            for (const auto line : p.wrap_lines(about, style.size, text_w)) {
+            const float w = std::min(text_w, 720.f);
+            int shown = 0;
+            for (auto line : p.wrap_lines(about, style.size, w)) {
                 if (line.empty()) {
                     continue;
                 }
-                ui.label({tx, y, text_w, 20}, line, style);
-                y += 20;
-                if (++lines == 2) {
+                if (++shown == 2) {
+                    // The rest of its paragraph: the label ends it with an ellipsis when it does not fit, or when more
+                    // paragraphs follow.
+                    const std::string_view rest = about.substr(static_cast<size_t>(line.data() - about.data()));
+                    const size_t nl = rest.find('\n');
+                    line = nl == rest.npos ? rest : rest.substr(0, nl);
+                    const bool more = nl != rest.npos && rest.find_first_not_of(" \t\r\n", nl + 1) != rest.npos;
+                    if (more && p.measure(line, style) <= w) {
+                        ui.label({tx, y, w, 20}, std::string(line) + "…", style);
+                    } else {
+                        ui.label({tx, y, w, 20}, line, style);
+                    }
+                    y += 20;
                     break;
                 }
+                ui.label({tx, y, w, 20}, line, style);
+                y += 20;
             }
         }
-        std::inplace_vector<std::pair<std::string_view, std::string>, 4> facts;
-        if (!tagged && who.level >= 0) {
-            facts.emplace_back("audio-lines", std::format("Lv.{}", who.level));
+        std::inplace_vector<std::pair<std::string_view, std::string>, 6> facts;
+        if (!tagged) {
+            for (auto &badge : badges) {
+                facts.emplace_back(badge.icon, std::move(badge.text));
+            }
         }
         if (!who.location.empty()) {
             facts.emplace_back("map-pin", who.location);
@@ -394,94 +466,107 @@ namespace lyren {
             facts.emplace_back("user-check", std::string(lyren::tr("Follows you")));
         }
         if (!facts.empty()) {
-            y += 4;
+            y += 2;
             const auto style = t.style(type::caption, t.faint());
             float x = tx;
             for (const auto &[icon, text] : facts) {
                 const float w = std::ceil(p.measure(text, style)) + 19;
-                if (x + w > r.right()) {
-                    break;
+                if (x > tx && x + w > r.right()) {
+                    x = tx;
+                    y += 19;
                 }
                 p.icon(icon, {x, y + 3, 13, 13}, t.faint());
-                ui.label({x + 18, y, w - 18, 19}, text, style);
+                if (const float label_w = std::min(w - 18, r.right() - (x + 18)); label_w > 0) {
+                    ui.label({x + 18, y, label_w, 19}, text, style);
+                }
                 x += w + 16;
             }
             y += 19;
         }
-        y = std::max(y, face.bottom()) + 22;
-        y += stats(ui, {r.x, y, r.w, 0}, page, who, self);
-        return y + 14 - r.y;
+
+        // The counts close the head across its full width, aligned with the portrait above and the tab strip below.
+        float bottom = std::max(y, face.bottom());
+        if (!counts.empty()) {
+            const float row_y = bottom + (compact ? 12.f : 14.f);
+            bottom = row_y + stats(ui, {counts_x, row_y, r.right() - counts_x - (at_foot ? actions_w + 24 : 0), 0}, counts, page);
+            if (at_foot && browser_.route().serial == visit_) {
+                actions(row_y);
+            }
+        }
+        return bottom + 16 - r.y;
     }
 
-    float ProfileView::stats(ui::Ui &ui, Rect r, const Listener &page, const Profile &who, bool self) {
+    auto ProfileView::stat_list(ui::Ui &ui, const Listener &page, const Profile &who, bool self) -> Stats {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const auto &caps = provider(page->who).capabilities;
         const auto &lib = library_.shelf(page->who.source);
-        // Interactive metric strip: social circle, posts, listening volume, and library counts.
-        struct Stat {
-            std::string_view label, icon;
-            int value;
-            std::optional<Section> opens;
-            int tab = -1;
-            std::optional<Page> opens_page;
-        };
-        std::inplace_vector<Stat, 4> all;
+        // Social circle, posts, listening volume, then what of the library there is room left for.
+        Stats all;
         if (caps.people || who.follows >= 0) {
-            all.push_back({lyren::tr_ctx("nav", "Following"), "users", social_.count(*page, false), caps.people ? std::optional(Section::people) : std::nullopt, 0, std::nullopt});
+            all.push_back({lyren::tr_ctx("nav", "Following"), social_.count(*page, false), caps.people ? std::optional(Section::people) : std::nullopt, 0, std::nullopt});
         }
         if (caps.people || who.fans >= 0) {
-            all.push_back({lyren::tr("Followers"), "heart", social_.count(*page, true), caps.people ? std::optional(Section::people) : std::nullopt, 1, std::nullopt});
+            all.push_back({lyren::tr("Followers"), social_.count(*page, true), caps.people ? std::optional(Section::people) : std::nullopt, 1, std::nullopt});
         }
         if (caps.posts) {
-            all.push_back({lyren::tr("Posts"), "message-square", who.posts, Section::posts, 0, std::nullopt});
+            all.push_back({lyren::tr("Posts"), who.posts, Section::posts, 0, std::nullopt});
         }
         if (who.listened >= 0) {
-            all.push_back({lyren::tr("Songs played"), "headphones", who.listened, caps.ranking ? std::optional(Section::chart) : std::nullopt, -1, std::nullopt});
+            all.push_back({lyren::tr("Songs played"), who.listened, caps.ranking ? std::optional(Section::chart) : std::nullopt, -1, std::nullopt});
         }
         if (self) {
-            if (all.size() < 4 && caps.likes) {
+            if (all.size() < all.capacity() && caps.likes) {
                 const int liked = lib.liked.count > 0 ? lib.liked.count : lib.playlists_loaded ? static_cast<int>(lib.liked_ids.size()) : -1;
-                all.push_back({lyren::tr("Liked songs"), "heart", liked, std::nullopt, -1, Page::liked});
+                all.push_back({lyren::tr("Liked songs"), liked, std::nullopt, -1, Page::liked});
             }
-            if (all.size() < 4 && caps.library) {
+            if (all.size() < all.capacity() && caps.library) {
                 const int lists = lib.playlists_loaded ? static_cast<int>(lib.playlists.size()) + (!lib.liked.id.empty() ? 1 : 0) : -1;
-                all.push_back({lyren::tr("Playlists"), "list-music", lists, Section::playlists, -1, std::nullopt});
+                all.push_back({lyren::tr("Playlists"), lists, Section::playlists, -1, std::nullopt});
             }
-            if (all.size() < 4 && (caps.collect_albums || caps.follow_artists)) {
+            if (all.size() < all.capacity() && (caps.collect_albums || caps.follow_artists)) {
                 const bool ready = lib.collection[0].loaded && lib.collection[1].loaded;
                 const int saved = ready ? static_cast<int>(lib.collection[0].cards.size() + lib.collection[1].cards.size()) : -1;
-                all.push_back({lyren::tr("Collection"), "star", saved, Section::collection, -1, std::nullopt});
+                all.push_back({lyren::tr("Collection"), saved, Section::collection, -1, std::nullopt});
             }
-        } else if (all.size() < 4 && caps.profile_playlists && (who.playlists >= 0 || page->playlists.loaded)) {
+        } else if (all.size() < all.capacity() && caps.profile_playlists && (who.playlists >= 0 || page->playlists.loaded)) {
             const int lists = who.playlists >= 0 ? who.playlists : static_cast<int>(page->playlists.cards.size());
-            all.push_back({lyren::tr("Playlists"), "list-music", lists, Section::playlists, -1, std::nullopt});
+            all.push_back({lyren::tr("Playlists"), lists, Section::playlists, -1, std::nullopt});
         }
+        // One count alone says too little to stand as a row.
         if (all.size() < 2) {
-            return 0;
+            all.clear();
         }
-        const bool tight = r.w < 460;
-        constexpr float h = 62;
-        const float radius = t.radius_l() * 0.72f;
-        const Rect bar{r.x, r.y, r.w, h};
-        p.rect(bar, t.dark ? t.fill(0.72f) : t.bg.mix(t.surface, 0.36f), radius);
-        const float cell = bar.w / static_cast<float>(all.size());
-        float x = bar.x;
+        const auto number = t.style(type::heading, {}, text::semibold | text::tabular_nums), label = t.style(type::label, {});
+        for (Stat &stat : all) {
+            stat.number_w = std::ceil(p.measure(stat.value < 0 ? std::string("—") : stat_number(stat.value), number)) + 1;
+            stat.w = stat_pad + stat.number_w + 6 + std::ceil(p.measure(stat.label, label)) + 1 + stat_pad;
+        }
+        return all;
+    }
+
+    float ProfileView::stats(ui::Ui &ui, Rect r, std::span<const Stat> all, const Listener &page) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        constexpr float h = control::medium;
+        // Each count sits with its name, as wide as the two; the row breaks where the next would not fit.
+        float x = r.x, y = r.y;
         for (size_t i = 0; i < all.size(); ++i) {
             const Stat &stat = all[i];
             const ui::Id id = ui::sub_id(ui.id("profile-stat"), i);
-            const Rect slot{x, bar.y, cell, h};
-            if (i > 0) {
-                p.rect({x, bar.y + 15, 1, h - 30}, t.line(0.55f));
+            if (x > r.x && x + stat.w > r.right()) {
+                x = r.x;
+                y += h + 2;
             }
+            const Rect slot{x, y, std::min(stat.w, std::max(0.f, r.right() - x)), h};
             float hot = 0;
             if (stat.opens || stat.opens_page) {
-                const Rect hit = slot.inset(4);
+                const Rect hit = slot.inset(0, 2);
                 const auto it = ui.interact(id, hit);
                 const auto feel = ui.feel(id, it, pace::quick);
                 hot = feel.hot;
                 if (hot > 0) {
-                    p.rect(hit.inset(feel.down), t.fill(0.95f * hot), std::max(radius - 4, 4.f));
+                    p.rect(hit.inset(feel.down), t.fill(1.15f * hot), t.round(hit.h));
                 }
                 if (it.hovered) {
                     ui.cursor = wl::Cursor::pointer;
@@ -496,21 +581,24 @@ namespace lyren {
                         show(ui, page, *stat.opens);
                     } else if (stat.opens_page) {
                         browser_.open(*stat.opens_page);
+                        break;
                     }
                 }
             }
-            const float pad_x = tight ? 10.f : 16.f;
-            const Rect value{slot.x + pad_x, bar.y + 7, std::max(0.f, slot.w - 2 * pad_x), 24};
-            const auto num_style = t.style(tight ? type::lead : type::title, t.text.mix(t.accent, 0.35f * hot), text::semibold | text::tabular_nums);
+            const Rect value{slot.x + stat_pad, y, std::min(stat.number_w, std::max(0.f, slot.w - stat_pad)), h};
+            const auto number = t.style(type::heading, t.text.mix(t.accent, 0.4f * hot), text::semibold | text::tabular_nums);
             if (stat.value < 0) {
-                ui.label(value, "—", num_style);
+                ui.label(value, "—", number);
             } else {
-                rolling_count(ui, ui::sub_id(id, 0xc7), value, stat.value, stat_number, num_style);
+                rolling_count(ui, ui::sub_id(id, 0xc7), value, stat.value, stat_number, number);
             }
-            ui.label({slot.x + pad_x, bar.y + 37, std::max(0.f, slot.w - 2 * pad_x), 18}, stat.label, t.style(type::caption, t.text_dim.mix(t.text, 0.55f * hot)));
-            x += cell;
+            // A pixel down, so the smaller name stands on the number's baseline.
+            if (const float label_w = slot.right() - stat_pad - value.right() - 6; label_w > 0) {
+                ui.label({value.right() + 6, y + 1, label_w, h}, stat.label, t.style(type::label, t.text_dim.mix(t.text, 0.55f * hot)));
+            }
+            x += stat.w + stat_gap;
         }
-        return h;
+        return y + h - r.y;
     }
 
     void ProfileView::tabs(ui::Ui &ui, Rect r, const Listener &page, const Profile &who, float pinned) {
@@ -552,8 +640,8 @@ namespace lyren {
         const float w = r.w / static_cast<float>(sections.size());
         for (size_t i = 0; i < sections.size(); ++i) {
             const Rect cell{r.x + static_cast<float>(i) * w, r.y, w, r.h};
-            if (ui.icon_button(ui::sub_id(ui.id("profile-tabs"), i), ui::center(cell, 36, 36), all[static_cast<size_t>(sections[i])].icon, 18, static_cast<int>(i) == selected,
-                               labels[i])) {
+            if (ui.icon_button(ui::sub_id(ui.id("profile-tabs"), i), ui::center(cell, std::min(w, 36.f), 36), all[static_cast<size_t>(sections[i])].icon, 18,
+                               static_cast<int>(i) == selected, labels[i])) {
                 show(ui, page, sections[i]);
             }
         }

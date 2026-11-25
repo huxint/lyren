@@ -372,6 +372,146 @@ TEST_CASE("profile layout adapts cleanly across narrow, medium and ultrawide win
     }
 }
 
+TEST_CASE("profile head keeps badges and counts inside a narrow window") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    scene.shell.browser.open_own_profile();
+    constexpr float w = 420, h = 700;
+    scene.draw(w, h);
+    const auto runs = scene.draw(w, h);
+    CHECK(drew(runs, "Mira Chen"));
+    // With no room beside the name the badges stand among the facts, and the post button is its icon alone.
+    CHECK(drew(runs, "VIP"));
+    CHECK(drew(runs, "Lv.8"));
+    CHECK_FALSE(drew(runs, "New post"));
+    CHECK(scene.find("square-pen", true) != nullptr);
+    for (const std::string_view label : {"Following", "Followers", "Posts", "Songs played"}) {
+        CAPTURE(label);
+        const auto *run = scene.find(label);
+        REQUIRE(run != nullptr);
+        CHECK_FALSE(run->cut);
+        CHECK(run->box.x >= 16 - 1);
+        CHECK(run->box.right() <= w - 16 + 1);
+    }
+}
+
+TEST_CASE("a press held on one listener's follow button does not land on the next listener's") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    auto followed = [&] {
+        return std::ranges::count_if(scene.service.calls, [](const std::string &call) {
+            return call.starts_with("follow ");
+        });
+    };
+    scene.shell.browser.open_profile(Source::netease, std::string(test::Service::friend_id), "Ada Lovelace", "");
+    scene.draw();
+    scene.draw();
+    const auto *follow = scene.find("Follow");
+    REQUIRE(follow != nullptr);
+    const float x = follow->box.x + follow->box.w / 2, y = follow->box.y + follow->box.h / 2;
+    scene.button(x, y, true);
+    scene.shell.browser.open_profile(Source::netease, "user-2", "Grace", "");
+    scene.draw();
+    scene.button(x, y, false);
+    scene.draw();
+    CHECK(followed() == 0);
+    // The same button, pressed and released on the page it belongs to, follows them.
+    REQUIRE(scene.find("Follow") != nullptr);
+    scene.button(x, y, true);
+    scene.button(x, y, false);
+    scene.draw();
+    CHECK(followed() == 1);
+}
+
+TEST_CASE("profile refresh menu only refreshes the visit it was opened on") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    scene.shell.browser.open_profile(Source::netease, std::string(test::Service::friend_id), "Ada Lovelace", "");
+    scene.draw();
+    scene.draw();
+    const auto *more = scene.find("ellipsis", true);
+    REQUIRE(more != nullptr);
+    REQUIRE(more->box.y < 300);
+    scene.click(*more);
+    const auto *refresh = scene.find("Refresh");
+    REQUIRE(refresh != nullptr);
+    const float rx = refresh->box.x + refresh->box.w / 2, ry = refresh->box.y + refresh->box.h / 2;
+
+    // Navigating away does not dismiss an open menu: choosing Refresh from Ada's menu must leave Grace's visit alone.
+    scene.shell.browser.open_profile(Source::netease, "user-2", "Grace", "");
+    scene.draw();
+    REQUIRE(scene.ui.menu_open());
+    const auto grace = scene.shell.browser.route().profile;
+    REQUIRE(grace != nullptr);
+    scene.click(rx, ry);
+    CHECK(scene.shell.browser.route().profile == grace);
+
+    // Refresh opened on Grace's own visit replaces it.
+    more = scene.find("ellipsis", true);
+    REQUIRE(more != nullptr);
+    scene.click(*more);
+    refresh = scene.find("Refresh");
+    REQUIRE(refresh != nullptr);
+    scene.click(*refresh);
+    CHECK(scene.shell.browser.route().profile != grace);
+}
+
+TEST_CASE("a profile head navigation click stops later clicks in the same frame from touching the old profile") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    scene.service.capabilities.posts = false;
+    scene.shell.browser.open_own_profile();
+    scene.draw();
+    scene.draw();
+    const auto page = scene.shell.browser.route().profile;
+    REQUIRE(page != nullptr);
+    REQUIRE(page->info.has_value());
+    // With listened hidden, the four head stats are Following, Followers, Liked songs, Playlists.
+    page->info->listened = -1;
+    scene.draw();
+    CHECK(page->section == Social::Section::overview);
+
+    const auto *liked = scene.find("Liked songs");
+    const auto *people_tab = scene.find("People");
+    REQUIRE(liked != nullptr);
+    REQUIRE(people_tab != nullptr);
+    const float lx = liked->box.x + liked->box.w / 2, ly = liked->box.y + liked->box.h / 2;
+    const float px = people_tab->box.x + people_tab->box.w / 2, py = people_tab->box.y + people_tab->box.h / 2;
+
+    // A second click in the same frame on the old page's Playlists stat or People tab must be ignored.
+    const ui::Painter::Run *playlists_stat = nullptr;
+    for (const auto &run : scene.painter.runs()) {
+        if (!run.icon && run.text == "Playlists" && std::abs(run.box.y - liked->box.y) < 12) {
+            playlists_stat = &run;
+            break;
+        }
+    }
+    REQUIRE(playlists_stat != nullptr);
+    const float sx = playlists_stat->box.x + playlists_stat->box.w / 2, sy = playlists_stat->box.y + playlists_stat->box.h / 2;
+
+    scene.clicks({{lx, ly}, {sx, sy}, {px, py}});
+    CHECK(scene.shell.browser.route().page == Page::liked);
+    CHECK(page->section == Social::Section::overview);
+}
+
+TEST_CASE("switching profile tabs while scrolled restores the section top") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    scene.shell.browser.open_own_profile();
+    constexpr float w = 1180, h = 460;
+    scene.draw(w, h);
+    scene.draw(w, h);
+    const ui::Id scroll = ui::sub_id(scene.ui.id("profile"), scene.shell.browser.route().serial);
+    scene.ui.scroll_to(scroll, 380.f);
+    scene.draw(w, h);
+    REQUIRE(scene.ui.scroll_offset(scroll) > 260.f);
+    const auto *col_tab = scene.find("Collection");
+    REQUIRE(col_tab != nullptr);
+    scene.click(*col_tab, w, h);
+    CHECK(scene.shell.browser.route().profile->section == Social::Section::collection);
+    CHECK(scene.ui.scroll_offset(scroll) <= 220.f);
+}
+
 TEST_CASE("profile overview, collection, people tabs and stat shortcuts work cleanly") {
     gfx::select_driver(GpuChoice::integrated);
     Scene scene;

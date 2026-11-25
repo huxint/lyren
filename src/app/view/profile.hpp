@@ -1,6 +1,10 @@
 #pragma once
 #include <cstdint>
+#include <inplace_vector>
 #include <memory>
+#include <optional>
+#include <span>
+#include <string_view>
 #include <vector>
 
 #include "app/view/draw.hpp"
@@ -36,8 +40,22 @@ namespace lyren {
             float total_h = 0;
         };
 
+        // A count in the head, and where a click on it leads.
+        struct Stat {
+            std::string_view label;
+            int value; // negative while unknown
+            std::optional<Section> opens;
+            int tab = -1; // the sub-tab of the section it opens
+            std::optional<Page> opens_page;
+            float number_w = 0, w = 0; // as measured: the number alone, and the whole with its padding
+        };
+        using Stats = std::inplace_vector<Stat, 4>;
+
         float header(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, bool self);
-        float stats(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, bool self);
+        // The counts worth showing for this listener, measured; none when there would be only one.
+        Stats stat_list(ui::Ui &ui, const Listener &page, const Profile &who, bool self);
+        // Lays the counts out from r's left, breaking into rows within its width.
+        float stats(ui::Ui &ui, ui::Rect r, std::span<const Stat> all, const Listener &page);
         // pinned: how far the tabs have come to rest at the top of the view, 0..1.
         void tabs(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, float pinned);
         float section(ui::Ui &ui, ui::Rect r, float rail_budget_h, const Listener &page, bool self);
@@ -59,6 +77,7 @@ namespace lyren {
         void show(ui::Ui &ui, const Listener &page, Section section);
 
         uint64_t visit_ = 0;                 // the visit the page was last laid out for
+        ui::Id scroll_ = 0;                  // scroll container id for the current visit, outside any nested id scope
         int section_dir_ = 1;                // -1 or +1 for directional tab slide
         bool wide_ = true;                   // hysteresis state for two-column studio rail
         bool compact_ = false;               // hysteresis state for compact header

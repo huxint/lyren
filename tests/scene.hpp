@@ -362,6 +362,25 @@ namespace lyren::test {
             point(x, y);
             return draw(w, h);
         }
+        // Half a click at (x, y): the button goes down, or comes up, and a frame is drawn.
+        std::span<const ui::Painter::Run> button(float x, float y, bool press, float w = 1180, float h = 760) {
+            pointer_ = {.x = x, .y = y, .inside = true, .left_down = press};
+            pointer_.actions = {{.x = x, .y = y, .button = BTN_LEFT, .press = press}};
+            return draw(w, h, pointer_);
+        }
+        // Several clicks batched into a single frame, then a frame for what they set off to show.
+        std::span<const ui::Painter::Run> clicks(std::initializer_list<std::pair<float, float>> points, float w = 1180, float h = 760) {
+            ui::FrameInput input{.inside = true};
+            for (const auto &[x, y] : points) {
+                input.x = x;
+                input.y = y;
+                input.actions.push_back({.x = x, .y = y, .button = BTN_LEFT, .press = true});
+                input.actions.push_back({.x = x, .y = y, .button = BTN_LEFT, .press = false});
+            }
+            draw(w, h, input);
+            point(input.x, input.y);
+            return draw(w, h);
+        }
         std::span<const ui::Painter::Run> click(const ui::Painter::Run &run, float w = 1180, float h = 760) {
             return click(run.box.x + run.box.w / 2, run.box.y + run.box.h / 2, w, h);
         }
