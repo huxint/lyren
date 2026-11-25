@@ -319,11 +319,16 @@ namespace lyren {
             default:
                 break;
         }
-        // What played on this device is at hand; every other list is the service's to send.
-        if (route.page == Page::recent && (shelf().recent_tab == 0 || !signed_in())) {
-            const auto &played = playback_.history(browser_.active());
-            route.card.subtitle = lyren::trf("{} songs · On this device", played.size());
-            return list_page(ui, r, played, false, "", std::max(browser_.entered, browser_.tab_since));
+        // What played on this device is at hand; cloud recent plays live on the platform shelf.
+        if (route.page == Page::recent) {
+            if (shelf().recent_tab == 0 || !signed_in()) {
+                const auto &played = playback_.history(browser_.active());
+                route.card.subtitle = lyren::trf("{} songs · On this device", played.size());
+                return list_page(ui, r, played, false, "", std::max(browser_.entered, browser_.tab_since));
+            }
+            const auto &recent = shelf().recent_plays;
+            route.card.subtitle = lyren::trf("{} songs · From all your devices", recent.tracks.size());
+            return list_page(ui, r, recent.tracks, recent.loading, recent.error, std::max(recent.since, browser_.tab_since));
         }
         // No list yet: the account is still loading, or the page waits for a login.
         if (!route.list) {
@@ -336,8 +341,6 @@ namespace lyren {
             route.card.subtitle = lyren::trf("{} songs", list.tracks.size());
         } else if (route.page == Page::cloud) {
             route.card.subtitle = lyren::trf("Cloud uploads · {} songs", list.tracks.size());
-        } else if (route.page == Page::recent) {
-            route.card.subtitle = lyren::trf("{} songs · From all your devices", list.tracks.size());
         }
         list_page(ui, r, list.tracks, list.loading, list.error, std::max(list.since, browser_.tab_since));
     }
@@ -998,13 +1001,13 @@ namespace lyren {
         int clicked = -1;
         switch (a.tab) {
             case 0:
-                near_end = shell_.tracks.list(ui, content, ui.id("artist-songs"), songs, since);
+                near_end = shell_.tracks.list(ui, content, scroll_id(ui, "artist-songs"), songs, since);
                 break;
             case 1:
-                clicked = grid_view(ui, content, ui.id("artist-albums"), a.albums.cards, false, since, a.albums.loading, near_end);
+                clicked = grid_view(ui, content, scroll_id(ui, "artist-albums"), a.albums.cards, false, since, a.albums.loading, near_end);
                 break;
             default:
-                prose(ui, {content.x + 16, content.y + 8, content.w - 16, content.h - 8}, ui.id("artist-intro"), a.sections);
+                prose(ui, {content.x + 16, content.y + 8, content.w - 16, content.h - 8}, scroll_id(ui, "artist-intro"), a.sections);
         }
         if (near_end) {
             browser_.load_artist_tab(a.tab);
@@ -1164,7 +1167,7 @@ namespace lyren {
         const float title_h = compact ? 30.f : 38.f;
         ui.label({tx, title_y, tw, title_h}, built_in ? lyren::tr(c.title) : std::string_view(c.title), t.style(compact ? type::title : type::display, t.text, text::semibold));
         const float sub_y = title_y + title_h + 4;
-        const AlbumInfo *album = page == Page::album && browser_.route().list && !browser_.route().list->loading ? &browser_.route().list->album : nullptr;
+        const AlbumInfo *album = page == Page::album && browser_.route().list && browser_.route().list->loaded ? &browser_.route().list->album : nullptr;
         if (album && !album->artist.empty()) {
             // Album: the artist links to their page, then the date and the label; the notes open in full.
             const float aw = std::min(std::ceil(p.measure(album->artist, sub)) + 1, tw);
@@ -1220,7 +1223,9 @@ namespace lyren {
                 const float rw = ui.button_width(lyren::tr("Retry"), true);
                 if (ui.button(ui.id("list-retry"), {centre.x + (centre.w - rw) / 2, centre.y + 112, rw, control::medium}, lyren::tr("Retry"), ui::ButtonKind::secondary,
                               "refresh-cw")) {
-                    if (browser_.route().list) {
+                    if (page == Page::recent) {
+                        spawn(library_.load_recent_plays(c.source, true));
+                    } else if (browser_.route().list) {
                         spawn(browser_.load_list(browser_.route().list, page, c));
                     } else {
                         spawn(library_.load(browser_.active()));
@@ -1234,13 +1239,17 @@ namespace lyren {
             const float w = ui.button_width(lyren::tr("Retry"), true);
             ui.label({retry.x, retry.y, retry.w - w - 12, 32}, lyren::tr(list_error), t.style(type::caption, t.danger));
             if (ui.button(ui.id("list-retry"), {retry.right() - w, retry.y, w, control::small + 4}, lyren::tr("Retry"), ui::ButtonKind::secondary, "refresh-cw")) {
-                spawn(browser_.load_list(browser_.route().list, page, c));
-                if (c.owned) {
-                    spawn(library_.load(c.source));
+                if (page == Page::recent) {
+                    spawn(library_.load_recent_plays(c.source, true));
+                } else {
+                    spawn(browser_.load_list(browser_.route().list, page, c));
+                    if (c.owned) {
+                        spawn(library_.load(c.source));
+                    }
                 }
             }
         }
-        shell_.tracks.list(ui, body, ui.id("tracks"), tracks, std::max(browser_.entered + 0.04, since));
+        shell_.tracks.list(ui, body, scroll_id(ui, "tracks"), tracks, std::max(browser_.entered + 0.04, since));
     }
 
     void Pages::list_actions(ui::Ui &ui, float x, float y, float height, bool compact) {
@@ -1258,7 +1267,7 @@ namespace lyren {
             return clicked;
         };
         if (browser_.route().page == Page::album) {
-            if (!browser_.route().list || browser_.route().list->loading) {
+            if (!browser_.route().list || !browser_.route().list->loaded) {
                 return;
             }
             const bool on = library_.kept(c.source, Library::Preference::album, c.id, browser_.route().list->album.collected);
@@ -1276,26 +1285,37 @@ namespace lyren {
                 spawn(browser_.load_list(browser_.route().list, Page::radar, c));
             }
         } else if (browser_.route().page == Page::liked) {
-            if (!provider().features.heartbeat || !signed_in() || shelf().liked.id.empty() || !browser_.route().list || browser_.route().list->tracks.empty()) {
-                return;
+            if (provider().features.heartbeat && signed_in() && !shelf().liked.id.empty() && browser_.route().list && !browser_.route().list->tracks.empty()) {
+                if (labelled("heartbeat", lyren::tr("Heartbeat"), "heart-pulse", ui.button_width(lyren::tr("Heartbeat"), true), ui::ButtonKind::tonal)) {
+                    // From the picked song, otherwise from any of them.
+                    const auto &v = browser_.route().list->tracks;
+                    const size_t seed = browser_.selection().selected >= 0 && browser_.selection().selected < static_cast<int>(v.size())
+                                            ? static_cast<size_t>(browser_.selection().selected)
+                                            : playback_.random() % v.size();
+                    spawn(playback_.heartbeat(v[seed], library_.shelf(v[seed].source).liked.id));
+                }
             }
-            if (labelled("heartbeat", lyren::tr("Heartbeat"), "heart-pulse", ui.button_width(lyren::tr("Heartbeat"), true), ui::ButtonKind::tonal)) {
-                // From the picked song, otherwise from any of them.
-                const auto &v = browser_.route().list->tracks;
-                const size_t seed = browser_.selection().selected >= 0 && browser_.selection().selected < static_cast<int>(v.size())
-                                        ? static_cast<size_t>(browser_.selection().selected)
-                                        : playback_.random() % v.size();
-                spawn(playback_.heartbeat(v[seed], library_.shelf(v[seed].source).liked.id));
+            if (signed_in() && browser_.route().list && !browser_.route().list->loading && square("liked-refresh", "refresh-cw", lyren::tr("Refresh"))) {
+                spawn(browser_.load_list(browser_.route().list, Page::liked, c));
+            }
+        } else if (browser_.route().page == Page::cloud) {
+            if (signed_in() && browser_.route().list && !browser_.route().list->loading && square("cloud-refresh", "refresh-cw", lyren::tr("Refresh"))) {
+                spawn(browser_.load_list(browser_.route().list, Page::cloud, c));
             }
         } else if (browser_.route().page == Page::recent) {
             const std::array<std::string_view, 2> tabs = {lyren::tr("This device"), lyren::tr("Cloud")};
             const float tabs_w = std::max(160.f, ui.button_width(tabs[0], false) + ui.button_width(tabs[1], false) - 12);
-            if (provider().features.recent_plays && signed_in() &&
-                ui.segmented(ui.id("recent-tabs"), {x, y + (height - control::medium) / 2, tabs_w, control::medium}, tabs, shelf().recent_tab)) {
-                browser_.tab_since = ui.now;
-                browser_.reset_selection();
-                ui.scroll_to(ui.id("tracks"), 0);
-                browser_.ensure();
+            if (provider().features.recent_plays && signed_in()) {
+                if (ui.segmented(ui.id("recent-tabs"), {x, y + (height - control::medium) / 2, tabs_w, control::medium}, tabs, shelf().recent_tab)) {
+                    browser_.tab_since = ui.now;
+                    browser_.reset_selection();
+                    ui.scroll_to(scroll_id(ui, "tracks"), 0);
+                    browser_.ensure();
+                }
+                x += tabs_w + gap;
+                if (shelf().recent_tab == 1 && !shelf().recent_plays.loading && square("recent-refresh", "refresh-cw", lyren::tr("Refresh"))) {
+                    spawn(library_.load_recent_plays(browser_.active(), true));
+                }
             }
         } else if (browser_.route().page == Page::playlist) {
             if (provider(c).capabilities.collect_playlists && c.collectable && !c.owned && browser_.route().list) {
@@ -1310,6 +1330,10 @@ namespace lyren {
             if (provider(c).capabilities.comments[2] && c.commentable && square("playlist-comments", "message-square", lyren::tr("Comments"))) {
                 shell_.open_comments(c.source, Subject::playlist, c.thread.empty() ? c.id : c.thread, c.title, c.cover);
             }
+            if ((!c.owned || !provider(c).capabilities.playlist_edit) && browser_.route().list && !browser_.route().list->loading &&
+                square("playlist-refresh", "refresh-cw", lyren::tr("Refresh"))) {
+                spawn(browser_.load_list(browser_.route().list, Page::playlist, c));
+            }
             if (c.owned && provider(c).capabilities.playlist_edit && square("playlist-more", "ellipsis", lyren::tr("More"))) {
                 if (library_.shelf(c.source).playlist_writes.contains(c.id)) {
                     return env_.notify(std::string(lyren::tr("The playlist is still saving")), "list-music");
@@ -1322,6 +1346,10 @@ namespace lyren {
                                  return env_.notify(lyren::trf("Sign in to {} to reorder this playlist", lyren::tr(platform(c.source).name)), "user");
                              }
                              list->ordering = !list->ordering;
+                             if (list->ordering && list->refreshing) {
+                                 ++list->gen;
+                                 list->refreshing = false;
+                             }
                              browser_.reset_selection();
                              if (list->ordering) {
                                  env_.notify(std::string(lyren::tr("Use the arrows to move songs")), "list-ordered");

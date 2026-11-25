@@ -351,12 +351,8 @@ namespace lyren {
                 }
                 // The menu outlives a turn of the page: it refreshes the visit it was opened on, or nothing.
                 items.push_back({"refresh-cw", std::string(lyren::tr("Refresh")), [this, visit = browser_.route().serial] {
-                                     if (auto &route = browser_.route(); route.page == Page::profile && route.serial == visit) {
-                                         route.profile = social_.open(route.card);
-                                         const auto &c = provider(route.card).capabilities;
-                                         if ((library_.own(route.card) || route.card.owned) && (c.collect_albums || c.follow_artists) && env_.signed_in(route.card.source)) {
-                                             spawn(library_.load_collection(route.card.source));
-                                         }
+                                     if (const auto &route = browser_.route(); route.page == Page::profile && route.serial == visit) {
+                                         browser_.reload_profile();
                                      }
                                  }});
                 ui.open_menu(more.x, more.bottom() + 6, std::move(items));
@@ -824,8 +820,8 @@ namespace lyren {
         bool drew_any = false;
 
         // 1. Compact quick-access shortcut strip tailored to this platform's features.
-        const bool cloud_recent = bool(prov.features.recent_plays) && (page->recent.loading || !page->recent.tracks.empty());
-        const auto &recent_tracks = cloud_recent ? page->recent.tracks : playback_.history(card.source);
+        const bool cloud_recent = bool(prov.features.recent_plays) && (lib.recent_plays.loading || !lib.recent_plays.tracks.empty());
+        const auto &recent_tracks = cloud_recent ? lib.recent_plays.tracks : playback_.history(card.source);
         {
             struct Shortcut {
                 std::string_view id, icon, label;
@@ -900,7 +896,7 @@ namespace lyren {
         }
 
         // 3. Recently played songs (cloud when the service exposes it, otherwise this device's history).
-        if ((cloud_recent && page->recent.loading && recent_tracks.empty()) || !recent_tracks.empty()) {
+        if ((cloud_recent && lib.recent_plays.loading && recent_tracks.empty()) || !recent_tracks.empty()) {
             constexpr float head_h = 46, row_h = 50;
             const size_t shown = recent_tracks.empty() ? 3 : std::min<size_t>(recent_tracks.size(), 4);
             const Rect box{r.x, y, col_w, head_h + static_cast<float>(shown) * row_h + 10};
@@ -939,7 +935,7 @@ namespace lyren {
                 }
             } else {
                 const bool show_time = box.w >= 420;
-                const double since = std::max(page->section_since, cloud_recent ? page->recent.since : page->since);
+                const double since = std::max(page->section_since, cloud_recent ? lib.recent_plays.since : page->since);
                 ui.push_id(ui.id("overview-recent"));
                 for (size_t i = 0; i < shown; ++i) {
                     const Track &track = recent_tracks[i];

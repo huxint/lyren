@@ -345,7 +345,9 @@ namespace lyren {
     void App::build(double now) {
         float m = static_cast<float>(window_->margin()), w = static_cast<float>(window_->width()), h = static_cast<float>(window_->height());
         auto &p = *painter_;
-        p.begin(static_cast<float>(window_->scale()), m, m);
+        const float scale = static_cast<float>(window_->scale());
+        images_.set_scale(scale);
+        p.begin(scale, m, m);
         frame_theme_ = theme_;
         bool accent_moving = false;
         if (theme_.auto_accent) {

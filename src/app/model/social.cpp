@@ -16,6 +16,10 @@ namespace lyren {
                 likes_.forget(event.source);
                 removals_.forget(event.source);
                 feeds_[static_cast<size_t>(event.source)].reset();
+                own_pages_[static_cast<size_t>(event.source)].reset();
+                std::erase_if(other_pages_, [&](const std::shared_ptr<Page> &page) {
+                    return page->who.source == event.source;
+                });
             }
         });
     }
@@ -57,13 +61,102 @@ namespace lyren {
         return out;
     }
 
-    std::shared_ptr<Social::Page> Social::open(Card who) {
+    std::shared_ptr<Social::Page> Social::create(Card who, const Page *previous, bool reloading) {
+        const bool self = library_.own(who) || who.owned;
         auto page = std::make_shared<Page>();
         page->who = std::move(who);
         page->since = page->section_since = env_.now();
+        if (previous) {
+            page->section = previous->section;
+            page->posts_tab = previous->posts_tab;
+            page->chart_tab = previous->chart_tab;
+            page->collection_tab = previous->collection_tab;
+            page->people_tab = previous->people_tab;
+        }
+        if (const auto parts = sections(page->who); !parts.empty() && (!previous || !std::ranges::contains(parts, page->section))) {
+            page->section = parts.front();
+        }
         each_page([](const auto &) {});
         pages_.push_back(page);
-        spawn(load_profile(page));
+        if (self) {
+            own_pages_[static_cast<size_t>(page->who.source)] = page;
+        } else {
+            auto it = std::ranges::find_if(other_pages_, [&](const std::shared_ptr<Page> &cached) {
+                return cached->who.source == page->who.source && cached->who.id == page->who.id;
+            });
+            if (it != other_pages_.end()) {
+                other_pages_.erase(it);
+            } else if (other_pages_.size() == other_pages_.capacity()) {
+                other_pages_.erase(other_pages_.begin());
+            }
+            other_pages_.push_back(page);
+        }
+        spawn(load_profile(page, reloading));
+        if (previous && page->section == Section::chart && page->chart_tab != 0) {
+            load_chart(page, page->chart_tab);
+        }
+        return page;
+    }
+
+    std::shared_ptr<Social::Page> Social::open(Card who) {
+        const bool self = library_.own(who) || who.owned;
+        std::shared_ptr<Page> cached;
+        if (self) {
+            auto &slot = own_pages_[static_cast<size_t>(who.source)];
+            if (slot && slot->who.id == who.id) {
+                cached = slot;
+            }
+        } else {
+            auto it = std::ranges::find_if(other_pages_, [&](const std::shared_ptr<Page> &page) {
+                return page->who.source == who.source && page->who.id == who.id;
+            });
+            if (it != other_pages_.end()) {
+                std::rotate(it, it + 1, other_pages_.end());
+                cached = other_pages_.back();
+            }
+        }
+        if (cached) {
+            if (!cached->loading && !cached->info && !cached->error.empty()) {
+                return create(std::move(who), cached.get());
+            }
+            if (self) {
+                library_.ensure_recent_plays(who.source);
+                if (cached->section == Section::collection) {
+                    library_.ensure_collection(who.source);
+                }
+            }
+            return cached;
+        }
+        return create(std::move(who));
+    }
+
+    std::shared_ptr<Social::Page> Social::reload(Card who) {
+        const bool self = library_.own(who) || who.owned;
+        std::shared_ptr<Page> existing;
+        if (self) {
+            auto &slot = own_pages_[static_cast<size_t>(who.source)];
+            if (slot && slot->who.id == who.id) {
+                existing = slot;
+            }
+        } else {
+            auto it = std::ranges::find_if(other_pages_, [&](const std::shared_ptr<Page> &page) {
+                return page->who.source == who.source && page->who.id == who.id;
+            });
+            if (it != other_pages_.end()) {
+                existing = *it;
+            }
+        }
+        auto page = create(std::move(who), existing.get(), true);
+        if (self) {
+            if (page->section == Section::posts && page->posts_tab == 1) {
+                reload_posts(page, true);
+            }
+            spawn(library_.load_recent_plays(page->who.source, true));
+            const auto &caps = env_.provider(page->who).capabilities;
+            if ((caps.collect_albums || caps.follow_artists) && env_.signed_in(page->who.source)) {
+                spawn(library_.load_collection(page->who.source, true));
+            }
+        }
         return page;
     }
 
@@ -78,13 +171,15 @@ namespace lyren {
             const auto &shelf = library_.shelf(page->who.source);
             const auto &res = shelf.collection[static_cast<size_t>(page->collection_tab)];
             if (!res.loaded && !res.loading && env_.signed_in(page->who.source)) {
-                spawn(library_.load_collection(page->who.source));
+                spawn(library_.load_collection(page->who.source, false));
+            } else {
+                library_.ensure_collection(page->who.source);
             }
         }
         env_.redraw();
     }
 
-    Task<void> Social::load_profile(std::shared_ptr<Page> page) {
+    Task<void> Social::load_profile(std::shared_ptr<Page> page, bool reloading) {
         const Card &who = page->who;
         const auto &shelf = library_.shelf(who.source);
         auto &provider = env_.provider(who);
@@ -93,7 +188,7 @@ namespace lyren {
         const uint64_t account_gen = shelf.account_gen;
         page->loading = true;
         page->error.clear();
-        if (const auto parts = sections(who); !parts.empty()) {
+        if (const auto parts = sections(who); !parts.empty() && !std::ranges::contains(parts, page->section)) {
             page->section = parts.front();
         }
         if (caps.posts) {
@@ -106,12 +201,12 @@ namespace lyren {
         if (caps.ranking) {
             load_chart(page, 0);
         }
-        if (self && provider.features.recent_plays && env_.signed_in(who.source)) {
-            load_recent(page);
-        }
-        if (self && (caps.collect_albums || caps.follow_artists) && !shelf.collection[0].loaded && !shelf.collection[0].loading && shelf.collection[0].error.empty() &&
-            shelf.collection[1].error.empty() && env_.signed_in(who.source)) {
-            spawn(library_.load_collection(who.source));
+        if (self && !reloading) {
+            library_.ensure_recent_plays(who.source);
+            if ((caps.collect_albums || caps.follow_artists) && !shelf.collection[0].loaded && !shelf.collection[0].loading && shelf.collection[0].error.empty() &&
+                shelf.collection[1].error.empty() && env_.signed_in(who.source)) {
+                spawn(library_.load_collection(who.source, false));
+            }
         }
         if (!self && caps.profile_playlists) {
             spawn(load_playlists(page));
@@ -197,46 +292,6 @@ namespace lyren {
         if (tab == 0 && chart.error.empty() && chart.ranking.tracks.empty()) {
             page->chart_tab = 1;
             load_chart(page, 1);
-        }
-        env_.redraw();
-    }
-
-    void Social::load_recent(std::shared_ptr<Page> page) {
-        auto &recent = page->recent;
-        if (recent.loading || recent.loaded || !env_.provider(page->who).features.recent_plays) {
-            return;
-        }
-        recent.loading = true;
-        recent.error.clear();
-        spawn(fetch_recent(std::move(page)));
-    }
-
-    Task<void> Social::fetch_recent(std::shared_ptr<Page> page) {
-        auto &shelf = library_.shelf(page->who.source);
-        const uint64_t account_gen = shelf.account_gen;
-        Result<std::vector<Track>> r;
-        if (shelf.recent_plays_loaded && env_.now() - shelf.recent_plays_at < 60.0) {
-            r = shelf.recent_plays;
-        } else {
-            r = co_await env_.provider(page->who).features.recent_plays();
-            if (account_gen != shelf.account_gen) {
-                co_return;
-            }
-            if (r) {
-                shelf.recent_plays = *r;
-                shelf.recent_plays_at = env_.now();
-                shelf.recent_plays_loaded = true;
-            }
-        }
-        auto &recent = page->recent;
-        recent.loading = false;
-        recent.loaded = true;
-        recent.since = env_.now();
-        if (r) {
-            env_.images.prefetch(*r);
-            recent.tracks = std::move(*r);
-        } else {
-            recent.error = r.error();
         }
         env_.redraw();
     }

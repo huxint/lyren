@@ -52,6 +52,11 @@ namespace lyren::test {
         std::move_only_function<Task<Result<std::vector<Track>>>()> on_fm;
         std::move_only_function<Task<Result<Stream>>(Track, Quality)> on_stream;
         std::move_only_function<Task<Result<std::vector<Card>>>()> on_collected_albums;
+        std::move_only_function<Task<Result<std::vector<Track>>>(Card)> on_tracks;
+        std::move_only_function<Task<Result<AlbumInfo>>(std::string)> on_album;
+        std::move_only_function<Task<Result<ArtistInfo>>(std::string)> on_artist;
+        std::move_only_function<Task<Result<Batch>>(std::string, int)> on_artist_songs;
+        std::move_only_function<Task<Result<Profile>>(std::string)> on_profile;
         std::move_only_function<Task<Result<void>>(std::string)> on_import_session;
         std::move_only_function<Task<SessionCheck>(std::string)> on_check_session;
 
@@ -162,8 +167,29 @@ namespace lyren::test {
             }
             co_return Batch{};
         }
-        Task<Result<std::vector<Track>>> tracks(Card) override {
+        Task<Result<std::vector<Track>>> tracks(Card card) override {
+            if (on_tracks) {
+                co_return co_await on_tracks(std::move(card));
+            }
             co_return std::vector<Track>{song(0), song(1), song(2)};
+        }
+        Task<Result<AlbumInfo>> album(std::string id) override {
+            if (on_album) {
+                co_return co_await on_album(std::move(id));
+            }
+            co_return AlbumInfo{.artist = "Mira Chen", .artist_id = "art-1", .date = "2026-01-01", .tracks = {song(0), song(1)}};
+        }
+        Task<Result<ArtistInfo>> artist(std::string id) override {
+            if (on_artist) {
+                co_return co_await on_artist(std::move(id));
+            }
+            co_return ArtistInfo{.name = "Artist " + id, .songs = 20, .albums = 4};
+        }
+        Task<Result<Batch>> artist_songs(std::string id, int offset) override {
+            if (on_artist_songs) {
+                co_return co_await on_artist_songs(std::move(id), offset);
+            }
+            co_return Batch{.tracks = {song(0), song(1)}, .total = 2};
         }
         Task<Result<std::vector<Card>>> recommended_playlists() override {
             std::vector<Card> out;
@@ -222,6 +248,9 @@ namespace lyren::test {
         }
 
         Task<Result<Profile>> profile(std::string uid) override {
+            if (on_profile) {
+                co_return co_await on_profile(std::move(uid));
+            }
             if (uid == self) {
                 co_return Profile{.id = uid,
                                   .name = "Mira Chen",

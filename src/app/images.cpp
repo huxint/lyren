@@ -14,7 +14,8 @@ namespace lyren {
 
     static constexpr int max_in_flight = 6;
     static constexpr int max_background = 2;
-    static constexpr size_t budget = 24u << 20;
+    static constexpr size_t base_budget = 24u << 20;
+    static constexpr size_t hidpi_budget = 64u << 20;
     static constexpr size_t max_entries = 512;
     static constexpr uint32_t blur_px = 48;
     // Set in the key's variant for pictures that keep their aspect; the rest of it is the size tier.
@@ -57,6 +58,14 @@ namespace lyren {
             }
         }
         return 1024;
+    }
+
+    size_t Images::budget() const {
+        return scale_ > 1.25f ? hidpi_budget : base_budget;
+    }
+
+    void Images::set_scale(float scale) {
+        scale_ = std::max(1.f, scale);
     }
 
     Images::Cached &Images::request(CacheKey::View key, Priority priority) {
@@ -155,7 +164,7 @@ namespace lyren {
     void Images::prefetch(std::string_view url, uint32_t px, bool blurred) {
         const CacheKey::View key{url, blurred ? 0 : px};
         const uint32_t side = blurred ? blur_px : px;
-        if (!url.empty() && bytes_ + static_cast<size_t>(side) * side * 4 <= budget && (entries_.size() < max_entries || entries_.contains(key))) {
+        if (!url.empty() && bytes_ + static_cast<size_t>(side) * side * 4 <= budget() && (entries_.size() < max_entries || entries_.contains(key))) {
             request(key, Priority::background);
         }
     }
@@ -300,7 +309,7 @@ namespace lyren {
     }
 
     void Images::schedule_evict() {
-        if (evict_timer_ || (bytes_ <= budget && entries_.size() <= max_entries)) {
+        if (evict_timer_ || (bytes_ <= budget() && entries_.size() <= max_entries)) {
             return;
         }
         // When the main window is hidden or occluded, Wayland withholds frame callbacks while desktop lyrics or
@@ -315,7 +324,8 @@ namespace lyren {
         loop_.cancel(evict_timer_);
         evict_timer_ = 0;
         ++frame_;
-        if (bytes_ <= budget && entries_.size() <= max_entries) {
+        const size_t cap = budget();
+        if (bytes_ <= cap && entries_.size() <= max_entries) {
             return;
         }
         const double now = now_();
@@ -330,7 +340,7 @@ namespace lyren {
             return it->second.used;
         });
         for (auto it : old) {
-            if (bytes_ <= budget * 3 / 4 && entries_.size() <= max_entries * 3 / 4) {
+            if (bytes_ <= cap * 7 / 8 && entries_.size() <= max_entries * 7 / 8) {
                 break;
             }
             erase(it);
@@ -339,14 +349,16 @@ namespace lyren {
     }
 
     void Images::prefetch(std::span<const Card> cards) {
-        for (const auto &card : cards.first(std::min(cards.size(), 16uz))) {
-            prefetch(card.cover, 128);
+        const auto px = static_cast<uint32_t>(tier(160.f * scale_));
+        for (const auto &card : cards.first(std::min(cards.size(), 12uz))) {
+            prefetch(card.cover, px);
         }
     }
 
     void Images::prefetch(std::span<const Track> tracks) {
-        for (const auto &track : tracks.first(std::min(tracks.size(), 32uz))) {
-            prefetch(track.cover, 64);
+        const auto px = static_cast<uint32_t>(tier(40.f * scale_));
+        for (const auto &track : tracks.first(std::min(tracks.size(), 24uz))) {
+            prefetch(track.cover, px);
         }
     }
 

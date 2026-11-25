@@ -53,6 +53,9 @@ namespace lyren {
                 playback.stop();
             }
         };
+        playback.on_cloud_play = [this](const Track &track, bool settled) {
+            library.note_cloud_play(track, settled);
+        };
         browser.on_change = [this] {
             changed();
         };

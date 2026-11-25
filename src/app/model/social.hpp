@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <inplace_vector>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,9 +23,6 @@ namespace lyren {
         struct Chart : Fetch {
             Ranking ranking;
         };
-        struct Recent : Fetch {
-            std::vector<Track> tracks;
-        };
         // The parts of a listener's page.
         enum class Section : uint8_t {
             overview,
@@ -34,7 +32,7 @@ namespace lyren {
             collection,
             people
         };
-        // A listener's identity, social lists and music, kept while the page stays in the history.
+        // A listener's identity, social lists and music, kept while cached or in the history.
         struct Page {
             Card who;
             std::optional<Profile> info;
@@ -49,7 +47,6 @@ namespace lyren {
             std::array<People, 2> people; // follows, fans
             std::shared_ptr<Posts> posts = std::make_shared<Posts>();
             std::array<Chart, 2> charts;
-            Recent recent; // cloud recent plays on platforms that expose them
             Listing playlists;
             int created = 0; // how many of the playlists they made; the rest they saved
         };
@@ -65,14 +62,15 @@ namespace lyren {
         Social(const Social &) = delete;
         Social &operator=(const Social &) = delete;
 
-        // A page for the listener, loading.
+        // A page for the listener, reusing a cached visit when one is on hand.
         std::shared_ptr<Page> open(Card who);
+        // Replaces any cached page for who with a fresh load, keeping the active section and tabs.
+        std::shared_ptr<Page> reload(Card who);
         // The sections the listener's platform can fill, in the order they show.
         std::vector<Section> sections(const Card &who) const;
         void show(const std::shared_ptr<Page> &page, Section section);
         void load_people(std::shared_ptr<Page> page, bool fans);
         void load_chart(std::shared_ptr<Page> page, int tab);
-        void load_recent(std::shared_ptr<Page> page);
         // author: whose timeline; empty for the feed of the people the account follows.
         void load_posts(std::shared_ptr<Posts> list, Source source, std::string author);
         // The feed of the people the account on the platform follows.
@@ -102,10 +100,10 @@ namespace lyren {
         Task<void> send();
 
     private:
-        Task<void> load_profile(std::shared_ptr<Page> page);
+        std::shared_ptr<Page> create(Card who, const Page *previous = nullptr, bool reloading = false);
+        Task<void> load_profile(std::shared_ptr<Page> page, bool reloading = false);
         Task<void> fetch_people(std::shared_ptr<Page> page, bool fans, uint64_t gen);
         Task<void> fetch_chart(std::shared_ptr<Page> page, int tab);
-        Task<void> fetch_recent(std::shared_ptr<Page> page);
         Task<void> load_playlists(std::shared_ptr<Page> page);
         Task<void> fetch_posts(std::shared_ptr<Posts> list, Source source, std::string author, uint64_t gen);
         // The account's own pages show what it has just posted.
@@ -116,6 +114,8 @@ namespace lyren {
         Env &env_;
         Library &library_;
         std::vector<std::weak_ptr<Page>> pages_;
+        std::array<std::shared_ptr<Page>, platforms.size()> own_pages_{};
+        std::inplace_vector<std::shared_ptr<Page>, 8> other_pages_;
         std::array<std::shared_ptr<Posts>, platforms.size()> feeds_;
         Likes likes_;
         Removals removals_;

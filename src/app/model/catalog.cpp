@@ -151,7 +151,26 @@ namespace lyren {
         env_.redraw();
     }
 
-    Task<void> Library::load_collection(Source source) {
+    void Library::ensure_collection(Source source) {
+        if (!env_.signed_in(source)) {
+            return;
+        }
+        const auto &caps = env_.provider(source).capabilities;
+        if (!caps.collect_albums && !caps.follow_artists) {
+            return;
+        }
+        const Shelf &lib = shelf(source);
+        if (lib.collection[0].loading || lib.collection[1].loading) {
+            return;
+        }
+        const bool ready = lib.collection[0].loaded && lib.collection[1].loaded && lib.collection[0].error.empty() && lib.collection[1].error.empty();
+        const double now = env_.now();
+        if (!ready || (now - lib.collection_at >= 60.0 && now >= lib.collection_retry_at)) {
+            spawn(load_collection(source, false));
+        }
+    }
+
+    Task<void> Library::load_collection(Source source, bool force) {
         Shelf &lib = shelf(source);
         const uint64_t gen = ++lib.collection_gen, revision = lib.preference_gen;
         for (auto &listing : lib.collection) {
@@ -174,20 +193,116 @@ namespace lyren {
         auto batch = [](std::vector<Card> cards) {
             return Batch{.cards = std::move(cards)};
         };
-        std::array<Listing, 2> fresh;
-        arrived(fresh[0], std::move(albums).transform(batch));
-        arrived(fresh[1], std::move(artists).transform(batch));
-        // A reload does not replay the cards' entrance.
+        std::array<Result<Batch>, 2> results{std::move(albums).transform(batch), std::move(artists).transform(batch)};
+        bool all_ok = true;
+        // A reload does not replay the cards' entrance, and a transient failure keeps cached cards intact.
         for (int i = 0; i < 2; ++i) {
-            if (lib.collection[i].loaded) {
-                fresh[i].since = lib.collection[i].since;
+            auto &slot = lib.collection[i];
+            if (!results[i]) {
+                all_ok = false;
+                slot.loading = false;
+                if (!slot.loaded) {
+                    slot.error = results[i].error();
+                } else if (force) {
+                    env_.notify(std::format("{}: {}", lyren::tr("Could not load this"), lyren::tr(results[i].error())), "triangle-alert", true);
+                }
+                continue;
             }
-            lib.collection[i] = std::move(fresh[i]);
-            if (lib.collection[i].loaded) {
-                reconcile_all(source, i == 0 ? Preference::album : Preference::artist, revision);
+            Listing fresh;
+            arrived(fresh, std::move(results[i]));
+            if (slot.loaded) {
+                fresh.since = slot.since;
             }
+            slot = std::move(fresh);
+            reconcile_all(source, i == 0 ? Preference::album : Preference::artist, revision);
+        }
+        if (all_ok) {
+            lib.collection_at = env_.now();
+            lib.collection_retry_at = -1e9;
+        } else if (!force) {
+            lib.collection_retry_at = env_.now() + 15.0;
         }
         env_.redraw();
+    }
+
+    void Library::ensure_recent_plays(Source source) {
+        if (!env_.signed_in(source) || !env_.provider(source).features.recent_plays) {
+            return;
+        }
+        const auto &recent = shelf(source).recent_plays;
+        if (recent.loading || recent.refreshing) {
+            return;
+        }
+        const double now = env_.now();
+        if (!recent.loaded || (!recent.error.empty() && recent.tracks.empty())) {
+            spawn(load_recent_plays(source, true));
+        } else if (now >= recent.retry_at && (now - recent.fetched_at >= 60.0 || (recent.stale && now - recent.fetched_at >= 10.0))) {
+            spawn(load_recent_plays(source, false));
+        }
+    }
+
+    Task<void> Library::load_recent_plays(Source source, bool force) {
+        Shelf &lib = shelf(source);
+        auto &recent = lib.recent_plays;
+        if (!env_.signed_in(source) || !env_.provider(source).features.recent_plays) {
+            co_return;
+        }
+        const bool background = !force && recent.loaded && !recent.tracks.empty();
+        const uint64_t gen = ++recent.gen, account_gen = lib.account_gen;
+        if (background) {
+            recent.refreshing = true;
+        } else {
+            recent.loading = true;
+            recent.error.clear();
+        }
+        auto r = co_await env_.provider(source).features.recent_plays();
+        if (gen != recent.gen || account_gen != lib.account_gen) {
+            co_return;
+        }
+        recent.loading = recent.refreshing = false;
+        if (r) {
+            const bool had_tracks = !recent.tracks.empty();
+            recent.loaded = true;
+            recent.stale = false;
+            recent.error.clear();
+            recent.fetched_at = env_.now();
+            recent.retry_at = -1e9;
+            if (!had_tracks) {
+                recent.since = env_.now();
+            }
+            recent.tracks = std::move(*r);
+            env_.images.prefetch(recent.tracks);
+        } else if (background) {
+            recent.retry_at = env_.now() + 15.0;
+        } else {
+            recent.loaded = true;
+            recent.error = r.error();
+        }
+        env_.redraw();
+    }
+
+    void Library::note_cloud_play(const Track &track, bool settled) {
+        Shelf &lib = shelf(track.source);
+        auto &recent = lib.recent_plays;
+        if (!recent.loaded) {
+            return;
+        }
+        if (!settled) {
+            const bool was_empty = recent.tracks.empty();
+            std::erase_if(recent.tracks, [&](const Track &x) {
+                return same(x, track);
+            });
+            recent.tracks.insert(recent.tracks.begin(), track);
+            if (recent.tracks.size() > 200) {
+                recent.tracks.pop_back();
+            }
+            if (was_empty) {
+                recent.since = env_.now();
+            }
+            env_.redraw();
+        } else {
+            recent.stale = true;
+        }
     }
 
     Task<void> Library::load_radio(Source source) {

@@ -11,10 +11,11 @@ namespace lyren {
 
     // How something asked of a service stands.
     struct Fetch {
-        bool loading = false, loaded = false;
+        bool loading = false, loaded = false, refreshing = false, stale = false;
         std::string error;
         double since = -10; // when it arrived, for its entrance
-        uint64_t gen = 0;   // bumped to disown the requests under way
+        double fetched_at = -1e9, retry_at = -1e9;
+        uint64_t gen = 0; // bumped to disown the requests under way
     };
 
     // Cumulative row bottoms of a list as last laid out, kept beside the items so that they share their lifetime.

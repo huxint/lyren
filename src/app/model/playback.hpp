@@ -31,8 +31,9 @@ namespace lyren {
         Playback(const Playback &) = delete;
         Playback &operator=(const Playback &) = delete;
 
-        std::move_only_function<void()> on_change;           // something worth saving changed
-        std::move_only_function<void(Source)> on_radio_skip; // a radio is asked for its next song
+        std::move_only_function<void()> on_change;                        // something worth saving changed
+        std::move_only_function<void(Source)> on_radio_skip;              // a radio is asked for its next song
+        std::move_only_function<void(const Track &, bool)> on_cloud_play; // a cloud-reported listen started or settled
 
         // Answers the desktop's media controls from now on. raise brings the window forward.
         void connect(Bus &bus, std::move_only_function<void(std::string_view token)> raise);
@@ -168,6 +169,7 @@ namespace lyren {
         void halt();
         void stop_player(); // stops output and reports the actual listening time
         void report_listen(bool ended);
+        Task<void> report_start(Track track);
         void seek_file(double at);
         int next_index();
         Task<void> load_track(uint64_t gen, Track t);

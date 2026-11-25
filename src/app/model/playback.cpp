@@ -752,6 +752,16 @@ namespace lyren {
         }
     }
 
+    Task<void> Playback::report_start(Track track) {
+        if (on_cloud_play) {
+            on_cloud_play(track, false);
+        }
+        co_await env_.provider(track).features.reporting.start(track.id, track.album_id);
+        if (on_cloud_play) {
+            on_cloud_play(track, true);
+        }
+    }
+
     void Playback::on_player() {
         const auto s = player_.state();
         const uint64_t event_id = ++player_event_;
@@ -778,7 +788,7 @@ namespace lyren {
                 auto &provider = env_.provider(*current());
                 if (provider.logged_in() && !trial_ && provider.features.reporting.start) {
                     listen_ = *current();
-                    spawn(provider.features.reporting.start(listen_->id, listen_->album_id));
+                    spawn(report_start(*listen_));
                 }
             }
             if (s == State::paused && on_change) {

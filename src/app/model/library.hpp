@@ -31,6 +31,9 @@ namespace lyren {
             std::vector<Dislike> items;
             std::unordered_set<std::string> pending; // being written
         };
+        struct RecentPlays : Fetch {
+            std::vector<Track> tracks;
+        };
         // One writer per resource. Further clicks change the desired value while the current request finishes.
         struct Edit {
             bool value = false, confirmed = false, pending = false;
@@ -65,10 +68,9 @@ namespace lyren {
             double square_since = -10;
             std::array<Listing, 2> collection; // albums, artists
             uint64_t collection_gen = 0;
+            double collection_at = -1e9, collection_retry_at = -1e9;
             std::array<std::shared_ptr<DislikeList>, 3> dislikes;
-            std::vector<Track> recent_plays;
-            double recent_plays_at = -1e9;
-            bool recent_plays_loaded = false;
+            RecentPlays recent_plays;
 
             std::vector<Track> radio;
             int radio_pos = 0;
@@ -180,7 +182,11 @@ namespace lyren {
         void load_square(Source source);
         void set_release_category(Source source, int category);
         void load_releases(Source source);
-        Task<void> load_collection(Source source);
+        void ensure_collection(Source source);
+        Task<void> load_collection(Source source, bool force = true);
+        void ensure_recent_plays(Source source);
+        Task<void> load_recent_plays(Source source, bool force = false);
+        void note_cloud_play(const Track &track, bool settled);
         Task<void> load_radio(Source source);
         // The radio moves on to its next song, fetching more as the end nears. False while waiting for the next batch.
         bool advance_radio(Source source);

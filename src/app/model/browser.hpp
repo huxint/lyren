@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <inplace_vector>
 #include <memory>
 #include <optional>
 #include <string>
@@ -43,6 +44,7 @@ namespace lyren {
         struct TrackList : Fetch {
             std::vector<Track> tracks;
             AlbumInfo album;                             // album pages: the details; the tracks are above
+            int daily_slot = -1;                         // day-cycle stamp (00:00 / 06:00) for daily mix rollover
             bool ordering = false, saving_order = false; // a playlist being put in order by hand
         };
         // An artist's page: the head, songs and albums a page at a time, the introduction (intro holds only its status).
@@ -149,12 +151,14 @@ namespace lyren {
         void search();
         void load_results(int tab, bool retry = false);
 
-        // The songs and the artist of the page on show.
-        Task<void> load_list(std::shared_ptr<TrackList> list, Page page, Card card);
+        // The songs, artist and listener of the page on show.
+        Task<void> load_list(std::shared_ptr<TrackList> list, Page page, Card card, bool background = false);
         void reload_list();
         // Asks again for an artist whose page did not load.
         void reload_artist();
         void load_artist_tab(int tab, bool retry = false);
+        // Replaces the cached profile on show with a fresh load.
+        void reload_profile();
         // The song leaves the daily list at once; the one the service recommends instead takes its place.
         void dislike_daily(std::shared_ptr<TrackList> list, Track track);
         void add_to_playlist(std::vector<Track> tracks, Card playlist);
@@ -172,6 +176,35 @@ namespace lyren {
         }
 
     private:
+        struct CachedList {
+            Source source = Source::netease;
+            Page page = Page::playlist;
+            std::string id;
+            std::shared_ptr<TrackList> list;
+        };
+        struct CachedArtist {
+            Source source = Source::netease;
+            std::string id;
+            std::shared_ptr<Artist> artist;
+        };
+        static constexpr int built_in_slot(Page page) {
+            switch (page) {
+                case Page::liked:
+                    return 0;
+                case Page::daily:
+                    return 1;
+                case Page::radar:
+                    return 2;
+                case Page::cloud:
+                    return 3;
+                default:
+                    return -1;
+            }
+        }
+        static void trim_history(std::vector<Route> &stack);
+        void refresh_clock();
+        std::shared_ptr<TrackList> cached_list(Source source, Page page, std::string_view id, bool create);
+        std::shared_ptr<Artist> cached_artist(Source source, std::string_view id, bool create);
         void enter(Route route, int direction);
         void on_library(const Library::Event &event);
         template <class F>
@@ -187,8 +220,12 @@ namespace lyren {
         Source active_;
         Route route_;
         std::vector<Route> history_, forward_;
+        std::array<std::array<std::shared_ptr<TrackList>, 4>, platforms.size()> built_in_lists_{};
+        std::inplace_vector<CachedList, 16> list_cache_;
+        std::inplace_vector<CachedArtist, 12> artist_cache_;
         uint64_t serial_ = 0, navigations_ = 0;
         std::string today_;
+        int daily_slot_ = -1;
         uint64_t search_gen_ = 0;
         std::string empty_query_;
         int empty_tab_ = 0;

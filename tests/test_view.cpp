@@ -1190,3 +1190,251 @@ TEST_CASE("recommend sticky header morphs, latches, stays clickable above scroll
     });
     CHECK_FALSE(card_icon);
 }
+
+TEST_CASE("route and shelf caches reuse data across page switches, SWR refreshes calmly, and isolate scrolls") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    int track_fetches = 0, daily_fetches = 0, radar_fetches = 0, album_fetches = 0, artist_fetches = 0, profile_fetches = 0, collection_fetches = 0, recent_fetches = 0;
+    bool fail_tracks = false, fail_collection = false;
+    scene.service.on_tracks = [&](Card card) -> Task<Result<std::vector<Track>>> {
+        ++track_fetches;
+        if (fail_tracks) {
+            co_return std::unexpected("Temporary error");
+        }
+        std::vector<Track> out;
+        for (int i = 0; i < 24; ++i) {
+            Track t = test::Service::song(i);
+            t.id = card.id + "-s" + std::to_string(i);
+            out.push_back(std::move(t));
+        }
+        co_return out;
+    };
+    scene.service.features.daily.songs = [&]() -> Task<Result<std::vector<Track>>> {
+        ++daily_fetches;
+        co_return std::vector<Track>{test::Service::song(0), test::Service::song(1), test::Service::song(2)};
+    };
+    scene.service.features.radar = [&]() -> Task<Result<std::vector<Track>>> {
+        ++radar_fetches;
+        co_return std::vector<Track>{test::Service::song(2), test::Service::song(3)};
+    };
+    scene.service.features.recent_plays = [&]() -> Task<Result<std::vector<Track>>> {
+        ++recent_fetches;
+        co_return std::vector<Track>{test::Service::song(4), test::Service::song(1)};
+    };
+    scene.service.on_album = [&](std::string) -> Task<Result<AlbumInfo>> {
+        ++album_fetches;
+        co_return AlbumInfo{.artist = "Mira Chen", .artist_id = "art-1", .date = "2026-01-01", .collected = false, .tracks = {test::Service::song(0), test::Service::song(1)}};
+    };
+    scene.service.on_artist = [&](std::string id) -> Task<Result<ArtistInfo>> {
+        ++artist_fetches;
+        co_return ArtistInfo{.name = "Artist " + id, .songs = 10, .albums = 2};
+    };
+    scene.service.on_profile = [&](std::string uid) -> Task<Result<Profile>> {
+        ++profile_fetches;
+        co_return Profile{.id = uid, .name = uid == test::Service::self ? "Mira Chen" : "Ada Lovelace", .follows = 10, .fans = 20};
+    };
+    scene.service.on_collected_albums = [&]() -> Task<Result<std::vector<Card>>> {
+        ++collection_fetches;
+        if (fail_collection) {
+            co_return std::unexpected("Collection down");
+        }
+        co_return std::vector<Card>{
+            {.kind = CardKind::album, .id = "alb-1", .title = "Harbour Tapes", .subtitle = "Mira Chen", .count = 10, .count_kind = Card::Count::songs},
+        };
+    };
+
+    // 1. Built-in pages (liked, daily, radar), dynamic playlists, albums, artists, and profiles reuse caches via open().
+    scene.shell.browser.open(Page::liked);
+    scene.draw();
+    const auto liked_list = scene.shell.browser.route().list;
+    REQUIRE(liked_list != nullptr);
+    CHECK(track_fetches == 1);
+    const ui::Id liked_scroll = ui::sub_id(scene.ui.id("tracks"), scene.shell.browser.route().serial);
+    scene.ui.scroll_to(liked_scroll, 320.f);
+    scene.draw();
+    REQUIRE(scene.ui.scroll_offset(liked_scroll) > 200.f);
+
+    // Switching to another cached/list page starts at scroll 0, while back() restores Liked songs' scroll offset.
+    scene.shell.browser.open(Page::daily);
+    scene.draw();
+    CHECK(daily_fetches == 1);
+    const ui::Id daily_scroll = ui::sub_id(scene.ui.id("tracks"), scene.shell.browser.route().serial);
+    CHECK(scene.ui.scroll_offset(daily_scroll) == doctest::Approx(0.f));
+    REQUIRE(scene.shell.browser.back());
+    scene.draw();
+    CHECK(scene.shell.browser.route().list == liked_list);
+    CHECK(track_fetches == 1);
+    CHECK(scene.ui.scroll_offset(liked_scroll) > 200.f);
+
+    // Re-opening Liked songs via open() (sidebar) or via its playlist card reuses the exact cached TrackList.
+    scene.shell.browser.open(Page::radar);
+    scene.draw();
+    CHECK(radar_fetches == 1);
+    scene.shell.browser.open(Page::liked);
+    scene.draw();
+    CHECK(scene.shell.browser.route().list == liked_list);
+    CHECK(track_fetches == 1);
+    scene.shell.browser.open(Page::recommend);
+    scene.draw();
+    scene.shell.browser.open(Page::playlist, scene.shell.library.shelf(Source::netease).liked);
+    scene.draw();
+    CHECK(scene.shell.browser.route().page == Page::liked);
+    CHECK(scene.shell.browser.route().list == liked_list);
+    CHECK(track_fetches == 1);
+
+    // Dynamic playlists, albums, and artists reuse LRU cache entries across open().
+    const Card pl1{.kind = CardKind::playlist, .source = Source::netease, .id = "pl-1", .title = "Evening Mix"};
+    const Card alb1{.kind = CardKind::album, .source = Source::netease, .id = "alb-1", .title = "Harbour Tapes"};
+    const Card art1{.kind = CardKind::artist, .source = Source::netease, .id = "art-1", .title = "Mira Chen"};
+    scene.shell.browser.open(pl1);
+    scene.draw();
+    const auto pl1_list = scene.shell.browser.route().list;
+    CHECK(track_fetches == 2);
+    scene.shell.browser.open(alb1);
+    scene.draw();
+    CHECK(album_fetches == 1);
+    scene.shell.browser.open(art1);
+    scene.draw();
+    const auto art1_ptr = scene.shell.browser.route().artist;
+    CHECK(artist_fetches == 1);
+    scene.shell.browser.open(pl1);
+    scene.draw();
+    CHECK(scene.shell.browser.route().list == pl1_list);
+    CHECK(track_fetches == 2);
+    scene.shell.browser.open(alb1);
+    scene.draw();
+    CHECK(album_fetches == 1);
+    scene.shell.browser.open(art1);
+    scene.draw();
+    CHECK(scene.shell.browser.route().artist == art1_ptr);
+    CHECK(artist_fetches == 1);
+
+    // 2. Collection 60s SWR keeps cached cards on transient refresh failure and Library::kept consults loaded collection.
+    scene.shell.browser.open(Page::collection);
+    scene.draw();
+    CHECK(collection_fetches == 1);
+    CHECK(scene.shell.library.kept(Source::netease, Library::Preference::album, "alb-1", false));
+    scene.shell.browser.open(Page::recommend);
+    scene.draw();
+    scene.shell.browser.open(Page::collection);
+    scene.draw();
+    CHECK(collection_fetches == 1);
+
+    scene.now += 65.0;
+    fail_collection = true;
+    scene.shell.browser.open(Page::recommend);
+    scene.draw();
+    scene.shell.browser.open(Page::collection);
+    scene.draw();
+    CHECK(collection_fetches == 2);
+    // Transient background failure keeps previously cached album cards intact and backs off for 15s.
+    CHECK(scene.shell.library.shelf(Source::netease).collection[0].cards.size() == 1);
+    scene.shell.browser.open(Page::recommend);
+    scene.draw();
+    scene.shell.browser.open(Page::collection);
+    scene.draw();
+    CHECK(collection_fetches == 2);
+    fail_collection = false;
+
+    // 3. Cloud recent plays are shared between Page::recent (Cloud) and Own Profile, and note_cloud_play prepends optimistically.
+    scene.shell.library.shelf(Source::netease).recent_tab = 1;
+    scene.shell.browser.open(Page::recent);
+    scene.draw();
+    CHECK(recent_fetches == 1);
+    scene.shell.browser.open_own_profile();
+    scene.draw();
+    const auto own_prof = scene.shell.browser.route().profile;
+    CHECK(profile_fetches == 1);
+    CHECK(recent_fetches == 1);
+    scene.shell.browser.open(Page::recommend);
+    scene.draw();
+    scene.shell.browser.open_own_profile();
+    scene.draw();
+    CHECK(scene.shell.browser.route().profile == own_prof);
+    CHECK(profile_fetches == 1);
+    // Profile More -> Refresh creates a fresh Social::Page while preserving the active section tab.
+    scene.shell.social.show(own_prof, Social::Section::collection);
+    scene.draw();
+    scene.shell.browser.reload_profile();
+    scene.draw();
+    CHECK(scene.shell.browser.route().profile != own_prof);
+    CHECK(scene.shell.browser.route().profile->section == Social::Section::collection);
+    CHECK(profile_fetches == 2);
+    scene.shell.library.note_cloud_play(test::Service::song(0), false);
+    REQUIRE_FALSE(scene.shell.library.shelf(Source::netease).recent_plays.tracks.empty());
+    CHECK(scene.shell.library.shelf(Source::netease).recent_plays.tracks.front().id == "song-0");
+
+    // 4. Playlist SWR after 300s preserves since & tracks on silent failure with 15s backoff, then refreshes calmly.
+    const double pl1_since = pl1_list->since;
+    scene.now += 310.0;
+    fail_tracks = true;
+    scene.shell.browser.open(pl1);
+    scene.draw();
+    CHECK(track_fetches == 3);
+    CHECK(pl1_list->tracks.size() == 24);
+    CHECK(pl1_list->error.empty());
+    CHECK(pl1_list->since == doctest::Approx(pl1_since));
+    // Backoff prevents immediate retry on rapid switch-back.
+    scene.shell.browser.open(Page::recommend);
+    scene.draw();
+    scene.shell.browser.open(pl1);
+    scene.draw();
+    CHECK(track_fetches == 3);
+    // After 15s backoff, silent SWR succeeds without changing since.
+    scene.now += 20.0;
+    fail_tracks = false;
+    scene.shell.browser.open(Page::recommend);
+    scene.draw();
+    scene.shell.browser.open(pl1);
+    scene.draw();
+    CHECK(track_fetches == 4);
+    CHECK(pl1_list->since == doctest::Approx(pl1_since));
+
+    // Explicit Refresh button on non-owned playlist forces a reload immediately.
+    const auto *refresh_icon = scene.find("refresh-cw", true);
+    REQUIRE(refresh_icon != nullptr);
+    scene.click(*refresh_icon);
+    CHECK(track_fetches == 5);
+
+    // 5. Off-screen Kind::liked + reload_after_edit marks cached Liked songs stale and updates tracks immediately.
+    scene.service.reload_after_edit = true;
+    scene.shell.browser.open(Page::recommend);
+    scene.draw();
+    Track added = test::Service::song(4);
+    added.id = "brand-new-like";
+    scene.shell.library.toggle_like(added);
+    CHECK(liked_list->tracks.front().id == "brand-new-like");
+    CHECK(liked_list->stale);
+    scene.shell.browser.open(Page::liked);
+    scene.draw();
+    CHECK(track_fetches == 6);
+    CHECK_FALSE(liked_list->stale);
+
+    // 6. Failed initial load retries automatically on re-entry.
+    const Card pl_err{.kind = CardKind::playlist, .source = Source::netease, .id = "pl-err", .title = "Flaky"};
+    fail_tracks = true;
+    scene.shell.browser.open(pl_err);
+    scene.draw();
+    CHECK(track_fetches == 7);
+    CHECK_FALSE(scene.shell.browser.route().list->error.empty());
+    fail_tracks = false;
+    scene.shell.browser.open(Page::recommend);
+    scene.draw();
+    scene.shell.browser.open(pl_err);
+    scene.draw();
+    CHECK(track_fetches == 8);
+    CHECK(scene.shell.browser.route().list->error.empty());
+    CHECK(scene.shell.browser.route().list->tracks.size() == 24);
+
+    // 7. delete_playlist purges cache and history so Back cannot resurrect the deleted playlist.
+    scene.shell.browser.delete_playlist(pl_err);
+    scene.draw();
+    CHECK(scene.shell.browser.route().page == Page::recommend);
+    CHECK_FALSE(scene.shell.browser.can_go_forward());
+
+    // 8. Sign-out / account reset (Kind::left) flushes all cached lists, artists, and profiles.
+    scene.shell.library.reset(Source::netease);
+    scene.shell.browser.open(art1);
+    scene.draw();
+    CHECK(artist_fetches == 2);
+}

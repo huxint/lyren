@@ -845,3 +845,23 @@ TEST_CASE("Vulkan staging allocates from empty, compacts evicted textures while 
     g.renderer.destroy_texture(after_compact);
     g.renderer.destroy_target(target);
 }
+
+TEST_CASE("HiDPI cover cache expands VRAM budget and prefetches scale-matched tiers") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    net::Http http;
+    Images images(
+        g.loop, http, g.renderer, [] {},
+        [] {
+            return 0.;
+        });
+    images.set_scale(2.f);
+    const gfx::Image image{512, 512, std::vector<uint8_t>(512 * 512 * 4, 255)};
+    // 40 x 1 MiB covers fit comfortably inside the 64 MiB HiDPI budget without evicting the first cover.
+    for (int i = 0; i < 40; ++i) {
+        images.put("hidpi-" + std::to_string(i), 512, image);
+        images.end_frame();
+    }
+    CHECK(images.get("hidpi-0", 512).ready);
+    CHECK(images.get("hidpi-39", 512).ready);
+}

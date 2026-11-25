@@ -27,13 +27,99 @@ namespace lyren {
       active_(active) {
         route_.card.source = active;
         route_.serial = ++serial_;
-        const std::time_t now = std::time(nullptr);
-        std::tm local;
-        localtime_r(&now, &local);
-        today_ = std::format("{:02}-{:02}", local.tm_mon + 1, local.tm_mday);
+        refresh_clock();
         library.subscribe([this](const Library::Event &event) {
             on_library(event);
         });
+    }
+
+    void Browser::refresh_clock() {
+        const std::time_t now = std::time(nullptr);
+        std::tm local{};
+        localtime_r(&now, &local);
+        today_ = std::format("{:02}-{:02}", local.tm_mon + 1, local.tm_mday);
+        // Daily mixes roll over at 00:00 (QQ) and 06:00 (NetEase) local time.
+        const int slot = (local.tm_year * 1000 + local.tm_yday) * 2 + (local.tm_hour >= 6);
+        if (daily_slot_ >= 0 && slot != daily_slot_) {
+            for (size_t s = 0; s < platforms.size(); ++s) {
+                if (auto &daily = built_in_lists_[s][static_cast<size_t>(built_in_slot(Page::daily))]) {
+                    daily->stale = true;
+                }
+                const auto source = static_cast<Source>(s);
+                if (env_.signed_in(source) && env_.provider(source).features.daily.playlists) {
+                    spawn(library_.load_daily_lists(source));
+                }
+            }
+        }
+        daily_slot_ = slot;
+    }
+
+    void Browser::trim_history(std::vector<Route> &stack) {
+        if (stack.size() > 50) {
+            stack.erase(stack.begin());
+        }
+        // Older visits release strong references so history never pins evicted caches; revisiting re-binds from cache or reloads.
+        if (stack.size() > 8) {
+            Route &old = stack[stack.size() - 9];
+            old.list.reset();
+            old.artist.reset();
+            old.profile.reset();
+            if (old.search) {
+                if (old.search.use_count() == 1) {
+                    old.search->results = {};
+                } else {
+                    old.search = std::make_shared<Search>(Search{.query = old.search->query, .tab = old.search->tab, .serial = old.search->serial});
+                }
+            }
+        }
+    }
+
+    std::shared_ptr<Browser::TrackList> Browser::cached_list(Source source, Page page, std::string_view id, bool create) {
+        if (const int slot = built_in_slot(page); slot >= 0) {
+            auto &entry = built_in_lists_[static_cast<size_t>(source)][static_cast<size_t>(slot)];
+            if (!entry && create) {
+                entry = std::make_shared<TrackList>();
+            }
+            return entry;
+        }
+        if (page != Page::playlist && page != Page::album && page != Page::similar) {
+            return {};
+        }
+        auto it = std::ranges::find_if(list_cache_, [&](const CachedList &entry) {
+            return entry.source == source && entry.page == page && entry.id == id;
+        });
+        if (it != list_cache_.end()) {
+            std::rotate(it, it + 1, list_cache_.end());
+            return list_cache_.back().list;
+        }
+        if (!create) {
+            return {};
+        }
+        if (list_cache_.size() == list_cache_.capacity()) {
+            list_cache_.erase(list_cache_.begin());
+        }
+        auto list = std::make_shared<TrackList>();
+        list_cache_.push_back({.source = source, .page = page, .id = std::string(id), .list = list});
+        return list;
+    }
+
+    std::shared_ptr<Browser::Artist> Browser::cached_artist(Source source, std::string_view id, bool create) {
+        auto it = std::ranges::find_if(artist_cache_, [&](const CachedArtist &entry) {
+            return entry.source == source && entry.id == id;
+        });
+        if (it != artist_cache_.end()) {
+            std::rotate(it, it + 1, artist_cache_.end());
+            return artist_cache_.back().artist;
+        }
+        if (!create) {
+            return {};
+        }
+        if (artist_cache_.size() == artist_cache_.capacity()) {
+            artist_cache_.erase(artist_cache_.begin());
+        }
+        auto artist = std::make_shared<Artist>();
+        artist_cache_.push_back({.source = source, .id = std::string(id), .artist = artist});
+        return artist;
     }
 
     template <class F>
@@ -84,6 +170,10 @@ namespace lyren {
     }
 
     void Browser::open(Page page, const Card &card) {
+        // Opening the account's own liked playlist card goes straight to the dedicated Liked songs page.
+        if (page == Page::playlist && !card.id.empty() && card.id == library_.shelf(card.source).liked.id) {
+            return open(Page::liked, {.source = card.source});
+        }
         if (route_.page == page && same(route_.card, card) && page != Page::search) {
             // Already there, which still counts as going there: whatever covers the page steps aside.
             ++navigations_;
@@ -91,19 +181,7 @@ namespace lyren {
         }
         forward_.clear();
         history_.push_back(route_);
-        if (history_.size() > 50) {
-            history_.erase(history_.begin());
-        }
-        // Older pages reload if they are visited again.
-        if (history_.size() > 8) {
-            Route &old = history_[history_.size() - 9];
-            old.list.reset();
-            old.artist.reset();
-            old.profile.reset();
-            if (old.search) {
-                old.search->results = {};
-            }
-        }
+        trim_history(history_);
         Card target = card;
         if (page == Page::playlist) {
             const auto &playlists = library_.shelf(card.source).playlists;
@@ -150,9 +228,7 @@ namespace lyren {
             return false;
         }
         forward_.push_back(route_);
-        if (forward_.size() > 50) {
-            forward_.erase(forward_.begin());
-        }
+        trim_history(forward_);
         Route route = std::move(history_.back());
         history_.pop_back();
         enter(std::move(route), -1);
@@ -164,9 +240,7 @@ namespace lyren {
             return false;
         }
         history_.push_back(route_);
-        if (history_.size() > 50) {
-            history_.erase(history_.begin());
-        }
+        trim_history(history_);
         Route route = std::move(forward_.back());
         forward_.pop_back();
         enter(std::move(route), 1);
@@ -174,6 +248,10 @@ namespace lyren {
     }
 
     void Browser::enter(Route route, int from) {
+        refresh_clock();
+        if (route_.list && !route_.list->saving_order) {
+            route_.list->ordering = false;
+        }
         route_ = std::move(route);
         if (!route_.serial) {
             route_.serial = ++serial_;
@@ -262,19 +340,54 @@ namespace lyren {
         if (page == Page::search && route_.search && !results(route_.search->tab).loaded) {
             load_results(route_.search->tab);
         }
-        const bool listed = page == Page::daily || page == Page::radar || page == Page::cloud || page == Page::liked || page == Page::playlist || page == Page::album ||
-                            page == Page::similar || (page == Page::recent && lib.recent_tab == 1 && signed_in);
+        if (page == Page::recent && lib.recent_tab == 1 && signed_in) {
+            library_.ensure_recent_plays(active_);
+        }
+        const bool listed =
+            page == Page::daily || page == Page::radar || page == Page::cloud || page == Page::liked || page == Page::playlist || page == Page::album || page == Page::similar;
         // The liked songs wait for the account's playlists, which name the list behind them.
-        if (listed && !route_.list && !(needs_login(page) && !signed_in) && !(page == Page::liked && !lib.playlists_loaded)) {
-            route_.list = std::make_shared<TrackList>();
-            spawn(load_list(route_.list, page, route_.card));
+        if (listed && !(needs_login(page) && !signed_in) && !(page == Page::liked && !lib.playlists_loaded)) {
+            if (!route_.list) {
+                route_.list = cached_list(route_.card.source, page, route_.card.id, true);
+            }
+            if (auto &list = route_.list; list && !list->loading && !list->refreshing) {
+                const bool empty_error = !list->error.empty() && list->tracks.empty();
+                const bool swr_page = page == Page::liked || page == Page::cloud || page == Page::playlist;
+                const double now = env_.now();
+                const bool expired = swr_page && list->loaded && now - list->fetched_at >= 300.0;
+                const bool daily_rolled = page == Page::daily && list->loaded && list->daily_slot >= 0 && list->daily_slot != daily_slot_;
+                const bool busy_write = page == Page::playlist && (list->ordering || list->saving_order || library_.writing(route_.card.source, route_.card.id));
+                if (!list->loaded || empty_error) {
+                    spawn(load_list(list, page, route_.card, false));
+                } else if (!busy_write && (list->stale || expired || daily_rolled) && now >= list->retry_at) {
+                    spawn(load_list(list, page, route_.card, !list->tracks.empty()));
+                }
+            }
         }
-        if (page == Page::artist && !route_.artist) {
-            route_.artist = std::make_shared<Artist>();
-            spawn(load_artist(route_.artist, route_.card));
+        if (page == Page::artist) {
+            if (!route_.artist) {
+                route_.artist = cached_artist(route_.card.source, route_.card.id, true);
+            }
+            if (auto &artist = route_.artist; artist && !artist->loading) {
+                if (!artist->info && (!artist->error.empty() || (!artist->songs.loaded && !artist->songs.loading))) {
+                    spawn(load_artist(artist, route_.card));
+                }
+                const Listing &tab = artist->tab == 0 ? artist->songs : artist->tab == 1 ? artist->albums : artist->intro;
+                const bool tab_empty = artist->tab == 2 ? artist->sections.empty() : tab.size() == 0;
+                if (!tab.loading && tab_empty && !tab.error.empty()) {
+                    load_artist_tab(artist->tab, true);
+                }
+            }
         }
-        if (page == Page::profile && !route_.profile && !(route_.card.owned && !signed_in)) {
-            route_.profile = social_.open(route_.card);
+        if (page == Page::profile && !(route_.card.owned && !signed_in)) {
+            if (!route_.profile || (!route_.profile->loading && !route_.profile->info && !route_.profile->error.empty())) {
+                route_.profile = social_.open(route_.card);
+            } else if (route_.card.owned || library_.own(route_.card)) {
+                library_.ensure_recent_plays(route_.card.source);
+                if (route_.profile->section == Social::Section::collection) {
+                    library_.ensure_collection(route_.card.source);
+                }
+            }
         }
         if (page == Page::recommend && !lib.recommended.loaded && !lib.recommended.loading) {
             spawn(library_.load_recommended(active_));
@@ -302,9 +415,8 @@ namespace lyren {
                 spawn(library_.load_dislikes(active_, static_cast<DislikeKind>(lib.dislike_tab)));
             }
         }
-        // Collections can change elsewhere, so they reload whenever the page is entered.
-        if (page == Page::collection && signed_in && !lib.collection[0].loading) {
-            spawn(library_.load_collection(active_));
+        if (page == Page::collection && signed_in) {
+            library_.ensure_collection(active_);
         }
     }
 
@@ -332,7 +444,7 @@ namespace lyren {
         }
         if (source == active_ && supports(Page::collection, source) && p.logged_in() && !lib.collection[0].loaded && !lib.collection[0].loading &&
             lib.collection[0].error.empty() && lib.collection[1].error.empty()) {
-            co_await library_.load_collection(source);
+            co_await library_.load_collection(source, false);
         }
     }
 
@@ -351,18 +463,7 @@ namespace lyren {
         }
         forward_.clear();
         history_.push_back(route_);
-        if (history_.size() > 50) {
-            history_.erase(history_.begin());
-        }
-        if (history_.size() > 8) {
-            Route &old = history_[history_.size() - 9];
-            old.list.reset();
-            old.artist.reset();
-            old.profile.reset();
-            if (old.search) {
-                old.search->results = {};
-            }
-        }
+        trim_history(history_);
         auto session = std::make_shared<Search>(Search{.query = query, .serial = ++search_gen_});
         enter({.page = Page::search, .card = {.source = active_}, .search = std::move(session)}, 1);
     }
@@ -395,12 +496,18 @@ namespace lyren {
         env_.redraw();
     }
 
-    Task<void> Browser::load_list(std::shared_ptr<TrackList> list, Page page, Card card) {
+    Task<void> Browser::load_list(std::shared_ptr<TrackList> list, Page page, Card card, bool background) {
         auto &lib = library_.shelf(card.source);
         Provider &provider = env_.provider(card);
+        const bool quiet = background && list->loaded && !list->tracks.empty();
         const uint64_t gen = ++list->gen, account_gen = lib.account_gen, revision = lib.preference_gen;
-        list->loading = true;
-        list->error.clear();
+        if (quiet) {
+            list->refreshing = true;
+        } else {
+            list->loading = true;
+            list->refreshing = false;
+            list->error.clear();
+        }
         // Not a ?: chain: with co_await in its branches GCC 16 also starts the tasks of branches not taken.
         Result<std::vector<Track>> r;
         if (page == Page::album) {
@@ -425,17 +532,6 @@ namespace lyren {
             r = co_await provider.features.radar();
         } else if (page == Page::cloud) {
             r = co_await provider.features.cloud();
-        } else if (page == Page::recent) {
-            if (lib.recent_plays_loaded && env_.now() - lib.recent_plays_at < 60.0) {
-                r = lib.recent_plays;
-            } else {
-                r = co_await provider.features.recent_plays();
-                if (r && account_gen == lib.account_gen) {
-                    lib.recent_plays = *r;
-                    lib.recent_plays_at = env_.now();
-                    lib.recent_plays_loaded = true;
-                }
-            }
         } else if (page == Page::similar) {
             r = co_await provider.similar(card.id);
         } else {
@@ -445,18 +541,53 @@ namespace lyren {
             co_return;
         }
         list->loading = false;
-        list->loaded = true;
+        list->refreshing = false;
         if (r) {
-            if (selection_.list == &list->tracks) {
-                reset_selection();
+            const bool had_tracks = !list->tracks.empty();
+            const bool same_tracks = list->loaded && std::ranges::equal(list->tracks, *r, [](const Track &a, const Track &b) {
+                                         return same(a, b) && a.type == b.type;
+                                     });
+            std::string selected_id;
+            if (selection_.list == &list->tracks && !same_tracks && quiet && selection_.selected >= 0 && selection_.selected < static_cast<int>(list->tracks.size())) {
+                selected_id = list->tracks[static_cast<size_t>(selection_.selected)].id;
+            }
+            list->loaded = true;
+            list->stale = false;
+            list->error.clear();
+            list->fetched_at = env_.now();
+            list->retry_at = -1e9;
+            if (page == Page::daily) {
+                list->daily_slot = daily_slot_;
             }
             list->tracks = std::move(*r);
+            if (selection_.list == &list->tracks && !same_tracks) {
+                if (quiet) {
+                    auto it = selected_id.empty() ? list->tracks.end() : std::ranges::find(list->tracks, selected_id, &Track::id);
+                    selection_.selected = selection_.anchor = it == list->tracks.end() ? -1 : static_cast<int>(it - list->tracks.begin());
+                    if (selection_.choosing) {
+                        std::unordered_set<std::string> remaining;
+                        for (const auto &track : list->tracks) {
+                            if (selection_.chosen.contains(track.id)) {
+                                remaining.insert(track.id);
+                            }
+                        }
+                        selection_.chosen = std::move(remaining);
+                    }
+                } else {
+                    reset_selection();
+                }
+            }
             if (page == Page::liked) {
                 library_.set_liked(card.source, list->tracks, revision);
             }
             env_.images.prefetch(list->tracks);
-            list->since = env_.now();
+            if (!had_tracks || (!quiet && !same_tracks)) {
+                list->since = env_.now();
+            }
+        } else if (quiet) {
+            list->retry_at = env_.now() + 15.0;
         } else {
+            list->loaded = true;
             list->error = r.error();
         }
         env_.redraw();
@@ -464,10 +595,11 @@ namespace lyren {
 
     void Browser::reload_list() {
         if (route_.page == Page::recent) {
-            library_.shelf(route_.card.source).recent_plays_loaded = false;
+            spawn(library_.load_recent_plays(route_.card.source, true));
+            return;
         }
         if (route_.list) {
-            spawn(load_list(route_.list, route_.page, route_.card));
+            spawn(load_list(route_.list, route_.page, route_.card, false));
         } else {
             ensure();
         }
@@ -479,6 +611,14 @@ namespace lyren {
         } else {
             ensure();
         }
+    }
+
+    void Browser::reload_profile() {
+        if (route_.page != Page::profile) {
+            return;
+        }
+        route_.profile = social_.reload(route_.card);
+        env_.redraw();
     }
 
     Task<void> Browser::load_artist(std::shared_ptr<Artist> page, Card card) {
@@ -642,6 +782,9 @@ namespace lyren {
         });
         list->tracks = std::move(*fresh);
         list->error.clear();
+        list->stale = false;
+        list->fetched_at = env_.now();
+        list->retry_at = -1e9;
         if (route_.list == list) {
             auto it = std::ranges::find(list->tracks, order[static_cast<size_t>(selected)].id, &Track::id);
             selection_.selected = it == list->tracks.end() ? -1 : static_cast<int>(it - list->tracks.begin());
@@ -655,9 +798,22 @@ namespace lyren {
     }
 
     void Browser::delete_playlist(Card playlist) {
+        std::erase_if(list_cache_, [&](const CachedList &entry) {
+            return entry.page == Page::playlist && entry.source == playlist.source && entry.id == playlist.id;
+        });
+        auto purge = [&](std::vector<Route> &stack) {
+            std::erase_if(stack, [&](const Route &route) {
+                return route.page == Page::playlist && same(route.card, playlist);
+            });
+        };
+        purge(history_);
         if (route_.page == Page::playlist && same(route_.card, playlist)) {
-            back();
+            if (!back()) {
+                open(Page::recommend, {.source = playlist.source});
+                purge(history_);
+            }
         }
+        purge(forward_);
         spawn(library_.delete_playlist(std::move(playlist)));
     }
 
@@ -705,30 +861,35 @@ namespace lyren {
         using Kind = Library::Event::Kind;
         const Source source = event.source;
         switch (event.kind) {
-            case Kind::liked:
-                each_route([&](Route &route) {
-                    if (route.card.source != source || route.page != Page::liked || !route.list) {
-                        return;
-                    }
-                    auto &tracks = route.list->tracks;
-                    auto it = std::ranges::find_if(tracks, [&](const Track &x) {
-                        return same(x, *event.track);
-                    });
-                    if (event.on && it == tracks.end()) {
-                        tracks.insert(tracks.begin(), *event.track);
-                    } else if (!event.on && it != tracks.end()) {
-                        tracks.erase(it);
-                    }
-                    if (selection_.list == &tracks) {
-                        reset_selection();
-                    }
+            case Kind::liked: {
+                auto &list = built_in_lists_[static_cast<size_t>(source)][static_cast<size_t>(built_in_slot(Page::liked))];
+                if (!list || !list->loaded) {
+                    break;
+                }
+                auto &tracks = list->tracks;
+                auto it = std::ranges::find_if(tracks, [&](const Track &x) {
+                    return same(x, *event.track);
                 });
-                break;
-            case Kind::liked_stale:
-                if (route_.page == Page::liked && route_.card.source == source && route_.list) {
-                    spawn(load_list(route_.list, Page::liked, {.source = source}));
+                if (event.on && it == tracks.end()) {
+                    tracks.insert(tracks.begin(), *event.track);
+                } else if (!event.on && it != tracks.end()) {
+                    tracks.erase(it);
+                }
+                if (selection_.list == &tracks) {
+                    reset_selection();
                 }
                 break;
+            }
+            case Kind::liked_stale: {
+                auto &list = built_in_lists_[static_cast<size_t>(source)][static_cast<size_t>(built_in_slot(Page::liked))];
+                if (list) {
+                    list->stale = true;
+                }
+                if (route_.page == Page::liked && route_.card.source == source && route_.list) {
+                    spawn(load_list(route_.list, Page::liked, {.source = source}, !route_.list->tracks.empty()));
+                }
+                break;
+            }
             case Kind::playlists: {
                 const auto &playlists = library_.shelf(source).playlists;
                 each_route([&](Route &route) {
@@ -744,19 +905,32 @@ namespace lyren {
                 });
                 break;
             }
-            case Kind::loaded:
-                // A page that waited for the account loads now.
+            case Kind::loaded: {
+                auto &liked = built_in_lists_[static_cast<size_t>(source)][static_cast<size_t>(built_in_slot(Page::liked))];
+                if (liked) {
+                    liked->stale = true;
+                }
+                // A page that waited for the account loads now; an already-cached liked list refreshes in place.
                 if (source == active_) {
-                    if (route_.page == Page::liked) {
-                        route_.list.reset();
+                    if (route_.page == Page::liked && route_.list && !route_.list->loading && !route_.list->refreshing) {
+                        spawn(load_list(route_.list, Page::liked, {.source = source}, !route_.list->tracks.empty()));
+                    } else {
+                        ensure();
                     }
-                    ensure();
                 }
                 break;
+            }
             case Kind::left:
                 if (source == active_) {
                     reset_selection();
                 }
+                built_in_lists_[static_cast<size_t>(source)] = {};
+                std::erase_if(list_cache_, [&](const CachedList &entry) {
+                    return entry.source == source;
+                });
+                std::erase_if(artist_cache_, [&](const CachedArtist &entry) {
+                    return entry.source == source;
+                });
                 each_route([&](Route &route) {
                     if (route.search) {
                         route.search->results[static_cast<size_t>(source)] = {};
@@ -778,13 +952,23 @@ namespace lyren {
                     ensure();
                 }
                 break;
-            case Kind::tracks_failed:
+            case Kind::tracks_failed: {
+                auto cached = cached_list(event.playlist->source, Page::playlist, event.playlist->id, false);
+                const bool visible = route_.page == Page::playlist && same(route_.card, *event.playlist);
+                if (cached) {
+                    if (visible || cached->tracks.empty()) {
+                        cached->error = event.error;
+                    } else {
+                        cached->stale = true;
+                    }
+                }
                 each_route([&](Route &route) {
-                    if (route.page == Page::playlist && same(route.card, *event.playlist) && route.list) {
+                    if (route.page == Page::playlist && same(route.card, *event.playlist) && route.list && route.list != cached) {
                         route.list->error = event.error;
                     }
                 });
                 break;
+            }
             case Kind::tracks: {
                 const Card &playlist = *event.playlist;
                 const auto &fresh = *event.fresh;
@@ -813,20 +997,33 @@ namespace lyren {
                     }
                 }
                 // Every visit to the playlist shows the same songs.
-                std::shared_ptr<TrackList> list;
-                each_route([&](Route &route) {
-                    if (!list && route.page == Page::playlist && same(route.card, playlist)) {
-                        list = route.list;
-                    }
-                });
+                std::shared_ptr<TrackList> list = cached_list(playlist.source, Page::playlist, playlist.id, false);
                 if (!list) {
-                    list = std::make_shared<TrackList>();
+                    each_route([&](Route &route) {
+                        if (!list && route.page == Page::playlist && same(route.card, playlist)) {
+                            list = route.list;
+                        }
+                    });
+                }
+                if (!list) {
+                    list = cached_list(playlist.source, Page::playlist, playlist.id, true);
                     list->since = env_.now();
+                } else if (std::ranges::none_of(list_cache_, [&](const CachedList &entry) {
+                               return entry.list == list;
+                           })) {
+                    if (list_cache_.size() == list_cache_.capacity()) {
+                        list_cache_.erase(list_cache_.begin());
+                    }
+                    list_cache_.push_back({.source = playlist.source, .page = Page::playlist, .id = playlist.id, .list = list});
                 }
                 ++list->gen;
                 list->tracks = fresh;
                 list->loading = false;
+                list->refreshing = false;
                 list->loaded = true;
+                list->stale = false;
+                list->fetched_at = env_.now();
+                list->retry_at = -1e9;
                 list->error.clear();
                 if (s.list == &list->tracks) {
                     s.selected = s.anchor = -1;

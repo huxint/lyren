@@ -131,9 +131,22 @@ namespace lyren {
     }
 
     bool Library::kept(Source source, Preference kind, std::string_view id, bool value) const {
-        const auto &edits = shelf(source).preferences[static_cast<size_t>(kind)];
-        auto it = edits.find(id);
-        return it == edits.end() ? value : it->second.value;
+        const Shelf &lib = shelf(source);
+        const auto &edits = lib.preferences[static_cast<size_t>(kind)];
+        if (auto it = edits.find(id); it != edits.end()) {
+            return it->second.value;
+        }
+        if (kind == Preference::album || kind == Preference::artist) {
+            const auto &caps = env_.provider(source).capabilities;
+            const bool supported = kind == Preference::artist ? caps.follow_artists : caps.collect_albums;
+            const auto &collection = lib.collection[kind == Preference::artist ? 1 : 0];
+            if (supported && collection.loaded) {
+                return std::ranges::any_of(collection.cards, [&](const Card &card) {
+                    return card.id == id;
+                });
+            }
+        }
+        return value;
     }
 
     void Library::apply(Source source, Preference kind, const Edit &edit) {

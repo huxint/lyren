@@ -41,6 +41,8 @@ namespace lyren {
 
         // Size tier for a cover drawn d buffer pixels wide.
         static int tier(float d);
+        // Display scale factor, used to size the HiDPI VRAM budget and match prefetch tiers to drawn covers.
+        void set_scale(float scale);
         // url is the original cover URL; resizing it for the service happens only when a download starts.
         // A cached size can stand in while a sharper image loads. blurred uses a separate, small background image.
         const Entry &get(std::string_view url, uint32_t px, bool blurred = false);
@@ -75,6 +77,7 @@ namespace lyren {
         void erase(CacheMap<Cached>::iterator it);
         void pump();
         void schedule_evict();
+        size_t budget() const;
         // transient: the download failed in the network or on the server, not in the image itself.
         void complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &image, float hue, float luma, const std::string &error, bool transient);
 
@@ -93,6 +96,7 @@ namespace lyren {
         uint64_t ticket_ = 0;
         uint64_t frame_ = 1;
         size_t bytes_ = 0;
+        float scale_ = 1.f;
     };
 
 } // namespace lyren
