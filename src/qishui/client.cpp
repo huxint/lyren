@@ -210,10 +210,15 @@ namespace lyren::qishui {
             co_return std::unexpected("Qishui Music session changed; retry the action");
         }
         const auto &identity = field(*config, "identity");
-        for (auto name : {"device_id", "iid", "fp"}) {
+        for (std::string_view name : {"device_id", "iid", "fp"}) {
+            std::string custom = get(std::format("custom_{}", name));
+            if (!custom.empty()) {
+                session.insert_or_assign(std::string(name), std::move(custom));
+                continue;
+            }
             auto value = string(field(identity, name));
             if (!value.empty()) {
-                session.insert_or_assign(name, std::move(value));
+                session.insert_or_assign(std::string(name), std::move(value));
             }
         }
         if (get("device_id").empty() || get("iid").empty()) {

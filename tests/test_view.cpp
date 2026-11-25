@@ -523,3 +523,174 @@ TEST_CASE("unliking a song on the liked songs page defers list erasure until the
     CHECK(scene.shell.browser.route().list->tracks.size() == initial_count - 1);
     scene.draw();
 }
+
+TEST_CASE("profile collection failure renders error once without retrying every frame") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    int album_requests = 0;
+    scene.service.on_collected_albums = [&]() -> Task<Result<std::vector<Card>>> {
+        ++album_requests;
+        co_return std::unexpected("Collection service unavailable");
+    };
+    scene.shell.browser.open_own_profile();
+    scene.draw();
+    scene.draw();
+    album_requests = 0;
+    const auto *col_tab = scene.find("Collection");
+    REQUIRE(col_tab != nullptr);
+    auto runs = scene.click(*col_tab);
+    for (int i = 0; i < 6; ++i) {
+        runs = scene.draw();
+    }
+    CHECK(album_requests == 1);
+    CHECK(drew(runs, "Collection service unavailable"));
+    CHECK_FALSE(scene.ui.animating());
+}
+
+TEST_CASE("card grid keeps springs warm at rest and glides smoothly across column breakpoints") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene({.motion = 1.0});
+    for (int i = 0; i < 8; ++i) {
+        scene.draw(1400, 1250);
+    }
+    CHECK_FALSE(scene.ui.animating());
+    const auto *wide_card = scene.find("Late Night Tape 5");
+    REQUIRE(wide_card != nullptr);
+    const ui::Rect wide_box = wide_card->box;
+
+    scene.draw_dt(760, 1250, 0.016);
+    CHECK(scene.ui.animating());
+    scene.draw_dt(760, 1250, 0.08);
+    const auto *mid_card = scene.find("Late Night Tape 5");
+    REQUIRE(mid_card != nullptr);
+    const ui::Rect mid_box = mid_card->box;
+
+    for (int i = 0; i < 8; ++i) {
+        scene.draw(760, 1250);
+    }
+    CHECK_FALSE(scene.ui.animating());
+    const auto *narrow_card = scene.find("Late Night Tape 5");
+    REQUIRE(narrow_card != nullptr);
+    const ui::Rect narrow_box = narrow_card->box;
+
+    // Crossing the column breakpoint must animate through an intermediate position instead of teleporting on frame 1.
+    const bool moved_x = std::abs(wide_box.x - narrow_box.x) > 20.f;
+    const bool moved_y = std::abs(wide_box.y - narrow_box.y) > 20.f;
+    REQUIRE((moved_x || moved_y));
+    if (moved_x) {
+        CHECK(std::abs(mid_box.x - wide_box.x) > 1.f);
+        CHECK(std::abs(mid_box.x - narrow_box.x) > 1.f);
+    }
+    if (moved_y) {
+        CHECK(std::abs(mid_box.y - wide_box.y) > 1.f);
+        CHECK(std::abs(mid_box.y - narrow_box.y) > 1.f);
+    }
+}
+
+TEST_CASE("track context menu Play action owns a snapshot and survives source list mutation") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    std::vector<std::string> attempted;
+    scene.service.on_stream = [&](Track track, Quality) -> Task<Result<Stream>> {
+        attempted.push_back(track.id);
+        co_return std::unexpected("Stopped");
+    };
+    scene.shell.browser.open(Page::daily);
+    scene.draw();
+    scene.draw();
+    const auto *title = scene.find("Night Train");
+    REQUIRE(title != nullptr);
+
+    const auto menu = scene.click(title->box.x + 10, title->box.y + 8, 1180, 760, BTN_RIGHT);
+    CHECK(drew(menu, "Play"));
+    const auto *play_item = scene.find("Play");
+    REQUIRE(play_item != nullptr);
+
+    // Mutate and reallocate the backing list while the popup menu is open before clicking Play.
+    REQUIRE(scene.shell.browser.route().list != nullptr);
+    scene.shell.browser.route().list->tracks.clear();
+    scene.shell.browser.route().list->tracks.shrink_to_fit();
+
+    scene.click(*play_item);
+    REQUIRE_FALSE(attempted.empty());
+    CHECK(attempted.front() == "song-0");
+}
+
+TEST_CASE("structured session-import account dialog unpacks JSON, diagnoses steps, guards empty URL, and restores custom identity") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene({.signed_in = false});
+    scene.service.capabilities.qr_login = false;
+    scene.service.capabilities.session_import = true;
+
+    int import_calls = 0;
+    std::string last_imported;
+    scene.service.on_check_session = [&](std::string) -> Task<SessionCheck> {
+        SessionCheck c;
+        c.signer = {SessionCheck::State::ok, "http://127.0.0.1:8000"};
+        c.identity = {SessionCheck::State::ok, "device_id custom-did"};
+        c.account = {SessionCheck::State::ok, "Mira Chen (me)"};
+        co_return c;
+    };
+    scene.service.on_import_session = [&](std::string json) -> Task<Result<void>> {
+        ++import_calls;
+        last_imported = std::move(json);
+        scene.service.session()["signer_url"] = "http://127.0.0.1:8000";
+        scene.service.session()["cookie_jar"] = ".qishui.com\tTRUE\t/\tTRUE\t0\tsessionid\tabc\n";
+        scene.service.session()["custom_device_id"] = "custom-did";
+        scene.service.session()["custom_iid"] = "custom-iid";
+        scene.service.signed_in = true;
+        co_return Result<void>{};
+    };
+
+    scene.draw();
+    scene.shell.account.open(scene.ui);
+    const auto list_runs = scene.draw();
+    CHECK(drew(list_runs, "Not signed in · Anonymous playback ready"));
+    const auto *connect_acct = scene.find("Connect account");
+    REQUIRE(connect_acct != nullptr);
+    const auto form_runs = scene.click(*connect_acct);
+    CHECK(drew(form_runs, "Signing service URL"));
+    CHECK(drew(form_runs, "Test connection"));
+
+    // Paste full JSON into the cookie field; the next frame auto-unpacks it into structured fields and opens advanced identity.
+    scene.shell.accounts.sign_in().cookie = R"({"signer_url":"http://127.0.0.1:8000","cookie":"sessionid=abc","device_id":"custom-did","iid":"custom-iid"})";
+    scene.draw();
+    CHECK(scene.shell.accounts.sign_in().signer_url == "http://127.0.0.1:8000");
+    CHECK(scene.shell.accounts.sign_in().cookie == "sessionid=abc");
+    CHECK(scene.shell.accounts.sign_in().device_id == "custom-did");
+    CHECK(scene.shell.accounts.sign_in().iid == "custom-iid");
+    CHECK(scene.shell.accounts.sign_in().show_advanced);
+
+    const auto *test_btn = scene.find("Test connection");
+    REQUIRE(test_btn != nullptr);
+    scene.click(*test_btn);
+    const auto diag_runs = scene.draw();
+    CHECK(drew(diag_runs, "Signing service"));
+    CHECK(drew(diag_runs, "Device identity"));
+    CHECK(drew(diag_runs, "Account session"));
+    CHECK(scene.shell.accounts.sign_in().check.has_value());
+
+    // Clearing signer_url clears stale diagnostics and disables Connect instead of importing stale settings.
+    scene.shell.accounts.sign_in().signer_url.clear();
+    scene.draw();
+    const auto *connect_btn = scene.find("Connect");
+    REQUIRE(connect_btn != nullptr);
+    scene.click(*connect_btn);
+    CHECK(import_calls == 0);
+
+    // Restoring signer_url and clicking Connect imports and signs in; Edit connection restores custom device identity.
+    scene.shell.accounts.sign_in().signer_url = "http://127.0.0.1:8000";
+    scene.draw();
+    connect_btn = scene.find("Connect");
+    REQUIRE(connect_btn != nullptr);
+    scene.click(*connect_btn);
+    CHECK(import_calls == 1);
+    CHECK(last_imported.contains("custom-did"));
+    CHECK(scene.service.signed_in);
+
+    scene.shell.accounts.begin(Source::qishui);
+    CHECK(scene.shell.accounts.sign_in().signer_url == "http://127.0.0.1:8000");
+    CHECK(scene.shell.accounts.sign_in().device_id == "custom-did");
+    CHECK(scene.shell.accounts.sign_in().iid == "custom-iid");
+    CHECK(scene.shell.accounts.sign_in().show_advanced);
+}

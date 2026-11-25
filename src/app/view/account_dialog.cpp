@@ -14,6 +14,7 @@ namespace lyren {
     namespace control = ui::control;
 
     void AccountDialog::open(ui::Ui &ui) {
+        had_feedback_ = false;
         accounts_.cancel();
         ui.open_modal(460, std::min(540.f, ui.height - 40), [this](ui::Ui &u, Rect r) {
             body(u, r);
@@ -119,7 +120,8 @@ namespace lyren {
         ui.label({r.x + 32, r.y, r.w - 72, 30}, lyren::trf("Connect {}", lyren::tr(platform(source).name)), t.style(type::title, t.text, text::semibold));
 
         const Rect view{r.x, r.y + 42, r.w, std::max(0.f, r.h - 42 - control::large - 14)};
-        const float off = ui.begin_scroll(ui.id("account-import-scroll"), view, std::max(import_h_, view.h));
+        const ui::Id scroll_id = ui.id("account-import-scroll");
+        const float off = ui.begin_scroll(scroll_id, view, std::max(import_h_, view.h));
         const float x = view.x, w = std::max(120.f, view.w - 6);
         float y = view.y - off;
 
@@ -141,6 +143,8 @@ namespace lyren {
         }
 
         const bool busy = sign_in.importing || sign_in.checking;
+        const auto snapshot = std::array<std::string, 6>{sign_in.signer_url, sign_in.signer_token, sign_in.cookie, sign_in.device_id, sign_in.iid, sign_in.fp};
+        sign_in.structured = true;
         {
             ui::Enabled editable(ui, !busy, 0.6f);
 
@@ -185,7 +189,7 @@ namespace lyren {
         section_toggle("qs-adv-toggle", lyren::tr("Advanced device identity (optional)"), sign_in.show_advanced);
         if (sign_in.show_advanced) {
             ui::Enabled editable(ui, !busy, 0.6f);
-            ui.label({x + 20, y, w - 20, 16}, lyren::tr("Leave blank to use the identity returned by GET /config"), t.style(type::micro, t.faint()));
+            ui.label({x + 20, y, w - 20, 16}, lyren::tr("Overrides GET /config when set; leave blank to use the signing service's identity"), t.style(type::micro, t.faint()));
             y += 20;
             const float half = std::floor((w - 20 - 8) / 2);
             ui.text_box(ui.id("qs-did"), {x + 20, y, half, control::small}, sign_in.device_id, "device_id");
@@ -193,6 +197,11 @@ namespace lyren {
             y += control::small + 8;
             ui.text_box(ui.id("qs-fp"), {x + 20, y, w - 20, control::small}, sign_in.fp, "fp (optional)");
             y += control::small + 10;
+        }
+        if (std::array<std::string_view, 6>{sign_in.signer_url, sign_in.signer_token, sign_in.cookie, sign_in.device_id, sign_in.iid, sign_in.fp} !=
+            std::array<std::string_view, 6>{snapshot[0], snapshot[1], snapshot[2], snapshot[3], snapshot[4], snapshot[5]}) {
+            sign_in.error.clear();
+            sign_in.check.reset();
         }
 
         // 5. Collapsible 3-step connection guide + protocol snippet copy.
@@ -262,13 +271,19 @@ namespace lyren {
         }
 
         const float total_h = (y - (view.y - off)) + 6;
+        const bool has_feedback = sign_in.checking || sign_in.check.has_value() || !sign_in.error.empty();
         if (std::abs(import_h_ - total_h) > 0.5f) {
             import_h_ = total_h;
             ui.redraw();
         }
+        if (has_feedback && !had_feedback_ && total_h > view.h) {
+            ui.scroll_by(scroll_id, total_h - view.h - off);
+            ui.redraw();
+        }
+        had_feedback_ = has_feedback;
         ui.end_scroll();
 
-        const bool has_input = !sign_in.signer_url.empty() || !sign_in.settings.empty();
+        const bool has_input = sign_in.structured ? !sign_in.signer_url.empty() : !sign_in.settings.empty();
         const auto connect_lbl = lyren::tr("Connect");
         const auto test_lbl = lyren::tr("Test connection");
         const float connect_w = std::max(96.f, ui.button_width(connect_lbl, true));

@@ -48,6 +48,7 @@ namespace lyren::audio {
         uint64_t size(); // blocks until known; 0 on failure
 
         void close(); // any thread: stops the download and wakes readers for good
+        void invalidate_cache();
         std::string error() const;
         long status() const;                            // HTTP status of a failed download, 0 for network errors
         bool waiting() const;                           // a reader is blocked on the network

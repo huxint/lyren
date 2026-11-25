@@ -107,10 +107,7 @@ namespace lyren::gfx {
                 vkFreeMemory(dev, textures_[id].memory, nullptr);
             }
         }
-        if (staging_.buffer) {
-            vkDestroyBuffer(dev, staging_.buffer, nullptr);
-            vkFreeMemory(dev, staging_.memory, nullptr);
-        }
+        free_staging();
         for (auto &[f, p] : pipelines_) {
             vkDestroyPipeline(dev, p, nullptr);
         }
@@ -536,14 +533,17 @@ namespace lyren::gfx {
         if (copies_.empty()) {
             if (extra_bytes == 0) {
                 free_staging();
-            } else {
-                staging_.used = 0;
+                return;
             }
-            return;
+            if (extra_bytes <= staging_.size) {
+                staging_.used = 0;
+                return;
+            }
+        } else {
+            std::ranges::stable_sort(copies_, {}, [](const Copy &c) {
+                return c.region.bufferOffset;
+            });
         }
-        std::ranges::stable_sort(copies_, {}, [](const Copy &c) {
-            return c.region.bufferOffset;
-        });
         const size_t live = live_staging_bytes();
         const size_t aligned_live = (live + 15) & ~static_cast<size_t>(15);
         const size_t want = aligned_live + extra_bytes;
@@ -585,6 +585,9 @@ namespace lyren::gfx {
     }
 
     void Renderer::upload(TextureId tex, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void *pixels, uint32_t pitch) {
+        if (w == 0 || h == 0) {
+            return;
+        }
         const Texture &t = textures_[tex];
         size_t row = static_cast<size_t>(w) * t.texel, bytes = row * h;
         size_t offset = (staging_.used + 15) & ~static_cast<size_t>(15);

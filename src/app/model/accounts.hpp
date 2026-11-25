@@ -31,6 +31,7 @@ namespace lyren {
             std::string device_id;
             std::string iid;
             std::string fp;
+            bool structured = false;
             bool show_advanced = false;
             bool show_guide = false;
             bool importing = false;

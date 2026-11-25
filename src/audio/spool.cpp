@@ -189,6 +189,7 @@ namespace lyren::audio {
                 s->fd_ = cfd;
                 s->size_ = static_cast<uint64_t>(st.st_size);
                 s->have_.add(0, s->size_);
+                s->cache_path_ = cached.string();
                 log::debug("audio cache hit: {} ({} bytes)", cache_key, s->size_);
                 return s;
             }
@@ -289,7 +290,7 @@ namespace lyren::audio {
             if (req == req_) {
                 pos_ = offset + d.size();
             }
-            promote_now = error_.empty() && size_ != unknown && size_ > 0 && !tmp_path_.empty() && have_.available(0) == size_;
+            promote_now = req == req_ && !closed_ && error_.empty() && size_ != unknown && size_ > 0 && !tmp_path_.empty() && have_.available(0) == size_;
         }
         if (promote_now) {
             promote_cache();
@@ -312,6 +313,7 @@ namespace lyren::audio {
             if (size_ == 0 || size_ == unknown || size_ > limit) {
                 return;
             }
+            ::fdatasync(fd_);
             if (std::rename(tmp_path_.c_str(), cache_path_.c_str()) != 0) {
                 return;
             }
@@ -319,6 +321,17 @@ namespace lyren::audio {
             promoted = cache_path_;
         }
         prune_audio_cache(promoted.parent_path(), limit, promoted);
+    }
+
+    void Spool::invalidate_cache() {
+        std::string path;
+        {
+            std::lock_guard lk(m_);
+            path = std::move(cache_path_);
+        }
+        if (!path.empty()) {
+            ::unlink(path.c_str());
+        }
     }
 
     void Spool::on_done(uint64_t req, long status, std::string error) {

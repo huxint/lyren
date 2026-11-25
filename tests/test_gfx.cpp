@@ -767,3 +767,81 @@ TEST_CASE("emoji are drawn in colour from their own sheet") {
     CHECK(captured);
     g.renderer.destroy_target(target);
 }
+
+TEST_CASE("Vulkan staging allocates from empty, compacts evicted textures while hidden, and reclaims when empty") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+
+    std::vector<uint8_t> red(128 * 128 * 4, 0), green(128 * 128 * 4, 0);
+    for (size_t i = 0; i < 128 * 128; ++i) {
+        red[i * 4 + 0] = 255;
+        red[i * 4 + 3] = 255;
+        green[i * 4 + 1] = 255;
+        green[i * 4 + 3] = 255;
+    }
+
+    auto make_tex = [&](const std::vector<uint8_t> &px) {
+        const auto id = g.renderer.create_texture(128, 128, VK_FORMAT_R8G8B8A8_UNORM, false);
+        g.renderer.upload(id, 0, 0, 128, 128, px.data(), 128 * 4);
+        return id;
+    };
+
+    // 1. Initial upload from empty staging_, then destroy all staged textures before draw() (reclaims staging_).
+    const auto t0 = make_tex(red);
+    g.renderer.destroy_texture(t0);
+
+    // 2. Upload many textures while hidden (no draw()), evict all but the last to trigger compaction, then upload one more.
+    std::vector<gfx::TextureId> temp;
+    for (int i = 0; i < 20; ++i) {
+        temp.push_back(make_tex(red));
+    }
+    const auto kept = make_tex(green);
+    for (auto id : temp) {
+        g.renderer.destroy_texture(id);
+    }
+    const auto after_compact = make_tex(red);
+
+    bool configured = false;
+    wl::Window window(g.display,
+                      {.configure =
+                           [&] {
+                               configured = true;
+                               g.loop.quit();
+                           },
+                       .pointer = [](const wl::PointerEvent &) {},
+                       .key = [](const wl::KeyEvent &) {},
+                       .focus = [](bool) {},
+                       .text_input = [](const wl::TextInputEvent &) {}},
+                      320, 240);
+    auto timeout = g.loop.after(2s, [&] {
+        g.loop.quit();
+    });
+    g.loop.run();
+    g.loop.cancel(timeout);
+    REQUIRE(configured);
+
+    auto *target = g.renderer.create_target(g.display.display, window.surface());
+    g.renderer.resize(*target, window.buffer_width(), window.buffer_height());
+    gfx::Prim prim{
+        .rect = {0, 0, 64, 64},
+        .clip = {0, 0, 320, 240},
+        .uv = {0, 0, 1, 1},
+        .color = {1, 1, 1, 1},
+        .info = {static_cast<uint32_t>(gfx::Kind::image), kept, 0, 0},
+    };
+    bool captured = false;
+    g.renderer.capture_next(*target, [&](const uint8_t *bgra, uint32_t width, uint32_t) {
+        const uint8_t *px = bgra + (16 * width + 16) * 4;
+        CHECK(px[1] > 240); // green channel preserved across compaction
+        CHECK(px[2] < 15);
+        captured = true;
+    });
+    g.renderer.draw(*target, {&prim, 1}, {}, [&] {
+        window.prepare_present();
+    });
+    CHECK(captured);
+
+    g.renderer.destroy_texture(kept);
+    g.renderer.destroy_texture(after_compact);
+    g.renderer.destroy_target(target);
+}

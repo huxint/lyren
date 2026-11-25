@@ -180,9 +180,9 @@ namespace lyren {
         sign_in_.signer_url = get_val("signer_url");
         sign_in_.signer_token = get_val("signer_token");
         sign_in_.cookie = !get_val("cookie").empty() ? get_val("cookie") : get_val("cookie_jar");
-        sign_in_.device_id = get_val("device_id");
-        sign_in_.iid = get_val("iid");
-        sign_in_.fp = get_val("fp");
+        sign_in_.device_id = !get_val("device_id").empty() ? get_val("device_id") : get_val("custom_device_id");
+        sign_in_.iid = !get_val("iid").empty() ? get_val("iid") : get_val("custom_iid");
+        sign_in_.fp = !get_val("fp").empty() ? get_val("fp") : get_val("custom_fp");
         if (!sign_in_.device_id.empty() || !sign_in_.iid.empty() || !sign_in_.fp.empty()) {
             sign_in_.show_advanced = true;
         }
@@ -193,7 +193,8 @@ namespace lyren {
     }
 
     std::string Accounts::compose_settings() const {
-        if (sign_in_.signer_url.empty() && sign_in_.signer_token.empty() && sign_in_.cookie.empty() && sign_in_.device_id.empty() && sign_in_.iid.empty() && sign_in_.fp.empty()) {
+        if (!sign_in_.structured && sign_in_.signer_url.empty() && sign_in_.signer_token.empty() && sign_in_.cookie.empty() && sign_in_.device_id.empty() && sign_in_.iid.empty() &&
+            sign_in_.fp.empty()) {
             return sign_in_.settings;
         }
         StringMap<std::string> out;
@@ -220,6 +221,7 @@ namespace lyren {
         sign_in_ = {.source = source, .since = env_.now()};
         auto &p = env_.provider(source);
         if (p.capabilities.session_import) {
+            sign_in_.structured = true;
             const auto &s = p.session();
             auto get_val = [&](std::string_view key) -> std::string {
                 const auto it = s.find(key);
@@ -228,9 +230,10 @@ namespace lyren {
             sign_in_.signer_url = get_val("signer_url");
             sign_in_.signer_token = get_val("signer_token");
             sign_in_.cookie = get_val("cookie_jar");
-            if (!sign_in_.signer_url.empty()) {
-                sign_in_.settings = compose_settings();
-            }
+            sign_in_.device_id = get_val("custom_device_id");
+            sign_in_.iid = get_val("custom_iid");
+            sign_in_.fp = get_val("custom_fp");
+            sign_in_.show_advanced = !sign_in_.device_id.empty() || !sign_in_.iid.empty() || !sign_in_.fp.empty();
         } else if (p.capabilities.qr_login) {
             spawn(scan());
         }

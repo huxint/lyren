@@ -385,7 +385,10 @@ namespace lyren::qishui {
                     return std::unexpected("Connection settings contain invalid control characters");
                 }
                 if (!trimmed.empty()) {
-                    out.session.emplace(name, std::string(trimmed));
+                    out.session.insert_or_assign(name, std::string(trimmed));
+                    if (name == "device_id" || name == "iid" || name == "fp") {
+                        out.session.insert_or_assign("custom_" + name, std::string(trimmed));
+                    }
                 }
             }
             const auto signer = out.session.find("signer_url");
@@ -490,10 +493,15 @@ namespace lyren::qishui {
         }
         check.signer = {State::ok, candidate.get("signer_url")};
         const auto &identity = field(*config, "identity");
-        for (auto name : {"device_id", "iid", "fp"}) {
+        for (std::string_view name : {"device_id", "iid", "fp"}) {
+            std::string custom = candidate.get(std::format("custom_{}", name));
+            if (!custom.empty()) {
+                candidate.session.insert_or_assign(std::string(name), std::move(custom));
+                continue;
+            }
             auto value = string(field(identity, name));
             if (!value.empty()) {
-                candidate.session.insert_or_assign(name, std::move(value));
+                candidate.session.insert_or_assign(std::string(name), std::move(value));
             }
         }
         if (candidate.get("device_id").empty() || candidate.get("iid").empty()) {
@@ -616,11 +624,9 @@ namespace lyren::qishui {
         client.session.erase("cookie");
         client.session.erase("user_id");
         if (!was_logged_in) {
-            client.session.erase("signer_url");
-            client.session.erase("signer_token");
-            client.session.erase("device_id");
-            client.session.erase("iid");
-            client.session.erase("fp");
+            for (std::string_view key : {"signer_url", "signer_token", "device_id", "iid", "fp", "custom_device_id", "custom_iid", "custom_fp"}) {
+                client.session.erase(std::string(key));
+            }
         }
         client.cookies_ = {};
         pagination_.clear();
@@ -634,7 +640,9 @@ namespace lyren::qishui {
         lyric_type_.clear();
         sync_collection_cache();
         if (!was_logged_in) {
+            auto saved_cb = std::move(client.on_session);
             (void)co_await client.initialize();
+            client.on_session = std::move(saved_cb);
         }
         if (client.on_session) {
             client.on_session();

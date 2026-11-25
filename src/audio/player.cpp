@@ -192,6 +192,9 @@ namespace lyren::audio {
                     std::string error;
                     dec = open_decoder(*spool, error, c.key);
                     if (!dec) {
+                        if (spool->error().empty()) {
+                            spool->invalidate_cache();
+                        }
                         fail(gen, std::move(error));
                         continue;
                     }
@@ -263,6 +266,9 @@ namespace lyren::audio {
                 std::string e = spool->error();
                 if (e.empty()) {
                     e = std::move(dec->error);
+                    if (!e.empty()) {
+                        spool->invalidate_cache();
+                    }
                 }
                 if (!e.empty()) {
                     fail(gen, std::move(e));

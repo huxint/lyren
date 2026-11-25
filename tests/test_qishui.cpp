@@ -622,4 +622,47 @@ TEST_CASE("Qishui lenient cookie parsing, signer error attribution, diagnostic c
         REQUIRE_MESSAGE(a3.has_value(), (a3 ? std::string{} : a3.error()));
         CHECK_FALSE(a3->collected);
     }
+
+    SUBCASE("custom device_id, iid, and fp override /config and persist for editing") {
+        std::atomic<bool> empty_identity{true};
+        test::Server signer([&](std::string_view req) {
+            if (req.starts_with("GET /config ")) {
+                return empty_identity.load() ? test::ok(R"({"ok":true,"identity":{}})") : test::ok(R"({"ok":true,"identity":{"device_id":"cfg_d","iid":"cfg_i","fp":"cfg_f"}})");
+            }
+            return test::ok(R"({"ok":true,"headers":{"x-helios":"h","x-medusa":"m"}})");
+        });
+        Loop loop;
+        net::Http http;
+        qishui::Qishui qs(loop, http);
+
+        // 1. Empty /config identity succeeds when manual device_id and iid are provided.
+        auto r1 = run(loop, qs.import_session(glz::write_json(glz::obj{"signer_url", signer.url(), "device_id", "man_d", "iid", "man_i"}).value()));
+        REQUIRE_MESSAGE(r1.has_value(), (r1 ? std::string{} : r1.error()));
+        CHECK(qs.client.get("device_id") == "man_d");
+        CHECK(qs.client.get("iid") == "man_i");
+        CHECK(qs.client.get("fp") == "man_d");
+        CHECK(qs.client.get("custom_device_id") == "man_d");
+        CHECK(qs.client.get("custom_iid") == "man_i");
+        CHECK(qs.client.get("custom_fp").empty());
+
+        // 2. Non-empty /config identity is overridden selectively by custom fields without marking defaults as custom.
+        empty_identity = false;
+        std::optional<SessionCheck> chk;
+        spawn([&]() -> Task<void> {
+            chk = co_await qs.check_session(glz::write_json(glz::obj{"signer_url", signer.url(), "device_id", "override_d"}).value());
+            loop.quit();
+        }());
+        loop.run();
+        REQUIRE(chk);
+        CHECK(chk->ok());
+        CHECK(chk->identity.detail.contains("override_d"));
+
+        auto r2 = run(loop, qs.import_session(glz::write_json(glz::obj{"signer_url", signer.url(), "device_id", "override_d"}).value()));
+        REQUIRE_MESSAGE(r2.has_value(), (r2 ? std::string{} : r2.error()));
+        CHECK(qs.client.get("device_id") == "override_d");
+        CHECK(qs.client.get("iid") == "cfg_i");
+        CHECK(qs.client.get("fp") == "cfg_f");
+        CHECK(qs.client.get("custom_device_id") == "override_d");
+        CHECK(qs.client.get("custom_iid").empty());
+    }
 }

@@ -51,6 +51,9 @@ namespace lyren::test {
         std::vector<std::string> calls;
         std::move_only_function<Task<Result<std::vector<Track>>>()> on_fm;
         std::move_only_function<Task<Result<Stream>>(Track, Quality)> on_stream;
+        std::move_only_function<Task<Result<std::vector<Card>>>()> on_collected_albums;
+        std::move_only_function<Task<Result<void>>(std::string)> on_import_session;
+        std::move_only_function<Task<SessionCheck>(std::string)> on_check_session;
 
         Service() {
             capabilities.library = capabilities.likes = capabilities.playlist_edit = true;
@@ -128,6 +131,18 @@ namespace lyren::test {
         bool logged_in() const override {
             return signed_in;
         }
+        Task<Result<void>> import_session(std::string json) override {
+            if (on_import_session) {
+                co_return co_await on_import_session(std::move(json));
+            }
+            co_return co_await Provider::import_session(std::move(json));
+        }
+        Task<SessionCheck> check_session(std::string json) override {
+            if (on_check_session) {
+                co_return co_await on_check_session(std::move(json));
+            }
+            co_return co_await Provider::check_session(std::move(json));
+        }
         Task<Result<Account>> account() override {
             if (!signed_in) {
                 co_return std::unexpected("Not signed in");
@@ -187,6 +202,9 @@ namespace lyren::test {
             co_return std::vector<std::string>{"song-1"};
         }
         Task<Result<std::vector<Card>>> collected_albums() override {
+            if (on_collected_albums) {
+                co_return co_await on_collected_albums();
+            }
             co_return std::vector<Card>{
                 {.kind = CardKind::album, .id = "alb-1", .title = "Harbour Tapes", .subtitle = "Mira Chen", .count = 10, .count_kind = Card::Count::songs},
                 {.kind = CardKind::album, .id = "alb-2", .title = "Midnight Lines", .subtitle = "Low Tide", .count = 8, .count_kind = Card::Count::songs},

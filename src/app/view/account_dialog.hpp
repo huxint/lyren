@@ -18,6 +18,7 @@ namespace lyren {
         void scan(ui::Ui &ui, ui::Rect r, Source source);
 
         float import_h_ = 360;
+        bool had_feedback_ = false;
     };
 
 } // namespace lyren

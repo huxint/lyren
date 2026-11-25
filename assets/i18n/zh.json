@@ -468,7 +468,7 @@
   "sessionid=…; sid_tt=… (also accepts Cookie: header, Netscape cookie_jar, or full JSON)": "sessionid=…; sid_tt=…（支持带 Cookie: 前缀、Netscape 格式或直接粘贴整段 JSON）",
   "Imported JSON settings": "已识别并填入 JSON 配置",
   "Advanced device identity (optional)": "高级设备身份（可选）",
-  "Leave blank to use the identity returned by GET /config": "留空则自动使用签名服务 GET /config 返回的设备身份",
+  "Overrides GET /config when set; leave blank to use the signing service's identity": "填写后覆盖签名服务 GET /config 返回的设备身份，留空则使用服务默认值",
   "How to connect (3 steps)": "如何连接（3 步）",
   "1. Run a signing service that serves GET /config and POST /sign.": "1. 启动支持 GET /config 与 POST /sign 的本地或自建签名服务。",
   "2. Sign in on Qishui web/app and copy Cookie from DevTools Network (optional).": "2. 在已登录汽水音乐的浏览器开发者工具 Network 中复制请求头 Cookie（仅用签名服务可留空）。",
