@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -16,10 +17,30 @@ namespace lyren {
         uint64_t gen = 0;   // bumped to disown the requests under way
     };
 
-    // The heights of a list's rows as last laid out, kept beside the items so that they share their lifetime.
+    // Cumulative row bottoms of a list as last laid out, kept beside the items so that they share their lifetime.
     struct Heights {
-        std::vector<float> rows;
+        std::vector<float> ends;
         float width = 0, size = 0; // what they were laid out for: the column's width and the text size
+
+        void reset(float w, float s) {
+            ends.clear();
+            width = w, size = s;
+        }
+        void push(float h) {
+            ends.push_back(total() + h);
+        }
+        size_t size_count() const {
+            return ends.size();
+        }
+        float total() const {
+            return ends.empty() ? 0.f : ends.back();
+        }
+        float top(size_t i) const {
+            return i == 0 ? 0.f : ends[i - 1];
+        }
+        size_t first_at(float y) const {
+            return static_cast<size_t>(std::ranges::upper_bound(ends, y) - ends.begin());
+        }
     };
 
     // Items that arrive a page at a time, each page naming the next by a cursor.

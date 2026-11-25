@@ -61,7 +61,7 @@ namespace lyren::test {
             capabilities.profiles = capabilities.people = capabilities.follow_users = true;
             capabilities.posts = capabilities.post_write = capabilities.ranking = capabilities.profile_playlists = true;
             capabilities.comments = {true, true, true, true};
-            capabilities.comment_sort = capabilities.comment_replies = capabilities.comment_likes = capabilities.comment_post = true;
+            capabilities.comment_sort = capabilities.comment_replies = capabilities.comment_likes = capabilities.comment_post = capabilities.comment_delete = true;
             capabilities.radio = capabilities.radio_dislike = true;
             features.daily.songs = []() -> Task<Result<std::vector<Track>>> {
                 co_return std::vector<Track>{song(0), song(1), song(2)};
@@ -304,6 +304,24 @@ namespace lyren::test {
             page.comments.push_back({.id = "c2", .user = "林夕", .text = "听了十年。", .time = "yesterday", .likes = 8});
             page.comments.push_back({.id = "c3", .user = "Tom", .text = "Loud.", .time = "2024", .reply_user = "林夕", .reply = "听了十年。", .owned = true});
             co_return page;
+        }
+        Task<Result<CommentPage>> comment_replies(Subject, std::string, std::string, int, std::string) override {
+            CommentPage page{.total = 2};
+            page.comments.push_back({.id = "r1", .user = "林夕", .text = "Same here.", .time = "1 hour ago", .likes = 5});
+            page.comments.push_back({.id = "r2", .user = "Tom", .text = "Best part of the track.", .time = "30 minutes ago", .likes = 2});
+            co_return page;
+        }
+        Task<Result<void>> like_comment(Subject, std::string id, std::string comment, bool on) override {
+            calls.push_back(std::format("like-comment {} {} {}", id, comment, on));
+            co_return Result<void>{};
+        }
+        Task<Result<std::string>> post_comment(Subject, std::string id, std::string content, std::string reply, std::string) override {
+            calls.push_back(std::format("post-comment {} {} {}", id, reply.empty() ? "-" : reply, content));
+            co_return std::string("c-new");
+        }
+        Task<Result<void>> delete_comment(Subject, std::string id, std::string comment) override {
+            calls.push_back(std::format("delete-comment {} {}", id, comment));
+            co_return Result<void>{};
         }
 
     private:

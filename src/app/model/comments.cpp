@@ -237,8 +237,8 @@ namespace lyren {
         }(this, thread_.source, thread_.subject, thread_.id, thread_.draft, std::move(view), std::move(target)));
     }
 
-    void Comments::remove(Comment comment) {
-        const uint64_t ticket = removals_.begin(thread_.source, comment.id);
+    void Comments::remove(Source source, Subject subject, std::string resource, Comment comment) {
+        const uint64_t ticket = removals_.begin(source, comment.id);
         env_.redraw();
         spawn([](Comments *self, Source source, Subject subject, std::string resource, std::string id, uint64_t ticket) -> Task<void> {
             auto result = co_await self->env_.provider(source).delete_comment(subject, resource, id);
@@ -270,7 +270,7 @@ namespace lyren {
                 }
             }
             self->refresh();
-        }(this, thread_.source, thread_.subject, thread_.id, std::move(comment.id), ticket));
+        }(this, source, subject, std::move(resource), std::move(comment.id), ticket));
     }
 
 } // namespace lyren

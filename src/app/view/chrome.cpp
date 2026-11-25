@@ -175,16 +175,12 @@ namespace lyren {
         const float off = ui.begin_scroll(ui::sub_id(ui.id("sidebar"), std::to_underlying(browser_.active())), r, content);
         const Rect row0{r.x + 8, 0, r.w - 16, item_h};
 
-        // One highlight glides to the selected entry, an accent mark at its edge stretching ahead of it.
+        // One highlight glides to the selected entry.
         const float to = selected >= 0 ? item_y(static_cast<size_t>(selected)) : 0;
         const float lit = ui.anim(ui.id("side-lit"), selected >= 0 ? 1 : 0, pace::steady);
         if (lit > 0) {
             const float y = ui.spring(ui.id("side-sel"), to, 240);
             p.rect({row0.x, r.y + y - off, row0.w, item_h}, t.fill(1.45f * lit), t.radius_s());
-            const ui::Id top_id = ui.id("side-mark-top"), bottom_id = ui.id("side-mark-bottom");
-            const bool down = to + 9 > ui.spring_value(top_id, to + 9);
-            const float top = ui.spring(top_id, to + 9, down ? 340 : 190), bottom = ui.spring(bottom_id, to + item_h - 9, down ? 190 : 340);
-            p.rect({row0.x + 2, r.y + top - off, 3, bottom - top}, t.accent.with_alpha(lit), 1.5f);
         }
 
         auto heading = [&](size_t before, std::string_view text) {

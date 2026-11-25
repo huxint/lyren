@@ -141,11 +141,10 @@ namespace lyren {
             const Post &quoted = *draft.forward;
             const Rect quote{r.x, y, r.w, 76};
             p.rect(quote, t.fill(), t.radius);
-            p.rect({quote.x + 12, quote.y + 14, 2, quote.h - 28}, t.accent.with_alpha(0.6f), 1);
-            ui.label({quote.x + 24, quote.y + 11, quote.w - 40, 20}, "@" + quoted.author.name, t.style(type::label, t.accent, text::medium));
-            const auto lines = p.wrap_lines(gist(quoted), t.fs(type::label), quote.w - 40);
+            ui.label({quote.x + 16, quote.y + 11, quote.w - 32, 20}, "@" + quoted.author.name, t.style(type::label, t.accent, text::medium));
+            const auto lines = p.wrap_lines(gist(quoted), t.fs(type::label), quote.w - 32);
             for (size_t i = 0; i < std::min<size_t>(lines.size(), 2); ++i) {
-                ui.label({quote.x + 24, quote.y + 32 + static_cast<float>(i) * 19, quote.w - 40, 19}, lines[i], t.style(type::label, t.text_dim));
+                ui.label({quote.x + 16, quote.y + 32 + static_cast<float>(i) * 19, quote.w - 32, 19}, lines[i], t.style(type::label, t.text_dim));
             }
         } else if (draft.track) {
             const Rect chip{r.x, y, r.w, 64};
@@ -361,7 +360,6 @@ namespace lyren {
             if (draw) {
                 const Rect block{x, y + h, w, block_h};
                 p.rect(block, t.fill(0.85f), t.radius, t.surface_edge(0.75f), 1);
-                p.rect({block.x, block.y + 14, 3, block.h - 28}, t.accent.with_alpha(0.55f), 1.5f);
                 // The author's name opens their page.
                 const auto it = ui.interact(ui.id("author"), {block.x + inset, block.y + inset, p.measure(name, body), lh});
                 if (it.hovered) {
@@ -555,25 +553,24 @@ namespace lyren {
         }
         auto &heights = posts.heights;
         if (const float size = t.fs(type::lead); heights.width != w || heights.size != size) {
-            heights.rows.clear();
-            heights.width = w, heights.size = size;
+            heights.reset(w, size);
         }
-        while (heights.rows.size() < posts.items.size()) {
-            heights.rows.push_back(post(ui, source, posts.items[heights.rows.size()], 0, 0, w, false, byline));
+        while (heights.size_count() < posts.items.size()) {
+            heights.push(post(ui, source, posts.items[heights.size_count()], 0, 0, w, false, byline));
         }
         // Only the posts in sight are drawn; the first to arrive come in one after another.
         const Rect clip = ui.clip();
-        float y = r.y;
         int shown = 0;
-        for (size_t i = 0; i < posts.items.size(); ++i) {
-            const float h = heights.rows[i];
-            if (y + h > clip.y && y < clip.bottom()) {
-                const float in = ui.cascade(posts.since, shown++);
-                Fade fade(p, in);
-                post(ui, source, posts.items[i], r.x, y + (1 - in) * 10, w, true, byline);
+        for (size_t i = heights.first_at(clip.y - r.y); i < posts.items.size(); ++i) {
+            const float row_y = r.y + heights.top(i);
+            if (row_y >= clip.bottom()) {
+                break;
             }
-            y += h;
+            const float in = ui.cascade(posts.since, shown++);
+            Fade fade(p, in);
+            post(ui, source, posts.items[i], r.x, row_y + (1 - in) * 10, w, true, byline);
         }
+        const float y = r.y + heights.total();
         const Rect foot{r.x, y, w, 64};
         if (posts.loading) {
             ui.spinner(ui::center(foot, 20, 20), t.text_dim, 2);

@@ -512,6 +512,99 @@ TEST_CASE("switching profile tabs while scrolled restores the section top") {
     CHECK(scene.ui.scroll_offset(scroll) <= 220.f);
 }
 
+TEST_CASE("comments docked composer expands, cancels reply safely, posts, and isolates visits") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    scene.shell.open_comments(Source::netease, Subject::song, "song-0", "Night Train · Mira Chen", "");
+    scene.draw();
+    const auto initial = scene.draw();
+    CHECK(drew(initial, "Top comment"));
+    CHECK(drew(initial, "What does this music bring to mind?"));
+
+    // Reply opens the docked composer; cancelling the reply in the same frame must not dereference freed memory.
+    const auto *reply_btn = scene.find("Reply");
+    REQUIRE(reply_btn != nullptr);
+    const auto replying = scene.click(*reply_btn);
+    CHECK(drew(replying, "Replying to Ada Lovelace"));
+    CHECK(drew(replying, "Post"));
+
+    const ui::Painter::Run *cancel_reply = nullptr;
+    for (const auto &run : scene.painter.runs()) {
+        if (run.icon && run.text == "x" && run.box.y > 400) {
+            cancel_reply = &run;
+            break;
+        }
+    }
+    REQUIRE(cancel_reply != nullptr);
+    const auto after_cancel = scene.click(*cancel_reply);
+    CHECK_FALSE(drew(after_cancel, "Replying to Ada Lovelace"));
+    CHECK(drew(after_cancel, "Post"));
+
+    // Typing and clicking Post sends the comment and collapses the dock.
+    scene.shell.comments.thread().draft->text = "Great bridge.";
+    scene.draw();
+    const auto *post_btn = scene.find("Post");
+    REQUIRE(post_btn != nullptr);
+    scene.click(*post_btn);
+    CHECK(std::ranges::any_of(scene.service.calls, [](std::string_view c) {
+        return c == "post-comment song-0 - Great bridge.";
+    }));
+    CHECK_FALSE(scene.shell.comments.thread().draft->expanded);
+
+    // A held press on song-0's composer trigger must not expand song-1's composer after a subject switch.
+    const auto *trigger = scene.find("What does this music bring to mind?");
+    REQUIRE(trigger != nullptr);
+    const float tx = trigger->box.x + trigger->box.w / 2, ty = trigger->box.y + trigger->box.h / 2;
+    scene.button(tx, ty, true);
+    scene.shell.open_comments(Source::netease, Subject::song, "song-1", "Harbour · Mira Chen", "");
+    scene.draw();
+    scene.button(tx, ty, false);
+    scene.draw();
+    CHECK_FALSE(scene.shell.comments.thread().draft->expanded);
+
+    // Opening replies shows the pinned root comment and replies, and Back returns to the comment list.
+    const auto *replies_btn = scene.find("2 replies");
+    REQUIRE(replies_btn != nullptr);
+    const auto in_replies = scene.click(*replies_btn);
+    CHECK(drew(in_replies, "Replies"));
+    CHECK(drew(in_replies, "Same here."));
+    const ui::Painter::Run *back = nullptr;
+    for (const auto &run : scene.painter.runs()) {
+        if (run.icon && run.text == "chevron-left" && run.box.x > 700) {
+            back = &run;
+            break;
+        }
+    }
+    REQUIRE(back != nullptr);
+    const auto back_list = scene.click(*back);
+    CHECK(drew(back_list, "Popular"));
+}
+
+TEST_CASE("comment delete confirmation targets the subject where Delete was clicked") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    scene.shell.open_comments(Source::netease, Subject::song, "song-0", "Night Train · Mira Chen", "");
+    scene.draw();
+    scene.draw();
+    const auto *trash = scene.find("trash", true);
+    REQUIRE(trash != nullptr);
+    const auto modal = scene.click(*trash);
+    CHECK(drew(modal, "Delete comment?"));
+
+    // Switch to another song before confirming deletion.
+    scene.shell.open_comments(Source::netease, Subject::song, "song-1", "Harbour · Mira Chen", "");
+    scene.draw();
+    const auto *confirm = scene.find("Delete");
+    REQUIRE(confirm != nullptr);
+    scene.click(*confirm);
+    CHECK(std::ranges::any_of(scene.service.calls, [](std::string_view c) {
+        return c == "delete-comment song-0 c3";
+    }));
+    CHECK_FALSE(std::ranges::any_of(scene.service.calls, [](std::string_view c) {
+        return c.starts_with("delete-comment song-1 ");
+    }));
+}
+
 TEST_CASE("profile overview, collection, people tabs and stat shortcuts work cleanly") {
     gfx::select_driver(GpuChoice::integrated);
     Scene scene;

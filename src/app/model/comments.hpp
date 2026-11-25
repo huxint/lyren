@@ -76,7 +76,7 @@ namespace lyren {
         void toggle_like(const Comment &comment);
         // Sends the draft on show: a new comment, or a reply to the draft's target or the open thread's root.
         void send();
-        void remove(Comment comment);
+        void remove(Source source, Subject subject, std::string resource, Comment comment);
 
     private:
         Task<void> fetch(uint64_t gen, int tab, int page, std::string cursor);

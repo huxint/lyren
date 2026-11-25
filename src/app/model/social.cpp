@@ -384,7 +384,7 @@ namespace lyren {
                 if (list && std::erase_if(list->items, [&](const Post &p) {
                         return p.id == post.id;
                     })) {
-                    list->heights.rows.clear();
+                    list->heights.ends.clear();
                 }
             };
             self->each_page([&](const std::shared_ptr<Page> &page) {

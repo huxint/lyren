@@ -193,21 +193,31 @@ namespace lyren {
         scroll_ = scroll_id(ui, "profile");
         const float off = ui.begin_scroll(scroll_, r, std::max(content_h_, r.h));
         // Their background washes the top of the page with gentle parallax; without one, the colour of their picture.
+        // Anchored to the viewport's top edge with matching corner radii so scrolling never pokes square corners outside
+        // the rounded page sheet.
+        const Rect clip = ui.clip();
+        const float corner = std::max(0.f, t.radius_l() - 1);
         if (const float scroll_fade = 1 - smooth01(off / 200); scroll_fade > 0.01f) {
-            const float wash_h = header_h_ > 0 ? header_h_ + tabs_h : 228.f;
-            const Rect band{r.x, r.y - std::min(off * 0.22f, 44.f), r.w, wash_h};
+            const float shift = std::min(off * 0.22f, 44.f);
+            const float full_h = header_h_ > 0 ? header_h_ + tabs_h : 228.f;
+            const float wash_h = std::max(0.f, full_h - shift);
+            const Rect band{clip.x, clip.y, clip.w, wash_h};
+            const float rad = std::min(corner, wash_h / 2);
             const auto *image = who.background.empty() ? nullptr : &env_.images.get(who.background, 128, true);
-            if (image && image->ready) {
+            if (image && image->ready && wash_h > 0) {
                 {
                     Fade wash(p, ui.progress(image->ready_at, 480, ease::standard) * (t.dark ? 0.30f : 0.17f) * scroll_fade);
                     const float aspect = static_cast<float>(image->w) / static_cast<float>(std::max(image->h, 1u));
-                    p.image(band, image->tex, t.radius_l(), white, cover_uv(aspect, band.w / band.h));
+                    Rect uv = cover_uv(aspect, band.w / full_h);
+                    uv.y += uv.h * (shift / full_h);
+                    uv.h *= wash_h / full_h;
+                    p.image(band, image->tex, rad, white, uv);
                 }
-                p.gradient(band, t.surface.with_alpha(0.06f), t.surface, t.radius_l());
-            } else if (!image) {
+                p.gradient(band, t.surface.with_alpha(0.06f), t.surface, rad);
+            } else if (!image && wash_h > 0) {
                 const float hue = who.avatar.empty() ? -1 : cover_hue(who.avatar, (compact_ ? face_compact : face_wide) * p.scale());
                 const ui::Color tint = hue >= 0 ? ui::hsl(hue, 0.5f, 0.5f) : t.accent;
-                p.gradient(band, tint.with_alpha((t.dark ? 0.10f : 0.055f) * scroll_fade), tint.with_alpha(0), t.radius_l());
+                p.gradient(band, tint.with_alpha((t.dark ? 0.10f : 0.055f) * scroll_fade), tint.with_alpha(0), rad);
             }
         }
         // What the head and tabs remember belongs to this visit: a press, a count mid-roll or the tab mark does not
@@ -234,7 +244,7 @@ namespace lyren {
         const Rect strip{body.x, std::max(r.y, r.y + header_h_ - off), body.w, tabs_h};
         const float pinned = smooth01((off - header_h_ + 24) / 24);
         if (pinned > 0.01f) {
-            p.rect({r.x, strip.y, r.w, strip.h}, t.surface.with_alpha(pinned), {t.radius_l(), t.radius_l(), 0, 0});
+            p.rect({clip.x, std::max(strip.y, clip.y), clip.w, strip.h}, t.surface.with_alpha(pinned), {corner, corner, 0, 0});
         }
         const float edge = std::lerp(body.x, r.x, pinned);
         p.rect({edge, strip.bottom() - 1, r.w - 2 * (edge - r.x), 1}, t.line());
