@@ -348,7 +348,7 @@ namespace lyren {
                 const Rect logo = ui::center(card, 40, 40);
                 p.rect(logo.inset(-4), white, 12);
                 p.rect(logo, t.accent, 10);
-                p.icon("music", ui::center(logo, 22, 22), t.on_accent());
+                p.icon("lyren", ui::center(logo, 22, 22), t.on_accent());
             }
             // Scanned, expired or failed: the code fades under the state.
             const float veil = ui.anim(ui.id("qr-veil"), failed || state == QrState::scanned || state == QrState::expired ? 1 : 0, 240);

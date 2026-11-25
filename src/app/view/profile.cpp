@@ -157,6 +157,8 @@ namespace lyren {
         if (visit_ != browser_.route().serial) {
             visit_ = browser_.route().serial;
             content_h_ = 0;
+            rail_repeat_rows_ = 0;
+            rail_follow_rows_ = -1;
             repeat_slot_.reset();
         }
         Profile who = page->info ? *page->info : Profile{.id = card.id};
@@ -217,11 +219,12 @@ namespace lyren {
         tabs(ui, strip, page, who, pinned);
         ui.push_clip({r.x, strip.bottom(), r.w, r.bottom() - strip.bottom()});
         float height = 0;
+        const float rail_budget_h = std::max(0.f, r.h - tabs_h - section_gap - 12.f);
         {
             const float in = ui.progress(page->section_since, pace::arrive);
             Fade fade(p, in);
             const float slide_x = (1 - in) * 16.f * static_cast<float>(section_dir_);
-            height = section(ui, {body.x + slide_x, r.y + header_h_ + tabs_h + section_gap - off + (1 - in) * 6, body.w, 0}, page, self);
+            height = section(ui, {body.x + slide_x, r.y + header_h_ + tabs_h + section_gap - off + (1 - in) * 6, body.w, 0}, rail_budget_h, page, self);
         }
         if (pinned > 0) {
             p.gradient({r.x, strip.bottom(), r.w, 10}, t.shadow.with_alpha(0.16f * pinned), t.shadow.with_alpha(0));
@@ -558,12 +561,12 @@ namespace lyren {
         p.rect({r.x + x, r.bottom() - 2, 24, 2}, t.accent, 1);
     }
 
-    float ProfileView::section(ui::Ui &ui, Rect r, const Listener &page, bool self) {
+    float ProfileView::section(ui::Ui &ui, Rect r, float rail_budget_h, const Listener &page, bool self) {
         switch (page->section) {
             case Section::overview:
-                return overview(ui, r, page);
+                return overview(ui, r, rail_budget_h, page);
             case Section::posts:
-                return posts(ui, r, page, self);
+                return posts(ui, r, rail_budget_h, page, self);
             case Section::chart:
                 return chart(ui, r, page);
             case Section::playlists:
@@ -576,7 +579,94 @@ namespace lyren {
         return 0;
     }
 
-    float ProfileView::overview(ui::Ui &ui, Rect r, const Listener &page) {
+    ProfileView::RailPlan ProfileView::plan_rail(float budget_h, const Listener &page) {
+        RailPlan plan;
+        const auto &caps = provider(page->who).capabilities;
+        const auto &follows = page->people[0];
+        const bool has_ranking = caps.ranking;
+        const bool has_faces = caps.people && (follows.loading || !follows.items.empty());
+
+        constexpr float repeat_base = 58, repeat_row_h = 54, card_gap = 16;
+        constexpr float follow_head_h = 46, follow_pad = 12, person_h = 48, avatar_body_h = 62;
+        constexpr float avatar_card_h = follow_head_h + avatar_body_h;
+
+        if (has_faces) {
+            const float min_for_any = has_ranking ? (repeat_base + repeat_row_h + card_gap + avatar_card_h) : avatar_card_h;
+            plan.show_follows = budget_h >= min_for_any;
+        }
+        if (plan.show_follows) {
+            if (follows.items.empty() || follows.items.size() == 1) {
+                plan.follows_list = true;
+            } else {
+                const float list_threshold =
+                    has_ranking ? (repeat_base + 2 * repeat_row_h + card_gap + follow_head_h + follow_pad + 2 * person_h) : (follow_head_h + follow_pad + 2 * person_h);
+                if (rail_follow_rows_ < 0) {
+                    plan.follows_list = budget_h >= list_threshold;
+                } else if (rail_follow_rows_ == 0) {
+                    plan.follows_list = budget_h >= list_threshold + 8.f;
+                } else {
+                    plan.follows_list = budget_h >= list_threshold - 8.f;
+                }
+            }
+        }
+
+        if (has_ranking) {
+            float reserve = 0;
+            if (plan.show_follows) {
+                if (plan.follows_list) {
+                    const size_t min_rows = follows.items.empty() ? size_t{2} : std::min<size_t>(follows.items.size(), 2);
+                    reserve = card_gap + follow_head_h + follow_pad + static_cast<float>(min_rows) * person_h;
+                } else {
+                    reserve = card_gap + avatar_card_h;
+                }
+            }
+            const float avail = budget_h - reserve;
+            int rows = std::clamp(static_cast<int>((avail - repeat_base) / repeat_row_h), 1, 5);
+            if (rail_repeat_rows_ > 0 && rows != rail_repeat_rows_) {
+                if (rows > rail_repeat_rows_ && avail < repeat_base + static_cast<float>(rail_repeat_rows_ + 1) * repeat_row_h + 4.f) {
+                    rows = rail_repeat_rows_;
+                } else if (rows < rail_repeat_rows_ && avail >= repeat_base + static_cast<float>(rail_repeat_rows_) * repeat_row_h - 4.f) {
+                    rows = rail_repeat_rows_;
+                }
+            }
+            rail_repeat_rows_ = rows;
+            plan.repeat_rows = static_cast<size_t>(rows);
+            plan.repeat_h = repeat_height(page, plan.repeat_rows);
+            plan.total_h = plan.repeat_h;
+        }
+
+        if (plan.show_follows) {
+            const float rem = budget_h - (has_ranking ? plan.repeat_h + card_gap : 0.f);
+            if (!plan.follows_list) {
+                rail_follow_rows_ = 0;
+                plan.follow_rows = 0;
+                plan.follows_body_h = avatar_body_h;
+            } else if (follows.items.empty()) {
+                const int fit = std::clamp(static_cast<int>((rem - follow_head_h - follow_pad) / person_h), 2, 3);
+                plan.follow_rows = static_cast<size_t>(fit);
+                plan.follows_body_h = static_cast<float>(plan.follow_rows) * person_h + follow_pad;
+            } else {
+                const int max_people = static_cast<int>(std::min<size_t>(follows.items.size(), 4));
+                const int min_people = std::min(2, max_people);
+                int fit = std::clamp(static_cast<int>((rem - follow_head_h - follow_pad) / person_h), min_people, max_people);
+                if (rail_follow_rows_ >= 1 && fit != rail_follow_rows_) {
+                    const int prev = std::clamp(rail_follow_rows_, min_people, max_people);
+                    if (fit > prev && rem < follow_head_h + follow_pad + static_cast<float>(prev + 1) * person_h + 4.f) {
+                        fit = prev;
+                    } else if (fit < prev && rem >= follow_head_h + follow_pad + static_cast<float>(prev) * person_h - 4.f) {
+                        fit = prev;
+                    }
+                }
+                rail_follow_rows_ = fit;
+                plan.follow_rows = static_cast<size_t>(fit);
+                plan.follows_body_h = static_cast<float>(plan.follow_rows) * person_h + follow_pad;
+            }
+            plan.total_h = (has_ranking ? plan.repeat_h + card_gap : 0.f) + follow_head_h + plan.follows_body_h + 8.f;
+        }
+        return plan;
+    }
+
+    float ProfileView::overview(ui::Ui &ui, Rect r, float rail_budget_h, const Listener &page) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Card &card = page->who;
@@ -599,12 +689,12 @@ namespace lyren {
         const float col_w = std::lerp(r.w, wide_col_w, rail_k);
 
         const Rect clip = ui.clip();
-        const Rect side{r.right() - rw, std::max(r.y, clip.y + section_gap), rw, std::max(0.f, clip.bottom() - std::max(r.y, clip.y + section_gap) - 12)};
-        const auto &follows = page->people[0];
-        const bool has_faces = caps.people && (follows.loading || !follows.items.empty());
-        const auto wide_repeat_rows = static_cast<size_t>(std::clamp(static_cast<int>((side.bottom() - side.y - 46 - (has_faces ? 160.f : 24.f)) / 56), 1, 5));
-        const float wide_repeat_h = caps.ranking ? repeat_height(page, wide_repeat_rows) : 0.f;
-        const float inline_repeat_h = caps.ranking ? repeat_height(page, 4) : 0.f;
+        const float side_y = std::max(r.y, clip.y + section_gap);
+        const RailPlan plan = plan_rail(rail_budget_h, page);
+        const Rect side{r.right() - rw, side_y, rw, rail_budget_h};
+        const float wide_repeat_h = caps.ranking ? ui.spring(ui.id("rail-repeat-h"), plan.repeat_h, 240) : 0.f;
+        const float inline_repeat_h = caps.ranking ? ui.spring(ui.id("inline-repeat-h"), repeat_height(page, 4), 240) : 0.f;
+        const float settled_inline_repeat_h = caps.ranking ? repeat_height(page, 4) : 0.f;
 
         float y = r.y;
         bool drew_any = false;
@@ -676,8 +766,12 @@ namespace lyren {
         // 2. Reserve smoothly animated inline space for "On repeat" as the rail collapses; the card itself is drawn
         // last through repeat_slot_ so it physically glides between the right rail and this slot across window resizes.
         const float inline_repeat_y = y;
+        float settled_extra = 0;
         if (caps.ranking) {
-            y += (inline_repeat_h + 20.f) * (1 - rail_k);
+            const float inline_slot = (inline_repeat_h + 20.f) * (1 - rail_k);
+            const float settled_slot = has_rail ? 0.f : (settled_inline_repeat_h + 20.f);
+            y += inline_slot;
+            settled_extra = settled_slot - inline_slot;
             drew_any = true;
         }
 
@@ -834,12 +928,11 @@ namespace lyren {
         }
 
         // Right studio rail (Following card): fades & slides cleanly as the rail appears or collapses.
-        float beside = 0;
         if (rail_k > 0.01f) {
             Fade fade(p, rail_k);
             ui::Enabled live(ui, has_rail, 1);
             const Rect shifted{side.x + (1 - rail_k) * 18.f, side.y, side.w, side.h};
-            beside = rail(ui, shifted, page, false) * rail_k;
+            rail(ui, shifted, page, plan, false, wide_repeat_h);
         }
 
         // Shared-element "On repeat" card drawn last so it glides smoothly above the reflowing layout.
@@ -850,19 +943,21 @@ namespace lyren {
             if (flying) {
                 p.shadow({flight.x, flight.y + 8, flight.w, flight.h}, studio_card_radius(t), 24, t.shadow.with_alpha(0.35f));
             }
-            const size_t rows = flying ? std::max<size_t>(wide_repeat_rows, 4) : (has_rail ? wide_repeat_rows : 4);
+            const auto visible_rows = static_cast<size_t>(std::clamp(static_cast<int>(std::ceil((flight.h - 48.f) / 54.f)), 1, 5));
+            const size_t rows = std::max(has_rail ? plan.repeat_rows : size_t{4}, visible_rows);
             repeat_card(ui, flight, page, rows);
         }
 
+        const float beside = has_rail ? plan.total_h : 0.f;
         if (!drew_any && beside <= 0) {
             const Rect room{r.x, y, col_w, 240};
             empty(ui, room, "music", lyren::tr("Nothing here yet"));
             y += room.h;
         }
-        return std::max(y - r.y, beside);
+        return std::max(y - r.y + settled_extra, beside);
     }
 
-    float ProfileView::posts(ui::Ui &ui, Rect r, const Listener &page, bool self) {
+    float ProfileView::posts(ui::Ui &ui, Rect r, float rail_budget_h, const Listener &page, bool self) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Card &card = page->who;
@@ -879,15 +974,15 @@ namespace lyren {
         const float wide_col_w = std::min(std::max(280.f, r.w - rw - rail_gap), PostFeed::column);
         const float feed_w = std::lerp(std::min(r.w, PostFeed::column), wide_col_w, rail_k);
 
-        float beside = 0;
+        const RailPlan plan = plan_rail(rail_budget_h, page);
         if (rail_k > 0.01f) {
             // The framed studio rail stays in sight while the timeline scrolls past it.
             const Rect clip = ui.clip();
             const float sy = std::max(r.y, clip.y + section_gap);
-            const Rect side{r.right() - rw + (1 - rail_k) * 18.f, sy, rw, std::max(0.f, clip.bottom() - sy - 12)};
+            const Rect side{r.right() - rw + (1 - rail_k) * 18.f, sy, rw, rail_budget_h};
             Fade fade(p, rail_k);
             ui::Enabled live(ui, has_rail, 1);
-            beside = rail(ui, side, page, true) * rail_k;
+            rail(ui, side, page, plan, true);
         }
         float y = r.y;
         // The account's own page also holds the feed of the people it follows.
@@ -912,7 +1007,7 @@ namespace lyren {
         }
         const auto list = feed ? social_.feed(card.source) : page->posts;
         y += shell_.feed.draw(ui, {r.x, y, feed_w, 0}, list, card.source, feed ? std::string() : card.id, feed);
-        return std::max(y - r.y, beside);
+        return std::max(y - r.y, has_rail ? plan.total_h : 0.f);
     }
 
     float ProfileView::repeat_height(const Listener &page, size_t max_rows) const {
@@ -1019,32 +1114,36 @@ namespace lyren {
         return box.h;
     }
 
-    float ProfileView::rail(ui::Ui &ui, Rect r, const Listener &page, bool include_repeat) {
+    float ProfileView::rail(ui::Ui &ui, Rect r, const Listener &page, const RailPlan &plan, bool include_repeat, float repeat_h_override) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Card &card = page->who;
         const auto &caps = provider(card).capabilities;
         const auto &follows = page->people[0];
-        const bool faces = caps.people && (follows.loading || !follows.items.empty());
         const float radius = studio_card_radius(t);
         const ui::Color card_fill = studio_card_fill(t);
         float y = r.y;
 
         if (caps.ranking) {
-            constexpr float head_h = 46, row_h = 56;
-            const auto max_rows = static_cast<size_t>(std::clamp(static_cast<int>((r.bottom() - y - head_h - (faces ? 160.f : 24.f)) / row_h), 1, 5));
-            y += (include_repeat ? repeat_card(ui, {r.x, y, r.w, 0}, page, max_rows) : repeat_height(page, max_rows)) + 16;
+            const float anim_repeat_h = repeat_h_override >= 0.f ? repeat_h_override : ui.spring(ui.id("rail-repeat-h"), plan.repeat_h, 240);
+            if (include_repeat) {
+                const auto visible_rows = static_cast<size_t>(std::clamp(static_cast<int>(std::ceil((anim_repeat_h - 48.f) / 54.f)), 1, 5));
+                repeat_card(ui, {r.x, y, r.w, anim_repeat_h}, page, std::max(plan.repeat_rows, visible_rows));
+            }
+            y += anim_repeat_h + 16;
         }
 
-        if (faces && y + 106 <= r.bottom()) {
+        const float show_k = ui.anim(ui.id("rail-follow-show"), plan.show_follows ? 1.f : 0.f, pace::steady);
+        if (show_k > 0.01f) {
+            Fade show_fade(p, show_k);
+            ui::Enabled show_live(ui, plan.show_follows, 1);
             const int count = social_.count(*page, false);
             constexpr float head_h = 46, person_h = 48;
-            const float avail = r.bottom() - y - head_h - 14;
-            const bool list_mode = avail >= person_h * 2;
-            const size_t rows = follows.items.empty() ? 3 : list_mode ? std::min<size_t>({follows.items.size(), static_cast<size_t>(avail / person_h), 4}) : 0;
-            const float body_h = list_mode || follows.items.empty() ? static_cast<float>(rows) * person_h + 12 : 62.f;
-            const Rect box{r.x, y, r.w, head_h + body_h};
+            const float target_body_h = plan.follows_body_h > 0.f ? plan.follows_body_h : 62.f;
+            const float body_h = ui.spring(ui.id("rail-follow-h"), target_body_h, 240);
+            const Rect box{r.x, y + (1 - show_k) * 8.f, r.w, head_h + body_h};
             p.rect(box, card_fill, radius);
+            ui.push_clip(box);
             {
                 const auto style = t.style(type::label, t.text, text::semibold);
                 const auto title = lyren::tr_ctx("nav", "Following");
@@ -1062,71 +1161,92 @@ namespace lyren {
 
             ui.push_id(ui.id("rail-faces"));
             if (follows.items.empty()) {
+                const size_t skel_rows = std::max<size_t>(plan.follow_rows, 2);
                 float py = box.y + head_h + 6;
-                for (size_t i = 0; i < rows; ++i) {
+                for (size_t i = 0; i < skel_rows; ++i) {
                     const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
                     ui.skeleton({box.x + 16, py + 7, 34, 34}, 17);
                     ui.skeleton({box.x + 62, py + 12, (box.w - 82) * (0.42f + 0.35f * k), 10}, 5);
                     ui.skeleton({box.x + 62, py + 29, (box.w - 82) * (0.28f + 0.25f * (1 - k)), 9}, 4.5f);
                     py += person_h;
                 }
-            } else if (list_mode) {
-                float py = box.y + head_h + 6;
-                for (size_t i = 0; i < rows; ++i) {
-                    const Person &who = follows.items[i];
-                    const Rect row{box.x + 8, py, box.w - 16, person_h};
-                    const ui::Id id = ui.id(who.id);
-                    const auto it = ui.interact(id, row);
-                    const auto [hot, down] = ui.feel(id, it, pace::quick);
-                    if (hot > 0) {
-                        p.rect(row.inset(down, 2 + down), t.fill(hot), t.radius_s());
-                    }
-                    const Rect face{row.x + 8, row.y + (row.h - 34) / 2, 34, 34};
-                    cover(ui, face, who.avatar, 17, "user");
-                    p.rect(face, {}, 17, t.surface_edge(0.85f), 1);
-                    const float tx = face.right() + 12, tw = row.right() - tx - 8;
-                    std::string meta = who.signature.substr(0, who.signature.find('\n'));
-                    if (meta.empty() && who.fans >= 0) {
-                        meta = lyren::trf("{} fans", short_number(who.fans));
-                    }
-                    p.text(tx, row.y + (meta.empty() ? 29.f : 21.f), who.name, t.style(type::label, t.text, text::medium), tw);
-                    if (!meta.empty()) {
-                        p.text(tx, row.y + 38, meta, t.style(type::caption, t.text_dim), tw);
-                    }
-                    if (it.hovered) {
-                        ui.cursor = wl::Cursor::pointer;
-                    }
-                    if (it.clicked) {
-                        browser_.open_profile(card.source, who.id, who.name, who.avatar);
-                    }
-                    py += person_h;
-                }
             } else {
-                constexpr float d = 36, gap = 8;
-                const auto n = std::min(follows.items.size(), static_cast<size_t>((box.w - 32 + gap) / (d + gap)));
-                for (size_t i = 0; i < n; ++i) {
-                    const Person &who = follows.items[i];
-                    const Rect face{box.x + 16 + static_cast<float>(i) * (d + gap), box.y + head_h + 13, d, d};
-                    const ui::Id id = ui.id(who.id);
-                    const auto it = ui.interact(id, face);
-                    const auto [hot, down] = ui.feel(id, it, pace::quick);
-                    cover(ui, face.inset(down), who.avatar, d / 2, "user");
-                    p.rect(face.inset(down), {}, d / 2, t.surface_edge(0.85f), 1);
-                    if (hot > 0) {
-                        p.rect(face.inset(-2), {}, d / 2 + 2, t.text.with_alpha(0.4f * hot), 1.5f);
+                const float list_k = ui.anim(ui.id("rail-follow-mode"), plan.follows_list ? 1.f : 0.f, pace::steady);
+                const double since = std::max(page->section_since, follows.since);
+                if (list_k > 0.01f) {
+                    Fade mode_fade(p, list_k);
+                    ui::Enabled mode_live(ui, plan.follows_list, 1);
+                    const auto vis_rows = static_cast<size_t>(std::clamp(static_cast<int>(std::ceil((body_h - 6.f) / person_h)), 1, 4));
+                    const size_t rows = std::min(follows.items.size(), std::max(plan.follow_rows, vis_rows));
+                    float py = box.y + head_h + 6;
+                    ui.push_id(ui.id("list"));
+                    for (size_t i = 0; i < rows; ++i) {
+                        const Person &who = follows.items[i];
+                        const float in = ui.cascade(since, static_cast<int>(i));
+                        Fade row_fade(p, in);
+                        const Rect row{box.x + 8, py + (1 - in) * 6, box.w - 16, person_h};
+                        const ui::Id id = ui.id(who.id);
+                        const auto it = ui.interact(id, row);
+                        const auto [hot, down] = ui.feel(id, it, pace::quick);
+                        if (hot > 0) {
+                            p.rect(row.inset(down, 2 + down), t.fill(hot), t.radius_s());
+                        }
+                        const Rect face{row.x + 8, row.y + (row.h - 34) / 2, 34, 34};
+                        cover(ui, face, who.avatar, 17, "user");
+                        p.rect(face, {}, 17, t.surface_edge(0.85f), 1);
+                        const float tx = face.right() + 12, tw = row.right() - tx - 8;
+                        std::string meta = who.signature.substr(0, who.signature.find('\n'));
+                        if (meta.empty() && who.fans >= 0) {
+                            meta = lyren::trf("{} fans", short_number(who.fans));
+                        }
+                        p.text(tx, row.y + (meta.empty() ? 29.f : 21.f), who.name, t.style(type::label, t.text, text::medium), tw);
+                        if (!meta.empty()) {
+                            p.text(tx, row.y + 38, meta, t.style(type::caption, t.text_dim), tw);
+                        }
+                        if (it.hovered) {
+                            ui.cursor = wl::Cursor::pointer;
+                        }
+                        if (it.clicked) {
+                            browser_.open_profile(card.source, who.id, who.name, who.avatar);
+                        }
+                        py += person_h;
                     }
-                    if (it.hovered) {
-                        ui.cursor = wl::Cursor::pointer;
-                        if (!it.held) {
-                            ui.tooltip(id, face, who.name);
+                    ui.pop_id();
+                }
+                if (list_k < 0.99f) {
+                    Fade mode_fade(p, 1.f - list_k);
+                    ui::Enabled mode_live(ui, !plan.follows_list, 1);
+                    constexpr float d = 36, gap = 8;
+                    const auto n = std::min(follows.items.size(), static_cast<size_t>((box.w - 32 + gap) / (d + gap)));
+                    ui.push_id(ui.id("strip"));
+                    for (size_t i = 0; i < n; ++i) {
+                        const Person &who = follows.items[i];
+                        const float in = ui.cascade(since, static_cast<int>(i));
+                        Fade av_fade(p, in);
+                        const Rect face{box.x + 16 + static_cast<float>(i) * (d + gap), box.y + head_h + 13 + (1 - in) * 4, d, d};
+                        const ui::Id id = ui.id(who.id);
+                        const auto it = ui.interact(id, face);
+                        const auto [hot, down] = ui.feel(id, it, pace::quick);
+                        cover(ui, face.inset(down), who.avatar, d / 2, "user");
+                        p.rect(face.inset(down), {}, d / 2, t.surface_edge(0.85f), 1);
+                        if (hot > 0) {
+                            p.rect(face.inset(-2), {}, d / 2 + 2, t.text.with_alpha(0.4f * hot), 1.5f);
+                        }
+                        if (it.hovered) {
+                            ui.cursor = wl::Cursor::pointer;
+                            if (!it.held) {
+                                ui.tooltip(id, face, who.name);
+                            }
+                        }
+                        if (it.clicked) {
+                            browser_.open_profile(card.source, who.id, who.name, who.avatar);
                         }
                     }
-                    if (it.clicked) {
-                        browser_.open_profile(card.source, who.id, who.name, who.avatar);
-                    }
+                    ui.pop_id();
                 }
             }
             ui.pop_id();
+            ui.pop_clip();
             y = box.bottom() + 8;
         }
         return y - r.y;

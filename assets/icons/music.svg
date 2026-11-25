@@ -1,15 +1,7 @@
-<svg
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <path d="M21 16V3a1 1 0 0 0-1.28-.96l-10 2.917a1 1 0 0 0-.72.96V19" />
-  <circle cx="18" cy="16" r="3" />
-  <circle cx="6" cy="19" r="3" />
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M 9.2 6.4 C 12.6 5.4 16.4 4.4 19.8 3.8 V 7.2 C 16.4 7.8 12.6 8.8 9.2 9.8 Z" fill="currentColor" fill-opacity="0.18" stroke="none" />
+  <path d="M 9.2 17.6 V 6.8 C 9.2 5.9 9.8 5.2 10.7 5.0 L 18.4 3.4 C 19.4 3.2 20.2 3.9 20.2 4.9 V 15.6" />
+  <path d="M 9.2 9.8 L 20.2 7.5" />
+  <ellipse cx="6.5" cy="18.0" rx="3.0" ry="2.35" transform="rotate(-18 6.5 18.0)" fill="currentColor" stroke="none" />
+  <ellipse cx="17.5" cy="16.0" rx="3.0" ry="2.35" transform="rotate(-18 17.5 16.0)" fill="currentColor" stroke="none" />
 </svg>

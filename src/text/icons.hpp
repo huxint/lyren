@@ -6,7 +6,7 @@
 
 namespace lyren::text {
 
-    // Lucide SVGs embedded from assets/icons (see CMakeLists.txt).
+    // Bespoke rounded SVGs embedded from assets/icons (see CMakeLists.txt).
     struct IconSource {
         const char *name;
         const char *svg;
@@ -14,7 +14,8 @@ namespace lyren::text {
     extern const IconSource icon_sources[];
     extern const std::size_t icon_source_count;
 
-    // Rasterizes an icon to a size×size coverage bitmap; false if no icon has that name. A "-fill" suffix fills the outline.
+    // Rasterizes an icon to a size×size coverage bitmap; false if no icon has that name. A "-fill" suffix uses a
+    // dedicated filled variant when present, or fills the base outline.
     bool rasterize_icon(std::string_view name, int size, std::vector<uint8_t> &coverage);
 
 } // namespace lyren::text

@@ -26,19 +26,30 @@ namespace lyren {
 
         // The parts of the page, each laid out down from r's top inside the page's scrolling view; they return their
         // height.
+        struct RailPlan {
+            size_t repeat_rows = 0;
+            float repeat_h = 0;
+            bool show_follows = false;
+            bool follows_list = false;
+            size_t follow_rows = 0;
+            float follows_body_h = 0;
+            float total_h = 0;
+        };
+
         float header(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, bool self);
         float stats(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, bool self);
         // pinned: how far the tabs have come to rest at the top of the view, 0..1.
         void tabs(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, float pinned);
-        float section(ui::Ui &ui, ui::Rect r, const Listener &page, bool self);
-        float overview(ui::Ui &ui, ui::Rect r, const Listener &page);
-        float posts(ui::Ui &ui, ui::Rect r, const Listener &page, bool self);
+        float section(ui::Ui &ui, ui::Rect r, float rail_budget_h, const Listener &page, bool self);
+        float overview(ui::Ui &ui, ui::Rect r, float rail_budget_h, const Listener &page);
+        float posts(ui::Ui &ui, ui::Rect r, float rail_budget_h, const Listener &page, bool self);
         float chart(ui::Ui &ui, ui::Rect r, const Listener &page);
         float playlists(ui::Ui &ui, ui::Rect r, const Listener &page, bool self);
         float collection(ui::Ui &ui, ui::Rect r, const Listener &page);
         float people(ui::Ui &ui, ui::Rect r, const Listener &page, bool self);
-        // What they listen to and whom they follow, beside the main column when there is room. It fills what r holds.
-        float rail(ui::Ui &ui, ui::Rect r, const Listener &page, bool include_repeat = true);
+        // Plans and draws what they listen to and whom they follow, beside the main column when there is room.
+        RailPlan plan_rail(float budget_h, const Listener &page);
+        float rail(ui::Ui &ui, ui::Rect r, const Listener &page, const RailPlan &plan, bool include_repeat, float repeat_h_override = -1);
         // Framed "On repeat" track card, shared between the studio rail and the narrow overview.
         float repeat_height(const Listener &page, size_t max_rows) const;
         float repeat_card(ui::Ui &ui, ui::Rect r, const Listener &page, size_t max_rows);
@@ -51,6 +62,8 @@ namespace lyren {
         int section_dir_ = 1;                // -1 or +1 for directional tab slide
         bool wide_ = true;                   // hysteresis state for two-column studio rail
         bool compact_ = false;               // hysteresis state for compact header
+        int rail_repeat_rows_ = 0;           // hysteresis state for studio rail "On repeat" row count
+        int rail_follow_rows_ = -1;          // hysteresis state for studio rail "Following" (-1 unset, 0 avatars, 1..4 rows)
         SharedSlot repeat_slot_;             // shared-element flight for "On repeat" (rail <-> inline)
         float content_h_ = 0, header_h_ = 0; // as last laid out
         Source playlists_source_ = Source::netease;

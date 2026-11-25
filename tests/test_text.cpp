@@ -1,6 +1,11 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
 #include "core/string_map.hpp"
+#include "text/icons.hpp"
 #include "text/shaper.hpp"
 
 using namespace lyren;
@@ -65,4 +70,42 @@ TEST_CASE("weights shape as their own runs and never lose a glyph") {
     // Out-of-range weights clamp instead of reading past the chains.
     CHECK(fonts.face_for(U'A', false, 9) == fonts.face_for(U'A', false, text::Fonts::weights - 1));
     CHECK(&shaper.shape(text, text::semibold | text::tabular_nums) != &semibold);
+}
+
+TEST_CASE("every embedded icon rasterizes cleanly with supersampled antialiasing and dedicated fill variants") {
+    CHECK(text::icon_source_count >= 94);
+    std::vector<uint8_t> cov;
+    CHECK_FALSE(text::rasterize_icon("lyren", 0, cov));
+    CHECK_FALSE(text::rasterize_icon("does-not-exist", 24, cov));
+
+    for (std::size_t i = 0; i < text::icon_source_count; ++i) {
+        const std::string_view name = text::icon_sources[i].name;
+        CAPTURE(name);
+        for (int sz : {16, 24}) {
+            REQUIRE(text::rasterize_icon(name, sz, cov));
+            REQUIRE(cov.size() == static_cast<size_t>(sz * sz));
+            const auto lit = std::ranges::count_if(cov, [](uint8_t a) {
+                return a > 0;
+            });
+            const auto peak = std::ranges::max(cov);
+            CHECK(lit > 0);
+            CHECK(peak >= 170);
+        }
+    }
+
+    // Dedicated "-fill" icons have heavier solid coverage than their outline counterparts, and fallback "-fill" works too.
+    for (std::string_view base : {"play", "pause", "skip-back", "skip-forward", "heart", "star", "thumbs-up", "cloud"}) {
+        CAPTURE(base);
+        std::vector<uint8_t> outline, filled;
+        REQUIRE(text::rasterize_icon(base, 24, outline));
+        REQUIRE(text::rasterize_icon(std::string(base) + "-fill", 24, filled));
+        long sum_out = 0, sum_fill = 0;
+        for (uint8_t a : outline) {
+            sum_out += a;
+        }
+        for (uint8_t a : filled) {
+            sum_fill += a;
+        }
+        CHECK(sum_fill > sum_out);
+    }
 }

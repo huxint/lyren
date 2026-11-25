@@ -404,7 +404,7 @@ namespace lyren {
             const auto brand_style = t.style(ui::type::lead, (window_->activated() ? t.text : t.text_dim).with_alpha(shown), text::semibold);
             float name_w = p.measure("Lyren", brand_style);
             ui::Rect mark = ui::cut_left(r, 52 + name_w);
-            p.icon("audio-lines", {mark.x + 16, bar.y + (bar.h - 17) / 2, 17, 17}, t.accent.with_alpha(shown));
+            p.icon("lyren", {mark.x + 16, bar.y + (bar.h - 18) / 2, 18, 18}, t.accent.with_alpha(shown));
             p.text_in({mark.x + 41, bar.y, name_w + 1, bar.h}, "Lyren", brand_style);
         } else {
             ui::cut_left(r, 8);

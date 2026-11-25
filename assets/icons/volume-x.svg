@@ -1,15 +1,5 @@
-<svg
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <path d="M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z" />
-  <path d="m16.5 14.5 5-5" />
-  <path d="m16.5 9.5 5 5" />
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M 3.2 10.2 C 3.2 9.1 4.1 8.2 5.2 8.2 H 6.8 L 10.4 5.1 C 11.4 4.2 12.8 4.9 12.8 6.2 V 17.8 C 12.8 19.1 11.4 19.8 10.4 18.9 L 6.8 15.8 H 5.2 C 4.1 15.8 3.2 14.9 3.2 13.8 Z" fill="currentColor" fill-opacity="0.16" />
+  <path d="M 16.4 9.6 L 20.8 14.4" />
+  <path d="M 20.8 9.6 L 16.4 14.4" />
 </svg>

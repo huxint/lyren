@@ -694,3 +694,100 @@ TEST_CASE("structured session-import account dialog unpacks JSON, diagnoses step
     CHECK(scene.shell.accounts.sign_in().iid == "custom-iid");
     CHECK(scene.shell.accounts.sign_in().show_advanced);
 }
+
+TEST_CASE("profile studio rail stays invariant across vertical scroll and transitions monotonically across window heights") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene({.motion = 1.0});
+    scene.shell.browser.open_own_profile();
+    for (int i = 0; i < 8; ++i) {
+        scene.draw(1180, 620);
+    }
+    CHECK_FALSE(scene.ui.animating());
+
+    const auto page = scene.shell.browser.route().profile;
+    REQUIRE(page != nullptr);
+    REQUIRE_FALSE(page->charts[0].ranking.tracks.empty());
+    REQUIRE(page->people[0].items.size() >= 2);
+    const std::string first_person = page->people[0].items[0].name;
+    const std::string second_person = page->people[0].items[1].name;
+
+    auto count_repeat_ranks = [&](std::span<const ui::Painter::Run> runs) {
+        int ranks = 0;
+        for (int r = 1; r <= 5; ++r) {
+            const std::string s = std::to_string(r);
+            const bool found = std::ranges::any_of(runs, [&](const ui::Painter::Run &run) {
+                return !run.icon && run.text == s && run.box.x > 760.f;
+            });
+            if (found) {
+                ++ranks;
+            }
+        }
+        return ranks;
+    };
+
+    // At desktop height (920), both On repeat and Following list rows are visible from scroll = 0 and stay invariant across the entire scroll.
+    for (int i = 0; i < 8; ++i) {
+        scene.draw(1180, 920);
+    }
+    CHECK_FALSE(scene.ui.animating());
+    auto base_runs = scene.draw(1180, 920);
+    const int base_ranks = count_repeat_ranks(base_runs);
+    REQUIRE(base_ranks == 5);
+    REQUIRE(drew(base_runs, first_person));
+    REQUIRE(drew(base_runs, second_person));
+
+    const ui::Id scroll = ui::sub_id(scene.ui.id("profile"), scene.shell.browser.route().serial);
+    float prev_person_y = scene.find(first_person)->box.y;
+    for (int step = 1; step <= 12; ++step) {
+        scene.ui.scroll_to(scroll, static_cast<float>(step) * 32.f);
+        const auto runs = scene.draw(1180, 920);
+        CHECK(count_repeat_ranks(runs) == base_ranks);
+        REQUIRE(drew(runs, first_person));
+        CHECK(drew(runs, second_person));
+        const float y = scene.find(first_person)->box.y;
+        // Moves monotonically upward until the tabs/rail pin, then stays completely still without jitter.
+        CHECK(y <= prev_person_y + 0.01f);
+        prev_person_y = y;
+    }
+    const float pinned_y = prev_person_y;
+    scene.ui.scroll_to(scroll, 440.f);
+    scene.draw(1180, 920);
+    CHECK(std::abs(scene.find(first_person)->box.y - pinned_y) < 0.01f);
+
+    for (int step = 12; step >= 0; --step) {
+        scene.ui.scroll_to(scroll, static_cast<float>(step) * 32.f);
+        const auto runs = scene.draw(1180, 920);
+        CHECK(count_repeat_ranks(runs) == base_ranks);
+        CHECK(drew(runs, first_person));
+        CHECK(drew(runs, second_person));
+    }
+    CHECK_FALSE(scene.ui.animating());
+
+    // Across every window height from 520 to 960 (pinned), once Following upgrades to list mode it never drops back to avatar-only when On repeat grows.
+    scene.ui.scroll_to(scroll, 360.f);
+    bool saw_list = false;
+    int prev_ranks = 0;
+    for (int h = 520; h <= 960; h += 28) {
+        auto runs = scene.draw(1180, h);
+        for (int settle = 0; settle < 8; ++settle) {
+            runs = scene.draw(1180, h);
+        }
+        const int ranks = count_repeat_ranks(runs);
+        const bool is_list = drew(runs, first_person) && drew(runs, second_person);
+        if (saw_list) {
+            CHECK(is_list);
+        }
+        saw_list |= is_list;
+        CHECK(ranks >= prev_ranks);
+        prev_ranks = ranks;
+    }
+    CHECK(saw_list);
+
+    // Shrinking down to a compact height triggers smooth spring/fade animation rather than an instant 1-frame snap.
+    scene.draw_dt(1180, 380, 0.016);
+    CHECK(scene.ui.animating());
+    for (int i = 0; i < 10; ++i) {
+        scene.draw(1180, 380);
+    }
+    CHECK_FALSE(scene.ui.animating());
+}
