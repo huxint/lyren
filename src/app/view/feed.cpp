@@ -148,7 +148,7 @@ namespace lyren {
             }
         } else if (draft.track) {
             const Rect chip{r.x, y, r.w, 64};
-            p.rect(chip, t.fill(), t.radius, t.surface_edge(0.8f), 1);
+            p.rect(chip, t.fill(), t.radius);
             cover(ui, {chip.x + 8, chip.y + 8, 48, 48}, draft.track->cover, t.radius_s());
             p.text(chip.x + 68, chip.y + 28, draft.track->title, t.style(type::body, t.text, text::medium), chip.w - 116);
             p.text(chip.x + 68, chip.y + 47, draft.track->artist, t.style(type::caption, t.text_dim), chip.w - 116);
@@ -160,7 +160,7 @@ namespace lyren {
             const ui::Id id = ui.id("post-attach");
             const auto it = ui.interact(id, chip);
             const auto [hot, down] = ui.feel(id, it, pace::quick);
-            p.rect(chip.inset(down), t.fill(0.6f + 0.8f * hot), t.radius, t.surface_edge(0.75f + 0.45f * hot), 1);
+            p.rect(chip.inset(down), t.fill(0.6f + 0.8f * hot), t.radius);
             p.icon("plus", {chip.x + 14, chip.y + 14, 16, 16}, t.accent);
             p.text(chip.x + 40, chip.y + 27, lyren::trf("Attach the song playing: {} · {}", playing->title, playing->artist), t.style(type::label, t.text_dim.mix(t.text, hot)),
                    chip.w - 56);
@@ -192,7 +192,6 @@ namespace lyren {
         const auto &account = library_.shelf(source).account;
         const Rect face{r.x, r.y + (h - look::avatar) / 2, look::avatar, look::avatar};
         cover(ui, face, account ? account->avatar : std::string(), look::avatar / 2, "user");
-        p.rect(face, {}, look::avatar / 2, t.surface_edge(0.9f), 1);
         Rect field{r.x + look::gutter, r.y, r.w - look::gutter, h};
         // The song playing is one click from being shared.
         const Track *playing = playback_.current();
@@ -210,7 +209,7 @@ namespace lyren {
             }
             const auto [shot, sdown] = ui.feel(sid, sit, pace::quick);
             const Rect disc = share.inset(sdown);
-            p.rect(disc, t.fill(0.95f + 0.7f * shot), disc.h / 2, t.surface_edge(0.85f + 0.4f * shot), 1);
+            p.rect(disc, t.fill(0.95f + 0.7f * shot), disc.h / 2);
             p.icon("music", ui::center(disc, 17, 17), t.text_dim.mix(t.accent, shot));
             if (sit.clicked) {
                 compose(ui, source, *playing);
@@ -220,7 +219,7 @@ namespace lyren {
         const auto it = ui.interact(id, field);
         const auto [hot, down] = ui.feel(id, it, pace::quick);
         const Rect pill = field.inset(down);
-        p.rect(pill, t.fill(0.9f + 0.7f * hot), t.round(pill.h), t.surface_edge(0.8f + 0.5f * hot), 1);
+        p.rect(pill, t.fill(0.9f + 0.7f * hot), t.round(pill.h));
         p.icon("square-pen", {pill.x + 16, pill.y + (pill.h - 16) / 2, 16, 16}, t.faint().mix(t.text_dim, hot));
         ui.label({pill.x + 42, pill.y, pill.w - 58, pill.h}, lyren::tr("What are you listening to?"), t.style(type::body, t.faint().mix(t.text_dim, hot)));
         if (it.hovered) {
@@ -244,13 +243,12 @@ namespace lyren {
                 const auto it = ui.interact(id, chip);
                 const auto [hot, down] = ui.feel(id, it, pace::quick);
                 const Rect c = chip.inset(down);
-                p.rect(c, t.fill(0.9f + 0.8f * hot), t.radius, t.surface_edge(0.8f + 0.4f * hot), 1);
+                p.rect(c, t.fill(0.9f + 0.8f * hot), t.radius);
                 const Rect art{c.x + 8, c.y + 8, 48, 48};
                 cover(ui, art, post.track ? post.track->cover : post.card->cover, t.radius_s(),
                       post.track                           ? "music"
                       : post.card->kind == CardKind::album ? "disc-album"
                                                            : "list-music");
-                p.rect(art, {}, t.radius_s(), t.surface_edge(0.75f), 1);
                 const float tx = art.right() + 12, tw = c.right() - tx - 52;
                 const bool on = post.track && playback_.is_current(*post.track);
                 p.text(tx, c.y + 28, post.track ? post.track->title : post.card->title, t.style(type::body, on ? t.accent : t.text, text::medium), tw);
@@ -359,7 +357,7 @@ namespace lyren {
             const float block_h = inset + static_cast<float>(lines.size()) * lh + (carried > 0 ? 8 + carried - look::gap : 0) + inset;
             if (draw) {
                 const Rect block{x, y + h, w, block_h};
-                p.rect(block, t.fill(0.85f), t.radius, t.surface_edge(0.75f), 1);
+                p.rect(block, t.fill(0.85f), t.radius);
                 // The author's name opens their page.
                 const auto it = ui.interact(ui.id("author"), {block.x + inset, block.y + inset, p.measure(name, body), lh});
                 if (it.hovered) {

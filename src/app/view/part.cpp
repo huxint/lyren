@@ -69,10 +69,17 @@ namespace lyren {
         const auto &e = env_.images.get(url, static_cast<uint32_t>(px));
         const float shown = e.ready ? ui.progress(e.ready_at, 320, ease::standard) : 0;
         if (shown < 1) {
-            p.rect(r, t.fill(1.4f), radius);
-            if (!placeholder.empty() && r.w >= 28) {
-                const float s = std::round(std::min(r.w, r.h) * 0.36f);
-                p.icon(placeholder, ui::center(r, s, s), t.text_dim.with_alpha(0.5f * (1 - shown)));
+            if (!url.empty() && !e.failed) {
+                // Shimmer while a cover is in flight, then dissolve cleanly into the decoded art without flashing the
+                // empty-cover icon.
+                Fade fade(p, 1 - shown);
+                ui.skeleton(r, radius);
+            } else {
+                p.rect(r, t.fill(1.4f), radius);
+                if (!placeholder.empty() && r.w >= 28) {
+                    const float s = std::round(std::min(r.w, r.h) * 0.36f);
+                    p.icon(placeholder, ui::center(r, s, s), t.text_dim.with_alpha(0.5f * (1 - shown)));
+                }
             }
         }
         if (e.ready) {
@@ -91,7 +98,7 @@ namespace lyren {
         const auto &t = ui.theme();
         const Rect c = ui::center(r, std::min(r.w, 360.f), detail.empty() ? 92.f : 116.f);
         const Rect disc{c.x + (c.w - 48) / 2, c.y, 48, 48};
-        p.rect(disc, t.fill(), 24, t.surface_edge(0.9f), 1);
+        p.rect(disc, t.fill(), 24);
         p.icon(icon, ui::center(disc, 20, 20), t.text_dim);
         ui.label({c.x, disc.bottom() + 16, c.w, 22}, title, t.style(type::lead, t.text, text::medium), Align::center);
         if (!detail.empty()) {
@@ -192,16 +199,11 @@ namespace lyren {
         const auto [hot, down] = ui.feel(id, it, ui::pace::steady);
         const Rect cov = Rect{r.x, r.y - 2 * hot, r.w, r.w}.inset(down * 1.5f);
         const float radius = round ? cov.w / 2 : t.radius;
-        if (hot > 0) {
-            p.shadow({cov.x, cov.y + 6, cov.w, cov.h}, radius, 18, t.shadow.with_alpha(0.65f * hot));
-        }
         cover(ui, cov, c.cover, radius, round ? "user" : c.kind == CardKind::album ? "disc-album" : "list-music");
-        p.rect(cov, {}, radius, t.surface_edge(0.55f + 0.35f * hot), 1);
         if (hot > 0 && !round) {
             // A quiet shade gathers under the play disc, which glides into place.
             p.gradient({cov.x, cov.y + cov.h * 0.55f, cov.w, cov.h * 0.45f}, {0, 0, 0, 0}, {0, 0, 0, 0.24f * hot}, radius);
             const Rect b{cov.right() - 42, cov.bottom() - 42 + 4 * (1 - hot), 32, 32};
-            p.shadow(b, 16, 8, t.shadow.with_alpha(0.6f * hot));
             p.rect(b, t.accent.with_alpha(hot), 16);
             Rect glyph = ui::center(b, 13, 13);
             glyph.x += 1;

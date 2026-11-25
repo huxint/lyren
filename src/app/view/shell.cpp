@@ -223,17 +223,14 @@ namespace lyren {
         const auto &t = ui.theme();
         const Page on = browser.route().page;
         // The page is an architectural sheet with a whisper wash of its own colour at the top.
-        if (!t.dark) {
-            p.shadow(area, t.radius_l(), 10, t.shadow.with_alpha(0.35f), true);
-        }
-        p.rect(area, t.surface, t.radius_l(), t.surface_edge(0.8f), 1);
+        p.rect(area, t.surface, t.radius_l());
         const float enter = ui.progress(browser.entered, ui::pace::glide);
-        if (on != Page::search && on != Page::settings && on != Page::profile) {
+        if (on != Page::search && on != Page::settings && on != Page::profile && on != Page::recommend) {
             const float hue = pages.hue(ui);
             const ui::Color tint = hue >= 0 ? ui::hsl(hue, 0.5f, 0.5f) : t.accent;
-            p.gradient({area.x + 1, area.y + 1, area.w - 2, 240}, tint.with_alpha((t.dark ? 0.10f : 0.055f) * enter), tint.with_alpha(0), t.radius_l() - 1);
+            p.gradient({area.x, area.y, area.w, 240}, tint.with_alpha((t.dark ? 0.10f : 0.055f) * enter), tint.with_alpha(0), t.radius_l());
         }
-        ui.push_clip(area.inset(1));
+        ui.push_clip(area);
         {
             Fade fade(p, enter);
             Rect r = area;

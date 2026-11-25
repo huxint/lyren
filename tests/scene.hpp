@@ -333,6 +333,8 @@ namespace lyren::test {
         bool signed_in = true;
         bool dark = true;
         double motion = 0;
+        float font_size = 0;
+        float radius = -1;
         std::vector<Track> queue;
         int current = -1;
     };
@@ -455,6 +457,12 @@ namespace lyren::test {
             Config config;
             config.theme.motion = options.motion;
             config.theme.mode = options.dark ? ThemeMode::dark : ThemeMode::light;
+            if (options.font_size > 0) {
+                config.theme.font_size = options.font_size;
+            }
+            if (options.radius >= 0) {
+                config.theme.radius = options.radius;
+            }
             config.interface.language = options.language;
             return config;
         }

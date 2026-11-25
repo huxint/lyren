@@ -108,9 +108,8 @@ namespace lyren {
             const Rect art_box{row.x + 10, row.y + 8, 40, 40};
             if (art) {
                 cover(ui, art_box, *art, t.radius_s(), "list-music");
-                p.rect(art_box, {}, t.radius_s(), t.surface_edge(0.8f), 1);
             } else {
-                p.rect(art_box, t.fill(1.4f), t.radius_s(), t.surface_edge(0.8f), 1);
+                p.rect(art_box, t.fill(1.4f), t.radius_s());
                 p.icon("plus", ui::center(art_box, 18, 18), t.text_dim);
             }
             p.text(art_box.right() + 14, row.y + (sub.empty() ? 34 : 25), title, t.style(type::body, t.text), row.w - 80);
@@ -170,7 +169,6 @@ namespace lyren {
                     p.rect(r, t.elevated, t.radius_l());
                     u.spinner(ui::center(r, 24, 24), t.text_dim, 2);
                 }
-                p.rect(r, {}, t.radius_l(), t.surface_edge(1.2f), 1);
                 const auto it = u.interact(u.id("picture-view"), r);
                 if (it.hovered) {
                     u.cursor = wl::Cursor::pointer;

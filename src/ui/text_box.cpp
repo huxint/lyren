@@ -236,7 +236,11 @@ namespace lyren::ui {
 
         float hot = anim(id, it.hovered ? 1 : 0, pace::quick), f = anim(sub_id(id, 0xf0), focused ? 1 : 0, pace::quick);
         Color fill = t.fill(1 + 0.5f * hot * (1 - f));
-        p_->rect(r, fill, t.round(r.h), t.surface_edge(0.8f + 0.4f * hot).mix(t.accent.with_alpha(0.75f), f), 1);
+        if (f > 0.01f) {
+            p_->rect(r, fill, t.round(r.h), t.accent.with_alpha(0.75f * f), 1);
+        } else {
+            p_->rect(r, fill, t.round(r.h));
+        }
         if (!icon.empty()) {
             p_->icon(icon, {r.x + pad, r.y + (r.h - 16) / 2, 16, 16}, t.text_dim.mix(t.text, f));
         }
@@ -316,7 +320,6 @@ namespace lyren::ui {
         } else if (const float ka = anim(sub_id(id, 0xc2), !shortcut.empty() && text.empty() && !focused ? 1 : 0, pace::quick); ka > 0.01f && !shortcut.empty()) {
             const float bw = std::max(18.f, std::ceil(p_->measure(shortcut, key_st)) + 10);
             const Rect cap{r.right() - 8 - bw, r.y + (r.h - 18) / 2, bw, 18};
-            p_->rect(cap, t.fill(1.2f * ka), std::min(5.f, t.radius_s()), t.surface_edge(0.9f * ka), 1);
             label(cap, shortcut, {.size = key_st.size, .color = t.faint().with_alpha(ka), .features = key_st.features}, Align::center);
         }
         return submitted;
@@ -367,7 +370,11 @@ namespace lyren::ui {
         box.edit.clamp(text);
         if (framed) {
             float f = anim(sub_id(id, 0xf0), focused ? 1 : 0, pace::quick);
-            p_->rect(r, t.fill(0.9f), t.radius_s(), t.surface_edge(1.1f).mix(t.accent.with_alpha(0.75f), f), 1);
+            if (f > 0.01f) {
+                p_->rect(r, t.fill(0.9f), t.radius_s(), t.accent.with_alpha(0.75f * f), 1);
+            } else {
+                p_->rect(r, t.fill(0.9f), t.radius_s());
+            }
         }
 
         const TextEdit &e = box.edit;

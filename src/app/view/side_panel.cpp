@@ -37,11 +37,8 @@ namespace lyren {
         const auto &t = ui.theme();
         // On the stage the panel is a pane of glass over the cover, standing clear of the player below it.
         const Rect frame{slot.x + 8, slot.y, slot.w - 8, slot.h - std::round(4 * stage)};
-        if (!t.dark && stage < 0.5f) {
-            p.shadow({frame.x, frame.y + 1, frame.w, frame.h}, t.radius_l(), 10, t.shadow.with_alpha(0.4f * (1 - 2 * stage)));
-        }
-        p.rect(frame, t.surface, t.radius_l(), t.surface_edge().mix(t.line(), stage), 1);
-        ui.push_clip(frame.inset(1));
+        p.rect(frame, t.surface, t.radius_l());
+        ui.push_clip(frame);
         auto content = [&](Kind kind, Rect r) {
             if (kind == Kind::queue) {
                 queue(ui, r);
@@ -112,7 +109,6 @@ namespace lyren {
             }
             const Rect thumb{row.x + 10, row.y + 9, 36, 36};
             cover(ui, thumb, track.cover, t.radius_s());
-            p.rect(thumb, {}, t.radius_s(), t.surface_edge(0.8f), 1);
             const float text_w = row.w - 58 - (pointed || on ? 44 : 12);
             p.text(row.x + 58, row.y + 23, track.title, t.style(type::label, on ? t.accent : t.text, on ? text::medium : 0), text_w);
             p.text(row.x + 58, row.y + 41, track.artist, t.style(type::caption, t.text_dim), text_w);

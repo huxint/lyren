@@ -178,7 +178,6 @@ namespace lyren {
         }
         const Rect art{c.title.x, r.y + (r.h - 40) / 2, 40, 40};
         cover(ui, art, track.cover, t.radius_s());
-        p.rect(art, {}, t.radius_s(), t.surface_edge(0.8f), 1);
         const float tx = art.right() + 14, tw = c.title.right() - tx - 8;
         const auto title = t.style(type::body, on ? t.accent : t.text, on ? text::medium : 0);
         const float w = p.text(tx, r.y + 25, track.title, title, tw);

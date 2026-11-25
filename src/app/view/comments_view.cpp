@@ -148,7 +148,6 @@ namespace lyren {
         const Rect thumb{r.x + C::inset, r.y + (compact ? 12.f : 16.f), art, art};
         static constexpr std::array placeholders = {"music", "disc-album", "list-music", "message-square"};
         cover(ui, thumb, thread().cover, t.radius_s(), placeholders[static_cast<size_t>(thread().subject)]);
-        p.rect(thumb, {}, t.radius_s(), t.surface_edge(0.85f), 1);
 
         const Rect close{r.right() - C::inset - C::btn + 6, thumb.y + (art - C::btn) / 2, C::btn, C::btn};
         const float tx = thumb.right() + 12;
@@ -366,7 +365,7 @@ namespace lyren {
             }
             const auto [hot, down] = ui.feel(trigger_id, it, pace::quick);
             const Rect box = bar.inset(down * 0.5f);
-            p.rect(box, t.fill(0.95f + 0.45f * hot), t.radius, t.surface_edge(0.85f + 0.35f * hot), 1);
+            p.rect(box, t.fill(0.95f + 0.45f * hot), t.radius);
             p.icon("pencil", {box.x + 12, box.y + (box.h - C::small_icon) / 2, C::small_icon, C::small_icon}, has_text ? t.accent : t.text_dim.mix(t.text, 0.5f * hot));
             const std::string_view preview = has_text ? first_line(draft->text) : lyren::tr(target ? "Write a reply…" : "What does this music bring to mind?");
             ui.label({box.x + 12 + C::small_icon + C::gap, box.y, std::max(0.f, box.w - 24 - C::small_icon - C::gap), box.h}, preview,
@@ -414,7 +413,11 @@ namespace lyren {
             const float well_h = std::max(line_h + well_pad * 2, dock.bottom() - 12 - footer_h - 10 - y);
             const Rect well{dock.x + C::inset, y, inner_w, well_h};
             const float focused = ui.anim(ui.id("comment-composer-focus"), ui.focus == field && editing ? 1.f : 0.f, pace::quick);
-            p.rect(well, t.fill(0.85f), t.radius, t.surface_edge(0.9f).mix(t.accent.with_alpha(0.55f), focused), 1);
+            if (focused > 0.01f) {
+                p.rect(well, t.fill(0.85f), t.radius, t.accent.with_alpha(0.55f * focused), 1);
+            } else {
+                p.rect(well, t.fill(0.85f), t.radius);
+            }
             if (!draft->insert.empty() && editing) {
                 ui.focus = field;
                 ui.input().commit.insert(0, std::exchange(draft->insert, {}));
@@ -538,14 +541,13 @@ namespace lyren {
                 }
                 ui.pop_clip();
             } else {
-                const bool show_top = !reply && thread().tab == 0 && provider(thread().source).capabilities.comment_sort;
                 const float size = t.fs(type::body);
                 if (f.heights.width != w || f.heights.size != size) {
                     f.heights.reset(w, size);
                 }
                 while (f.heights.size_count() < f.items.size()) {
                     const size_t i = f.heights.size_count();
-                    f.heights.push(comment(ui, f.items[i], 0, 0, w, false, show_top && i == 0));
+                    f.heights.push(comment(ui, f.items[i], 0, 0, w, false));
                 }
                 const float tail = f.loading || !f.more || !f.error.empty() ? 56.f : C::padding;
                 const float content = f.heights.total() + tail;
@@ -559,7 +561,7 @@ namespace lyren {
                     if (row_y >= clip.bottom()) {
                         break;
                     }
-                    comment(ui, f.items[i], x, row_y, w, true, show_top && i == 0);
+                    comment(ui, f.items[i], x, row_y, w, true);
                 }
                 ui.pop_id();
 
@@ -623,7 +625,6 @@ namespace lyren {
             Fade fade(p, a);
             p.image(r, e.tex, t.radius, white.mix({0.86f, 0.86f, 0.86f, 1}, hot * 0.35f), cover_uv(aspect, r.w / r.h));
         }
-        p.rect(r, {}, t.radius, t.surface_edge(1.0f + 0.6f * hot), 1);
         const std::string_view url = c.image;
         if (url.substr(0, url.find('?')).ends_with(".gif")) {
             const Rect badge{r.x + 8, r.bottom() - 8 - 18, 32, 18};
@@ -635,7 +636,7 @@ namespace lyren {
         }
     }
 
-    float CommentsView::comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw, bool top_comment) {
+    float CommentsView::comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw) {
         using C = CommentStyle;
         auto &p = ui.painter();
         const auto &t = ui.theme();
@@ -698,29 +699,18 @@ namespace lyren {
             }
         }
 
-        // Compact single-line identity: author, timestamp, and a quiet text-only marker on the first hot comment.
+        // Compact single-line identity: author and timestamp.
         const float meta_right = std::max(tx, like.x - C::gap);
         const auto name_style = t.style(type::label, t.text.mix(t.text_dim, 0.14f), text::medium);
         const float name_w = std::min(std::ceil(p.measure(c.user, name_style)) + 1, std::max(0.f, meta_right - tx));
         if (name_w > 0) {
             ui.label({tx, top, name_w, ident_h}, c.user, name_style);
         }
-        float mx = tx + name_w + C::gap;
+        const float mx = tx + name_w + C::gap;
         if (!c.time.empty() && mx < meta_right) {
             const auto time_style = t.style(type::micro, t.faint());
             const float tw_time = std::min(std::ceil(p.measure(c.time, time_style)) + 1, meta_right - mx);
             ui.label({mx, top + 1, tw_time, ident_h}, c.time, time_style);
-            mx += tw_time + C::gap;
-        }
-        if (top_comment && mx + 24 < meta_right) {
-            const auto tag = lyren::tr("Top comment");
-            const auto tag_style = t.style(type::micro, t.text_dim, text::medium);
-            const float tag_w = std::ceil(p.measure(tag, tag_style)) + 10;
-            if (mx + tag_w <= meta_right) {
-                const Rect pill{mx, top + (ident_h - 17) / 2, tag_w, 17};
-                p.rect(pill, t.fill(1.1f), 8.5f);
-                ui.label(pill, tag, tag_style, Align::center);
-            }
         }
 
         if (!c.user_id.empty() && caps.profiles) {

@@ -55,7 +55,7 @@ namespace lyren {
         }
         const auto [hot, down] = ui.feel(platform_id, picked);
         const Rect pill = selector.inset(down);
-        p.rect(pill, t.fill(1 + 0.85f * hot), t.round(pill.h), t.surface_edge(0.8f + 0.5f * hot), 1);
+        p.rect(pill, t.fill(1 + 0.85f * hot), t.round(pill.h));
         p.rect({pill.x + 13, pill.y + pill.h / 2 - 3, 6, 6}, signed_in() ? t.accent : t.text.with_alpha(0.26f), 3);
         ui.label({pill.x + 26, pill.y, platform_w + 1, pill.h}, lyren::tr(platform(browser_.active()).short_name), name_style);
         p.icon("chevron-down", {pill.right() - 20, pill.y + (pill.h - 10) / 2, 10, 10}, t.text_dim.mix(t.text, hot));
@@ -213,7 +213,6 @@ namespace lyren {
             if (playlist) {
                 const Rect art_r = glyph.inset(-3.5f);
                 cover(ui, art_r, playlist->cover, 5, "list-music");
-                p.rect(art_r, {}, 5, t.surface_edge(0.8f), 1);
             } else {
                 p.icon(icon, glyph, on ? t.accent : t.text_dim.mix(t.text, hot * 0.7f));
             }

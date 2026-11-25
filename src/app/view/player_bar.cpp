@@ -36,10 +36,7 @@ namespace lyren {
         const auto &t = ui.theme();
         const Layout l = layout(strip);
         // A refined floating console on the window; on the stage, a frosted glass pane over the cover.
-        if (const float lift = smooth01(1 - 2 * stage); lift > 0 && !t.dark) {
-            p.shadow(l.card, t.radius_l(), 10, t.shadow.with_alpha(0.35f * lift), true);
-        }
-        p.rect(l.card, t.surface, t.radius_l(), t.surface_edge(0.8f).mix(t.line(), stage), 1);
+        p.rect(l.card, t.surface, t.radius_l());
         const Rect centre = ui::center(l.centre, std::min(l.centre.w, 600.f), l.centre.h);
         transport(ui, {centre.x, l.card.y + 8, centre.w, 36});
         string(ui, {centre.x, l.card.y + 46, centre.w, 20}, l.card.y - 6, stage);

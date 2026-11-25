@@ -54,16 +54,15 @@ namespace lyren {
         for (size_t i = 0; i < platforms.size(); ++i) {
             const auto &entry = platforms[i];
             const Rect row{r.x, view.y + static_cast<float>(i) * step - off, r.w, row_h};
-            p.rect(row, t.fill(0.95f), t.radius, t.surface_edge(0.85f), 1);
+            p.rect(row, t.fill(0.95f), t.radius);
             const Rect face{row.x + 14, row.y + 12, 40, 40};
             const auto &account = library_.shelf(entry.source).account;
             const auto &caps = provider(entry.source).capabilities;
             const bool in = env_.signed_in(entry.source), qr = caps.qr_login, signer_only = accounts_.signer_connected(entry.source);
             if (account) {
                 cover(ui, face, account->avatar, 20, "user");
-                p.rect(face, {}, 20, t.surface_edge(0.8f), 1);
             } else {
-                p.rect(face, signer_only ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 20, t.surface_edge(0.8f), 1);
+                p.rect(face, signer_only ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 20);
                 p.icon(signer_only ? "link" : "user", ui::center(face, 18, 18), signer_only ? t.accent : t.text_dim);
             }
             const ui::Id id = ui.id(entry.id);
@@ -132,7 +131,7 @@ namespace lyren {
                 t.fs(type::caption), w - 42);
             const float note_h = std::max(38.f, static_cast<float>(note_lines.size()) * 17 + 16);
             const Rect banner{x, y, w, note_h};
-            p.rect(banner, t.accent.with_alpha(t.dark ? 0.12f : 0.08f), t.radius_s(), t.accent.with_alpha(0.25f), 1);
+            p.rect(banner, t.accent.with_alpha(t.dark ? 0.12f : 0.08f), t.radius_s());
             p.icon("info", {banner.x + 12, banner.y + 11, 15, 15}, t.accent);
             float ly = banner.y + 8;
             for (const auto &line : note_lines) {
@@ -238,7 +237,7 @@ namespace lyren {
                 {lyren::tr("Account session"), &check.account},
             }};
             const Rect card_r{x, y, w, 86};
-            p.rect(card_r, t.fill(0.95f), t.radius_s(), t.surface_edge(0.85f), 1);
+            p.rect(card_r, t.fill(0.95f), t.radius_s());
             float ry = card_r.y + 8;
             for (const auto &[name, step_ptr] : rows) {
                 const auto state = step_ptr->state;
@@ -316,8 +315,7 @@ namespace lyren {
         ui.label({r.x, r.y + 40, r.w, 20}, lyren::tr(platform(source).scan_hint), t.style(type::label, t.text_dim), Align::center);
         // The code keeps its white card in every theme: phones read dark modules on white.
         const Rect card = ui::center({r.x, r.y + 76, r.w, 240}, 228, 228);
-        p.shadow({card.x, card.y + 8, card.w, card.h}, 14, 30, t.shadow.with_alpha(0.55f));
-        p.rect(card, white, 14, t.dark ? ui::Color{} : t.surface_edge(1.1f), t.dark ? 0.f : 1.f);
+        p.rect(card, white, 14);
         const QrState state = sign_in.status ? sign_in.status->state : QrState::waiting;
         const bool failed = !sign_in.error.empty();
         if (sign_in.has_code()) {

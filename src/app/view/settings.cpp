@@ -342,7 +342,6 @@ namespace lyren {
             const float sz = 20 * std::clamp(pop, 0.4f, 1.15f);
             const Rect badge = ui::center({tile.right() - 28, tile.y + 8, 20, 20}, sz, sz);
             Fade fade(p, lit);
-            p.shadow(badge, sz / 2, 8, t.accent.with_alpha(0.45f));
             p.rect(badge, t.accent, sz / 2);
             p.icon("check", ui::center(badge, sz * 0.56f, sz * 0.56f), t.on_accent());
         };
@@ -371,14 +370,8 @@ namespace lyren {
                 const auto [hot, down] = ui.feel(id, it, pace::steady);
                 const float lit = ui.anim(ui::sub_id(id, 1), on ? 1 : 0, pace::steady);
                 const Rect lifted = Rect{tile.x, tile.y - 2.5f * hot, tile.w, tile.h}.inset(down * 1.2f);
-                if (hot > 0.01f) {
-                    p.shadow(lifted, 12, 16, t.shadow.with_alpha(0.32f * hot), true);
-                }
                 theme_mock(ui, lifted, look);
                 p.rect(lifted.inset(-3), {}, 14, t.accent.with_alpha(lit), 2);
-                if (lit < 0.99f) {
-                    p.rect(lifted, {}, 12, look.surface_edge(0.9f).with_alpha(1 - lit), 1);
-                }
                 check_badge(id, lifted, lit);
                 const std::string_view name = i == 0 ? lyren::tr("Dark") : lyren::tr("Light");
                 ui.label({tile.x, tile.bottom() + 10, tile.w, 24}, name, t.style(type::label, on ? t.text : t.text_dim, on ? text::medium : 0), Align::center);
@@ -493,12 +486,8 @@ namespace lyren {
                 const auto [hot, down] = ui.feel(id, it, pace::steady);
                 const float lit = ui.anim(ui::sub_id(id, 1), on ? 1 : 0, pace::steady);
                 const Rect lifted = Rect{tile.x, tile.y - 2.5f * hot, tile.w, tile.h}.inset(down * 1.2f);
-                if (lit > 0.01f) {
-                    p.shadow({lifted.x, lifted.y + 6, lifted.w, lifted.h}, 12, 22, t.accent.with_alpha(0.18f * lit));
-                }
                 desktop_mock(ui, lifted, island);
                 p.rect(lifted.inset(-3), {}, 14, t.accent.with_alpha(lit), 2);
-                p.rect(lifted, {}, 12, t.surface_edge(1.1f).with_alpha(1 - lit), 1);
                 check_badge(id, lifted, lit);
                 ui.label({tile.x, tile.bottom() + 10, tile.w, 24}, island ? lyren::tr("Dynamic Island") : lyren::tr("Floating lyrics"),
                          t.style(type::label, on ? t.text : t.text_dim, on ? text::medium : 0), Align::center);
@@ -536,7 +525,6 @@ namespace lyren {
                     shell_.desktop.floating(ui, wall, false);
                 }
                 ui.pop_clip();
-                p.rect(wall, {}, radius - 4, t.surface_edge(0.85f), 1);
 
                 slider_row(
                     "lyric-size", lyren::tr("Text size"), {}, env_.config.desktop_lyrics.font_size, 16, 72, 1,
@@ -593,7 +581,6 @@ namespace lyren {
                     shell_.desktop.island(ui, wall.x + wall.w / 2, wall.y + 18, false);
                 }
                 ui.pop_clip();
-                p.rect(wall, {}, radius - 4, t.surface_edge(0.85f), 1);
                 ui.pop_id();
 
                 bool cover_on = island_options.cover;
@@ -642,9 +629,8 @@ namespace lyren {
                 }
                 if (account) {
                     cover(ui, face, account->avatar, 20, "user");
-                    p.rect(face, {}, 20, t.surface_edge(0.85f), 1);
                 } else {
-                    p.rect(face, (in || signer_only) ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 20, t.surface_edge(0.85f), 1);
+                    p.rect(face, (in || signer_only) ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 20);
                     p.icon(in ? "user" : signer_only ? "link" : "music", ui::center(face, 18, 18), (in || signer_only) ? t.accent : t.text_dim);
                 }
 
@@ -753,7 +739,7 @@ namespace lyren {
                 }
                 const auto [hot, down] = ui.feel(id, it, pace::quick);
                 const Rect box = pill.inset(down);
-                p.rect(box, t.fill(1 + 0.75f * hot), t.round(box.h), t.surface_edge(0.8f + 0.45f * hot), 1);
+                p.rect(box, t.fill(1 + 0.75f * hot), t.round(box.h));
                 ui.label({box.x + 14, box.y, box.w - 38, box.h}, name(env_.config.render.max_fps), t.style(type::label, t.text, text::medium));
                 p.icon("chevron-down", {box.right() - 24, box.y + (box.h - 12) / 2, 12, 12}, t.text_dim.mix(t.text, hot));
                 if (it.clicked) {
@@ -884,8 +870,8 @@ namespace lyren {
             p.rect({side.x, side.y + static_cast<float>(i) * 12, bw, 6}, i == 0 ? look.accent.with_alpha(0.9f) : look.text.with_alpha(0.16f), 3);
         }
         const Rect page{side.right() + 8, m.y + 8, m.right() - side.right() - 16, m.h - 38};
-        p.rect(page, look.surface, 7, look.surface_edge(), 1);
-        p.gradient({page.x + 1, page.y + 1, page.w - 2, page.h * 0.45f}, look.accent.with_alpha(look.dark ? 0.12f : 0.07f), look.accent.with_alpha(0), 6);
+        p.rect(page, look.surface, 7);
+        p.gradient({page.x, page.y, page.w, page.h * 0.45f}, look.accent.with_alpha(look.dark ? 0.12f : 0.07f), look.accent.with_alpha(0), 7);
         p.rect({page.x + 10, page.y + 10, page.w * 0.34f, 7}, look.text.with_alpha(0.75f), 3.5f);
         const float cw = (page.w - 20 - 16) / 3;
         for (int i = 0; i < 3; ++i) {
@@ -897,7 +883,7 @@ namespace lyren {
             }
         }
         const Rect console{m.x + 8, m.bottom() - 24, m.w - 16, 18};
-        p.rect(console, look.surface, 6, look.surface_edge(), 1);
+        p.rect(console, look.surface, 6);
         const float by = console.y + console.h / 2;
         p.rect({console.x + 6, by - 5, 10, 10}, look.text.with_alpha(0.22f), 2.5f);
         p.rect({console.x + 21, by - 2, m.w * 0.14f, 4}, look.text.with_alpha(0.3f), 2);

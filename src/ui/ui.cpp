@@ -357,12 +357,13 @@ namespace lyren::ui {
         Scroll &s = scrolls_[id];
         s.seen = now;
         s.target = std::clamp(offset, 0.f, max_offset(s));
-        if (!smooth) {
+        const bool glide = smooth && theme_->motion > 0;
+        if (!glide) {
             s.offset = s.target;
         } else if (!s.smooth) {
             s.last_frame = now;
         }
-        s.smooth = smooth && theme_->motion > 0, s.coasting = false;
+        s.smooth = glide, s.coasting = false;
         redraw_ = true;
     }
 

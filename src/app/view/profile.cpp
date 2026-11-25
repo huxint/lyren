@@ -23,7 +23,7 @@ namespace lyren {
     namespace {
         // The page is an editorial column: the main content and, when there is room for both, a framed studio rail beside it.
         constexpr float rail_gap = 32, rail_min = 276, rail_max = 324, page_w = PostFeed::column + rail_gap + rail_max;
-        constexpr float tabs_h = 38, section_gap = 20;
+        constexpr float tabs_h = 38, sticky_h = 52, section_gap = 20;
         // The head: the picture's diameter, the room around a count for its hover pill, and how much of a long
         // signature is worth wrapping for the two lines that show.
         constexpr float face_wide = 104, face_compact = 72, stat_pad = 10, stat_gap = 4;
@@ -145,7 +145,8 @@ namespace lyren {
             section_dir_ = section > page->section ? 1 : -1;
         }
         social_.show(page, section);
-        ui.scroll_to(scroll_, std::min(ui.scroll_offset(scroll_), header_h_));
+        const float latch = std::max(0.f, header_h_ - (sticky_h - tabs_h));
+        ui.scroll_to(scroll_, std::min(ui.scroll_offset(scroll_), latch));
     }
 
     void ProfileView::draw(ui::Ui &ui, Rect r) {
@@ -196,7 +197,7 @@ namespace lyren {
         // Anchored to the viewport's top edge with matching corner radii so scrolling never pokes square corners outside
         // the rounded page sheet.
         const Rect clip = ui.clip();
-        const float corner = std::max(0.f, t.radius_l() - 1);
+        const float corner = t.radius_l();
         if (const float scroll_fade = 1 - smooth01(off / 200); scroll_fade > 0.01f) {
             const float shift = std::min(off * 0.22f, 44.f);
             const float full_h = header_h_ > 0 ? header_h_ + tabs_h : 228.f;
@@ -223,7 +224,13 @@ namespace lyren {
         // What the head and tabs remember belongs to this visit: a press, a count mid-roll or the tab mark does not
         // carry over to whoever's page comes next.
         ui.push_id(ui.id(visit_));
-        header_h_ = header(ui, {body.x, r.y - off, body.w, 0}, page, who, self);
+        {
+            const float prev_latch = header_h_ > 0 ? std::max(0.f, header_h_ - (sticky_h - tabs_h)) : 0.f;
+            const float head_a = header_h_ > 0 ? 1 - smooth01((off - (prev_latch - 48.f)) / 42.f) : 1.f;
+            Fade head_fade(p, head_a);
+            ui::Enabled head_live(ui, header_h_ <= 0 || off < prev_latch - 12.f, 1);
+            header_h_ = header(ui, {body.x, r.y - off, body.w, 0}, page, who, self);
+        }
         if (browser_.route().serial != visit_) {
             // A click in the head led elsewhere: the rest of this page takes no more of this frame's input.
             ui.pop_id();
@@ -239,28 +246,31 @@ namespace lyren {
             ui.pop_id();
             return ui.end_scroll();
         }
-        // The tabs come to rest at the top of the view, with an opaque surface backing once pinned so the scrolled head
-        // never bleeds through behind them.
-        const Rect strip{body.x, std::max(r.y, r.y + header_h_ - off), body.w, tabs_h};
-        const float pinned = smooth01((off - header_h_ + 24) / 24);
+        // The tabs latch cleanly into a calmer sticky bar with balanced top breathing room, an opaque surface backing
+        // matched to the page's top corners, and a crisp hairline without drop shadow.
+        const float latch_off = std::max(0.f, header_h_ - (sticky_h - tabs_h));
+        const float pinned = smooth01((off - (latch_off - 24.f)) / 24.f);
+        const float strip_bottom = std::max(r.y + sticky_h, r.y + header_h_ + tabs_h - off);
         if (pinned > 0.01f) {
-            p.rect({clip.x, std::max(strip.y, clip.y), clip.w, strip.h}, t.surface.with_alpha(pinned), {corner, corner, 0, 0});
+            const float bh = std::max(0.f, strip_bottom - clip.y);
+            ui.push_clip({clip.x, clip.y, clip.w, bh});
+            p.rect({clip.x, clip.y, clip.w, std::max(bh, corner * 2)}, t.surface.with_alpha(pinned), {corner, corner, 0, 0});
+            ui.pop_clip();
         }
-        const float edge = std::lerp(body.x, r.x, pinned);
-        p.rect({edge, strip.bottom() - 1, r.w - 2 * (edge - r.x), 1}, t.line());
-        tabs(ui, strip, page, who, pinned);
+        const float x0 = std::lerp(body.x, clip.x, pinned);
+        const float x1 = std::lerp(body.right(), clip.right(), pinned);
+        p.rect({x0, strip_bottom - 1, std::max(0.f, x1 - x0), 1}, t.line(0.8f + 0.2f * pinned));
+        const float tab_h = std::lerp(tabs_h, 46.f, pinned);
+        tabs(ui, {body.x, strip_bottom - tab_h, body.w, tab_h}, page, who, pinned);
         ui.pop_id();
-        ui.push_clip({r.x, strip.bottom(), r.w, r.bottom() - strip.bottom()});
+        ui.push_clip({clip.x, strip_bottom, clip.w, std::max(0.f, clip.bottom() - strip_bottom)});
         float height = 0;
-        const float rail_budget_h = std::max(0.f, r.h - tabs_h - section_gap - 12.f);
+        const float rail_budget_h = std::max(0.f, r.h - sticky_h - section_gap - 12.f);
         {
             const float in = ui.progress(page->section_since, pace::arrive);
             Fade fade(p, in);
             const float slide_x = (1 - in) * 16.f * static_cast<float>(section_dir_);
             height = section(ui, {body.x + slide_x, r.y + header_h_ + tabs_h + section_gap - off + (1 - in) * 6, body.w, 0}, rail_budget_h, page, self);
-        }
-        if (pinned > 0) {
-            p.gradient({r.x, strip.bottom(), r.w, 10}, t.shadow.with_alpha(0.16f * pinned), t.shadow.with_alpha(0));
         }
         ui.pop_clip();
         if (const float next = header_h_ + tabs_h + section_gap + height + 28; std::abs(next - content_h_) > 0.5f) {
@@ -293,12 +303,10 @@ namespace lyren {
             const float size = d * (0.94f + 0.06f * in) - down * 1.4f;
             Rect portrait = ui::center(face, size, size);
             portrait.y -= 1.5f * hot * (1.f - down);
-            p.shadow({portrait.x, portrait.y + 5 + 2.f * hot, portrait.w, portrait.h}, size / 2, 18 + 6 * hot, t.shadow.with_alpha(0.42f + 0.14f * hot));
             cover(ui, portrait, who.avatar, size / 2, "user");
             if (hot > 0.01f) {
                 p.rect(portrait, white.with_alpha((t.dark ? 0.055f : 0.075f) * hot), size / 2);
             }
-            p.rect(portrait, {}, size / 2, t.surface_edge(1.1f).mix(t.text.with_alpha(t.dark ? 0.26f : 0.16f), hot), 1);
             if (it.right_clicked) {
                 shell_.dialogs.link_menu(ui, it.px, it.py, card);
             } else if (it.clicked && clickable) {
@@ -409,7 +417,7 @@ namespace lyren {
             for (const auto &badge : badges) {
                 const Rect pill{x, top + (name_h - 20) / 2 + 1, badge.w, 20};
                 if (badge.vip) {
-                    p.rect(pill, gold.with_alpha(0.14f), 10, gold.with_alpha(0.32f), 1);
+                    p.rect(pill, gold.with_alpha(0.14f), 10);
                 } else {
                     p.rect(pill, t.fill(1.5f), 10);
                 }
@@ -635,14 +643,32 @@ namespace lyren {
             if (ui.tabs(ui.id("profile-tabs"), r, labels, selected)) {
                 show(ui, page, sections[static_cast<size_t>(selected)]);
             }
-            // With the head scrolled away, the tabs say whose page this is.
-            if (pinned > 0 && r.w - needed > 220) {
-                Fade identity(p, pinned);
+            // With the head scrolled away, the tabs say whose page this is; clicking glides back to the top.
+            if (pinned > 0.01f) {
                 const auto name = t.style(type::label, t.text_dim, text::medium);
                 const float w = std::min(std::ceil(p.measure(who.name, name)) + 1, 160.f);
-                const Rect face{r.right() - w - 34, r.y + (r.h - 24) / 2 + 4 * (1 - pinned), 24, 24};
-                cover(ui, face, who.avatar, 12, "user");
-                ui.label({face.right() + 10, face.y, w, 24}, who.name, name);
+                const float chip_w = 4 + 24 + 8 + w + 10;
+                if (r.w - needed >= chip_w + 24) {
+                    const float in = ease::standard(pinned);
+                    Fade identity(p, in);
+                    ui::Enabled live(ui, pinned > 0.5f, 1);
+                    const Rect chip{r.right() - chip_w, r.y + (r.h - 32) / 2 + 5 * (1 - in), chip_w, 32};
+                    const ui::Id cid = ui.id("profile-top");
+                    const auto it = ui.interact(cid, chip);
+                    if (it.hovered) {
+                        ui.cursor = wl::Cursor::pointer;
+                    }
+                    const auto [hot, down] = ui.feel(cid, it, pace::quick);
+                    if (hot > 0.01f) {
+                        p.rect(chip.inset(down * 0.5f), t.fill(hot), 16);
+                    }
+                    const Rect face{chip.x + 4, chip.y + 4, 24, 24};
+                    cover(ui, face, who.avatar, 12, "user");
+                    ui.label({face.right() + 8, chip.y, w, chip.h}, who.name, {.size = name.size, .color = t.text_dim.mix(t.text, hot), .features = name.features});
+                    if (it.clicked) {
+                        ui.scroll_to(scroll_, 0, true);
+                    }
+                }
             }
             return;
         }
@@ -930,7 +956,6 @@ namespace lyren {
                     const bool on = playback_.is_current(track);
                     const float veil = std::max(hot, on ? 1.f : 0.f);
                     cover(ui, art, track.cover, t.radius_s(), veil > 0.5f ? "" : "music");
-                    p.rect(art, {}, t.radius_s(), t.surface_edge(0.8f), 1);
                     if (veil > 0) {
                         p.rect(art, ui::Color{0, 0, 0, 0.42f * veil}, t.radius_s());
                         if (on && playback_.playing() && hot < 0.5f) {
@@ -1037,10 +1062,6 @@ namespace lyren {
         if (caps.ranking) {
             const Rect target = has_rail ? Rect{side.x, side.y, side.w, wide_repeat_h} : Rect{r.x, inline_repeat_y, col_w, inline_repeat_h};
             const Rect flight = repeat_slot_.resolve(ui, target, has_rail ? 1 : 0, 340);
-            const bool flying = repeat_slot_.morphing(ui, 340);
-            if (flying) {
-                p.shadow({flight.x, flight.y + 8, flight.w, flight.h}, studio_card_radius(t), 24, t.shadow.with_alpha(0.35f));
-            }
             const auto visible_rows = static_cast<size_t>(std::clamp(static_cast<int>(std::ceil((flight.h - 48.f) / 54.f)), 1, 5));
             const size_t rows = std::max(has_rail ? plan.repeat_rows : size_t{4}, visible_rows);
             repeat_card(ui, flight, page, rows);
@@ -1177,7 +1198,6 @@ namespace lyren {
                 const bool on = playback_.is_current(track);
                 const float veil = std::max(hot, on ? 1.f : 0.f);
                 cover(ui, art, track.cover, t.radius_s(), veil > 0.5f ? "" : "music");
-                p.rect(art, {}, t.radius_s(), t.surface_edge(0.8f), 1);
                 if (veil > 0) {
                     p.rect(art, ui::Color{0, 0, 0, 0.42f * veil}, t.radius_s());
                     if (on && playback_.playing() && hot < 0.5f) {
@@ -1291,7 +1311,6 @@ namespace lyren {
                         }
                         const Rect face{row.x + 8, row.y + (row.h - 34) / 2, 34, 34};
                         cover(ui, face, who.avatar, 17, "user");
-                        p.rect(face, {}, 17, t.surface_edge(0.85f), 1);
                         const float tx = face.right() + 12, tw = row.right() - tx - 8;
                         std::string meta = who.signature.substr(0, who.signature.find('\n'));
                         if (meta.empty() && who.fans >= 0) {
@@ -1326,7 +1345,6 @@ namespace lyren {
                         const auto it = ui.interact(id, face);
                         const auto [hot, down] = ui.feel(id, it, pace::quick);
                         cover(ui, face.inset(down), who.avatar, d / 2, "user");
-                        p.rect(face.inset(down), {}, d / 2, t.surface_edge(0.85f), 1);
                         if (hot > 0) {
                             p.rect(face.inset(-2), {}, d / 2 + 2, t.text.with_alpha(0.4f * hot), 1.5f);
                         }
@@ -1421,7 +1439,6 @@ namespace lyren {
             }
             const Rect art{rank.right() + 6, row.y + 8, 40, 40};
             cover(ui, art, track.cover, t.radius_s());
-            p.rect(art, {}, t.radius_s(), t.surface_edge(0.8f), 1);
             // How often it is played, against the most played; the bars grow in with their rows.
             const float meter_w = std::min(180.f, std::round(row.w * 0.24f));
             const float tx = art.right() + 14, tw = row.right() - tx - meter_w - 36;

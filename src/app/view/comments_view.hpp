@@ -24,7 +24,7 @@ namespace lyren {
         // Docked bottom writing tray, smoothly expanding upward within r. Returns its occupied height.
         float composer(ui::Ui &ui, ui::Rect r);
         // Lays out a comment at y, or only measures it; returns its height.
-        float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw, bool top_comment = false);
+        float comment(ui::Ui &ui, const Comment &c, float x, float y, float w, bool draw);
         void picture(ui::Ui &ui, const Comment &c, ui::Rect r);
         void confirm_delete(ui::Ui &ui, Source source, Subject subject, std::string resource, Comment comment);
         // The lyric line sung now, when the comments are on the current song.

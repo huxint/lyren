@@ -25,7 +25,7 @@ namespace lyren {
 
     namespace {
         // Architectural artwork for built-in lists (liked, recent, cloud, radar, daily): a restrained tonal gradient
-        // with fine acoustic groove rings and a crisp structural border.
+        // with fine acoustic groove rings.
         void built_in_art(ui::Painter &p, const ui::Theme &t, Rect r, float hue, float radius, std::string_view icon) {
             const ui::Color top = hsl(hue, 0.42f, t.dark ? 0.30f : 0.56f);
             const ui::Color bottom = hsl(hue + 0.06f, 0.36f, t.dark ? 0.14f : 0.38f);
@@ -34,7 +34,6 @@ namespace lyren {
                 const Rect ring = r.inset(r.w * k);
                 p.rect(ring, {}, ring.w / 2, white.with_alpha(t.dark ? 0.08f : 0.14f), 1);
             }
-            p.rect(r, {}, radius, t.surface_edge(1.1f), 1);
             if (!icon.empty()) {
                 const float s = std::round(r.w * 0.34f);
                 p.icon(icon, ui::center(r, s, s), white.with_alpha(0.92f));
@@ -132,56 +131,138 @@ namespace lyren {
         return k;
     }
 
-    bool Pages::hero(ui::Ui &ui, ui::Id id, Rect r, std::string_view big, std::string_view badge, std::string_view title, std::string_view subtitle, float hue,
+    bool Pages::hero(ui::Ui &ui, ui::Id id, HeroSlot slot, std::string_view big, std::string_view badge, std::string_view title, std::string_view subtitle, float hue,
                      std::string_view icon, std::string_view action_icon) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
+        const Rect r = slot.rect;
+        const float dock = std::clamp(slot.dock, 0.f, 1.f);
         const auto it = ui.interact(id, r);
         if (it.hovered) {
             ui.cursor = wl::Cursor::pointer;
         }
         const auto [hot, down] = ui.feel(id, it, pace::steady);
-        const Rect card = Rect{r.x, r.y - 1.5f * hot, r.w, r.h}.inset(down * 1.2f);
+        const Rect card = Rect{r.x, r.y - std::lerp(1.5f, 0.5f, dock) * hot, r.w, r.h}.inset(down * std::lerp(1.2f, 0.7f, dock));
+        const float radius = std::lerp(t.radius_l(), t.round(36.f), dock);
         const ui::Color tint = ui::accent_for_hue(hue, t.dark);
-        if (hot > 0) {
-            p.shadow({card.x, card.y + 6, card.w, card.h}, t.radius_l(), 20, t.shadow.with_alpha(0.45f * hot));
-        }
-        const ui::Color paper = t.dark ? t.fill(1.05f + 0.35f * hot) : t.bg.mix(t.surface, 0.32f + 0.36f * hot);
-        p.rect(card, paper, t.radius_l());
-        p.gradient(card, tint.with_alpha((t.dark ? 0.13f : 0.09f) + 0.045f * hot), tint.with_alpha(t.dark ? 0.02f : 0.015f), t.radius_l());
-        if (hot > 0.01f) {
-            p.rect(card, {}, t.radius_l(), tint.with_alpha(0.18f * hot), 1);
+        const ui::Color full_paper = t.dark ? t.fill(1.05f + 0.35f * hot) : t.bg.mix(t.surface, 0.32f + 0.36f * hot);
+        const ui::Color dock_paper = t.dark ? t.fill(0.92f + 0.55f * hot) : t.bg.mix(t.surface, 0.22f + 0.36f * hot);
+        p.rect(card, full_paper.mix(dock_paper, dock), radius);
+        const float top_a = std::lerp((t.dark ? 0.13f : 0.09f) + 0.045f * hot, (t.dark ? 0.12f : 0.08f) + 0.055f * hot, dock);
+        const float bot_a = std::lerp(t.dark ? 0.02f : 0.015f, (t.dark ? 0.05f : 0.03f) + 0.03f * hot, dock);
+        p.gradient(card, tint.with_alpha(top_a), tint.with_alpha(bot_a), radius);
+        if (slot.icon_only && dock > 0.75f && it.hovered && !it.held) {
+            ui.tooltip(id, card, title);
         }
 
+        const Rect emblem_dock = slot.icon_only ? ui::center(card, 24, 24) : Rect{card.x + 6, card.y + (card.h - 24) / 2, 24, 24};
         if (icon.empty()) {
-            const auto num_style = t.style(36, t.text, text::semibold | text::tabular_nums);
-            const float nw = std::ceil(p.measure(big, num_style)) + 1;
-            ui.label({card.x + 20, card.y + 12, nw, 44}, big, num_style);
-            if (!badge.empty()) {
-                const auto badge_style = t.style(type::micro, tint, text::medium | text::tabular_nums);
-                const float bw = std::ceil(p.measure(badge, badge_style)) + 14;
-                const Rect pill{card.x + 20 + nw + 10, card.y + 24, bw, 20};
-                p.rect(pill, tint.with_alpha(t.dark ? 0.15f : 0.11f), 10);
-                ui.label(pill, badge, badge_style, Align::center);
+            if (const float big_a = 1 - smooth01(dock / 0.42f); big_a > 0.01f) {
+                Fade f(p, big_a);
+                const auto num_style = t.style(36, t.text, text::semibold | text::tabular_nums);
+                const float nw = std::ceil(p.measure(big, num_style)) + 1;
+                const float nx = std::lerp(card.x + 20, emblem_dock.x, dock);
+                const float ny = std::lerp(card.y + 12, emblem_dock.y - 6, dock);
+                if (dock > 0.01f) {
+                    p.set_zoom(std::lerp(1.f, 0.65f, dock), nx, ny + 22);
+                }
+                ui.label({nx, ny, nw, 44}, big, num_style);
+                p.set_zoom(1);
+                if (!badge.empty()) {
+                    if (const float badge_a = 1 - smooth01(dock / 0.32f); badge_a > 0.01f) {
+                        Fade bf(p, badge_a);
+                        const auto badge_style = t.style(type::micro, tint, text::medium | text::tabular_nums);
+                        const float bw = std::ceil(p.measure(badge, badge_style)) + 14;
+                        const Rect pill{nx + nw + 10, ny + 12, bw, 20};
+                        p.rect(pill, tint.with_alpha(t.dark ? 0.15f : 0.11f), 10);
+                        ui.label(pill, badge, badge_style, Align::center);
+                    }
+                }
+            }
+            if (const float chip_a = smooth01((dock - 0.22f) / 0.45f); chip_a > 0.01f) {
+                Fade f(p, chip_a);
+                const Rect chip = mix({card.x + 20, card.y + 18, 34, 34}, emblem_dock, dock);
+                p.rect(chip, tint.with_alpha(t.dark ? 0.22f : 0.15f), chip.h / 2);
+                const float chip_fs = std::min(t.fs(type::caption), chip.h * 0.54f);
+                ui.label(chip, big, {.size = chip_fs, .color = tint, .features = text::semibold | text::tabular_nums}, Align::center);
             }
         } else {
-            const Rect emblem{card.x + 20, card.y + 18, 38, 38};
-            p.rect(emblem, tint.with_alpha(t.dark ? 0.16f : 0.11f), 11);
-            p.icon(icon, ui::center(emblem, 19, 19), tint);
+            const Rect emblem = mix({card.x + 20, card.y + 18, 38, 38}, emblem_dock, dock);
+            const float emblem_r = std::lerp(11.f, emblem.h / 2, dock);
+            p.rect(emblem, tint.with_alpha(std::lerp(t.dark ? 0.16f : 0.11f, t.dark ? 0.22f : 0.15f, dock)), emblem_r);
+            if (dock >= 0.99f) {
+                p.icon(icon, ui::center(emblem, 13, 13), tint);
+            } else if (dock <= 0.01f) {
+                p.icon(icon, ui::center(emblem, 19, 19), tint);
+            } else {
+                p.set_zoom(std::lerp(1.f, 13.f / 19.f, dock), emblem.x + emblem.w / 2, emblem.y + emblem.h / 2);
+                p.icon(icon, ui::center(emblem, 19, 19), tint);
+                p.set_zoom(1);
+            }
         }
 
-        const float text_w = card.w - 78;
-        ui.label({card.x + 20, card.y + 68, text_w, 24}, title, t.style(type::heading, t.text, text::semibold));
-        ui.label({card.x + 20, card.y + 93, text_w, 18}, subtitle, t.style(type::caption, t.text_dim));
-
-        const Rect disc = Rect{card.right() - 50, card.bottom() - 50, 34, 34}.inset(-1.f * hot);
-        p.rect(disc, t.fill(1.25f).mix(tint, hot), disc.w / 2);
-        const ui::Color on_tint = tint.luminance() > 0.6f ? ink : white;
-        Rect glyph = ui::center(disc, 14, 14);
-        if (action_icon == "play-fill") {
-            glyph.x += 1;
+        if (const float sub_a = 1 - smooth01(dock / 0.30f); sub_a > 0.01f) {
+            const float sub_y = std::min(card.y + 93 - 28 * dock, card.bottom() - 20);
+            if (sub_y >= card.y) {
+                Fade f(p, sub_a);
+                ui.label({card.x + 20, sub_y, std::max(0.f, card.w - 78), 18}, subtitle, t.style(type::caption, t.text_dim));
+            }
         }
-        p.icon(action_icon, glyph, t.text_dim.mix(on_tint, hot));
+
+        const Rect title_full{card.x + 20, card.y + 68, std::max(0.f, card.w - 78), 24};
+        if (slot.icon_only) {
+            if (const float title_a = 1 - smooth01(dock / 0.45f); title_a > 0.01f) {
+                Fade f(p, title_a);
+                ui.label(title_full, title, t.style(type::heading, t.text, text::semibold));
+            }
+        } else {
+            const float tx = emblem_dock.right() + 8;
+            const Rect title_dock{tx, card.y + (card.h - 20) / 2, std::max(0.f, card.right() - tx - (slot.show_action ? 34.f : 10.f)), 20};
+            const Rect tr = mix(title_full, title_dock, dock);
+            if (dock >= 0.99f) {
+                ui.label(title_dock, title, t.style(type::label, t.text, text::medium));
+            } else if (dock <= 0.01f) {
+                ui.label(title_full, title, t.style(type::heading, t.text, text::semibold));
+            } else {
+                const float s = std::lerp(1.f, type::label / type::heading, dock);
+                p.set_zoom(s, tr.x, tr.y + tr.h / 2);
+                ui.label({tr.x, tr.y, tr.w / s, tr.h}, title, t.style(type::heading, t.text, text::semibold));
+                p.set_zoom(1);
+            }
+        }
+
+        const bool keep_disc = slot.show_action && !slot.icon_only;
+        const float disc_a = keep_disc ? 1.f : 1 - smooth01(dock / 0.45f);
+        if (disc_a > 0.01f) {
+            Fade f(p, disc_a);
+            const Rect disc_full = Rect{card.right() - 50, card.bottom() - 50, 34, 34}.inset(-1.f * hot);
+            const Rect disc_dock = Rect{card.right() - 29, card.y + (card.h - 22) / 2, 22, 22}.inset(-0.5f * hot);
+            const Rect disc = keep_disc ? mix(disc_full, disc_dock, dock) : disc_full;
+            p.rect(disc, t.fill(std::lerp(1.25f, 0.85f, dock)).mix(tint, hot), disc.w / 2);
+            const ui::Color on_tint = tint.luminance() > 0.6f ? ink : white;
+            const ui::Color glyph_c = t.text_dim.mix(on_tint, hot);
+            if (!keep_disc || dock <= 0.01f) {
+                Rect glyph = ui::center(disc, 14, 14);
+                if (action_icon == "play-fill") {
+                    glyph.x += 1;
+                }
+                p.icon(action_icon, glyph, glyph_c);
+            } else if (dock >= 0.99f) {
+                Rect glyph = ui::center(disc, 11, 11);
+                if (action_icon == "play-fill") {
+                    glyph.x += 0.5f;
+                }
+                p.icon(action_icon, glyph, glyph_c);
+            } else {
+                p.set_zoom(std::lerp(1.f, 11.f / 14.f, dock), disc.x + disc.w / 2, disc.y + disc.h / 2);
+                Rect glyph = ui::center(disc, 14, 14);
+                if (action_icon == "play-fill") {
+                    glyph.x += 1;
+                }
+                p.icon(action_icon, glyph, glyph_c);
+                p.set_zoom(1);
+            }
+        }
         return it.clicked;
     }
 
@@ -262,6 +343,8 @@ namespace lyren {
     }
 
     void Pages::recommend_page(ui::Ui &ui, Rect r) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
         auto &lib = shelf();
         const auto &features = provider().features;
         struct Hero {
@@ -288,29 +371,136 @@ namespace lyren {
         const Rect body = page_frame(r);
         const CardGrid daily(ui, ui.id("daily-cards"), body.w);
         const CardGrid g(ui, ui.id("rec-cards"), body.w);
-        constexpr float hero_h = 128, hero_gap = 16;
+        constexpr float top_pad = 28, title_h = 76;
+        constexpr float hero_h = 128, hero_gap = 16, after_heroes = 18;
+        constexpr float dock_h = 56, pill_h = 36, pill_gap = 10, pill_pad_y = (dock_h - pill_h) / 2;
         const int hero_cols = std::min(hero_count, std::max(1, static_cast<int>((body.w + hero_gap) / 260)));
-        const float heroes_h = hero_count ? static_cast<float>((hero_count + hero_cols - 1) / hero_cols) * (hero_h + hero_gap) + 18 : 0;
+        const int hero_rows = hero_count ? (hero_count + hero_cols - 1) / hero_cols : 0;
+        const float heroes_block_h = hero_rows ? static_cast<float>(hero_rows) * hero_h + static_cast<float>(hero_rows - 1) * hero_gap : 0.f;
+        const float heroes_h = hero_rows ? heroes_block_h + hero_gap + after_heroes : 0.f;
         const float daily_h = lib.daily_lists.empty() ? 0 : 42 + daily.height(lib.daily_lists.size()) + 36;
-        const float content = 28 + 76 + heroes_h + daily_h + 42 + std::max(g.height(lib.recommended.cards.size()), 120.f) + 32;
-        const float off = ui.begin_scroll(ui.id("recommend"), r, content);
-        float y = r.y + 28 - off;
+        const float content = top_pad + title_h + heroes_h + daily_h + 42 + std::max(g.height(lib.recommended.cards.size()), 120.f) + 32;
+        const ui::Id scroll = ui.id("recommend");
+        const float off = ui.begin_scroll(scroll, r, content);
+        const Rect clip = ui.clip();
+        const float corner = t.radius_l();
+        // Top accent wash dissolves as the page scrolls so the docked sticky bar meets a clean, unified surface.
+        if (const float wash_a = 1 - smooth01(off / 180.f); wash_a > 0.01f) {
+            p.gradient({clip.x, clip.y, clip.w, 240}, t.accent.with_alpha((t.dark ? 0.10f : 0.055f) * wash_a), t.accent.with_alpha(0), corner);
+        }
         const auto &profile = lib.account;
-        page_title(ui, body, y, lyren::tr("For you"), std::format("{} · {}", date, profile ? lyren::trf("Picked for you, {}", profile->name) : lyren::tr("Picked for you")));
-        y += 76;
+        const std::string subtitle = std::format("{} · {}", date, profile ? lyren::trf("Picked for you, {}", profile->name) : lyren::tr("Picked for you"));
+
+        // Compute the compact docked pill targets once on the stack so single-row hero cards morph smoothly into the
+        // sticky bar, and multi-row layouts share the exact same docked proportions when pinned.
+        std::array<std::string_view, 4> titles{};
+        std::array<Rect, 4> dock_rects{};
+        bool dock_action = true, dock_icon_only = false;
         if (hero_count) {
-            const float hw = (body.w - hero_gap * static_cast<float>(hero_cols - 1)) / static_cast<float>(hero_cols);
+            const auto dock_title_style = t.style(type::label, t.text, text::medium);
+            std::array<float, 4> title_ws{};
+            float sum_full = 0, sum_compact = 0;
             for (int i = 0; i < hero_count; ++i) {
-                const auto &entry = heroes[static_cast<size_t>(i)];
+                const auto idx = static_cast<size_t>(i);
+                titles[idx] = lyren::tr(heroes[idx].title);
+                title_ws[idx] = std::ceil(p.measure(titles[idx], dock_title_style)) + 1;
+                sum_full += title_ws[idx] + 78.f;
+                sum_compact += title_ws[idx] + 52.f;
+            }
+            const float gaps_w = hero_count > 1 ? pill_gap * static_cast<float>(hero_count - 1) : 0.f;
+            dock_action = sum_full + gaps_w <= body.w;
+            const bool dock_natural = dock_action || (sum_compact + gaps_w <= body.w);
+            const float each_w = (body.w - gaps_w) / static_cast<float>(hero_count);
+            dock_icon_only = !dock_natural && each_w < 84.f;
+            float dx = body.x;
+            for (int i = 0; i < hero_count; ++i) {
+                const auto idx = static_cast<size_t>(i);
+                const float w = dock_action ? title_ws[idx] + 78.f : dock_natural ? title_ws[idx] + 52.f : each_w;
+                dock_rects[idx] = {dx, r.y + pill_pad_y, w, pill_h};
+                dx += w + pill_gap;
+            }
+        }
+
+        auto draw_backing = [&](float alpha) {
+            if (alpha <= 0.01f) {
+                return;
+            }
+            // Keep the backing tall enough that top corners stay in the shader's upper half even for large theme radii.
+            ui.push_clip({clip.x, clip.y, clip.w, dock_h});
+            p.rect({clip.x, clip.y, clip.w, std::max(dock_h, corner * 2)}, t.surface.with_alpha(alpha), {corner, corner, 0, 0});
+            ui.pop_clip();
+            const float x0 = std::lerp(body.x, clip.x, alpha);
+            const float x1 = std::lerp(body.right(), clip.right(), alpha);
+            p.rect({x0, r.y + dock_h - 1, std::max(0.f, x1 - x0), 1}, t.line(alpha));
+        };
+
+        const float final_end_off = hero_count ? top_pad + title_h - pill_pad_y + heroes_block_h - pill_h : 0.f;
+        const float under = hero_count ? smooth01((off - final_end_off) / 24.f) : 0.f;
+        float cut_y = r.y;
+
+        if (hero_count) {
+            constexpr float latch_off = top_pad + title_h - pill_pad_y;
+            constexpr float collapse0 = hero_h - pill_h;
+            constexpr float row_step = hero_h + hero_gap;
+            constexpr float row_wait_y = pill_pad_y + pill_h + hero_gap;
+            if (const float title_a = 1 - smooth01((off - 12.f) / 56.f); title_a > 0.01f) {
+                Fade f(p, title_a);
+                page_title(ui, body, r.y + top_pad - off, lyren::tr("For you"), subtitle);
+            }
+            draw_backing(under);
+            const float hw = (body.w - hero_gap * static_cast<float>(hero_cols - 1)) / static_cast<float>(hero_cols);
+            float lowest_bottom = r.y + dock_h - pill_pad_y;
+            for (int i = 0; i < hero_count; ++i) {
+                const auto idx = static_cast<size_t>(i);
+                const auto &entry = heroes[idx];
+                const int row = i / hero_cols, col = i % hero_cols;
                 const float in = ui.cascade(browser_.entered, i, pace::arrive);
-                Fade fade(ui.painter(), in);
-                Rect tile{body.x + static_cast<float>(i % hero_cols) * (hw + hero_gap), y + static_cast<float>(i / hero_cols) * (hero_h + hero_gap) + (1 - in) * 6, hw, hero_h};
-                if (hero(ui, ui.id(entry.id), tile, entry.big, entry.badge, lyren::tr(entry.title), lyren::tr(entry.subtitle), entry.hue, entry.icon, entry.action)) {
+                Fade fade(p, in);
+                const float flow_x = body.x + static_cast<float>(col) * (hw + hero_gap);
+                Rect rect{};
+                float dock = 0;
+                if (row == 0) {
+                    // First row latches at the top dock line and compresses smoothly into compact pills.
+                    dock = ease::standard(std::clamp((off - latch_off) / collapse0, 0.f, 1.f));
+                    const float flow_y = r.y + top_pad + title_h - std::min(off, latch_off) + (1 - in) * 6 * (1 - dock);
+                    const Rect flow{flow_x, flow_y, hw, hero_h};
+                    rect = dock > 0 ? mix(flow, dock_rects[idx], dock) : flow;
+                } else {
+                    // Subsequent rows scroll up behind the docked strip, then shrink and slide rightward past the
+                    // already-docked pills before curving up into their open slot on the sticky row.
+                    const float start_off = latch_off + collapse0 + static_cast<float>(row - 1) * row_step;
+                    const float u = std::clamp((off - start_off) / row_step, 0.f, 1.f);
+                    if (u <= 0) {
+                        const float flow_y = r.y + top_pad + title_h + static_cast<float>(row) * row_step - off + (1 - in) * 6;
+                        rect = {flow_x, flow_y, hw, hero_h};
+                    } else {
+                        const float k_xh = ease::standard(std::clamp(u / 0.56f, 0.f, 1.f));
+                        const float k_y = smooth01((u - 0.44f) / 0.56f);
+                        dock = k_xh;
+                        const float base_y = r.y + row_wait_y + (1 - in) * 6 * (1 - dock);
+                        rect = {std::lerp(flow_x, dock_rects[idx].x, k_xh), std::lerp(base_y, dock_rects[idx].y, k_y), std::lerp(hw, dock_rects[idx].w, k_xh),
+                                std::lerp(hero_h, pill_h, k_xh)};
+                    }
+                }
+                lowest_bottom = std::max(lowest_bottom, rect.bottom());
+                if (hero(ui, ui.id(entry.id), {rect, dock, dock_action, dock_icon_only}, entry.big, entry.badge, titles[idx], lyren::tr(entry.subtitle), entry.hue, entry.icon,
+                         entry.action)) {
                     browser_.open(entry.page);
                 }
             }
-            y += heroes_h;
+            if (off > latch_off) {
+                cut_y = std::max(r.y + dock_h, lowest_bottom + pill_pad_y);
+            }
         }
+
+        // Everything below the sticky bar is clipped strictly beneath cut_y so hidden cards can neither bleed through
+        // nor steal clicks from the pinned actions.
+        ui.push_clip({clip.x, cut_y, clip.w, std::max(0.f, clip.bottom() - cut_y)});
+        float y = r.y + top_pad - off;
+        if (!hero_count) {
+            page_title(ui, body, y, lyren::tr("For you"), subtitle);
+        }
+        y += title_h + heroes_h;
         if (!lib.daily_lists.empty()) {
             section_heading(ui, body.x, y, body.w, lyren::tr("Daily playlists"), std::to_string(lib.daily_lists.size()));
             if (int i = card_grid(ui, {body.x, y + 42, body.w, 0}, ui.id("daily-cards"), lib.daily_lists, false, std::max(browser_.entered + 0.06, lib.daily_since)); i >= 0) {
@@ -326,6 +516,7 @@ namespace lyren {
                 browser_.open(res.cards[static_cast<size_t>(i)]);
             }
         }
+        ui.pop_clip();
         ui.end_scroll();
     }
 
@@ -429,12 +620,7 @@ namespace lyren {
         const float resting = 0.97f + 0.03f * presence;
         const Rect cov = ui::center({col.x, col.y, size, size}, size * resting, size * resting);
 
-        if (presence > 0) {
-            p.shadow({cov.x, cov.y + 10, cov.w, cov.h}, t.radius_l(), 56, t.accent.with_alpha(0.08f * presence));
-        }
-        p.shadow({cov.x, cov.y + 12, cov.w, cov.h}, t.radius_l(), 36, t.shadow.with_alpha(0.75f));
         cover(ui, cov, track.cover, t.radius_l());
-        p.rect(cov, {}, t.radius_l(), t.surface_edge(1.1f), 1);
         {
             const auto art_it = ui.interact(ui.id("fm-cover"), cov);
             if (art_it.hovered) {
@@ -714,7 +900,6 @@ namespace lyren {
             const Rect art{row.x + 10, row.y + 12, 44, 44};
             const float art_r = lib.dislike_tab == 1 ? 22.f : t.radius_s();
             cover(ui, art, item.cover, art_r, icons[lib.dislike_tab]);
-            p.rect(art, {}, art_r, t.surface_edge(0.8f), 1);
             const float text_x = art.right() + 14, text_w = row.w - (text_x - row.x) - restore_w - 24;
             ui.label({text_x, row.y + 13, text_w, 22}, item.name.empty() ? item.id : item.name, t.style(type::body, t.text, text::medium));
             ui.label({text_x, row.y + 37, text_w, 18}, lyren::tr("Hidden from recommendations"), t.style(type::caption, t.text_dim));
@@ -741,10 +926,8 @@ namespace lyren {
         const Rect frame = page_frame(r);
         const Rect head{frame.x, r.y + 28, frame.w, art_d};
         const Rect cov{head.x, head.y, art_d, art_d};
-        p.shadow({cov.x, cov.y + 8, cov.w, cov.h}, art_d / 2, 28, t.shadow.with_alpha(0.65f));
         const std::string &avatar = a.info ? a.info->avatar : c.cover;
         cover(ui, cov, avatar, art_d / 2, "user");
-        p.rect(cov, {}, art_d / 2, t.surface_edge(1.1f), 1);
         if (const auto it = ui.interact(ui.id("artist-link"), cov); it.right_clicked) {
             shell_.dialogs.link_menu(ui, it.px, it.py, c);
         } else if (it.clicked && !avatar.empty()) {
@@ -933,7 +1116,6 @@ namespace lyren {
         const Rect frame = page_frame(r);
         const Rect head{frame.x, r.y + 28, frame.w, art_d};
         const Rect cov{head.x, head.y, art_d, art_d};
-        p.shadow({cov.x, cov.y + 8, cov.w, cov.h}, t.radius_l(), 28, t.shadow.with_alpha(0.65f));
         bool custom_cover = false;
         switch (page) {
             case Page::liked:
@@ -957,7 +1139,6 @@ namespace lyren {
             default:
                 custom_cover = true;
                 cover(ui, cov, c.cover, t.radius_l(), page == Page::album ? "disc-album" : "list-music");
-                p.rect(cov, {}, t.radius_l(), t.surface_edge(1.1f), 1);
         }
         if (custom_cover) {
             const auto it = ui.interact(ui.id("list-link"), cov);

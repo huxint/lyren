@@ -40,7 +40,13 @@ namespace lyren {
         void list_page(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, bool loading, const std::string &error, double since);
         // card_grid in its own scrolling view; near_end tells when the last rows are close.
         int grid_view(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Card> &cards, bool round, double since, bool more, bool &near_end);
-        bool hero(ui::Ui &ui, ui::Id id, ui::Rect r, std::string_view big, std::string_view badge, std::string_view title, std::string_view subtitle, float hue,
+        struct HeroSlot {
+            ui::Rect rect;
+            float dock = 0;
+            bool show_action = true;
+            bool icon_only = false;
+        };
+        bool hero(ui::Ui &ui, ui::Id id, HeroSlot slot, std::string_view big, std::string_view badge, std::string_view title, std::string_view subtitle, float hue,
                   std::string_view icon = {}, std::string_view action_icon = "play-fill");
         // "Play all" and "Shuffle" from x; returns where the next button goes.
         float play_buttons(ui::Ui &ui, float x, float y, const std::vector<Track> &tracks, float height = ui::control::large, bool compact = false);

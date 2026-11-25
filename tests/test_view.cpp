@@ -70,7 +70,7 @@ TEST_CASE("trace: the redesigned surfaces as laid out") {
         scene.shell.open_comments(Source::netease, Subject::song, "song-0", "Night Train · Mira Chen", "");
         scene.draw();
         const auto comments = scene.draw();
-        CHECK(drew(comments, "Top comment"));
+        CHECK(drew(comments, "Popular"));
         CHECK(drew(comments, "The bridge at two minutes in is the whole song."));
         scene.trace("comments-" + tag);
 
@@ -510,6 +510,20 @@ TEST_CASE("switching profile tabs while scrolled restores the section top") {
     scene.click(*col_tab, w, h);
     CHECK(scene.shell.browser.route().profile->section == Social::Section::collection);
     CHECK(scene.ui.scroll_offset(scroll) <= 220.f);
+
+    // Clicking the pinned identity chip on the right of the sticky tab bar scrolls back to the top.
+    scene.ui.scroll_to(scroll, 380.f);
+    const auto scrolled = scene.draw(w, h);
+    const ui::Painter::Run *top_chip = nullptr;
+    for (const auto &run : scrolled) {
+        if (!run.icon && run.text == "Mira Chen" && run.box.x > 700.f && run.box.y < 100.f) {
+            top_chip = &run;
+            break;
+        }
+    }
+    REQUIRE(top_chip != nullptr);
+    scene.click(*top_chip, w, h);
+    CHECK(scene.ui.scroll_offset(scroll) < 1.f);
 }
 
 TEST_CASE("comments docked composer expands, cancels reply safely, posts, and isolates visits") {
@@ -518,7 +532,8 @@ TEST_CASE("comments docked composer expands, cancels reply safely, posts, and is
     scene.shell.open_comments(Source::netease, Subject::song, "song-0", "Night Train · Mira Chen", "");
     scene.draw();
     const auto initial = scene.draw();
-    CHECK(drew(initial, "Top comment"));
+    CHECK(drew(initial, "Ada Lovelace"));
+    CHECK_FALSE(drew(initial, "Top comment"));
     CHECK(drew(initial, "What does this music bring to mind?"));
 
     // Reply opens the docked composer; cancelling the reply in the same frame must not dereference freed memory.
@@ -1023,4 +1038,155 @@ TEST_CASE("profile studio rail stays invariant across vertical scroll and transi
         scene.draw(1180, 380);
     }
     CHECK_FALSE(scene.ui.animating());
+}
+
+TEST_CASE("recommend sticky header morphs, latches, stays clickable above scrolled cards, and settles idle") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene({.motion = 1.0});
+    auto &shelf = scene.shell.library.shelf(Source::netease);
+    // Populate both daily playlists and recommended playlists so the page scrolls well past the hero section.
+    shelf.daily_lists.push_back({.id = "daily-list-0", .title = "Morning Coffee", .count = 20, .count_kind = Card::Count::songs});
+    for (int i = 6; i < 36; ++i) {
+        shelf.recommended.cards.push_back({.id = std::format("rec-{}", i), .title = std::format("Late Night Tape {}", i + 1), .count = 18 + i, .count_kind = Card::Count::songs});
+    }
+
+    auto find_in_page = [](std::span<const ui::Painter::Run> runs, std::string_view text, bool icon = false, float min_x = 220.f) -> const ui::Painter::Run * {
+        for (const auto &run : runs) {
+            if (run.icon == icon && run.text == text && run.box.x >= min_x) {
+                return &run;
+            }
+        }
+        return nullptr;
+    };
+
+    // Wide layout (single-row hero strip -> continuous scroll-linked morph into sticky pills).
+    std::span<const ui::Painter::Run> rest;
+    for (int i = 0; i < 12; ++i) {
+        rest = scene.draw(1440, 760);
+    }
+    CHECK_FALSE(scene.ui.animating());
+    const auto *daily_rest = find_in_page(rest, "Daily mix");
+    const auto *fm_rest = find_in_page(rest, "Personal FM");
+    REQUIRE(daily_rest != nullptr);
+    REQUIRE(fm_rest != nullptr);
+    const float rest_y = daily_rest->box.y;
+    CHECK(std::abs(rest_y - fm_rest->box.y) < 1.f);
+
+    const ui::Id scroll = scene.ui.id("recommend");
+    // Early collapse (off = 104): subtitle must already be gone or stay strictly inside the shrinking card bounds.
+    scene.ui.scroll_to(scroll, 104.f, false);
+    const auto early = scene.draw(1440, 760);
+    if (const auto *sub = find_in_page(early, "Fresh picks, every day")) {
+        const float card_bottom = 48.f + 10.f + std::lerp(128.f, 36.f, ui::ease::standard(std::clamp((104.f - 94.f) / 92.f, 0.f, 1.f)));
+        CHECK(sub->box.bottom() <= card_bottom);
+    }
+
+    // Mid-morph: cards stay cleanly separated without horizontal overlap and rise smoothly toward the top bar.
+    scene.ui.scroll_to(scroll, 140.f, false);
+    const auto mid = scene.draw(1440, 760);
+    const auto *daily_mid = find_in_page(mid, "Daily mix");
+    const auto *fm_mid = find_in_page(mid, "Personal FM");
+    REQUIRE(daily_mid != nullptr);
+    REQUIRE(fm_mid != nullptr);
+    CHECK_FALSE(overlaps(daily_mid->box, fm_mid->box));
+    CHECK(daily_mid->box.y < rest_y);
+    CHECK_FALSE(drew(mid, "Fresh picks, every day"));
+
+    // Fully docked: pills stay pinned at the top even as scroll keeps advancing, with the back-to-top anchor visible.
+    scene.ui.scroll_to(scroll, 320.f, false);
+    const auto docked_a = scene.draw(1440, 760);
+    const auto *daily_dock = find_in_page(docked_a, "Daily mix");
+    const auto *fm_dock = find_in_page(docked_a, "Personal FM");
+    REQUIRE(daily_dock != nullptr);
+    REQUIRE(fm_dock != nullptr);
+    CHECK_FALSE(daily_dock->cut);
+    CHECK_FALSE(fm_dock->cut);
+    CHECK_FALSE(overlaps(daily_dock->box, fm_dock->box));
+    CHECK(daily_dock->box.y < 100.f);
+    CHECK(std::abs(daily_dock->box.y - fm_dock->box.y) < 1.f);
+    const float pinned_y = daily_dock->box.y;
+
+    scene.ui.scroll_to(scroll, 520.f, false);
+    const auto docked_b = scene.draw(1440, 760);
+    const auto *daily_deeper = find_in_page(docked_b, "Daily mix");
+    REQUIRE(daily_deeper != nullptr);
+    CHECK(std::abs(daily_deeper->box.y - pinned_y) < 0.01f);
+    CHECK(find_in_page(docked_b, "chevron-up", true) == nullptr);
+    CHECK_FALSE(scene.ui.animating());
+
+    // Narrower multi-row layout: row 0 docks first while row 1 shrinks, slides rightward clear of row 0, and curves up
+    // into its sticky slot with zero overlap at every intermediate scroll offset.
+    for (int i = 0; i < 12; ++i) {
+        scene.draw(760, 760);
+    }
+    for (const float step_off : {140.f, 186.f, 230.f, 266.f, 300.f, 330.f, 520.f}) {
+        scene.ui.scroll_to(scroll, step_off, false);
+        const auto frame = scene.draw(760, 760);
+        const auto *d = find_in_page(frame, "Daily mix", false, 80.f);
+        const auto *f = find_in_page(frame, "Personal FM", false, 80.f);
+        const auto *rad = find_in_page(frame, "Radar", false, 80.f);
+        REQUIRE(d != nullptr);
+        REQUIRE(f != nullptr);
+        REQUIRE(rad != nullptr);
+        CHECK_FALSE(overlaps(d->box, f->box));
+        CHECK_FALSE(overlaps(d->box, rad->box));
+        CHECK_FALSE(overlaps(f->box, rad->box));
+    }
+
+    // Mid-flight on row 1 (off = 266): clicking Daily mix opens Daily mix rather than row 1 or any playlist below.
+    scene.ui.scroll_to(scroll, 266.f, false);
+    const auto mid_narrow = scene.draw(760, 760);
+    const auto *mid_daily = find_in_page(mid_narrow, "Daily mix", false, 80.f);
+    REQUIRE(mid_daily != nullptr);
+    CHECK(mid_daily->box.y < 100.f);
+    scene.click(*mid_daily, 760, 760);
+    CHECK(scene.shell.browser.route().page == Page::daily);
+    scene.shell.browser.back();
+    scene.draw(760, 760);
+
+    // Fully docked narrow layout: all 3 pills align on one sticky row and clicking Personal FM opens FM.
+    scene.ui.scroll_to(scroll, 520.f, false);
+    const auto narrow_docked = scene.draw(760, 760);
+    const auto *narrow_daily = find_in_page(narrow_docked, "Daily mix", false, 80.f);
+    const auto *narrow_fm = find_in_page(narrow_docked, "Personal FM", false, 80.f);
+    const auto *narrow_radar = find_in_page(narrow_docked, "Radar", false, 80.f);
+    REQUIRE(narrow_daily != nullptr);
+    REQUIRE(narrow_fm != nullptr);
+    REQUIRE(narrow_radar != nullptr);
+    CHECK_FALSE(narrow_fm->cut);
+    CHECK(narrow_fm->box.y < 100.f);
+    CHECK(std::abs(narrow_daily->box.y - narrow_radar->box.y) < 1.f);
+    scene.click(*narrow_fm, 760, 760);
+    CHECK(scene.shell.browser.route().page == Page::fm);
+
+    // Large font_size (32) and large radius (24): compact day numeral inside the docked pill does not truncate.
+    Scene large({.font_size = 32.f, .radius = 24.f});
+    auto &large_shelf = large.shell.library.shelf(Source::netease);
+    for (int i = 6; i < 36; ++i) {
+        large_shelf.recommended.cards.push_back(
+            {.id = std::format("rec-{}", i), .title = std::format("Late Night Tape {}", i + 1), .count = 18 + i, .count_kind = Card::Count::songs});
+    }
+    large.draw(1440, 760);
+    large.ui.scroll_to(large.ui.id("recommend"), 380.f, false);
+    const auto large_docked = large.draw(1440, 760);
+    const std::string today_day(large.shell.browser.today().substr(3));
+    const auto *day_run = find_in_page(large_docked, today_day);
+    REQUIRE(day_run != nullptr);
+    CHECK_FALSE(day_run->cut);
+
+    // Loading playlist covers render shimmering skeletons (animating while pending, without the empty-cover icon).
+    Scene loading_covers({.motion = 1.0});
+    auto &loading_shelf = loading_covers.shell.library.shelf(Source::netease);
+    for (auto &c : loading_shelf.recommended.cards) {
+        c.cover = "https://example.invalid/cover/" + c.id + ".jpg";
+    }
+    for (int i = 0; i < 8; ++i) {
+        loading_covers.draw(1180, 760);
+    }
+    const auto loading_runs = loading_covers.draw(1180, 760);
+    CHECK(loading_covers.ui.animating());
+    const bool card_icon = std::ranges::any_of(loading_runs, [](const ui::Painter::Run &run) {
+        return run.icon && run.text == "list-music" && run.box.x >= 220.f && run.box.y < 660.f;
+    });
+    CHECK_FALSE(card_icon);
 }
