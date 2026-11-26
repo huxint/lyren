@@ -46,8 +46,8 @@ namespace lyren {
             bool show_action = true;
             bool icon_only = false;
         };
-        bool hero(ui::Ui &ui, ui::Id id, HeroSlot slot, std::string_view big, std::string_view badge, std::string_view title, std::string_view subtitle, float hue,
-                  std::string_view icon = {}, std::string_view action_icon = "play-fill");
+        bool hero(ui::Ui &ui, ui::Id id, HeroSlot slot, std::string_view big, std::string_view badge, std::string_view title, std::string_view subtitle, std::string_view icon = {},
+                  std::string_view action_icon = "play-fill");
         // "Play all" and "Shuffle" from x; returns where the next button goes.
         float play_buttons(ui::Ui &ui, float x, float y, const std::vector<Track> &tracks, float height = ui::control::large, bool compact = false);
         float collection_button(ui::Ui &ui, float x, float y, float height, bool compact);

@@ -57,6 +57,7 @@ namespace lyren::test {
         std::move_only_function<Task<Result<ArtistInfo>>(std::string)> on_artist;
         std::move_only_function<Task<Result<Batch>>(std::string, int)> on_artist_songs;
         std::move_only_function<Task<Result<Profile>>(std::string)> on_profile;
+        std::move_only_function<Task<Result<PostPage>>(std::string, std::string)> on_posts;
         std::move_only_function<Task<Result<void>>(std::string)> on_import_session;
         std::move_only_function<Task<SessionCheck>(std::string)> on_check_session;
 
@@ -287,7 +288,10 @@ namespace lyren::test {
             calls.push_back(std::format("follow {} {}", uid, on));
             co_return Result<void>{};
         }
-        Task<Result<PostPage>> posts(std::string uid, std::string) override {
+        Task<Result<PostPage>> posts(std::string uid, std::string cursor) override {
+            if (on_posts) {
+                co_return co_await on_posts(std::move(uid), std::move(cursor));
+            }
             co_return PostPage{.posts = timeline(uid == self ? me() : person(0), uid == self)};
         }
         Task<Result<PostPage>> feed(std::string) override {

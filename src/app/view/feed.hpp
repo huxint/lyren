@@ -29,13 +29,38 @@ namespace lyren {
         void compose(ui::Ui &ui, Source source, std::optional<Track> track = {}, std::optional<Post> forward = {});
 
     private:
+        struct YearGroup {
+            int year = 0; // 0 when post.time <= 0
+            size_t from = 0;
+            size_t to = 0; // exclusive
+        };
+        struct TimelineIndex {
+            const Social::Posts *list = nullptr;
+            size_t count = 0;
+            std::string first_id;
+            std::vector<YearGroup> groups;
+        };
+        struct TimelineLayout {
+            bool rail = false; // wide: bold sticky left year rail; narrow: sticky inline year header
+            float year_text_w = 0, year_rail_w = 0;
+            float day_box_w = 0, day_col_w = 0, content_x = 0;
+            float year_gap = 0, header_h = 0;
+            float head_h = 0, baseline = 0, month_offset = 0, year_h = 0;
+            ui::TextStyle year_style, day_style, month_style;
+        };
+
+        void sync_years(const Social::Posts &posts, bool reset);
+        static TimelineLayout timeline_layout(ui::Ui &ui, float w);
         // A post at y, or only its height when it is not drawn.
-        float post(ui::Ui &ui, Source source, const Post &post, float x, float y, float w, bool draw, bool byline);
+        float post(ui::Ui &ui, Source source, const Post &post, float x, float y, float w, bool draw, bool byline, const TimelineLayout *timeline = nullptr, float lead_h = 0,
+                   bool divider = true);
         // The song, playlist, pictures or forwarded post a post carries; returns the height used.
         float attachments(ui::Ui &ui, Source source, const Post &post, float x, float y, float w, bool draw);
         void menu(ui::Ui &ui, ui::Rect anchor, Source source, const Post &post, bool byline);
         void composer(ui::Ui &ui, ui::Rect r);
         float composer_height() const;
+
+        TimelineIndex index_;
     };
 
 } // namespace lyren

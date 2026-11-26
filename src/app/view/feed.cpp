@@ -37,6 +37,24 @@ namespace lyren {
             return out;
         }
 
+        int post_year(int64_t ms) {
+            return ms > 0 ? local(ms).tm_year + 1900 : 0;
+        }
+
+        SmallText<8> two_digits(int value) {
+            SmallText<8> out;
+            const auto res = std::format_to_n(out.buf.data(), out.buf.size(), "{:02}", value);
+            out.len = static_cast<size_t>(res.out - out.buf.data());
+            return out;
+        }
+
+        SmallText<8> hhmm(int hour, int minute) {
+            SmallText<8> out;
+            const auto res = std::format_to_n(out.buf.data(), out.buf.size(), "{:02}:{:02}", hour, minute);
+            out.len = static_cast<size_t>(res.out - out.buf.data());
+            return out;
+        }
+
         // What a post says, in a line or two: its words, or the song it shares.
         std::string_view gist(const Post &post) {
             return post.text.empty() && post.track ? std::string_view(post.track->title) : std::string_view(post.text);
@@ -93,13 +111,24 @@ namespace lyren {
         }
 
         // Posts on their way: the shape of a few of them.
-        void skeleton(ui::Ui &ui, Rect r, bool byline) {
+        void skeleton(ui::Ui &ui, Rect r, bool byline, float year_rail_w, float content_x, float day_w) {
             float y = r.y + look::pad;
             for (int i = 0; i < 3; ++i) {
-                const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f), x = r.x + look::gutter, w = r.w - look::gutter;
-                ui.skeleton({r.x, y, look::avatar, look::avatar}, byline ? look::avatar / 2 : ui.theme().radius_s());
-                ui.skeleton({x, y + 4, 120, 12}, 6);
-                ui.skeleton({x, y + 26, 64, 10}, 5);
+                const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
+                const float x = r.x + content_x, w = std::max(0.f, r.w - content_x);
+                if (byline) {
+                    ui.skeleton({r.x, y, look::avatar, look::avatar}, look::avatar / 2);
+                    ui.skeleton({x, y + 4, 120, 12}, 6);
+                    ui.skeleton({x, y + 26, 64, 10}, 5);
+                } else {
+                    if (i == 0 && year_rail_w > 0) {
+                        ui.skeleton({r.x, y + 2, std::max(36.f, year_rail_w - 22), 18}, 6);
+                    }
+                    const float dx = r.x + year_rail_w;
+                    ui.skeleton({dx + (day_w - 24) / 2, y + 2, 24, 16}, 5);
+                    ui.skeleton({dx + (day_w - 20) / 2, y + 24, 20, 9}, 4.5f);
+                    ui.skeleton({x, y + 6, 48, 10}, 5);
+                }
                 ui.skeleton({x, y + 56, w * (0.7f + 0.25f * k), 12}, 6);
                 ui.skeleton({x, y + 80, w * (0.4f + 0.3f * (1 - k)), 12}, 6);
                 ui.skeleton({x, y + 108, std::min(w, 360.f), look::chip}, ui.theme().radius);
@@ -188,10 +217,7 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         constexpr float h = 44;
-        const auto &account = library_.shelf(source).account;
-        const Rect face{r.x, r.y + (h - look::avatar) / 2, look::avatar, look::avatar};
-        cover(ui, face, account ? account->avatar : std::string(), look::avatar / 2, "user");
-        Rect field{r.x + look::gutter, r.y, r.w - look::gutter, h};
+        Rect field{r.x, r.y, r.w, h};
         // The song playing is one click from being shared.
         const Track *playing = playback_.current();
         const bool shareable = playing && playing->source == source;
@@ -381,13 +407,65 @@ namespace lyren {
         return h;
     }
 
-    float PostFeed::post(ui::Ui &ui, Source source, const Post &post, float x, float y, float w, bool draw, bool byline) {
+    void PostFeed::sync_years(const Social::Posts &posts, bool reset) {
+        const bool same_list =
+            index_.list == &posts && !reset && posts.items.size() >= index_.count && (index_.count == 0 || (!posts.items.empty() && posts.items.front().id == index_.first_id));
+        if (!same_list) {
+            index_.list = &posts;
+            index_.count = 0;
+            index_.first_id = posts.items.empty() ? std::string() : posts.items.front().id;
+            index_.groups.clear();
+        }
+        while (index_.count < posts.items.size()) {
+            const size_t i = index_.count++;
+            const int year = post_year(posts.items[i].time);
+            if (!index_.groups.empty() && index_.groups.back().year == year) {
+                index_.groups.back().to = i + 1;
+            } else {
+                index_.groups.push_back({year, i, i + 1});
+            }
+        }
+    }
+
+    PostFeed::TimelineLayout PostFeed::timeline_layout(ui::Ui &ui, float w) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        const float cx = x + look::gutter, inner = w - look::gutter;
+        TimelineLayout lay;
+        const TextStyle rail_year_style = t.style(22.f, t.text, text::semibold | text::tabular_nums);
+        const float rail_year_text_w = std::ceil(p.measure("8888", rail_year_style)) + 2.f;
+        const float rail_year_w = rail_year_text_w + 20.f;
+        lay.day_style = t.style(17.f, t.text.with_alpha(0.84f), text::semibold | text::tabular_nums);
+        lay.month_style = t.style(type::micro, t.faint(), text::medium);
+        lay.day_box_w = std::max(36.f, std::ceil(std::max({p.measure("88", lay.day_style), p.measure("12月", lay.month_style), p.measure("Dec", lay.month_style)})) + 4.f);
+        lay.day_col_w = lay.day_box_w + 14.f;
+        lay.rail = w - (rail_year_w + lay.day_col_w) >= 310.f;
+        lay.year_style = lay.rail ? rail_year_style : t.style(18.f, t.text, text::semibold | text::tabular_nums);
+        lay.year_text_w = lay.rail ? rail_year_text_w : std::ceil(p.measure("8888", lay.year_style)) + 2.f;
+        lay.year_rail_w = lay.rail ? rail_year_w : 0.f;
+        lay.content_x = lay.year_rail_w + lay.day_col_w;
+        const float ref_size = lay.rail ? lay.year_style.size : lay.day_style.size;
+        const float asc = std::ceil(p.ascent(ref_size));
+        const float desc = std::ceil(p.descent(ref_size));
+        lay.baseline = asc;
+        lay.month_offset = std::ceil(p.descent(lay.day_style.size) + p.ascent(lay.month_style.size)) + 2.f;
+        lay.head_h = std::max(20.f, asc + desc);
+        lay.year_h = std::max(24.f, asc + desc + 2.f);
+        lay.year_gap = 20.f;
+        lay.header_h = std::ceil(lay.year_style.size * 1.45f) + 10.f;
+        return lay;
+    }
+
+    float PostFeed::post(ui::Ui &ui, Source source, const Post &post, float x, float y, float w, bool draw, bool byline, const TimelineLayout *timeline, float lead_h,
+                         bool divider) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const float gutter = byline || !timeline ? look::gutter : timeline->content_x;
+        const float cx = x + gutter, inner = std::max(0.f, w - gutter);
         const auto body = t.style(type::lead, t.text);
         const float lh = std::round(body.size * 1.6f);
-        const float head_y = y + look::pad, head_h = byline ? look::avatar : 20;
+        const float post_top = y + lead_h;
+        const float head_y = post_top + look::pad;
+        const float head_h = byline ? look::avatar : timeline ? timeline->head_h : 20.f;
         const auto lines = post.text.empty() ? std::vector<std::string_view>{} : p.wrap_lines(post.text, body.size, inner);
         const float text_y = head_y + head_h + (byline ? 10 : 6);
         const float attach_y = text_y + static_cast<float>(lines.size()) * lh + (lines.empty() ? 0 : 10);
@@ -402,7 +480,9 @@ namespace lyren {
         // A post on its way out fades and stops answering.
         const bool leaving = social_.removing(source, post);
         ui::Enabled alive(ui, !leaving, 0.4f);
-        p.rect({cx, y + h - 1, inner, 1}, t.line());
+        if (divider) {
+            p.rect({cx, y + h - 1, inner, 1}, t.line(byline ? 1.f : 0.65f));
+        }
         const std::tm when = local(post.time);
         const auto quiet = t.style(type::caption, t.faint(), text::tabular_nums);
         if (byline) {
@@ -420,15 +500,18 @@ namespace lyren {
                 browser_.open_profile(source, post.author.id, post.author.name, post.author.avatar);
             }
             ui.label({cx, head_y + 21, inner - 40, 18}, post_time(post.time), quiet);
-        } else {
-            // On one listener's timeline the day stands where the face would: the posts read as a journal.
-            if (post.time > 0) {
-                ui.label({x, head_y - 2, look::avatar, 24}, std::format("{:02}", when.tm_mday), t.style(type::title, t.text.with_alpha(0.82f), text::semibold | text::tabular_nums),
-                         Align::center);
-                ui.label({x - 4, head_y + 24, look::avatar + 8, 16}, std::format("{}/{:02}", when.tm_year + 1900, when.tm_mon + 1),
-                         t.style(type::micro, t.faint(), text::tabular_nums), Align::center);
-                ui.label({cx, head_y, inner - 40, head_h}, std::format("{:02}:{:02}", when.tm_hour, when.tm_min), quiet);
-            }
+        } else if (post.time > 0 && timeline) {
+            // On one listener's timeline the year lives in the sticky rail; each entry carries only day, month and time
+            // locked to the same typographic baseline.
+            const float day_x = x + timeline->year_rail_w;
+            const float base = head_y + timeline->baseline;
+            const SmallText<8> day = two_digits(when.tm_mday);
+            const float day_w = p.measure(day, timeline->day_style);
+            p.text(day_x + (timeline->day_box_w - day_w) / 2, base, day, timeline->day_style);
+            const std::string_view month = month_short(when.tm_mon);
+            const float month_w = p.measure(month, timeline->month_style);
+            p.text(day_x + (timeline->day_box_w - month_w) / 2, base + timeline->month_offset, month, timeline->month_style);
+            p.text(cx, base, hhmm(when.tm_hour, when.tm_min), quiet, std::max(0.f, inner - 40));
         }
         const auto marks = highlights(post.text);
         float line_y = text_y;
@@ -475,7 +558,8 @@ namespace lyren {
                 compose(ui, source, {}, post);
             }
         }
-        const Rect more{x + w - 30, head_y - 3, 28, 28};
+        const float more_y = byline ? head_y - 3 : head_y + (head_h - 28) / 2;
+        const Rect more{x + w - 30, more_y, 28, 28};
         if (leaving) {
             ui.spinner(ui::center(more, 14, 14), t.text_dim, 1.5f);
         } else if (ui.icon_button(ui.id("more"), more, "ellipsis", 16, false, lyren::tr("More"))) {
@@ -526,6 +610,8 @@ namespace lyren {
         const auto &t = ui.theme();
         auto &posts = *list;
         const float w = std::min(r.w, column);
+        const std::optional<TimelineLayout> timeline = byline ? std::nullopt : std::optional(timeline_layout(ui, w));
+        const TimelineLayout *tl = timeline ? &*timeline : nullptr;
         if (posts.items.empty()) {
             if (posts.open()) {
                 social_.load_posts(list, source, author);
@@ -540,7 +626,7 @@ namespace lyren {
                     social_.load_posts(list, source, author);
                 }
             } else if (posts.loading || posts.more) {
-                skeleton(ui, {room.x, room.y, room.w, room.h}, byline);
+                skeleton(ui, {room.x, room.y, room.w, room.h}, byline, tl ? tl->year_rail_w : 0.f, tl ? tl->content_x : look::gutter, tl ? tl->day_box_w : look::avatar);
                 return 3 * (108 + look::chip + look::pad * 2);
             } else {
                 empty(ui, room, "messages-square", lyren::tr(author.empty() ? "No posts from people you follow" : "No posts yet"),
@@ -552,20 +638,147 @@ namespace lyren {
         if (const float size = t.fs(type::lead); heights.width != w || heights.size != size) {
             heights.reset(w, size);
         }
-        while (heights.size_count() < posts.items.size()) {
-            heights.push(post(ui, source, posts.items[heights.size_count()], 0, 0, w, false, byline));
+        if (tl) {
+            sync_years(posts, heights.size_count() == 0);
+        }
+        auto lead_for = [&](size_t i, const YearGroup &g) -> float {
+            if (!tl || i != g.from) {
+                return 0.f;
+            }
+            if (tl->rail) {
+                return i > 0 ? tl->year_gap : 0.f;
+            }
+            return g.year > 0 ? tl->header_h : 0.f;
+        };
+        if (heights.size_count() < posts.items.size()) {
+            size_t gi = tl ? static_cast<size_t>(std::ranges::upper_bound(index_.groups, heights.size_count(), {}, &YearGroup::to) - index_.groups.begin()) : 0;
+            while (heights.size_count() < posts.items.size()) {
+                const size_t i = heights.size_count();
+                float lead = 0.f;
+                if (tl) {
+                    while (gi + 1 < index_.groups.size() && index_.groups[gi].to <= i) {
+                        ++gi;
+                    }
+                    lead = lead_for(i, index_.groups[gi]);
+                }
+                heights.push(post(ui, source, posts.items[i], 0, 0, w, false, byline, tl, lead));
+            }
         }
         // Only the posts in sight are drawn; the first to arrive come in one after another.
         const Rect clip = ui.clip();
+        const size_t first = heights.first_at(clip.y - r.y);
+        // On narrow viewports sticky year headers span the column above scrolling posts; register their hit shield first
+        // and raise their primitives over the posts afterwards.
+        const size_t bars_from = p.mark();
+        if (tl && !tl->rail) {
+            const float in = ui.cascade(posts.since, 0);
+            for (auto g = std::ranges::upper_bound(index_.groups, first, {}, &YearGroup::to); g != index_.groups.end(); ++g) {
+                const float raw_top = r.y + heights.top(g->from);
+                if (raw_top >= clip.bottom()) {
+                    break;
+                }
+                if (g->year <= 0) {
+                    continue;
+                }
+                const float group_bottom = r.y + heights.ends[g->to - 1];
+                if (group_bottom <= clip.y) {
+                    continue;
+                }
+                const float max_y = std::max(raw_top, group_bottom - tl->header_h);
+                const float sticky_y = std::clamp(clip.y, raw_top, max_y);
+                const float pinned_k = smooth01((clip.y - raw_top) / 10.f);
+                const float push = max_y < clip.y ? std::clamp((clip.y - sticky_y) / tl->header_h, 0.f, 1.f) : 0.f;
+                const Rect bar{r.x, sticky_y + (1 - in) * 10, w, tl->header_h};
+                if (pinned_k > 0.01f && push < 0.98f) {
+                    ui.interact(ui::sub_id(ui.id("year-bar"), static_cast<uint64_t>(g->from)), bar);
+                }
+                Fade fade(p, in);
+                p.rect(bar, t.surface.with_alpha((0.92f + 0.08f * pinned_k) * (1.f - 0.6f * push)));
+                p.rect({bar.x, bar.bottom() - 1, bar.w, 1}, t.line((0.65f + 0.25f * pinned_k) * (1.f - push)));
+                const float text_a = 1.f - smooth01(push / 0.85f);
+                if (text_a > 0.02f) {
+                    Fade tf(p, text_a);
+                    ui.label({bar.x, bar.y, bar.w, bar.h - 1}, int_text(g->year), tl->year_style);
+                }
+            }
+        }
+        const size_t bars_to = p.mark();
         int shown = 0;
-        for (size_t i = heights.first_at(clip.y - r.y); i < posts.items.size(); ++i) {
+        size_t gi = tl ? static_cast<size_t>(std::ranges::upper_bound(index_.groups, first, {}, &YearGroup::to) - index_.groups.begin()) : 0;
+        for (size_t i = first; i < posts.items.size(); ++i) {
             const float row_y = r.y + heights.top(i);
             if (row_y >= clip.bottom()) {
                 break;
             }
+            float lead = 0.f;
+            bool divider = true;
+            if (tl) {
+                while (gi + 1 < index_.groups.size() && index_.groups[gi].to <= i) {
+                    ++gi;
+                }
+                const YearGroup &g = index_.groups[gi];
+                lead = lead_for(i, g);
+                // Omit the inner hairline right before a year boundary where the chapter divider takes over.
+                divider = i + 1 < g.to || gi + 1 == index_.groups.size();
+            }
             const float in = ui.cascade(posts.since, shown++);
             Fade fade(p, in);
-            post(ui, source, posts.items[i], r.x, row_y + (1 - in) * 10, w, true, byline);
+            const float dy = (1 - in) * 10;
+            if (tl && tl->rail && lead > 0) {
+                // Keep the left year rail as an uninterrupted vertical track so years glide and push smoothly through it.
+                p.rect({r.x + tl->year_rail_w, row_y + dy + 6, std::max(0.f, w - tl->year_rail_w), 1}, t.line(0.95f));
+            }
+            post(ui, source, posts.items[i], r.x, row_y + dy, w, true, byline, tl, lead, divider);
+        }
+        if (tl && tl->rail) {
+            // Sticky editorial year rail on the left: each year stays sharp and steady at the viewport top until the
+            // next year arrives, then smoothly eases upward and dissolves without scale shimmer or bounce jitter.
+            const float in = ui.cascade(posts.since, 0);
+            const float contact_dist = tl->year_h + 6.f;
+            const float pin_y = clip.y + look::pad;
+            constexpr float cushion = 12.f;
+            // Include a chapter whose last post has just scrolled above clip.y while its sticky year is still finishing
+            // its fade-out above the incoming chapter's lead gap.
+            const size_t year_first = heights.first_at(clip.y - r.y - tl->year_gap - look::pad - contact_dist);
+            for (auto g = std::ranges::upper_bound(index_.groups, year_first, {}, &YearGroup::to); g != index_.groups.end(); ++g) {
+                const float raw_top = r.y + heights.top(g->from);
+                if (raw_top >= clip.bottom()) {
+                    break;
+                }
+                if (g->year <= 0) {
+                    continue;
+                }
+                const float group_bottom = r.y + heights.ends[g->to - 1];
+                const float lead = g->from > 0 ? tl->year_gap : 0.f;
+                const float natural_y = raw_top + lead + look::pad;
+                const auto next_g = std::next(g);
+                const bool has_next = next_g != index_.groups.end() && next_g->year > 0;
+                const float next_natural_y = has_next ? r.y + heights.top(next_g->from) + tl->year_gap + look::pad : 0.f;
+                const float max_y = has_next ? std::max(natural_y, next_natural_y - contact_dist) : std::max(natural_y, group_bottom - look::pad - tl->year_h);
+                if (!has_next && group_bottom <= clip.y) {
+                    continue;
+                }
+                // C1-smooth minimum between pin_y and max_y so the outgoing year accelerates gently from rest into
+                // 1:1 scroll motion instead of snapping at the contact point.
+                float sticky_y = std::max(natural_y, std::min(pin_y, max_y));
+                if (natural_y < pin_y && max_y > natural_y) {
+                    const float h = std::max(cushion - std::abs(max_y - pin_y), 0.f) / cushion;
+                    sticky_y = std::max(natural_y, std::min(pin_y, max_y) - h * h * cushion * 0.25f);
+                }
+
+                const float push = std::clamp((pin_y - sticky_y) / contact_dist, 0.f, 1.f);
+                const float out_a = 1.f - smooth01(push);
+                if (out_a <= 0.02f) {
+                    continue;
+                }
+                const float approach = g->from > 0 ? smooth01(1.f - (natural_y - pin_y) / 64.f) : 1.f;
+                TextStyle ys = tl->year_style;
+                ys.color = t.text.with_alpha(std::lerp(0.76f, 0.96f, approach) * out_a);
+                Fade fade(p, in);
+                p.text(r.x, sticky_y + (1 - in) * 10 + tl->baseline, int_text(g->year), ys);
+            }
+        } else if (bars_to > bars_from) {
+            p.raise(bars_from, bars_to);
         }
         const float y = r.y + heights.total();
         const Rect foot{r.x, y, w, 64};

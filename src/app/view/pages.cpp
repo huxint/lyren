@@ -165,8 +165,8 @@ namespace lyren {
         return k;
     }
 
-    bool Pages::hero(ui::Ui &ui, ui::Id id, HeroSlot slot, std::string_view big, std::string_view badge, std::string_view title, std::string_view subtitle, float hue,
-                     std::string_view icon, std::string_view action_icon) {
+    bool Pages::hero(ui::Ui &ui, ui::Id id, HeroSlot slot, std::string_view big, std::string_view badge, std::string_view title, std::string_view subtitle, std::string_view icon,
+                     std::string_view action_icon) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Rect r = slot.rect;
@@ -176,91 +176,95 @@ namespace lyren {
             ui.cursor = wl::Cursor::pointer;
         }
         const auto [hot, down] = ui.feel(id, it, pace::steady);
-        const Rect card = Rect{r.x, r.y - std::lerp(1.5f, 0.5f, dock) * hot, r.w, r.h}.inset(down * std::lerp(1.2f, 0.7f, dock));
-        const float radius = std::lerp(t.radius_l(), t.round(36.f), dock);
-        const ui::Color tint = ui::accent_for_hue(hue, t.dark);
-        const ui::Color full_paper = t.dark ? t.fill(1.05f + 0.35f * hot) : t.bg.mix(t.surface, 0.32f + 0.36f * hot);
-        const ui::Color dock_paper = t.dark ? t.fill(0.92f + 0.55f * hot) : t.bg.mix(t.surface, 0.22f + 0.36f * hot);
-        p.rect(card, full_paper.mix(dock_paper, dock), radius);
-        const float top_a = std::lerp((t.dark ? 0.13f : 0.09f) + 0.045f * hot, (t.dark ? 0.12f : 0.08f) + 0.055f * hot, dock);
-        const float bot_a = std::lerp(t.dark ? 0.02f : 0.015f, (t.dark ? 0.05f : 0.03f) + 0.03f * hot, dock);
-        p.gradient(card, tint.with_alpha(top_a), tint.with_alpha(bot_a), radius);
+        const Rect card = Rect{r.x, r.y - std::lerp(1.f, 0.5f, dock) * hot, r.w, r.h}.inset(down * std::lerp(1.f, 0.6f, dock));
+        const float radius = std::lerp(t.radius_l() * 0.85f, t.round(36.f), dock);
+        // Calm monochrome architectural surface across all cards: dark mode uses layered neutral fills, while light
+        // mode pairs a deeper neutral tint with a whisper hairline so card silhouettes read crisply on white paper.
+        const ui::Color full_paper = t.dark ? t.fill(0.90f + 0.50f * hot) : t.fill(1.45f + 0.70f * hot);
+        const ui::Color dock_paper = t.dark ? t.fill(0.84f + 0.56f * hot) : t.fill(1.40f + 0.65f * hot);
+        const ui::Color card_edge = t.dark ? ui::Color{} : t.border.with_alpha(0.70f + 0.30f * hot);
+        p.rect(card, full_paper.mix(dock_paper, dock), radius, card_edge, t.dark ? 0.f : 1.f);
         if (slot.icon_only && dock > 0.75f && it.hovered && !it.held) {
             ui.tooltip(id, card, title);
         }
 
-        const Rect emblem_dock = slot.icon_only ? ui::center(card, 24, 24) : Rect{card.x + 6, card.y + (card.h - 24) / 2, 24, 24};
+        const Rect emblem_full{card.x + 14, card.y + (card.h - 44) / 2, 44, 44};
+        const Rect emblem_dock = slot.icon_only ? ui::center(card, 26, 26) : Rect{card.x + 5, card.y + (card.h - 26) / 2, 26, 26};
+        const Rect emblem = mix(emblem_full, emblem_dock, dock);
+        const float emblem_r = std::lerp(t.radius, emblem.h / 2, dock);
+        const ui::Color emblem_rest = t.dark ? t.fill(1.25f) : t.surface;
+        const ui::Color emblem_hot = t.accent.with_alpha(t.dark ? 0.20f : 0.14f);
+        const ui::Color emblem_edge = t.dark ? ui::Color{} : t.border.with_alpha(0.85f).mix(t.accent.with_alpha(0.35f), hot);
+        p.rect(emblem, emblem_rest.mix(emblem_hot, hot), emblem_r, emblem_edge, t.dark ? 0.f : 1.f);
+
         if (icon.empty()) {
-            if (const float big_a = 1 - smooth01(dock / 0.42f); big_a > 0.01f) {
-                Fade f(p, big_a);
-                const auto num_style = t.style(36, t.text, text::semibold | text::tabular_nums);
-                const float nw = std::ceil(p.measure(big, num_style)) + 1;
-                const float nx = std::lerp(card.x + 20, emblem_dock.x, dock);
-                const float ny = std::lerp(card.y + 12, emblem_dock.y - 6, dock);
-                if (dock > 0.01f) {
-                    p.set_zoom(std::lerp(1.f, 0.65f, dock), nx, ny + 22);
-                }
-                ui.label({nx, ny, nw, 44}, big, num_style);
-                p.set_zoom(1);
-                if (!badge.empty()) {
-                    if (const float badge_a = 1 - smooth01(dock / 0.32f); badge_a > 0.01f) {
-                        Fade bf(p, badge_a);
-                        const auto badge_style = t.style(type::micro, tint, text::medium | text::tabular_nums);
-                        const float bw = std::ceil(p.measure(badge, badge_style)) + 14;
-                        const Rect pill{nx + nw + 10, ny + 12, bw, 20};
-                        p.rect(pill, tint.with_alpha(t.dark ? 0.15f : 0.11f), 10);
-                        ui.label(pill, badge, badge_style, Align::center);
-                    }
+            // Calendar leaf at rest (quiet accent month above the crisp day), morphing directly into the docked badge.
+            if (!badge.empty()) {
+                if (const float month_a = 1 - smooth01(dock / 0.35f); month_a > 0.01f) {
+                    Fade mf(p, month_a);
+                    const float mfs = std::min(t.fs(10.f), 11.f);
+                    ui.label({emblem.x, emblem.y + 4, emblem.w, 12}, badge, {.size = mfs, .color = t.accent.with_alpha(0.92f), .features = text::semibold}, Align::center);
                 }
             }
-            if (const float chip_a = smooth01((dock - 0.22f) / 0.45f); chip_a > 0.01f) {
-                Fade f(p, chip_a);
-                const Rect chip = mix({card.x + 20, card.y + 18, 34, 34}, emblem_dock, dock);
-                p.rect(chip, tint.with_alpha(t.dark ? 0.22f : 0.15f), chip.h / 2);
-                const float chip_fs = std::min(t.fs(type::caption), chip.h * 0.54f);
-                ui.label(chip, big, {.size = chip_fs, .color = tint, .features = text::semibold | text::tabular_nums}, Align::center);
+            const Rect day_full{emblem.x, emblem.y + (badge.empty() ? 0.f : 16.f), emblem.w, badge.empty() ? emblem.h : 24.f};
+            const Rect day_r = mix(day_full, emblem, dock);
+            const float full_fs = std::min(t.fs(19.f), 20.f);
+            const float dock_fs = std::min(t.fs(type::caption), emblem.h * 0.54f);
+            const ui::Color day_c = t.text.mix(t.accent, std::max(hot * 0.85f, dock * 0.85f));
+            if (dock <= 0.01f) {
+                ui.label(day_full, big, {.size = full_fs, .color = day_c, .features = text::semibold | text::tabular_nums}, Align::center);
+            } else if (dock >= 0.99f) {
+                ui.label(emblem, big, {.size = dock_fs, .color = day_c, .features = text::semibold | text::tabular_nums}, Align::center);
+            } else {
+                const float s = std::lerp(1.f, dock_fs / full_fs, dock);
+                p.set_zoom(s, day_r.x + day_r.w / 2, day_r.y + day_r.h / 2);
+                ui.label({day_r.x + (day_r.w - day_r.w / s) / 2, day_r.y + (day_r.h - day_r.h / s) / 2, day_r.w / s, day_r.h / s}, big,
+                         {.size = full_fs, .color = day_c, .features = text::semibold | text::tabular_nums}, Align::center);
+                p.set_zoom(1);
             }
         } else {
-            const Rect emblem = mix({card.x + 20, card.y + 18, 38, 38}, emblem_dock, dock);
-            const float emblem_r = std::lerp(11.f, emblem.h / 2, dock);
-            p.rect(emblem, tint.with_alpha(std::lerp(t.dark ? 0.16f : 0.11f, t.dark ? 0.22f : 0.15f, dock)), emblem_r);
+            const float rest_a = t.dark ? std::lerp(0.78f, 0.72f, dock) : std::lerp(0.86f, 0.80f, dock);
+            const ui::Color glyph_c = t.text.with_alpha(rest_a).mix(t.accent, hot);
             if (dock >= 0.99f) {
-                p.icon(icon, ui::center(emblem, 13, 13), tint);
+                p.icon(icon, ui::center(emblem, 16, 16), glyph_c);
             } else if (dock <= 0.01f) {
-                p.icon(icon, ui::center(emblem, 19, 19), tint);
+                p.icon(icon, ui::center(emblem, 22, 22), glyph_c);
             } else {
-                p.set_zoom(std::lerp(1.f, 13.f / 19.f, dock), emblem.x + emblem.w / 2, emblem.y + emblem.h / 2);
-                p.icon(icon, ui::center(emblem, 19, 19), tint);
+                p.set_zoom(std::lerp(1.f, 16.f / 22.f, dock), emblem.x + emblem.w / 2, emblem.y + emblem.h / 2);
+                p.icon(icon, ui::center(emblem, 22, 22), glyph_c);
                 p.set_zoom(1);
             }
         }
 
+        const bool play = action_icon == "play-fill";
+        const float tx_full = card.x + 68;
+        const float tw_full = std::max(0.f, card.w - 68 - (play ? 48.f : 36.f));
         if (const float sub_a = 1 - smooth01(dock / 0.30f); sub_a > 0.01f) {
-            const float sub_y = std::min(card.y + 93 - 28 * dock, card.bottom() - 20);
+            const float sub_y = std::min(card.y + 43 - 12 * dock, card.bottom() - 20);
             if (sub_y >= card.y) {
                 Fade f(p, sub_a);
-                ui.label({card.x + 20, sub_y, std::max(0.f, card.w - 78), 18}, subtitle, t.style(type::caption, t.text_dim));
+                ui.label({tx_full, sub_y, tw_full, 18}, subtitle, t.style(type::caption, t.text_dim));
             }
         }
 
-        const Rect title_full{card.x + 20, card.y + 68, std::max(0.f, card.w - 78), 24};
+        const Rect title_full{tx_full, card.y + 19, tw_full, 22};
         if (slot.icon_only) {
             if (const float title_a = 1 - smooth01(dock / 0.45f); title_a > 0.01f) {
                 Fade f(p, title_a);
-                ui.label(title_full, title, t.style(type::heading, t.text, text::semibold));
+                ui.label(title_full, title, t.style(type::lead, t.text, text::semibold));
             }
         } else {
             const float tx = emblem_dock.right() + 8;
-            const Rect title_dock{tx, card.y + (card.h - 20) / 2, std::max(0.f, card.right() - tx - (slot.show_action ? 34.f : 10.f)), 20};
+            const Rect title_dock{tx, card.y + (card.h - 20) / 2, std::max(0.f, card.right() - tx - (slot.show_action ? 36.f : 12.f)), 20};
             const Rect tr = mix(title_full, title_dock, dock);
             if (dock >= 0.99f) {
                 ui.label(title_dock, title, t.style(type::label, t.text, text::medium));
             } else if (dock <= 0.01f) {
-                ui.label(title_full, title, t.style(type::heading, t.text, text::semibold));
+                ui.label(title_full, title, t.style(type::lead, t.text, text::semibold));
             } else {
-                const float s = std::lerp(1.f, type::label / type::heading, dock);
+                const float s = std::lerp(1.f, type::label / type::lead, dock);
                 p.set_zoom(s, tr.x, tr.y + tr.h / 2);
-                ui.label({tr.x, tr.y, tr.w / s, tr.h}, title, t.style(type::heading, t.text, text::semibold));
+                ui.label({tr.x, tr.y, tr.w / s, tr.h}, title, t.style(type::lead, t.text, text::semibold));
                 p.set_zoom(1);
             }
         }
@@ -269,28 +273,37 @@ namespace lyren {
         const float disc_a = keep_disc ? 1.f : 1 - smooth01(dock / 0.45f);
         if (disc_a > 0.01f) {
             Fade f(p, disc_a);
-            const Rect disc_full = Rect{card.right() - 50, card.bottom() - 50, 34, 34}.inset(-1.f * hot);
-            const Rect disc_dock = Rect{card.right() - 29, card.y + (card.h - 22) / 2, 22, 22}.inset(-0.5f * hot);
-            const Rect disc = keep_disc ? mix(disc_full, disc_dock, dock) : disc_full;
-            p.rect(disc, t.fill(std::lerp(1.25f, 0.85f, dock)).mix(tint, hot), disc.w / 2);
-            const ui::Color on_tint = tint.luminance() > 0.6f ? ink : white;
-            const ui::Color glyph_c = t.text_dim.mix(on_tint, hot);
+            const Rect disc_full =
+                play ? Rect{card.right() - 46, card.y + (card.h - 32) / 2, 32, 32}.inset(-1.f * hot) : Rect{card.right() - 34, card.y + (card.h - 24) / 2, 24, 24};
+            const Rect disc_dock = Rect{card.right() - 30, card.y + (card.h - 24) / 2, 24, 24}.inset(play ? -0.5f * hot : 0.f);
+            Rect disc = keep_disc ? mix(disc_full, disc_dock, dock) : disc_full;
+            ui::Color glyph_c;
+            if (play) {
+                const ui::Color disc_rest = t.dark ? t.fill(1.25f) : t.surface;
+                const ui::Color disc_edge = t.dark ? ui::Color{} : t.border.with_alpha(0.85f * (1 - hot));
+                p.rect(disc, disc_rest.mix(t.accent, hot), disc.w / 2, disc_edge, t.dark ? 0.f : 1.f);
+                glyph_c = (t.dark ? t.text_dim : t.text.with_alpha(0.75f)).mix(t.on_accent(), hot);
+            } else {
+                disc.x += std::lerp(2.f, 1.5f, dock) * hot;
+                glyph_c = (t.dark ? t.faint() : t.text_dim.with_alpha(0.78f)).mix(t.text, hot);
+            }
+            const float full_ic = play ? 15.f : 17.f, dock_ic = play ? 13.f : 14.f;
             if (!keep_disc || dock <= 0.01f) {
-                Rect glyph = ui::center(disc, 14, 14);
-                if (action_icon == "play-fill") {
+                Rect glyph = ui::center(disc, full_ic, full_ic);
+                if (play) {
                     glyph.x += 1;
                 }
                 p.icon(action_icon, glyph, glyph_c);
             } else if (dock >= 0.99f) {
-                Rect glyph = ui::center(disc, 11, 11);
-                if (action_icon == "play-fill") {
+                Rect glyph = ui::center(disc, dock_ic, dock_ic);
+                if (play) {
                     glyph.x += 0.5f;
                 }
                 p.icon(action_icon, glyph, glyph_c);
             } else {
-                p.set_zoom(std::lerp(1.f, 11.f / 14.f, dock), disc.x + disc.w / 2, disc.y + disc.h / 2);
-                Rect glyph = ui::center(disc, 14, 14);
-                if (action_icon == "play-fill") {
+                p.set_zoom(std::lerp(1.f, dock_ic / full_ic, dock), disc.x + disc.w / 2, disc.y + disc.h / 2);
+                Rect glyph = ui::center(disc, full_ic, full_ic);
+                if (play) {
                     glyph.x += 1;
                 }
                 p.icon(action_icon, glyph, glyph_c);
@@ -380,29 +393,30 @@ namespace lyren {
         struct Hero {
             Page page;
             std::string_view id, big, badge, title, subtitle, icon, action;
-            float hue;
         };
         std::inplace_vector<Hero, 4> heroes;
         const std::string day(browser_.today().substr(3));
+        const int month = (browser_.today()[0] - '0') * 10 + browser_.today()[1] - '0' - 1;
+        const std::string_view month_lbl = month_short(month);
         const std::string date = date_label();
         if (features.daily.songs) {
-            heroes.push_back({Page::daily, "hero-daily", day, date, "Daily mix", "Fresh picks, every day", {}, "play-fill", 0.98f});
+            heroes.push_back({Page::daily, "hero-daily", day, month_lbl, "Daily mix", "Fresh picks, every day", {}, "play-fill"});
         }
         if (browser_.supports(Page::fm, browser_.active())) {
-            heroes.push_back({Page::fm, "hero-fm", {}, {}, provider().radio_title, "A station that learns your taste", "radio", "play-fill", 0.60f});
+            heroes.push_back({Page::fm, "hero-fm", {}, {}, provider().radio_title, "A station that learns your taste", "radio", "play-fill"});
         }
         if (features.radar) {
-            heroes.push_back({Page::radar, "hero-radar", {}, {}, "Radar", "Favorites and new discoveries", "sparkles", "play-fill", 0.77f});
+            heroes.push_back({Page::radar, "hero-radar", {}, {}, "Radar", "Favorites and new discoveries", "sparkles", "play-fill"});
         }
         if (browser_.supports(Page::releases, browser_.active())) {
-            heroes.push_back({Page::releases, "hero-releases", {}, {}, "New releases", "Latest songs and albums", "disc-3", "chevron-right", 0.08f});
+            heroes.push_back({Page::releases, "hero-releases", {}, {}, "New releases", "Latest songs and albums", "disc-3", "chevron-right"});
         }
         const int hero_count = static_cast<int>(heroes.size());
         const Rect body = page_frame(r);
         const CardGrid daily(ui, ui.id("daily-cards"), body.w);
         const CardGrid g(ui, ui.id("rec-cards"), body.w);
         constexpr float top_pad = 28, title_h = 76;
-        constexpr float hero_h = 128, hero_gap = 16, after_heroes = 18;
+        constexpr float hero_h = 80, hero_gap = 14, after_heroes = 18;
         constexpr float dock_h = 56, pill_h = 36, pill_gap = 10, pill_pad_y = (dock_h - pill_h) / 2;
         const int hero_cols = std::min(hero_count, std::max(1, static_cast<int>((body.w + hero_gap) / 260)));
         const int hero_rows = hero_count ? (hero_count + hero_cols - 1) / hero_cols : 0;
@@ -513,7 +527,7 @@ namespace lyren {
                     }
                 }
                 lowest_bottom = std::max(lowest_bottom, rect.bottom());
-                if (hero(ui, ui.id(entry.id), {rect, dock, dock_action, dock_icon_only}, entry.big, entry.badge, titles[idx], lyren::tr(entry.subtitle), entry.hue, entry.icon,
+                if (hero(ui, ui.id(entry.id), {rect, dock, dock_action, dock_icon_only}, entry.big, entry.badge, titles[idx], lyren::tr(entry.subtitle), entry.icon,
                          entry.action)) {
                     browser_.open(entry.page);
                 }

@@ -511,7 +511,7 @@ TEST_CASE("switching profile tabs while scrolled restores the section top") {
     CHECK(scene.shell.browser.route().profile->section == Social::Section::collection);
     CHECK(scene.ui.scroll_offset(scroll) <= 220.f);
 
-    // Clicking the pinned identity chip on the right of the sticky tab bar scrolls back to the top.
+    // The sticky tab bar stays clean without repeating the profile avatar and name on its right edge.
     scene.ui.scroll_to(scroll, 380.f);
     const auto scrolled = scene.draw(w, h);
     const ui::Painter::Run *top_chip = nullptr;
@@ -521,9 +521,7 @@ TEST_CASE("switching profile tabs while scrolled restores the section top") {
             break;
         }
     }
-    REQUIRE(top_chip != nullptr);
-    scene.click(*top_chip, w, h);
-    CHECK(scene.ui.scroll_offset(scroll) < 1.f);
+    CHECK(top_chip == nullptr);
 }
 
 TEST_CASE("comments docked composer expands, cancels reply safely, posts, and isolates visits") {
@@ -1077,12 +1075,12 @@ TEST_CASE("recommend sticky header morphs, latches, stays clickable above scroll
     scene.ui.scroll_to(scroll, 104.f, false);
     const auto early = scene.draw(1440, 760);
     if (const auto *sub = find_in_page(early, "Fresh picks, every day")) {
-        const float card_bottom = 48.f + 10.f + std::lerp(128.f, 36.f, ui::ease::standard(std::clamp((104.f - 94.f) / 92.f, 0.f, 1.f)));
+        const float card_bottom = 48.f + 10.f + std::lerp(80.f, 36.f, ui::ease::standard(std::clamp((104.f - 94.f) / 44.f, 0.f, 1.f)));
         CHECK(sub->box.bottom() <= card_bottom);
     }
 
     // Mid-morph: cards stay cleanly separated without horizontal overlap and rise smoothly toward the top bar.
-    scene.ui.scroll_to(scroll, 140.f, false);
+    scene.ui.scroll_to(scroll, 120.f, false);
     const auto mid = scene.draw(1440, 760);
     const auto *daily_mid = find_in_page(mid, "Daily mix");
     const auto *fm_mid = find_in_page(mid, "Personal FM");
@@ -1119,7 +1117,7 @@ TEST_CASE("recommend sticky header morphs, latches, stays clickable above scroll
     for (int i = 0; i < 12; ++i) {
         scene.draw(760, 760);
     }
-    for (const float step_off : {140.f, 186.f, 230.f, 266.f, 300.f, 330.f, 520.f}) {
+    for (const float step_off : {120.f, 142.f, 170.f, 192.f, 220.f, 240.f, 420.f}) {
         scene.ui.scroll_to(scroll, step_off, false);
         const auto frame = scene.draw(760, 760);
         const auto *d = find_in_page(frame, "Daily mix", false, 80.f);
@@ -1133,8 +1131,8 @@ TEST_CASE("recommend sticky header morphs, latches, stays clickable above scroll
         CHECK_FALSE(overlaps(f->box, rad->box));
     }
 
-    // Mid-flight on row 1 (off = 266): clicking Daily mix opens Daily mix rather than row 1 or any playlist below.
-    scene.ui.scroll_to(scroll, 266.f, false);
+    // Mid-flight on row 1 (off = 192): clicking Daily mix opens Daily mix rather than row 1 or any playlist below.
+    scene.ui.scroll_to(scroll, 192.f, false);
     const auto mid_narrow = scene.draw(760, 760);
     const auto *mid_daily = find_in_page(mid_narrow, "Daily mix", false, 80.f);
     REQUIRE(mid_daily != nullptr);
@@ -1458,4 +1456,173 @@ TEST_CASE("route and shelf caches reuse data across page switches, SWR refreshes
     scene.shell.browser.open(art1);
     scene.draw();
     CHECK(artist_fetches == 2);
+}
+
+TEST_CASE("profile timeline groups posts by sticky left year rail and yields cleanly across years") {
+    gfx::select_driver(GpuChoice::integrated);
+    auto make_ms = [](int year, int month, int day, int hour, int minute) -> int64_t {
+        std::tm tm{};
+        tm.tm_year = year - 1900;
+        tm.tm_mon = month - 1;
+        tm.tm_mday = day;
+        tm.tm_hour = hour;
+        tm.tm_min = minute;
+        tm.tm_isdst = -1;
+        return static_cast<int64_t>(std::mktime(&tm)) * 1000;
+    };
+    auto build_posts = [&](const Person &author) {
+        std::vector<Post> out;
+        auto add = [&](std::string id, int y, int m, int d, int hh, int mm, std::string text) {
+            Post p = test::Service::post(std::move(id), author, std::move(text), false);
+            p.time = make_ms(y, m, d, hh, mm);
+            out.push_back(std::move(p));
+        };
+        add("y26-1", 2026, 5, 18, 21, 15, "Late spring rain over the river.\nSecond line to give this post room.");
+        add("y26-2", 2026, 3, 9, 14, 30, "Afternoon vinyl session on the desk.");
+        add("y26-3", 2026, 1, 22, 9, 5, "First track of the year, played twice.");
+        add("y25-1", 2025, 11, 28, 22, 40, "November harbour fog and slow drums.");
+        add("y25-2", 2025, 6, 7, 18, 20, "Summer evening tape.");
+        add("y25-3", 2025, 1, 7, 8, 10, "Cold morning commute.");
+        add("y24-1", 2024, 10, 3, 19, 0, "Old cassette found in a drawer.");
+        add("y24-2", 2024, 4, 12, 11, 45, "Opening notes from 2024.");
+        return out;
+    };
+
+    Scene scene;
+    scene.service.on_posts = [&](std::string, std::string) -> Task<Result<PostPage>> {
+        co_return PostPage{.posts = build_posts(test::Service::person(0))};
+    };
+    scene.shell.browser.open_profile(Source::netease, std::string(test::Service::friend_id), "Ada Lovelace", "");
+    scene.draw(1180, 620);
+    const auto rest = scene.draw(1180, 620);
+
+    // Year appears once per chapter in the left rail (never repeated as "2026/05" on each entry).
+    const auto count_text = [](std::span<const ui::Painter::Run> runs, std::string_view s) {
+        return std::ranges::count_if(runs, [&](const ui::Painter::Run &r) {
+            return !r.icon && r.text == s;
+        });
+    };
+    CHECK(count_text(rest, "2026") == 1);
+    CHECK_FALSE(drew(rest, "2026/05"));
+    CHECK_FALSE(drew(rest, "2026/03"));
+    const auto *y2026_rest = scene.find("2026");
+    const auto *d18_rest = scene.find("18");
+    const auto *may_rest = scene.find("May");
+    REQUIRE(y2026_rest != nullptr);
+    REQUIRE(d18_rest != nullptr);
+    REQUIRE(may_rest != nullptr);
+    const float rest_year_w = y2026_rest->box.w;
+    CHECK(y2026_rest->box.right() < d18_rest->box.x);
+    CHECK_FALSE(overlaps(y2026_rest->box, d18_rest->box));
+    CHECK_FALSE(overlaps(d18_rest->box, may_rest->box));
+
+    // Scrolling through 2026 latches "2026" sticky at the viewport top while posts glide upward past it.
+    const ui::Id scroll = ui::sub_id(scene.ui.id("profile"), scene.shell.browser.route().serial);
+    scene.ui.scroll_to(scroll, 260.f);
+    scene.draw(1180, 620);
+    const auto *y2026_pin_a = scene.find("2026");
+    const auto *d09_a = scene.find("09");
+    REQUIRE(y2026_pin_a != nullptr);
+    REQUIRE(d09_a != nullptr);
+    const float pinned_y = y2026_pin_a->box.y;
+    const float d09_y_a = d09_a->box.y;
+
+    scene.ui.scroll_to(scroll, 340.f);
+    scene.draw(1180, 620);
+    const auto *y2026_pin_b = scene.find("2026");
+    const auto *d09_b = scene.find("09");
+    REQUIRE(y2026_pin_b != nullptr);
+    REQUIRE(d09_b != nullptr);
+    CHECK(std::abs(y2026_pin_b->box.y - pinned_y) < 0.5f);
+    CHECK(d09_b->box.y < d09_y_a - 40.f);
+
+    // Scrolling across the 2026 -> 2025 -> 2024 boundaries eases the outgoing year upward and fades it cleanly without
+    // overlap, scale shimmer, or post-scroll spring bounce.
+    bool saw_both = false;
+    bool saw_push_handoff = false;
+    bool saw_2025_pinned = false;
+    float min_push_alpha = 1.f;
+    float prev_y26 = pinned_y;
+    for (float off = 360.f; off <= 960.f; off += 6.f) {
+        scene.ui.scroll_to(scroll, off);
+        scene.draw(1180, 620);
+        const auto *y26 = scene.find("2026");
+        const auto *y25 = scene.find("2025");
+        if (y26 && y25) {
+            saw_both = true;
+            CHECK_FALSE(overlaps(y26->box, y25->box));
+            CHECK(y26->box.bottom() < y25->box.y);
+            CHECK(y26->box.y <= prev_y26 + 0.01f);
+            prev_y26 = y26->box.y;
+            if (y26->box.y < pinned_y - 1.f) {
+                saw_push_handoff = true;
+                min_push_alpha = std::min(min_push_alpha, y26->alpha);
+                CHECK(y26->alpha < 0.96f);
+                CHECK(std::abs(y26->box.w - rest_year_w) < 0.5f);
+            }
+        }
+        if (!y26 && y25 && std::abs(y25->box.y - pinned_y) < 0.5f) {
+            saw_2025_pinned = true;
+        }
+    }
+    CHECK(saw_both);
+    CHECK(saw_push_handoff);
+    CHECK(min_push_alpha < 0.15f);
+    CHECK(saw_2025_pinned);
+    CHECK_FALSE(scene.ui.animating());
+
+    // Narrow viewport switches gracefully to inline sticky year headers without colliding with the day column.
+    scene.ui.scroll_to(scroll, 260.f);
+    scene.draw(440, 620);
+    const auto narrow = scene.draw(440, 620);
+    const auto *narrow_y26 = scene.find("2026");
+    REQUIRE(narrow_y26 != nullptr);
+    CHECK(drew(narrow, "2026"));
+
+    // Chinese locale formats month labels concisely as "5月" / "11月".
+    const Language prev_lang = language();
+    Scene zh_scene({.language = Language::zh});
+    zh_scene.service.on_posts = [&](std::string, std::string) -> Task<Result<PostPage>> {
+        co_return PostPage{.posts = build_posts(test::Service::person(0))};
+    };
+    zh_scene.shell.browser.open_profile(Source::netease, std::string(test::Service::friend_id), "Ada Lovelace", "");
+    zh_scene.draw(1180, 620);
+    const auto zh_runs = zh_scene.draw(1180, 620);
+    CHECK(drew(zh_runs, "2026"));
+    CHECK(drew(zh_runs, "5月"));
+    set_language(prev_lang);
+}
+
+TEST_CASE("home hero strip uses unified monochrome surfaces without per-card rainbow gradients") {
+    gfx::select_driver(GpuChoice::integrated);
+    for (const bool dark : {true, false}) {
+        Scene scene({.dark = dark});
+        const auto runs = scene.draw(1180, 760);
+        CHECK(drew(runs, "Daily mix"));
+        CHECK(drew(runs, "Personal FM"));
+        CHECK(drew(runs, "Radar"));
+        const auto *radar_sub = scene.find("Favorites and new discoveries");
+        REQUIRE(radar_sub != nullptr);
+        CHECK_FALSE(radar_sub->cut);
+        // Redundant month/day pill is gone; the calendar emblem shows the short month beside the day numeral.
+        CHECK_FALSE(drew(runs, scene.shell.pages.date_label()));
+        // Only the top page wash emits a vertical gradient in the hero band; individual hero cards stay calm flat surfaces.
+        int hero_gradients = 0;
+        int light_hero_edges = 0;
+        for (const gfx::Prim &prim : scene.painter.prims()) {
+            const auto kind = static_cast<gfx::Kind>(prim.info[0]);
+            if (kind == gfx::Kind::rect && prim.rect[0] >= 220.f && prim.rect[1] >= 120.f && prim.rect[1] < 260.f) {
+                if (prim.info[2] & gfx::flag_gradient) {
+                    ++hero_gradients;
+                }
+                if (!dark && prim.rect[3] >= 78.f && prim.rect[3] <= 82.f && prim.color2[3] > 0.2f) {
+                    ++light_hero_edges;
+                }
+            }
+        }
+        CHECK(hero_gradients == 0);
+        if (!dark) {
+            CHECK(light_hero_edges == 3);
+        }
+    }
 }

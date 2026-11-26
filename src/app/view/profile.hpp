@@ -56,8 +56,7 @@ namespace lyren {
         Stats stat_list(ui::Ui &ui, const Listener &page, const Profile &who, bool self);
         // Lays the counts out from r's left, breaking into rows within its width.
         float stats(ui::Ui &ui, ui::Rect r, std::span<const Stat> all, const Listener &page);
-        // pinned: how far the tabs have come to rest at the top of the view, 0..1.
-        void tabs(ui::Ui &ui, ui::Rect r, const Listener &page, const Profile &who, float pinned);
+        void tabs(ui::Ui &ui, ui::Rect r, const Listener &page);
         float section(ui::Ui &ui, ui::Rect r, float rail_budget_h, const Listener &page, bool self);
         float overview(ui::Ui &ui, ui::Rect r, float rail_budget_h, const Listener &page);
         float posts(ui::Ui &ui, ui::Rect r, float rail_budget_h, const Listener &page, bool self);

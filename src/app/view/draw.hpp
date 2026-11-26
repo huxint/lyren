@@ -199,6 +199,14 @@ namespace lyren {
         }
     }
 
+    // Short month label for calendar emblems and timelines (0..11), zero-allocation.
+    inline std::string_view month_short(int month) {
+        static constexpr std::array<std::string_view, 12> en{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        static constexpr std::array<std::string_view, 12> zh{"1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"};
+        const auto idx = static_cast<size_t>(std::clamp(month, 0, 11));
+        return language() == Language::zh ? zh[idx] : en[idx];
+    }
+
     // When a post was made, as near as matters: the time today, the day this year, the date before that.
     inline std::string post_time(int64_t ms) {
         if (ms <= 0) {

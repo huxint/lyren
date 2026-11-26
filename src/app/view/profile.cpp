@@ -274,7 +274,7 @@ namespace lyren {
         const float x1 = std::lerp(body.right(), clip.right(), pinned);
         p.rect({x0, strip_bottom - 1, std::max(0.f, x1 - x0), 1}, t.line(0.8f + 0.2f * pinned));
         const float tab_h = std::lerp(tabs_h, 46.f, pinned);
-        tabs(ui, {body.x, strip_bottom - tab_h, body.w, tab_h}, page, who, pinned);
+        tabs(ui, {body.x, strip_bottom - tab_h, body.w, tab_h}, page);
         ui.pop_id();
         ui.push_clip({clip.x, strip_bottom, clip.w, std::max(0.f, clip.bottom() - strip_bottom)});
         float height = 0;
@@ -622,7 +622,7 @@ namespace lyren {
         return y + h - r.y;
     }
 
-    void ProfileView::tabs(ui::Ui &ui, Rect r, const Listener &page, const Profile &who, float pinned) {
+    void ProfileView::tabs(ui::Ui &ui, Rect r, const Listener &page) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         struct Tab {
@@ -645,33 +645,6 @@ namespace lyren {
         if (needed <= r.w) {
             if (ui.tabs(ui.id("profile-tabs"), r, labels, selected)) {
                 show(ui, page, sections[static_cast<size_t>(selected)]);
-            }
-            // With the head scrolled away, the tabs say whose page this is; clicking glides back to the top.
-            if (pinned > 0.01f) {
-                const auto name = t.style(type::label, t.text_dim, text::medium);
-                const float w = std::min(std::ceil(p.measure(who.name, name)) + 1, 160.f);
-                const float chip_w = 4 + 24 + 8 + w + 10;
-                if (r.w - needed >= chip_w + 24) {
-                    const float in = ease::standard(pinned);
-                    Fade identity(p, in);
-                    ui::Enabled live(ui, pinned > 0.5f, 1);
-                    const Rect chip{r.right() - chip_w, r.y + (r.h - 32) / 2 + 5 * (1 - in), chip_w, 32};
-                    const ui::Id cid = ui.id("profile-top");
-                    const auto it = ui.interact(cid, chip);
-                    if (it.hovered) {
-                        ui.cursor = wl::Cursor::pointer;
-                    }
-                    const auto [hot, down] = ui.feel(cid, it, pace::quick);
-                    if (hot > 0.01f) {
-                        p.rect(chip.inset(down * 0.5f), t.fill(hot), 16);
-                    }
-                    const Rect face{chip.x + 4, chip.y + 4, 24, 24};
-                    cover(ui, face, who.avatar, 12, "user");
-                    ui.label({face.right() + 8, chip.y, w, chip.h}, who.name, {.size = name.size, .color = t.text_dim.mix(t.text, hot), .features = name.features});
-                    if (it.clicked) {
-                        ui.scroll_to(scroll_, 0, true);
-                    }
-                }
             }
             return;
         }
