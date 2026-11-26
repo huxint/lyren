@@ -103,13 +103,20 @@ add_library(
     src/kugou/lyrics.cpp
     src/bodian/client.cpp
     src/bodian/bodian.cpp
-    src/app/state.cpp
     src/media/types.cpp
     src/media/provider.cpp
     src/media/lyrics.cpp)
 target_include_directories(lyren_base PUBLIC src)
 target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA PRIVATE glaze)
-target_compile_options(lyren_base PUBLIC -Wall -Wextra -Wno-missing-field-initializers --embed-dir=${CMAKE_SOURCE_DIR}/assets)
+target_compile_options(
+    lyren_base
+    PUBLIC -Wall
+           -Wextra
+           -Wno-missing-field-initializers
+           --embed-dir=${CMAKE_SOURCE_DIR}/assets
+           $<$<COMPILE_LANGUAGE:CXX>:-fcontracts>
+           $<$<COMPILE_LANGUAGE:CXX>:$<IF:$<CONFIG:Debug>,-fcontract-evaluation-semantic=enforce,-fcontract-evaluation-semantic=ignore>>)
+target_link_options(lyren_base PUBLIC -fcontracts)
 if(LYREN_NATIVE)
     target_compile_options(lyren_base PUBLIC $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-march=native>)
 endif()
@@ -125,6 +132,7 @@ add_library(
     src/wl/display.cpp
     src/wl/input.cpp
     src/wl/clipboard.cpp
+    src/wl/surface.cpp
     src/wl/window.cpp
     src/wl/layer.cpp
     src/gfx/context.cpp
@@ -141,22 +149,29 @@ add_library(
     src/ui/ui.cpp
     src/ui/widgets.cpp
     src/ui/text_box.cpp
-    src/app/frames.cpp
-    src/app/images.cpp)
-target_link_libraries(lyren_ui PUBLIC lyren_base PkgConfig::SYSLIBS vulkan_headers PRIVATE PkgConfig::UILIBS GIF::GIF nanosvg nexus)
+    src/ui/frames.cpp)
+target_link_libraries(lyren_ui PUBLIC lyren_base PkgConfig::SYSLIBS vulkan_headers PRIVATE PkgConfig::UILIBS GIF::GIF nanosvg)
 
+# Headless application models (no Wayland, Vulkan, image or UI dependencies).
 add_library(
-    lyren_lib STATIC
+    lyren_model STATIC
     src/sys/bus.cpp
     src/sys/mpris.cpp
+    src/app/state.cpp
     src/app/model/playback.cpp
     src/app/model/library.cpp
     src/app/model/catalog.cpp
     src/app/model/social.cpp
     src/app/model/comments.cpp
     src/app/model/browser.cpp
-    src/app/model/accounts.cpp
+    src/app/model/accounts.cpp)
+target_link_libraries(lyren_model PUBLIC lyren_base PkgConfig::SDBUS glaze PRIVATE PkgConfig::QRENCODE)
+
+add_library(
+    lyren_lib STATIC
+    src/app/images.cpp
     src/app/app.cpp
+    src/app/script.cpp
     src/app/view/part.cpp
     src/app/view/shell.cpp
     src/app/view/chrome.cpp
@@ -172,7 +187,7 @@ add_library(
     src/app/view/player_bar.cpp
     src/app/view/stage.cpp
     src/app/view/desktop.cpp)
-target_link_libraries(lyren_lib PUBLIC lyren_ui PkgConfig::SDBUS glaze PRIVATE PkgConfig::QRENCODE)
+target_link_libraries(lyren_lib PUBLIC lyren_model lyren_ui PRIVATE nexus)
 add_wayland_protocols(
     lyren_ui
     ${WP_DIR}/stable/xdg-shell/xdg-shell.xml
@@ -215,8 +230,9 @@ if(BUILD_TESTING)
         tests/test_provider.cpp
         tests/test_timeline.cpp
         tests/test_lyrics.cpp
-        tests/test_image.cpp)
-    target_link_libraries(lyren_tests PRIVATE lyren_ui doctest glaze)
+        tests/test_image.cpp
+        tests/test_model.cpp)
+    target_link_libraries(lyren_tests PRIVATE lyren_model lyren_ui doctest glaze)
     target_compile_definitions(lyren_tests PRIVATE LYREN_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data")
     add_test(NAME unit COMMAND lyren_tests)
     set_tests_properties(unit PROPERTIES ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_BINARY_DIR}/test-cache;NO_PROXY=127.0.0.1;no_proxy=127.0.0.1")

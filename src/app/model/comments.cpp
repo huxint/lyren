@@ -65,7 +65,7 @@ namespace lyren {
     void Comments::load(int tab) {
         Feed &feed = *thread_.feeds[tab];
         // A first page that failed is asked for again; later pages wait for their retry.
-        if (feed.loading || !feed.more || (feed.page && !feed.error.empty())) {
+        if (!feed.open(true)) {
             return;
         }
         feed.loading = true;
@@ -74,18 +74,9 @@ namespace lyren {
     }
 
     void Comments::append(Feed &feed, CommentPage page, int number) {
-        if (!feed.page) {
-            feed.since = env_.now();
-        }
-        feed.page = number;
-        if (number == 1 || page.total > 0) {
-            feed.total = page.total;
-        }
-        feed.more = page.more;
-        feed.cursor = std::move(page.cursor);
         settle_likes(page.comments);
-        feed.items.insert(feed.items.end(), std::make_move_iterator(page.comments.begin()), std::make_move_iterator(page.comments.end()));
-        feed.loaded = true;
+        feed.append(std::move(page.comments), std::move(page.cursor), page.more, env_.now(), page.total);
+        feed.page = number;
     }
 
     Task<void> Comments::fetch(uint64_t gen, int tab, int page, std::string cursor) {
@@ -127,7 +118,7 @@ namespace lyren {
 
     void Comments::load_replies(std::shared_ptr<Replies> view) {
         Feed &feed = *view->feed;
-        if (feed.loading || !feed.more || (feed.page && !feed.error.empty())) {
+        if (!feed.open(true)) {
             return;
         }
         feed.loading = true;

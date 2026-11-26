@@ -1,7 +1,10 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <inplace_vector>
+#include <ranges>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "media/types.hpp"
@@ -16,6 +19,42 @@ namespace lyren {
         double since = -10; // when it arrived, for its entrance
         double fetched_at = -1e9, retry_at = -1e9;
         uint64_t gen = 0; // bumped to disown the requests under way
+
+        bool busy() const {
+            return loading || refreshing;
+        }
+        bool due(double now, double ttl, double stale_ttl = 0.0) const {
+            return now >= retry_at && (now - fetched_at >= ttl || (stale && now - fetched_at >= stale_ttl));
+        }
+        void begin(bool quiet = false) {
+            if (quiet) {
+                refreshing = true;
+            } else {
+                loading = true;
+                refreshing = false;
+                error.clear();
+            }
+        }
+        void succeed(double now, bool mark_since) {
+            loading = refreshing = false;
+            loaded = true;
+            stale = false;
+            error.clear();
+            fetched_at = now;
+            retry_at = -1e9;
+            if (mark_since) {
+                since = now;
+            }
+        }
+        void fail(std::string_view err, double now, bool quiet = false, double backoff = 15.0) {
+            loading = refreshing = false;
+            if (quiet) {
+                retry_at = now + backoff;
+            } else {
+                loaded = true;
+                error = err;
+            }
+        }
     };
 
     // Cumulative row bottoms of a list as last laid out, kept beside the items so that they share their lifetime.
@@ -54,21 +93,31 @@ namespace lyren {
         bool more = true;
         Heights heights;
 
-        // The next page may be asked for; a failed one waits for its retry.
-        bool open() const {
-            return !loading && more && error.empty();
+        // The next page may be asked for; a failed one waits for its retry (or retries page 0 if retry_first is set).
+        bool open(bool retry_first = false) const {
+            return !loading && more && ((retry_first && page == 0) || error.empty());
+        }
+        void append(std::vector<T> &&batch, std::string &&next_cursor, bool has_more, double now, int next_total = -1) {
+            if (page == 0 && items.empty()) {
+                since = now;
+            }
+            items.append_range(std::views::as_rvalue(batch));
+            if (next_total >= 0 && (page == 0 || next_total > 0)) {
+                total = next_total;
+            }
+            more = has_more;
+            cursor = std::move(next_cursor);
+            loaded = true;
+            ++page;
         }
     };
 
     // Songs and cards a page at a time, by offset: search results, charts, an artist's albums.
-    struct Listing {
+    struct Listing : Fetch {
         std::vector<Track> tracks;
         std::vector<Card> cards;
         int total = 0;
         int next_offset = 0; // negative once everything is here
-        bool loading = false, loaded = false;
-        std::string error;
-        double since = -10;
 
         size_t size() const {
             return tracks.size() + cards.size();
@@ -79,6 +128,36 @@ namespace lyren {
         // The next page may be asked for. retry: also after a failure.
         bool open(bool retry = false) const {
             return !loading && (retry || (more() && error.empty()));
+        }
+    };
+
+    // Fixed-capacity LRU cache (most recently used entry at back).
+    template <class Entry, size_t N>
+    struct LruCache {
+        std::inplace_vector<Entry, N> items;
+
+        template <class Pred>
+        Entry *find(Pred &&match, bool touch = true) {
+            auto it = std::ranges::find_if(items, match);
+            if (it == items.end()) {
+                return nullptr;
+            }
+            if (touch) {
+                std::rotate(it, it + 1, items.end());
+                return &items.back();
+            }
+            return &*it;
+        }
+        Entry &push(Entry entry) {
+            if (items.size() == items.capacity()) {
+                items.erase(items.begin());
+            }
+            items.push_back(std::move(entry));
+            return items.back();
+        }
+        template <class Pred>
+        void erase_if(Pred &&match) {
+            std::erase_if(items, match);
         }
     };
 

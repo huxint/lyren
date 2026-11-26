@@ -13,7 +13,7 @@ namespace lyren::audio {
         class Vorbis final : public Decoder {
         public:
             explicit Vorbis(Spool &s)
-            : s_(s) {}
+            : cursor_{s} {}
             ~Vorbis() override {
                 if (open_) {
                     ov_clear(&vf_);
@@ -87,29 +87,18 @@ namespace lyren::audio {
 
         private:
             static size_t read_cb(void *buf, size_t size, size_t n, void *ud) {
-                auto *d = static_cast<Vorbis *>(ud);
-                size_t got = d->s_.read(d->pos_, buf, size * n);
-                d->pos_ += got;
-                return got / size;
+                return static_cast<Vorbis *>(ud)->cursor_.read(buf, size * n) / size;
             }
             static int seek_cb(void *ud, ogg_int64_t off, int whence) {
-                auto *d = static_cast<Vorbis *>(ud);
-                const auto size = static_cast<int64_t>(d->s_.size());
-                const int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(d->pos_) : whence == SEEK_END ? size : -1;
-                if (base < 0 || off < -base || off > size - base) {
-                    return -1;
-                }
-                d->pos_ = static_cast<uint64_t>(base + off);
-                return 0;
+                return static_cast<Vorbis *>(ud)->cursor_.seek(off, whence) >= 0 ? 0 : -1;
             }
             static long tell_cb(void *ud) {
-                return static_cast<long>(static_cast<Vorbis *>(ud)->pos_);
+                return static_cast<long>(static_cast<Vorbis *>(ud)->cursor_.pos);
             }
 
-            Spool &s_;
+            SpoolCursor cursor_;
             OggVorbis_File vf_{};
             bool open_ = false;
-            uint64_t pos_ = 0;
         };
 
     } // namespace

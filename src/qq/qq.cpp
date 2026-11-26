@@ -11,9 +11,9 @@
 #include <source_location>
 #include <curl/curl.h>
 
+#include "core/encoding.hpp"
 #include "core/i18n.hpp"
 #include "core/log.hpp"
-#include "core/result_task.hpp"
 #include "net/fetch.hpp"
 #include "qq/crypto.hpp"
 #include "qq/auth.hpp"
@@ -608,17 +608,6 @@ namespace lyren::qq {
                     .cover = std::move(cover),
                     .count = count,
                     .count_kind = count > 0 ? Card::Count::songs : Card::Count::none};
-        }
-
-        std::string trimmed(const Str &s) {
-            if (!s) {
-                return {};
-            }
-            std::string_view v = *s;
-            constexpr std::string_view blank = " \t\r\n";
-            v.remove_prefix(std::min(v.size(), v.find_first_not_of(blank)));
-            v = v.substr(0, v.find_last_not_of(blank) + 1);
-            return std::string(v);
         }
 
         // Comment times use the day and year relative to today.
@@ -1358,30 +1347,15 @@ namespace lyren::qq {
                     });
                 });
         while (result && fetched > 0 && fetched < total_songs) {
-            auto page = parse_data<QSongList>(co_await client.call(
-                {{"music.musichallAlbum.AlbumSongList", "GetAlbumSongList", std::format(R"({{"albumMid":{},"begin":{},"num":500,"order":2}})", mid_json, fetched)}}));
-            if (!page) {
-                co_return std::unexpected(page.error());
-            }
-            if (!page->songList || page->songList->empty()) {
+            auto page = co_await ok(parse_data<QSongList>(co_await client.call(
+                {{"music.musichallAlbum.AlbumSongList", "GetAlbumSongList", std::format(R"({{"albumMid":{},"begin":{},"num":500,"order":2}})", mid_json, fetched)}})));
+            if (!page.songList || page.songList->empty()) {
                 break;
             }
-            fetched += static_cast<int>(page->songList->size());
-            total_songs = std::max(total_songs, page->totalNum);
-            auto part = tracks_of(page->songList);
+            fetched += static_cast<int>(page.songList->size());
+            total_songs = std::max(total_songs, page.totalNum);
+            auto part = tracks_of(page.songList);
             result->tracks.insert(result->tracks.end(), std::make_move_iterator(part.begin()), std::make_move_iterator(part.end()));
-        }
-        if (!result || !client.logged_in()) {
-            co_return result;
-        }
-        sync_collection_cache();
-        if (!saved_albums_ || Clock::now() - saved_albums_at_ >= 5min) {
-            if (auto favorites = co_await collected_albums(); !favorites) {
-                log::debug("qq album collected state unavailable: {}", favorites.error());
-            }
-        }
-        if (saved_albums_) {
-            result->collected = saved_albums_->contains(mid);
         }
         co_return result;
     }
@@ -1389,49 +1363,35 @@ namespace lyren::qq {
     Task<Result<ArtistInfo>> Qq::artist(std::string mid) {
         const std::string mid_json = glz::write_json(mid).value();
         // The details have no counts; the first entry of each list brings its total.
-        auto result =
-            parse<Three<QSingerDetail, QSongList, QAlbumList>>(
-                co_await client.call({{"music.musichallSinger.SingerInfoInter", "GetSingerDetail",
-                                       std::format(R"({{"singer_mids":[{}],"pic":1,"group_singer":0,"wiki_singer":0,"ex_singer":1}})", mid_json)},
-                                      {"music.musichallSong.SongListInter", "GetSingerSongList", std::format(R"({{"singerMid":{},"begin":0,"num":1,"order":1}})", mid_json)},
-                                      {"music.musichallAlbum.AlbumListServer", "GetAlbumList", std::format(R"({{"singerMid":{},"order":0,"begin":0,"num":1}})", mid_json)}}))
-                .and_then([&](Three<QSingerDetail, QSongList, QAlbumList> r) {
-                    return take_data(r.req_0).and_then([&](const QSingerDetail &d) -> Result<ArtistInfo> {
-                        if (!d.singer_list || d.singer_list->empty()) {
-                            return std::unexpected("Artist not found");
-                        }
-                        const QSingerEntry &e = d.singer_list->front();
-                        ArtistInfo out{.name = e.basic_info ? e.basic_info->name.value_or("") : ""};
-                        if (e.ex_info) {
-                            out.alias = e.ex_info->foreign_name.value_or("");
-                        }
-                        out.avatar = e.pic ? nonempty_or(e.pic->pic,
-                                                         [&] {
-                                                             return photo(1, mid);
-                                                         })
-                                           : photo(1, mid);
-                        if (auto s = take_data(r.req_1)) {
-                            out.songs = s->totalNum;
-                        }
-                        if (auto a = take_data(r.req_2)) {
-                            out.albums = a->total;
-                        }
-                        return out;
-                    });
+        co_return parse<Three<QSingerDetail, QSongList, QAlbumList>>(
+            co_await client.call({{"music.musichallSinger.SingerInfoInter", "GetSingerDetail",
+                                   std::format(R"({{"singer_mids":[{}],"pic":1,"group_singer":0,"wiki_singer":0,"ex_singer":1}})", mid_json)},
+                                  {"music.musichallSong.SongListInter", "GetSingerSongList", std::format(R"({{"singerMid":{},"begin":0,"num":1,"order":1}})", mid_json)},
+                                  {"music.musichallAlbum.AlbumListServer", "GetAlbumList", std::format(R"({{"singerMid":{},"order":0,"begin":0,"num":1}})", mid_json)}}))
+            .and_then([&](Three<QSingerDetail, QSongList, QAlbumList> r) {
+                return take_data(r.req_0).and_then([&](const QSingerDetail &d) -> Result<ArtistInfo> {
+                    if (!d.singer_list || d.singer_list->empty()) {
+                        return std::unexpected("Artist not found");
+                    }
+                    const QSingerEntry &e = d.singer_list->front();
+                    ArtistInfo out{.name = e.basic_info ? e.basic_info->name.value_or("") : ""};
+                    if (e.ex_info) {
+                        out.alias = e.ex_info->foreign_name.value_or("");
+                    }
+                    out.avatar = e.pic ? nonempty_or(e.pic->pic,
+                                                     [&] {
+                                                         return photo(1, mid);
+                                                     })
+                                       : photo(1, mid);
+                    if (auto s = take_data(r.req_1)) {
+                        out.songs = s->totalNum;
+                    }
+                    if (auto a = take_data(r.req_2)) {
+                        out.albums = a->total;
+                    }
+                    return out;
                 });
-        if (!result || !client.logged_in()) {
-            co_return result;
-        }
-        sync_collection_cache();
-        if (!followed_artists_ || Clock::now() - followed_artists_at_ >= 5min) {
-            if (auto followed = co_await followed_artists(); !followed) {
-                log::debug("qq artist follow state unavailable: {}", followed.error());
-            }
-        }
-        if (followed_artists_) {
-            result->followed = followed_artists_->contains(mid);
-        }
-        co_return result;
+            });
     }
 
     Task<Result<Batch>> Qq::artist_songs(std::string mid, int offset) {
@@ -1691,18 +1651,14 @@ namespace lyren::qq {
     Task<Result<std::pair<Card, std::vector<Card>>>> Qq::user_playlists(std::string uid) {
         const bool own = uid.empty() || uid == client.get("musicid");
         const std::string target = uid.empty() ? client.get("musicid") : uid;
-        co_return co_await and_then(
-            parse_user_playlists(co_await client.call({{"music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", std::format(R"({{"uin":{}}})", glz::write_json(target).value())}}),
-                                 own),
-            [this, own](auto out) -> Task<Result<std::pair<Card, std::vector<Card>>>> {
-                if (!own) {
-                    co_return out;
-                }
-                co_return (co_await collected_playlists()).transform([&](auto favorites) -> std::pair<Card, std::vector<Card>> {
-                    out.second.insert(out.second.end(), std::make_move_iterator(favorites.begin()), std::make_move_iterator(favorites.end()));
-                    return std::move(out);
-                });
-            });
+        auto out = co_await ok(parse_user_playlists(
+            co_await client.call({{"music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", std::format(R"({{"uin":{}}})", glz::write_json(target).value())}}), own));
+        if (!own) {
+            co_return out;
+        }
+        auto favorites = co_await ok(co_await collected_playlists());
+        out.second.insert(out.second.end(), std::make_move_iterator(favorites.begin()), std::make_move_iterator(favorites.end()));
+        co_return out;
     }
 
     Task<Result<std::vector<Card>>> Qq::collected_playlists() {
@@ -1782,28 +1738,24 @@ namespace lyren::qq {
 
     Task<Result<void>> Qq::rename_playlist(std::string id, std::string name) {
         // EditPlaylist replaces all four fields; read and retain the cover, description and tags first.
-        co_return co_await and_then(
-            parse_data<QDiss>(co_await client.call(
-                {{"music.srfDissInfo.aiDissInfo", "uniform_get_Dissinfo", std::format(R"({{"dirid":{},"optype":3,"tag":1,"userinfo":0,"pic_dpi":300}})", id.substr(4))}})),
-            [&](auto d) -> Task<Result<void>> {
-                if (!d.dirinfo) {
-                    co_return std::unexpected("QQ Music returned no playlist details");
-                }
-                std::string tags;
-                if (d.dirinfo->vec_tagid) {
-                    for (int tag : *d.dirinfo->vec_tagid) {
-                        tags += (tags.empty() ? "" : ",") + std::to_string(tag);
-                    }
-                }
-                const std::string description = d.dirinfo->desc.value_or("");
-                co_return written(
-                    co_await client.call({{"music.musicasset.PlaylistBaseWrite", "EditPlaylist",
-                                           std::format(R"({{"dirId":{},"mask":15,"dirNewName":{},"dirNewDesc":{},"dirNewPicUrl":{},"dirNewtaglist":"{}"}})", id.substr(4),
-                                                       glz::write_json(glz::escape_bytes_t{name}).value(), glz::write_json(glz::escape_bytes_t{description}).value(),
-                                                       glz::write_json(d.dirinfo->picurl.value_or("")).value(), tags)}},
-                                         Comm::app, net::Retry::never))
-                    .transform([](const auto &) {});
-            });
+        auto d = co_await ok(parse_data<QDiss>(co_await client.call(
+            {{"music.srfDissInfo.aiDissInfo", "uniform_get_Dissinfo", std::format(R"({{"dirid":{},"optype":3,"tag":1,"userinfo":0,"pic_dpi":300}})", id.substr(4))}})));
+        if (!d.dirinfo) {
+            co_return std::unexpected("QQ Music returned no playlist details");
+        }
+        std::string tags;
+        if (d.dirinfo->vec_tagid) {
+            for (int tag : *d.dirinfo->vec_tagid) {
+                tags += (tags.empty() ? "" : ",") + std::to_string(tag);
+            }
+        }
+        const std::string description = d.dirinfo->desc.value_or("");
+        co_return written(co_await client.call({{"music.musicasset.PlaylistBaseWrite", "EditPlaylist",
+                                                 std::format(R"({{"dirId":{},"mask":15,"dirNewName":{},"dirNewDesc":{},"dirNewPicUrl":{},"dirNewtaglist":"{}"}})", id.substr(4),
+                                                             glz::write_json(glz::escape_bytes_t{name}).value(), glz::write_json(glz::escape_bytes_t{description}).value(),
+                                                             glz::write_json(d.dirinfo->picurl.value_or("")).value(), tags)}},
+                                               Comm::app, net::Retry::never))
+            .transform([](const auto &) {});
     }
 
     Task<Result<void>> Qq::delete_playlist(std::string id) {
@@ -1812,31 +1764,11 @@ namespace lyren::qq {
             .transform([](const QWrite &) {});
     }
 
-    void Qq::sync_collection_cache() {
-        const std::string uid = client.logged_in() ? client.get("musicid") : std::string{};
-        if (collection_uid_ != uid) {
-            collection_uid_ = uid;
-            saved_albums_.reset();
-            followed_artists_.reset();
-            saved_albums_at_ = {};
-            followed_artists_at_ = {};
-        }
-    }
-
     Task<Result<void>> Qq::collect(std::string mid, bool on) {
-        auto r = written(co_await client.call({{"music.musicasset.AlbumFavWrite", on ? "FavAlbum" : "CancelFavAlbum",
-                                                std::format(R"({{"uin":{},"v_albumMid":[{}]}})", glz::write_json(client.get("musicid")).value(), glz::write_json(mid).value())}},
-                                              Comm::app, net::Retry::never))
-                     .transform([](const auto &) {});
-        sync_collection_cache();
-        if (r && saved_albums_) {
-            if (on) {
-                saved_albums_->insert(std::move(mid));
-            } else {
-                saved_albums_->erase(mid);
-            }
-        }
-        co_return r;
+        co_return written(co_await client.call({{"music.musicasset.AlbumFavWrite", on ? "FavAlbum" : "CancelFavAlbum",
+                                                 std::format(R"({{"uin":{},"v_albumMid":[{}]}})", glz::write_json(client.get("musicid")).value(), glz::write_json(mid).value())}},
+                                               Comm::app, net::Retry::never))
+            .transform([](const auto &) {});
     }
 
     Result<FavoriteAlbumsPage> parse_favorite_albums(const Reply &reply) {
@@ -1874,48 +1806,25 @@ namespace lyren::qq {
     }
 
     Task<Result<std::vector<Card>>> Qq::collected_albums() {
-        Result<std::vector<Card>> r(std::in_place);
+        std::vector<Card> out;
         bool more = true;
         const std::string uin = glz::write_json(client.get("musicid")).value();
-        for (int offset = 0; r && more;) {
-            r = parse_favorite_albums(
-                    co_await client.call({{"music.musicasset.AlbumFavRead", "GetAlbumFavInfo", std::format(R"({{"uin":{},"offset":{},"size":100}})", uin, offset)}}))
-                    .transform([&](FavoriteAlbumsPage page) {
-                        offset += static_cast<int>(page.albums.size());
-                        more = !page.albums.empty() && page.more && (page.total <= 0 || offset < page.total);
-                        r->insert(r->end(), std::make_move_iterator(page.albums.begin()), std::make_move_iterator(page.albums.end()));
-                        return std::move(*r);
-                    });
+        for (int offset = 0; more;) {
+            auto page = co_await ok(parse_favorite_albums(
+                co_await client.call({{"music.musicasset.AlbumFavRead", "GetAlbumFavInfo", std::format(R"({{"uin":{},"offset":{},"size":100}})", uin, offset)}})));
+            offset += static_cast<int>(page.albums.size());
+            more = !page.albums.empty() && page.more && (page.total <= 0 || offset < page.total);
+            out.insert(out.end(), std::make_move_iterator(page.albums.begin()), std::make_move_iterator(page.albums.end()));
         }
-        if (r && client.logged_in()) {
-            sync_collection_cache();
-            std::unordered_set<std::string> ids;
-            ids.reserve(r->size());
-            for (const auto &card : *r) {
-                ids.insert(card.id);
-            }
-            saved_albums_ = std::move(ids);
-            saved_albums_at_ = Clock::now();
-        }
-        co_return r;
+        co_return out;
     }
 
     Task<Result<void>> Qq::follow(std::string mid, bool on) {
-        auto r =
-            written(co_await client.call(
-                        {{"Concern.ConcernSystemServer", "cgi_concern_user_v2",
-                          std::format(R"({{"opertype":{},"source":0,"encrypt_singerid":1,"userinfo":{{"usertype":1,"userid":{}}}}})", on ? 0 : 1, glz::write_json(mid).value())}},
-                        Comm::app, net::Retry::never))
-                .transform([](const auto &) {});
-        sync_collection_cache();
-        if (r && followed_artists_) {
-            if (on) {
-                followed_artists_->insert(std::move(mid));
-            } else {
-                followed_artists_->erase(mid);
-            }
-        }
-        co_return r;
+        co_return written(co_await client.call({{"Concern.ConcernSystemServer", "cgi_concern_user_v2",
+                                                 std::format(R"({{"opertype":{},"source":0,"encrypt_singerid":1,"userinfo":{{"usertype":1,"userid":{}}}}})", on ? 0 : 1,
+                                                             glz::write_json(mid).value())}},
+                                               Comm::app, net::Retry::never))
+            .transform([](const auto &) {});
     }
 
     Result<PeoplePage> parse_people(const Reply &reply, int from) {
@@ -1997,26 +1906,14 @@ namespace lyren::qq {
     }
 
     Task<Result<std::vector<Card>>> Qq::followed_artists() {
-        Result<std::vector<Card>> out(std::in_place);
+        std::vector<Card> out;
         bool more = true;
-        for (int from = 0; out && more;) {
-            out = parse_followed_artists(co_await client.call({{"music.concern.RelationList", "GetFollowSingerList", std::format(R"({{"From":{},"Size":100}})", from)}}), from)
-                      .transform([&](FollowedArtistsPage page) {
-                          from += static_cast<int>(page.artists.size());
-                          more = page.more;
-                          out->insert(out->end(), std::make_move_iterator(page.artists.begin()), std::make_move_iterator(page.artists.end()));
-                          return std::move(*out);
-                      });
-        }
-        if (out && client.logged_in()) {
-            sync_collection_cache();
-            std::unordered_set<std::string> ids;
-            ids.reserve(out->size());
-            for (const auto &card : *out) {
-                ids.insert(card.id);
-            }
-            followed_artists_ = std::move(ids);
-            followed_artists_at_ = Clock::now();
+        for (int from = 0; more;) {
+            auto page = co_await ok(
+                parse_followed_artists(co_await client.call({{"music.concern.RelationList", "GetFollowSingerList", std::format(R"({{"From":{},"Size":100}})", from)}}), from));
+            from += static_cast<int>(page.artists.size());
+            more = page.more;
+            out.insert(out.end(), std::make_move_iterator(page.artists.begin()), std::make_move_iterator(page.artists.end()));
         }
         co_return out;
     }
@@ -2028,7 +1925,8 @@ namespace lyren::qq {
             loop_,
             http_,
             {.url = "https://xui.ptlogin2.qq.com/cgi-bin/xlogin?" +
-                    form({{"appid", "716027609"}, {"daid", "383"}, {"pt_3rd_aid", "100497308"}, {"style", "40"}, {"s_url", "https://graph.qq.com/oauth2.0/login_jump"}}),
+                    encoding::query_string(
+                        {{"appid", "716027609"}, {"daid", "383"}, {"pt_3rd_aid", "100497308"}, {"style", "40"}, {"s_url", "https://graph.qq.com/oauth2.0/login_jump"}}),
              .cookie_jar = cookies}};
         if (gen != qr_gen_) {
             co_return std::unexpected("QR sign-in was canceled");
@@ -2043,16 +1941,16 @@ namespace lyren::qq {
         }
         auto qr = co_await net::fetch{loop_,
                                       http_,
-                                      {.url = "https://ssl.ptlogin2.qq.com/ptqrshow?" + form({{"appid", "716027609"},
-                                                                                              {"e", "2"},
-                                                                                              {"l", "M"},
-                                                                                              {"s", "3"},
-                                                                                              {"d", "72"},
-                                                                                              {"v", "4"},
-                                                                                              {"t", millis()},
-                                                                                              {"daid", "383"},
-                                                                                              {"pt_3rd_aid", "100497308"},
-                                                                                              {"u1", "https://graph.qq.com/oauth2.0/login_jump"}}),
+                                      {.url = "https://ssl.ptlogin2.qq.com/ptqrshow?" + encoding::query_string({{"appid", "716027609"},
+                                                                                                                {"e", "2"},
+                                                                                                                {"l", "M"},
+                                                                                                                {"s", "3"},
+                                                                                                                {"d", "72"},
+                                                                                                                {"v", "4"},
+                                                                                                                {"t", millis()},
+                                                                                                                {"daid", "383"},
+                                                                                                                {"pt_3rd_aid", "100497308"},
+                                                                                                                {"u1", "https://graph.qq.com/oauth2.0/login_jump"}}),
                                        .headers = {"Referer: https://xui.ptlogin2.qq.com/"},
                                        .cookie_jar = cookies}};
         if (gen != qr_gen_) {
@@ -2075,27 +1973,27 @@ namespace lyren::qq {
         uint64_t gen = qr_gen_;
         auto cookies = qr_cookies_;
         std::string state = oauth_state_;
-        auto poll = co_await net::fetch{
-            loop_,
-            http_,
-            {.url = "https://ssl.ptlogin2.qq.com/ptqrlogin?" + form({{"u1", "https://graph.qq.com/oauth2.0/login_jump"},
-                                                                     {"ptqrtoken", std::to_string(hash33(cookies.get("qrsig", "ssl.ptlogin2.qq.com", "/ptqrlogin")))},
-                                                                     {"ptredirect", "0"},
-                                                                     {"h", "1"},
-                                                                     {"t", "1"},
-                                                                     {"g", "1"},
-                                                                     {"from_ui", "1"},
-                                                                     {"ptlang", "2052"},
-                                                                     {"action", "0-0-" + millis()},
-                                                                     {"js_ver", js_version_},
-                                                                     {"js_type", "1"},
-                                                                     {"pt_uistyle", "40"},
-                                                                     {"aid", "716027609"},
-                                                                     {"daid", "383"},
-                                                                     {"pt_3rd_aid", "100497308"},
-                                                                     {"login_sig", cookies.get("pt_login_sig", "xui.ptlogin2.qq.com", "/cgi-bin/xlogin")}}),
-             .headers = {"Referer: https://xui.ptlogin2.qq.com/"},
-             .cookie_jar = cookies}};
+        auto poll = co_await net::fetch{loop_,
+                                        http_,
+                                        {.url = "https://ssl.ptlogin2.qq.com/ptqrlogin?" +
+                                                encoding::query_string({{"u1", "https://graph.qq.com/oauth2.0/login_jump"},
+                                                                        {"ptqrtoken", std::to_string(hash33(cookies.get("qrsig", "ssl.ptlogin2.qq.com", "/ptqrlogin")))},
+                                                                        {"ptredirect", "0"},
+                                                                        {"h", "1"},
+                                                                        {"t", "1"},
+                                                                        {"g", "1"},
+                                                                        {"from_ui", "1"},
+                                                                        {"ptlang", "2052"},
+                                                                        {"action", "0-0-" + millis()},
+                                                                        {"js_ver", js_version_},
+                                                                        {"js_type", "1"},
+                                                                        {"pt_uistyle", "40"},
+                                                                        {"aid", "716027609"},
+                                                                        {"daid", "383"},
+                                                                        {"pt_3rd_aid", "100497308"},
+                                                                        {"login_sig", cookies.get("pt_login_sig", "xui.ptlogin2.qq.com", "/cgi-bin/xlogin")}}),
+                                         .headers = {"Referer: https://xui.ptlogin2.qq.com/"},
+                                         .cookie_jar = cookies}};
         if (gen != qr_gen_) {
             co_return QrStatus{};
         }
@@ -2104,91 +2002,84 @@ namespace lyren::qq {
         }
         cookies = std::move(poll.cookie_jar);
         qr_cookies_ = cookies;
-        co_return co_await and_then(qr_callback(poll.body), [&](auto args) -> Task<Result<QrStatus>> {
-            if (args[0] == "66") {
-                co_return QrStatus{};
+        auto args = co_await ok(qr_callback(poll.body));
+        if (args[0] == "66") {
+            co_return QrStatus{};
+        }
+        if (args[0] == "67") {
+            co_return QrStatus{.state = QrState::scanned, .nickname = args[5]};
+        }
+        if (args[0] == "65") {
+            co_return QrStatus{.state = QrState::expired};
+        }
+        if (args[0] != "0") {
+            co_return std::unexpected(lyren::trf("QQ QR sign-in failed ({})", args[0]));
+        }
+        auto confirm = co_await ok(qr_confirmation(args[2]));
+        confirm.cookie_jar = std::move(cookies);
+        auto checked = co_await net::fetch{loop_, http_, std::move(confirm)};
+        if (gen != qr_gen_) {
+            co_return QrStatus{};
+        }
+        std::string p_skey = checked.cookie_jar.get("p_skey", "graph.qq.com", "/oauth2.0/authorize");
+        if (!checked.error.empty() || checked.status >= 400 || p_skey.empty()) {
+            std::vector<std::string> cookie_names;
+            for (std::string_view cookie : checked.cookies) {
+                if (auto eq = cookie.find('='); eq != cookie.npos) {
+                    cookie_names.emplace_back(cookie.substr(0, eq));
+                }
             }
-            if (args[0] == "67") {
-                co_return QrStatus{.state = QrState::scanned, .nickname = args[5]};
+            log::warn("qq login confirmation: HTTP {}, URL {}, {} bytes, cookie names {}", checked.status, checked.url.substr(0, checked.url.find_first_of("?#")),
+                      checked.body.size(), cookie_names);
+            if (!checked.error.empty() || checked.status >= 400) {
+                co_return std::unexpected("QQ sign-in confirmation failed; scan again");
             }
-            if (args[0] == "65") {
-                co_return QrStatus{.state = QrState::expired};
-            }
-            if (args[0] != "0") {
-                co_return std::unexpected(lyren::trf("QQ QR sign-in failed ({})", args[0]));
-            }
-            co_return co_await and_then(qr_confirmation(args[2]), [&](auto confirm) -> Task<Result<QrStatus>> {
-                confirm.cookie_jar = std::move(cookies);
-                auto checked = co_await net::fetch{loop_, http_, std::move(confirm)};
-                if (gen != qr_gen_) {
-                    co_return QrStatus{};
-                }
-                std::string p_skey = checked.cookie_jar.get("p_skey", "graph.qq.com", "/oauth2.0/authorize");
-                if (!checked.error.empty() || checked.status >= 400 || p_skey.empty()) {
-                    std::vector<std::string> cookie_names;
-                    for (std::string_view cookie : checked.cookies) {
-                        if (auto eq = cookie.find('='); eq != cookie.npos) {
-                            cookie_names.emplace_back(cookie.substr(0, eq));
-                        }
-                    }
-                    log::warn("qq login confirmation: HTTP {}, URL {}, {} bytes, cookie names {}", checked.status, checked.url.substr(0, checked.url.find_first_of("?#")),
-                              checked.body.size(), cookie_names);
-                    if (!checked.error.empty() || checked.status >= 400) {
-                        co_return std::unexpected("QQ sign-in confirmation failed; scan again");
-                    }
-                    co_return std::unexpected("QQ sign-in returned no authorization credentials; scan again");
-                }
-                auto authorized =
-                    co_await net::fetch{loop_,
-                                        http_,
-                                        {.url = "https://graph.qq.com/oauth2.0/authorize",
-                                         .body = form({{"response_type", "code"},
-                                                       {"client_id", "100497308"},
-                                                       {"redirect_uri", "https://y.qq.com/wk_v17/common_login.html?type=QQ"},
-                                                       {"scope", "get_user_info"},
-                                                       {"state", state},
-                                                       {"switch", ""},
-                                                       {"from_ptlogin", "1"},
-                                                       {"src", "1"},
-                                                       {"update_auth", "1"},
-                                                       {"openapi", "1010"},
-                                                       {"g_tk", std::to_string(hash33(p_skey, 5381))},
-                                                       {"auth_time", millis()},
-                                                       {"ui", random_id()}}),
-                                         .headers = {"Content-Type: application/x-www-form-urlencoded", "Referer: https://graph.qq.com/", "Origin: https://graph.qq.com"},
-                                         .follow_redirects = false,
-                                         .cookie_jar = std::move(checked.cookie_jar)}};
-                if (gen != qr_gen_) {
-                    co_return QrStatus{};
-                }
-                if (!authorized.error.empty() || authorized.status < 300 || authorized.status >= 400) {
-                    co_return std::unexpected("QQ authorization was not completed; scan again");
-                }
-                std::string code = query_value(authorized.location, "code");
-                if (code.empty() || query_value(authorized.location, "state") != state) {
-                    co_return std::unexpected("QQ authorization state did not match; scan again");
-                }
-                auto session = login_session(
-                    co_await client.call({{"QQConnectLogin.LoginServer", "QQLogin",
-                                           std::format(R"({{"onlyNeedAccessToken":0,"forceRefreshToken":0,"appid":100497308,"code":{}}})", glz::write_json(code).value())}},
-                                         Comm::linux, net::Retry::never));
-                if (gen != qr_gen_) {
-                    co_return QrStatus{};
-                }
-                if (!session) {
-                    co_return std::unexpected(session.error());
-                }
-                client.session = std::move(*session);
-                ++client.session_gen;
-                renewal_.reset();
-                renew_after_ = Clock::now() + 30min;
-                qr_cookies_ = {};
-                if (client.on_session) {
-                    client.on_session();
-                }
-                co_return QrStatus{.state = QrState::confirmed, .nickname = args[5]};
-            });
-        });
+            co_return std::unexpected("QQ sign-in returned no authorization credentials; scan again");
+        }
+        auto authorized = co_await net::fetch{loop_,
+                                              http_,
+                                              {.url = "https://graph.qq.com/oauth2.0/authorize",
+                                               .body = encoding::query_string({{"response_type", "code"},
+                                                                               {"client_id", "100497308"},
+                                                                               {"redirect_uri", "https://y.qq.com/wk_v17/common_login.html?type=QQ"},
+                                                                               {"scope", "get_user_info"},
+                                                                               {"state", state},
+                                                                               {"switch", ""},
+                                                                               {"from_ptlogin", "1"},
+                                                                               {"src", "1"},
+                                                                               {"update_auth", "1"},
+                                                                               {"openapi", "1010"},
+                                                                               {"g_tk", std::to_string(hash33(p_skey, 5381))},
+                                                                               {"auth_time", millis()},
+                                                                               {"ui", random_id()}}),
+                                               .headers = {"Content-Type: application/x-www-form-urlencoded", "Referer: https://graph.qq.com/", "Origin: https://graph.qq.com"},
+                                               .follow_redirects = false,
+                                               .cookie_jar = std::move(checked.cookie_jar)}};
+        if (gen != qr_gen_) {
+            co_return QrStatus{};
+        }
+        if (!authorized.error.empty() || authorized.status < 300 || authorized.status >= 400) {
+            co_return std::unexpected("QQ authorization was not completed; scan again");
+        }
+        std::string code = query_value(authorized.location, "code");
+        if (code.empty() || query_value(authorized.location, "state") != state) {
+            co_return std::unexpected("QQ authorization state did not match; scan again");
+        }
+        auto reply = co_await client.call({{"QQConnectLogin.LoginServer", "QQLogin",
+                                            std::format(R"({{"onlyNeedAccessToken":0,"forceRefreshToken":0,"appid":100497308,"code":{}}})", glz::write_json(code).value())}},
+                                          Comm::linux, net::Retry::never);
+        if (gen != qr_gen_) {
+            co_return QrStatus{};
+        }
+        client.session = co_await ok(login_session(reply));
+        ++client.session_gen;
+        renewal_.reset();
+        renew_after_ = Clock::now() + 30min;
+        qr_cookies_ = {};
+        if (client.on_session) {
+            client.on_session();
+        }
+        co_return QrStatus{.state = QrState::confirmed, .nickname = args[5]};
     }
 
     Task<Result<void>> Qq::renew(bool force) {
@@ -2268,7 +2159,6 @@ namespace lyren::qq {
         renewal_.reset();
         renew_after_ = {};
         client.session.clear();
-        sync_collection_cache();
         if (client.on_session) {
             client.on_session();
         }

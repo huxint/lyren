@@ -1,8 +1,8 @@
 #include "qishui/qishui.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <charconv>
+#include <chrono>
 #include <ctime>
 #include <format>
 #include <limits>
@@ -19,20 +19,16 @@ namespace lyren::qishui {
         constexpr std::array kinds{"track", "album", "artist", "playlist"};
         constexpr std::array group_ids{"tracks", "albums", "artists", "playlists"};
 
-        int count(const Json &value) {
-            return static_cast<int>(std::clamp(number(value), 0.0, double(std::numeric_limits<int>::max())));
-        }
-
         std::string image(const Json &value) {
-            const auto urls = array(field(value, "urls"));
+            const auto urls = json::array(json::field(value, "urls"));
             if (urls.empty()) {
                 return {};
             }
-            std::string url = string(urls.front());
-            const auto uri = string(field(value, "uri"));
+            std::string url = json::text(urls.front());
+            const auto uri = json::text(value, "uri");
             if (url.ends_with('/') && !uri.empty()) {
                 url += uri;
-                const auto prefix = string(field(value, "template_prefix"));
+                const auto prefix = json::text(value, "template_prefix");
                 if (!prefix.empty()) {
                     url += '~' + prefix + "-resize:{size}:{size}.png";
                 }
@@ -42,8 +38,8 @@ namespace lyren::qishui {
 
         std::string artists(const Json &value) {
             std::string names;
-            for (const auto &artist : array(value)) {
-                const auto name = string(field(artist, "name"));
+            for (const auto &artist : json::array(value)) {
+                const auto name = json::text(artist, "name");
                 if (!names.empty() && !name.empty()) {
                     names += " / ";
                 }
@@ -54,38 +50,38 @@ namespace lyren::qishui {
 
         Result<Track> track(const Json &value) {
             Track result{.source = Source::qishui};
-            result.id = string(field(value, "id"));
-            result.title = string(field(value, "name"));
+            result.id = json::text(value, "id");
+            result.title = json::text(value, "name");
             if (result.id.empty() || result.title.empty()) {
                 return std::unexpected("Qishui Music returned incomplete song details");
             }
-            result.duration = static_cast<uint32_t>(std::clamp(number(field(value, "duration")) / 1000.0, 0.0, double(std::numeric_limits<uint32_t>::max())));
-            const auto &album = field(value, "album");
-            result.album = string(field(album, "name"));
-            result.album_id = string(field(album, "id"));
-            result.cover = image(field(album, "url_cover"));
-            result.artist = artists(field(value, "artists"));
-            const auto people = array(field(value, "artists"));
+            result.duration = static_cast<uint32_t>(std::clamp(json::number(json::field(value, "duration")) / 1000.0, 0.0, double(std::numeric_limits<uint32_t>::max())));
+            const auto &album = json::field(value, "album");
+            result.album = json::text(album, "name");
+            result.album_id = json::text(album, "id");
+            result.cover = image(json::field(album, "url_cover"));
+            result.artist = artists(json::field(value, "artists"));
+            const auto people = json::array(json::field(value, "artists"));
             if (!people.empty()) {
-                result.artist_id = string(field(people.front(), "id"));
+                result.artist_id = json::text(people.front(), "id");
             }
-            result.paid = boolean(field(field(value, "label_info"), "only_vip_playable"));
+            result.paid = json::boolean(json::field(json::field(value, "label_info"), "only_vip_playable"));
             return result;
         }
 
         const Json &track_entity(const Json &item) {
-            const auto &entity = item.contains("entity") ? field(item, "entity") : item;
+            const auto &entity = item.contains("entity") ? json::field(item, "entity") : item;
             if (entity.contains("track_wrapper")) {
-                return field(field(entity, "track_wrapper"), "track");
+                return json::field(json::field(entity, "track_wrapper"), "track");
             }
-            return entity.contains("track") ? field(entity, "track") : entity;
+            return entity.contains("track") ? json::field(entity, "track") : entity;
         }
 
         Result<std::vector<Track>> track_list(std::span<const Json> items) {
             std::vector<Track> result;
             result.reserve(items.size());
             for (const auto &item : items) {
-                const auto type = string(field(item, "type"));
+                const auto type = json::text(item, "type");
                 if (!type.empty() && type != "track") {
                     continue;
                 }
@@ -100,27 +96,27 @@ namespace lyren::qishui {
 
         Result<Card> card(const Json &value, CardKind kind, bool owned = false) {
             Card result{.kind = kind, .source = Source::qishui};
-            result.id = string(field(value, "id"));
-            result.title = string(field(value, kind == CardKind::playlist ? "title" : "name"));
+            result.id = json::text(value, "id");
+            result.title = json::text(value, kind == CardKind::playlist ? "title" : "name");
             if (result.id.empty() || result.title.empty()) {
                 return std::unexpected("Qishui Music returned incomplete resource details");
             }
-            result.cover = image(field(value, kind == CardKind::artist ? "url_avatar" : "url_cover"));
-            result.count = count(field(value, "count_tracks"));
+            result.cover = image(json::field(value, kind == CardKind::artist ? "url_avatar" : "url_cover"));
+            result.count = json::count(json::field(value, "count_tracks"));
             if (kind == CardKind::playlist) {
-                const auto &total = field(field(value, "resource_cnt"), "track_cnt");
+                const auto &total = json::field(json::field(value, "resource_cnt"), "track_cnt");
                 if (!total.is_null()) {
-                    result.count = count(total);
+                    result.count = json::count(total);
                 }
             }
             result.count_kind = result.count ? Card::Count::songs : Card::Count::none;
             result.owned = owned;
-            result.commentable = kind == CardKind::playlist && !boolean(field(value, "is_private"));
+            result.commentable = kind == CardKind::playlist && !json::boolean(json::field(value, "is_private"));
             if (kind == CardKind::playlist) {
-                result.subtitle = string(field(field(value, "owner"), "nickname"));
-                result.collectable = !owned && result.commentable && number(field(value, "type")) != 1;
+                result.subtitle = json::text(json::field(value, "owner"), "nickname");
+                result.collectable = !owned && result.commentable && json::number(json::field(value, "type")) != 1;
             } else if (kind == CardKind::album) {
-                result.subtitle = artists(field(value, "artists"));
+                result.subtitle = artists(json::field(value, "artists"));
             }
             return result;
         }
@@ -139,28 +135,28 @@ namespace lyren::qishui {
         }
 
         Result<Profile> profile_info(const Json &response) {
-            const auto &info = field(response, "my_info");
-            Profile result{.id = string(field(info, "id")),
-                           .name = string(field(info, "nickname")),
-                           .avatar = image(field(info, "larger_avatar_url")),
-                           .background = image(field(info, "bg_url")),
-                           .signature = string(field(info, "signature"))};
+            const auto &info = json::field(response, "my_info");
+            Profile result{.id = json::text(info, "id"),
+                           .name = json::text(info, "nickname"),
+                           .avatar = image(json::field(info, "larger_avatar_url")),
+                           .background = image(json::field(info, "bg_url")),
+                           .signature = json::text(info, "signature")};
             if (result.name.empty()) {
-                result.name = string(field(info, "public_name"));
+                result.name = json::text(info, "public_name");
             }
             if (result.avatar.empty()) {
-                result.avatar = image(field(info, "medium_avatar_url"));
+                result.avatar = image(json::field(info, "medium_avatar_url"));
             }
             if (result.background.empty()) {
-                result.background = image(field(info, "cover_url"));
+                result.background = image(json::field(info, "cover_url"));
             }
-            if (const auto &v = field(info, "count_following"); !v.is_null()) {
-                result.follows = count(v);
+            if (const auto &v = json::field(info, "count_following"); !v.is_null()) {
+                result.follows = json::count(v);
             }
-            if (const auto &v = field(info, "count_follower"); !v.is_null()) {
-                result.fans = count(v);
+            if (const auto &v = json::field(info, "count_follower"); !v.is_null()) {
+                result.fans = json::count(v);
             }
-            result.vip = boolean(field(info, "is_vip")) || number(field(field(info, "vip_info"), "vip_status")) > 0;
+            result.vip = json::boolean(json::field(info, "is_vip")) || json::number(json::field(json::field(info, "vip_info"), "vip_status")) > 0;
             if (result.id.empty()) {
                 return std::unexpected("Sign in to Qishui Music and try again");
             }
@@ -186,7 +182,7 @@ namespace lyren::qishui {
         }
 
         Result<void> collect_discovery(const Json &block, std::vector<Card> &out) {
-            if (const auto &playlist = field(field(block, "entity"), "playlist"); !playlist.is_null()) {
+            if (const auto &playlist = json::field(json::field(block, "entity"), "playlist"); !playlist.is_null()) {
                 auto parsed = card(playlist, CardKind::playlist);
                 if (!parsed) {
                     return std::unexpected(parsed.error());
@@ -194,7 +190,7 @@ namespace lyren::qishui {
                 out.push_back(std::move(*parsed));
             }
             for (auto name : {"resources", "inner_block"}) {
-                for (const auto &resource : array(field(block, name))) {
+                for (const auto &resource : json::array(json::field(block, name))) {
                     auto parsed = collect_discovery(resource, out);
                     if (!parsed) {
                         return parsed;
@@ -203,27 +199,117 @@ namespace lyren::qishui {
             }
             return {};
         }
+
+        bool looks_like_netscape_jar(std::string_view s) {
+            while (!s.empty()) {
+                const size_t nl = std::min(s.find('\n'), s.size());
+                std::string_view line = trim(s.substr(0, nl));
+                s.remove_prefix(std::min(nl + 1, s.size()));
+                if (line.empty()) {
+                    continue;
+                }
+                if (line.starts_with("#HttpOnly_")) {
+                    return std::ranges::count(line, '\t') >= 6;
+                }
+                if (line.starts_with('#')) {
+                    continue;
+                }
+                return std::ranges::count(line, '\t') >= 6;
+            }
+            return false;
+        }
+
+        struct ParsedSettings {
+            StringMap<std::string> session;
+            Result<std::string> cookie_jar{std::string{}};
+        };
+
+        Result<ParsedSettings> parse_settings_json(std::string_view text) {
+            StringMap<std::string> raw;
+            if (glz::read_json(raw, text)) {
+                return std::unexpected("Connection settings must be a JSON object of strings");
+            }
+            ParsedSettings out;
+            std::optional<std::string> raw_cookie;
+            for (auto &[name, value] : raw) {
+                if (name == "cookie") {
+                    raw_cookie = std::move(value);
+                    continue;
+                }
+                if (name == "cookie_jar") {
+                    if (!raw_cookie) {
+                        raw_cookie = std::move(value);
+                    }
+                    continue;
+                }
+                const auto trimmed = trim(value);
+                if (trimmed.find_first_of("\r\n\t") != trimmed.npos) {
+                    return std::unexpected("Connection settings contain invalid control characters");
+                }
+                if (!trimmed.empty()) {
+                    out.session.insert_or_assign(name, std::string(trimmed));
+                    if (name == "device_id" || name == "iid" || name == "fp") {
+                        out.session.insert_or_assign("custom_" + name, std::string(trimmed));
+                    }
+                }
+            }
+            const auto signer = out.session.find("signer_url");
+            if (signer == out.session.end() || (!signer->second.starts_with("http://") && !signer->second.starts_with("https://")) ||
+                signer->second.find(' ') != std::string::npos) {
+                return std::unexpected("Connection settings require an http:// or https:// signer_url");
+            }
+            if (raw_cookie) {
+                out.cookie_jar = parse_cookie_input(*raw_cookie);
+            }
+            return out;
+        }
+
+        // Materialize domain values page by page; discard the JSON tree before fetching the next page.
+        template <class T, class Parse>
+        Task<Result<T>> read_pages(Client &client, std::string path, std::string name, Query query, T result, Parse parse) {
+            StringHashSet cursors;
+            std::string cursor;
+            for (;;) {
+                auto fields = query;
+                fields.emplace_back("cursor", cursor);
+                fields.emplace_back("count", "100");
+                auto response = co_await ok(co_await client.call(path, std::move(fields)));
+                const auto &items = json::field(response, name);
+                if (!items.is_null() && !items.is_array()) {
+                    co_return std::unexpected("Qishui Music returned an invalid list");
+                }
+                co_await ok(parse(json::array(items), result));
+                if (!json::boolean(json::field(response, "has_more"))) {
+                    break;
+                }
+                cursor = json::text(response, "next_cursor");
+                if (cursor.empty() || !cursors.insert(cursor).second) {
+                    co_return std::unexpected("Qishui Music returned an invalid list continuation");
+                }
+            }
+            co_return result;
+        }
     } // namespace
 
     Result<SearchPage> parse_search(const Json &response, SearchKind kind) {
         SearchPage result;
-        const auto &groups = field(response, "result_groups");
+        const auto &groups = json::field(response, "result_groups");
         if (!groups.is_array()) {
             return std::unexpected("Qishui Music returned no search results");
         }
         const auto index = static_cast<size_t>(kind);
         for (const auto &group : groups.get_array()) {
-            if (text(field(group, "id")) != group_ids[index]) {
+            if (json::text_view(json::field(group, "id")) != group_ids[index]) {
                 continue;
             }
-            const auto size = array(field(group, "data")).size();
+            const auto items = json::array(json::field(group, "data"));
             if (kind == SearchKind::tracks) {
-                result.batch.tracks.reserve(size);
+                result.batch.tracks.reserve(items.size());
             } else {
-                result.batch.cards.reserve(size);
+                result.batch.cards.reserve(items.size());
             }
-            for (const auto &item : array(field(group, "data"))) {
-                const auto &entity = field(item, "entity");
+            for (const auto &item : items) {
+                const auto &entity = json::field(item, "entity");
                 if (kind == SearchKind::tracks) {
                     auto parsed = track(track_entity(entity));
                     if (!parsed) {
@@ -232,15 +318,15 @@ namespace lyren::qishui {
                     result.batch.tracks.push_back(std::move(*parsed));
                 } else {
                     const auto card_kind = kind == SearchKind::albums ? CardKind::album : kind == SearchKind::artists ? CardKind::artist : CardKind::playlist;
-                    auto parsed = card(field(entity, kinds[index]), card_kind);
+                    auto parsed = card(json::field(entity, kinds[index]), card_kind);
                     if (!parsed) {
                         return std::unexpected(parsed.error());
                     }
                     result.batch.cards.push_back(std::move(*parsed));
                 }
             }
-            if (boolean(field(group, "has_more"))) {
-                result.cursor = string(field(group, "next_cursor"));
+            if (json::boolean(json::field(group, "has_more"))) {
+                result.cursor = json::text(group, "next_cursor");
                 if (result.cursor.empty()) {
                     return std::unexpected("Qishui Music returned no search continuation");
                 }
@@ -253,36 +339,38 @@ namespace lyren::qishui {
 
     Result<CommentPage> parse_comments(const Json &response, std::string_view user_id, std::string_view root) {
         CommentPage result;
-        result.total = count(field(response, "count"));
-        result.more = boolean(field(response, "has_more"));
-        result.cursor = string(field(response, "cursor"));
-        result.comments.reserve(array(field(response, root.empty() ? "comments" : "reply_infos")).size());
+        result.total = json::count(json::field(response, "count"));
+        result.more = json::boolean(json::field(response, "has_more"));
+        result.cursor = json::text(response, "cursor");
+        const auto items = json::array(json::field(response, root.empty() ? "comments" : "reply_infos"));
+        result.comments.reserve(items.size());
         if (result.more && result.cursor.empty()) {
             return std::unexpected("Qishui Music returned no comment continuation");
         }
-        for (const auto &item : array(field(response, root.empty() ? "comments" : "reply_infos"))) {
+        for (const auto &item : items) {
             Comment comment;
-            comment.id = string(field(item, "id"));
+            comment.id = json::text(item, "id");
             if (comment.id.empty()) {
                 return std::unexpected("Qishui Music returned incomplete comment details");
             }
             if (!root.empty()) {
                 comment.id = std::string(root) + ':' + comment.id;
             }
-            const auto &user = field(item, "user");
-            comment.user_id = string(field(user, "id"));
-            comment.user = string(field(user, "nickname"));
-            comment.avatar = image(field(user, "medium_avatar_url"));
-            comment.text = string(field(item, "content"));
-            comment.likes = count(field(item, "count_digged"));
-            comment.replies = count(field(item, "count_reply"));
-            comment.liked = boolean(field(item, "user_digged"));
-            comment.owned = boolean(field(item, "can_delete")) || (!user_id.empty() && comment.user_id == user_id);
-            comment.reply = string(field(field(item, "reply_to"), "content"));
-            comment.reply_user = string(field(field(field(item, "reply_to"), "user"), "nickname"));
-            const auto images = array(field(item, "image_list"));
+            const auto &user = json::field(item, "user");
+            comment.user_id = json::text(user, "id");
+            comment.user = json::text(user, "nickname");
+            comment.avatar = image(json::field(user, "medium_avatar_url"));
+            comment.text = json::text(item, "content");
+            comment.likes = json::count(json::field(item, "count_digged"));
+            comment.replies = json::count(json::field(item, "count_reply"));
+            comment.liked = json::boolean(json::field(item, "user_digged"));
+            comment.owned = json::boolean(json::field(item, "can_delete")) || (!user_id.empty() && comment.user_id == user_id);
+            const auto &reply_to = json::field(item, "reply_to");
+            comment.reply = json::text(reply_to, "content");
+            comment.reply_user = json::text(json::field(reply_to, "user"), "nickname");
+            const auto images = json::array(json::field(item, "image_list"));
             if (!images.empty()) {
-                comment.image = image(field(images.front(), "medium_url"));
+                comment.image = image(json::field(images.front(), "medium_url"));
             }
             result.comments.push_back(std::move(comment));
         }
@@ -329,82 +417,8 @@ namespace lyren::qishui {
         };
     }
 
-    namespace {
-        std::string_view trim_ascii(std::string_view s) {
-            const auto first = s.find_first_not_of(" \t\r\n");
-            if (first == s.npos) {
-                return {};
-            }
-            return s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
-        }
-
-        bool looks_like_netscape_jar(std::string_view s) {
-            while (!s.empty()) {
-                const size_t nl = std::min(s.find('\n'), s.size());
-                std::string_view line = trim_ascii(s.substr(0, nl));
-                s.remove_prefix(std::min(nl + 1, s.size()));
-                if (line.empty()) {
-                    continue;
-                }
-                if (line.starts_with("#HttpOnly_")) {
-                    return std::ranges::count(line, '\t') >= 6;
-                }
-                if (line.starts_with('#')) {
-                    continue;
-                }
-                return std::ranges::count(line, '\t') >= 6;
-            }
-            return false;
-        }
-
-        struct ParsedSettings {
-            StringMap<std::string> session;
-            Result<std::string> cookie_jar{std::string{}};
-        };
-
-        Result<ParsedSettings> parse_settings_json(std::string_view text) {
-            StringMap<std::string> raw;
-            if (glz::read_json(raw, text)) {
-                return std::unexpected("Connection settings must be a JSON object of strings");
-            }
-            ParsedSettings out;
-            std::optional<std::string> raw_cookie;
-            for (auto &[name, value] : raw) {
-                if (name == "cookie") {
-                    raw_cookie = std::move(value);
-                    continue;
-                }
-                if (name == "cookie_jar") {
-                    if (!raw_cookie) {
-                        raw_cookie = std::move(value);
-                    }
-                    continue;
-                }
-                const auto trimmed = trim_ascii(value);
-                if (trimmed.find_first_of("\r\n\t") != trimmed.npos) {
-                    return std::unexpected("Connection settings contain invalid control characters");
-                }
-                if (!trimmed.empty()) {
-                    out.session.insert_or_assign(name, std::string(trimmed));
-                    if (name == "device_id" || name == "iid" || name == "fp") {
-                        out.session.insert_or_assign("custom_" + name, std::string(trimmed));
-                    }
-                }
-            }
-            const auto signer = out.session.find("signer_url");
-            if (signer == out.session.end() || (!signer->second.starts_with("http://") && !signer->second.starts_with("https://")) ||
-                signer->second.find(' ') != std::string::npos) {
-                return std::unexpected("Connection settings require an http:// or https:// signer_url");
-            }
-            if (raw_cookie) {
-                out.cookie_jar = parse_cookie_input(*raw_cookie);
-            }
-            return out;
-        }
-    } // namespace
-
     Result<std::string> parse_cookie_input(std::string_view raw) {
-        raw = trim_ascii(raw);
+        raw = trim(raw);
         if (raw.empty()) {
             return std::string{};
         }
@@ -425,7 +439,7 @@ namespace lyren::qishui {
                 }
             }
             if (prefix && raw[6] == ':') {
-                raw = trim_ascii(raw.substr(7));
+                raw = trim(raw.substr(7));
             }
         }
         std::string jar;
@@ -433,14 +447,14 @@ namespace lyren::qishui {
         std::string_view rest = raw;
         while (!rest.empty()) {
             const auto end = rest.find(';');
-            const auto entry = trim_ascii(rest.substr(0, end));
+            const auto entry = trim(rest.substr(0, end));
             if (!entry.empty()) {
                 const auto equal = entry.find('=');
                 if (equal == entry.npos || equal == 0) {
                     return std::unexpected("Qishui Music Cookie must contain name=value pairs");
                 }
-                const auto name = trim_ascii(entry.substr(0, equal));
-                const auto value = trim_ascii(entry.substr(equal + 1));
+                const auto name = trim(entry.substr(0, equal));
+                const auto value = trim(entry.substr(equal + 1));
                 if (name.empty() || name.find_first_of(" \t\r\n") != name.npos || value.find_first_of(" \t\r\n") != value.npos) {
                     return std::unexpected("Qishui Music Cookie must contain name=value pairs");
                 }
@@ -458,20 +472,8 @@ namespace lyren::qishui {
         return net::CookieJar::from_netscape(jar).netscape();
     }
 
-    void Qishui::sync_collection_cache() {
-        const std::string uid = logged_in() ? client.get("user_id") : std::string{};
-        if (collection_uid_ != uid) {
-            collection_uid_ = uid;
-            saved_albums_.reset();
-            followed_artists_.reset();
-            saved_albums_at_ = {};
-            followed_artists_at_ = {};
-        }
-    }
-
     Task<Result<void>> Qishui::initialize() {
-        sync_collection_cache();
-        co_return co_await client.initialize();
+        return client.initialize();
     }
 
     Task<SessionCheck> Qishui::check_session(std::string text) {
@@ -492,14 +494,14 @@ namespace lyren::qishui {
             co_return check;
         }
         check.signer = {State::ok, candidate.get("signer_url")};
-        const auto &identity = field(*config, "identity");
+        const auto &identity = json::field(*config, "identity");
         for (std::string_view name : {"device_id", "iid", "fp"}) {
             std::string custom = candidate.get(std::format("custom_{}", name));
             if (!custom.empty()) {
                 candidate.session.insert_or_assign(std::string(name), std::move(custom));
                 continue;
             }
-            auto value = string(field(identity, name));
+            auto value = json::text(identity, name);
             if (!value.empty()) {
                 candidate.session.insert_or_assign(std::string(name), std::move(value));
             }
@@ -538,35 +540,21 @@ namespace lyren::qishui {
 
     Task<Result<void>> Qishui::import_session(std::string text) {
         const auto generation = client.generation;
-        auto parsed = parse_settings_json(text);
-        if (!parsed) {
-            co_return std::unexpected(parsed.error());
-        }
-        if (!parsed->cookie_jar) {
-            co_return std::unexpected(parsed->cookie_jar.error());
-        }
-        StringMap<std::string> settings = std::move(parsed->session);
-        if (!parsed->cookie_jar->empty()) {
-            settings["cookie_jar"] = std::move(*parsed->cookie_jar);
+        auto parsed = co_await ok(parse_settings_json(text));
+        auto cookie_jar = co_await ok(std::move(parsed.cookie_jar));
+        StringMap<std::string> settings = std::move(parsed.session);
+        if (!cookie_jar.empty()) {
+            settings["cookie_jar"] = std::move(cookie_jar);
         }
         Client candidate(loop_, http_);
         candidate.api_base = client.api_base;
         candidate.seo_base = client.seo_base;
         candidate.session = std::move(settings);
-        auto ready = co_await candidate.initialize();
-        if (!ready) {
-            co_return ready;
-        }
+        co_await ok(co_await candidate.initialize());
         if (!candidate.get("cookie_jar").empty()) {
-            auto response = co_await candidate.call("/luna/pc/me");
-            if (!response) {
-                co_return std::unexpected(response.error());
-            }
-            auto account = account_info(*response);
-            if (!account) {
-                co_return std::unexpected(account.error());
-            }
-            candidate.session["user_id"] = account->id;
+            auto response = co_await ok(co_await candidate.call("/luna/pc/me"));
+            auto account = co_await ok(account_info(response));
+            candidate.session["user_id"] = account.id;
         }
         if (client.generation != generation) {
             co_return std::unexpected("Qishui Music session changed; retry the action");
@@ -583,7 +571,6 @@ namespace lyren::qishui {
         lyric_id_.clear();
         lyric_text_.clear();
         lyric_type_.clear();
-        sync_collection_cache();
         if (client.on_session) {
             client.on_session();
         }
@@ -591,11 +578,8 @@ namespace lyren::qishui {
     }
 
     Task<Result<Account>> Qishui::account() {
-        auto response = co_await client.call("/luna/pc/me");
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        auto result = account_info(*response);
+        auto response = co_await ok(co_await client.call("/luna/pc/me"));
+        auto result = account_info(response);
         if (result && client.get("user_id") != result->id) {
             client.session["user_id"] = result->id;
             if (client.on_session) {
@@ -610,11 +594,8 @@ namespace lyren::qishui {
             // Another listener's public playlists are available; their name and avatar come from the source item.
             co_return Profile{.id = std::move(uid)};
         }
-        auto response = co_await client.call("/luna/pc/me");
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        co_return profile_info(*response);
+        auto response = co_await ok(co_await client.call("/luna/pc/me"));
+        co_return profile_info(response);
     }
 
     Task<void> Qishui::logout() {
@@ -638,7 +619,6 @@ namespace lyren::qishui {
         lyric_id_.clear();
         lyric_text_.clear();
         lyric_type_.clear();
-        sync_collection_cache();
         if (!was_logged_in) {
             auto saved_cb = std::move(client.on_session);
             (void)co_await client.initialize();
@@ -683,87 +663,67 @@ namespace lyren::qishui {
 
     Task<Result<Batch>> Qishui::search(std::string query, SearchKind kind, int offset, int limit) {
         const auto type = kinds[static_cast<size_t>(kind)];
-        auto page = begin_page(std::string("search:") + type, query, offset);
-        if (!page) {
-            co_return std::unexpected(page.error());
-        }
+        auto page = co_await ok(begin_page(std::string("search:") + type, query, offset));
         Result<Json> response;
         if (client.get("signer_url").empty()) {
-            response = co_await client.android_search(type, std::move(query), page->cursor, limit);
+            response = co_await client.android_search(type, std::move(query), page.cursor, limit);
         } else {
-            Query fields{{"q", query},         {"cursor", page->cursor}, {"search_id", page->search_id}, {"search_method", "input"},
-                         {"debug_params", ""}, {"from_search_id", ""},   {"search_scene", "main"},       {"scene_name", "search"}};
+            Query fields{{"q", query},         {"cursor", page.cursor}, {"search_id", page.search_id}, {"search_method", "input"},
+                         {"debug_params", ""}, {"from_search_id", ""},  {"search_scene", "main"},      {"scene_name", "search"}};
             response = co_await client.call(std::string("/luna/pc/search/") + type, std::move(fields));
         }
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        auto parsed = parse_search(*response, kind);
-        if (!parsed) {
-            co_return std::unexpected(parsed.error());
-        }
-        auto done = finish_page(*page, std::move(parsed->cursor), parsed->batch);
-        if (!done) {
-            co_return std::unexpected(done.error());
-        }
-        co_return std::move(parsed->batch);
+        auto parsed = co_await ok(parse_search(co_await ok(std::move(response)), kind));
+        co_await ok(finish_page(page, std::move(parsed.cursor), parsed.batch));
+        co_return std::move(parsed.batch);
     }
 
     Task<Result<Json>> Qishui::track_data(std::string id) {
         if (client.get("signer_url").empty()) {
-            auto response = co_await client.public_get(client.seo_base + "/luna/h5/seo_track?" + query_string({{"track_id", id}, {"device_platform", "web"}}));
-            if (!response) {
-                co_return std::unexpected(response.error());
-            }
-            const auto &seo = field(*response, "seo_track");
-            if (string(field(field(seo, "track"), "id")).empty()) {
+            auto response =
+                co_await ok(co_await client.public_get(client.seo_base + "/luna/h5/seo_track?" + encoding::query_string({{"track_id", id}, {"device_platform", "web"}})));
+            const auto &seo = json::field(response, "seo_track");
+            if (json::text(json::field(seo, "track"), "id").empty()) {
                 co_return std::unexpected("Qishui Music returned incomplete song details");
             }
-            const bool nested_lyric = !text(field(field(seo, "lyric"), "content")).empty();
+            const bool nested_lyric = !json::text_view(json::field(json::field(seo, "lyric"), "content")).empty();
             Json result;
-            result["track"] = std::move((*response)["seo_track"]["track"]);
-            result["lyric"] = nested_lyric ? std::move((*response)["seo_track"]["lyric"]) : std::move((*response)["lyric"]);
-            result["track_player"] = std::move((*response)["track_player"]);
+            result["track"] = std::move(response["seo_track"]["track"]);
+            result["lyric"] = nested_lyric ? std::move(response["seo_track"]["lyric"]) : std::move(response["lyric"]);
+            result["track_player"] = std::move(response["track_player"]);
             co_return result;
         }
         Json body{{"track_id", id}, {"media_type", "track"}, {"queue_type", "favorite_track_playlist"}, {"scene_name", "library"}};
-        auto response = co_await client.call("/luna/pc/track_v2", {}, glz::write_json(body).value());
-        if (response && !response->contains("track") && response->contains("track_info")) {
-            (*response)["track"] = std::move((*response)["track_info"]);
+        auto response = co_await ok(co_await client.call("/luna/pc/track_v2", {}, json::write(body)));
+        if (!response.contains("track") && response.contains("track_info")) {
+            response["track"] = std::move(response["track_info"]);
         }
         co_return response;
     }
 
     Task<Result<Stream>> Qishui::stream(Track track, Quality quality) {
-        auto response = co_await track_data(track.id);
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
+        auto response = co_await ok(co_await track_data(track.id));
         lyric_id_ = track.id;
-        lyric_text_ = string(field(field(*response, "lyric"), "content"));
-        lyric_type_ = string(field(field(*response, "lyric"), "type"));
+        lyric_text_ = json::text(json::field(response, "lyric"), "content");
+        lyric_type_ = json::text(json::field(response, "lyric"), "type");
         uint32_t duration = track.duration;
-        if (const auto milliseconds = number(field(field(*response, "track"), "duration")); milliseconds > 0) {
+        if (const auto milliseconds = json::number(json::field(json::field(response, "track"), "duration")); milliseconds > 0) {
             duration = static_cast<uint32_t>(std::min(milliseconds / 1000.0, double(std::numeric_limits<uint32_t>::max())));
         }
-        auto direct = parse_stream(*response, quality, duration);
+        auto direct = parse_stream(response, quality, duration);
         if (direct) {
             co_return direct;
         }
-        const auto url = string(field(field(*response, "track_player"), "url_player_info"));
+        const auto url = json::text(json::field(response, "track_player"), "url_player_info");
         if (!url.empty()) {
             if (!url.starts_with("https://") && !url.starts_with("http://")) {
                 co_return std::unexpected("Qishui Music returned an invalid player URL");
             }
-            auto player = co_await client.public_get(url);
-            if (!player) {
-                co_return std::unexpected(player.error());
-            }
-            const auto &error = field(field(*player, "ResponseMetadata"), "Error");
-            if (!string(field(error, "Code")).empty()) {
+            auto player = co_await ok(co_await client.public_get(url));
+            const auto &error = json::field(json::field(player, "ResponseMetadata"), "Error");
+            if (!json::text(error, "Code").empty()) {
                 co_return std::unexpected("Qishui Music could not authorize this audio stream");
             }
-            co_return parse_stream(*player, quality, duration);
+            co_return parse_stream(player, quality, duration);
         }
         co_return direct;
     }
@@ -772,64 +732,47 @@ namespace lyren::qishui {
         if (lyric_id_ == track.id) {
             co_return qishui::parse_lyrics(lyric_text_, lyric_type_);
         }
-        auto response = co_await track_data(track.id);
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        co_return qishui::parse_lyrics(text(field(field(*response, "lyric"), "content")), text(field(field(*response, "lyric"), "type")));
+        auto response = co_await ok(co_await track_data(track.id));
+        const auto &lyric = json::field(response, "lyric");
+        co_return qishui::parse_lyrics(json::text_view(json::field(lyric, "content")), json::text_view(json::field(lyric, "type")));
     }
 
     Task<Result<std::vector<Track>>> Qishui::tracks(Card resource) {
         if (resource.kind == CardKind::album) {
-            auto result = co_await album(resource.id);
-            if (!result) {
-                co_return std::unexpected(result.error());
-            }
-            co_return std::move(result->tracks);
+            co_return (co_await ok(co_await album(resource.id))).tracks;
         }
         if (resource.kind == CardKind::artist) {
-            auto result = co_await artist_songs(resource.id, 0);
-            if (!result) {
-                co_return std::unexpected(result.error());
-            }
-            co_return std::move(result->tracks);
+            co_return (co_await ok(co_await artist_songs(resource.id, 0))).tracks;
         }
         if (resource.id.starts_with("top:")) {
+            const auto encoded = encoding::url_encode(std::string_view(resource.id).substr(4));
             Result<Json> response = std::unexpected("");
             if (client.get("signer_url").empty()) {
-                response = co_await client.public_get("https://api5-lf.qishui.com/luna/charts/" + encode(resource.id.substr(4)) + "?charge=0");
+                response = co_await client.public_get("https://api5-lf.qishui.com/luna/charts/" + encoded + "?charge=0");
             } else {
-                response = co_await client.call("/luna/pc/charts/" + encode(resource.id.substr(4)));
+                response = co_await client.call("/luna/pc/charts/" + encoded);
             }
-            if (!response) {
-                co_return std::unexpected(response.error());
-            }
-            const auto &chart = field(*response, "chart");
+            auto body = co_await ok(std::move(response));
+            const auto &chart = json::field(body, "chart");
             if (!chart.is_object()) {
                 co_return std::unexpected("Qishui Music returned no chart");
             }
-            co_return track_list(array(field(chart, "track_ranks")));
+            co_return track_list(json::array(json::field(chart, "track_ranks")));
         }
         std::vector<Track> result;
         std::string cursor, session;
-        std::unordered_set<std::string> cursors;
+        StringHashSet cursors;
         for (;;) {
             Query query{{"playlist_id", resource.id}, {"cursor", cursor}, {"count", "100"}, {"session_id", session}, {"reverse", "false"}, {"ab_param", ""}};
-            auto response = co_await client.call("/luna/pc/playlist/detail", std::move(query));
-            if (!response) {
-                co_return std::unexpected(response.error());
-            }
-            const auto &items = response->contains("media_resources") ? field(*response, "media_resources") : field(*response, "tracks");
-            auto parsed = track_list(array(items));
-            if (!parsed) {
-                co_return std::unexpected(parsed.error());
-            }
-            result.insert(result.end(), std::make_move_iterator(parsed->begin()), std::make_move_iterator(parsed->end()));
-            if (!boolean(field(*response, "has_more"))) {
+            auto response = co_await ok(co_await client.call("/luna/pc/playlist/detail", std::move(query)));
+            const auto &items = response.contains("media_resources") ? json::field(response, "media_resources") : json::field(response, "tracks");
+            auto parsed = co_await ok(track_list(json::array(items)));
+            result.append_range(std::views::as_rvalue(parsed));
+            if (!json::boolean(json::field(response, "has_more"))) {
                 break;
             }
-            cursor = string(field(*response, "next_cursor"));
-            session = string(field(*response, "session_id"));
+            cursor = json::text(response, "next_cursor");
+            session = json::text(response, "session_id");
             if (cursor.empty() || !cursors.insert(cursor).second) {
                 co_return std::unexpected("Qishui Music returned an invalid playlist continuation");
             }
@@ -839,24 +782,15 @@ namespace lyren::qishui {
 
     Task<Result<std::vector<Card>>> Qishui::recommended_playlists() {
         if (!logged_in()) {
-            auto response = co_await client.call("/luna/pc/discover", {}, "{}");
-            if (!response) {
-                co_return std::unexpected(response.error());
-            }
+            auto response = co_await ok(co_await client.call("/luna/pc/discover", {}, "{}"));
             std::vector<Card> result;
-            for (const auto &block : array(field(*response, "blocks"))) {
-                auto parsed = collect_discovery(block, result);
-                if (!parsed) {
-                    co_return std::unexpected(parsed.error());
-                }
+            for (const auto &block : json::array(json::field(response, "blocks"))) {
+                co_await ok(collect_discovery(block, result));
             }
             co_return result;
         }
-        auto response = co_await client.call("/luna/me/playlist/recommend");
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        co_return card_list(array(field(*response, "playlists")), CardKind::playlist);
+        auto response = co_await ok(co_await client.call("/luna/me/playlist/recommend"));
+        co_return card_list(json::array(json::field(response, "playlists")), CardKind::playlist);
     }
 
     Task<Result<std::vector<Card>>> Qishui::toplists() {
@@ -874,17 +808,12 @@ namespace lyren::qishui {
                   {"is_first_request", feed_count_ == 0},
                   {"is_did_first_request", feed_count_ == 0},
                   {"feed_counts", Json{{"mix_session_count", feed_count_ + 1}}}};
-        auto response = co_await client.call("/luna/pc/feed/song-tab", {}, glz::write_json(body).value());
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        auto parsed = track_list(array(field(*response, "items")));
-        if (parsed) {
-            ++feed_count_;
-            played_media_.clear();
-            for (const auto &track : *parsed) {
-                played_media_.push_back(Json{{"media_id", track.id}, {"type", "track"}, {"duration", track.duration}, {"played_mills", -1}});
-            }
+        auto response = co_await ok(co_await client.call("/luna/pc/feed/song-tab", {}, json::write(body)));
+        auto parsed = co_await ok(track_list(json::array(json::field(response, "items"))));
+        ++feed_count_;
+        played_media_.clear();
+        for (const auto &track : parsed) {
+            played_media_.push_back(Json{{"media_id", track.id}, {"type", "track"}, {"duration", track.duration}, {"played_mills", -1}});
         }
         co_return parsed;
     }
@@ -898,7 +827,7 @@ namespace lyren::qishui {
     }
 
     Task<Result<std::vector<Track>>> Qishui::new_songs(std::string) {
-        co_return co_await tracks({.source = Source::qishui, .id = "top:7060812597884869927"});
+        return tracks({.source = Source::qishui, .id = "top:7060812597884869927"});
     }
 
     Task<Result<Categories>> Qishui::categories() {
@@ -921,26 +850,20 @@ namespace lyren::qishui {
             co_return std::unexpected("Qishui Music list changed; refresh the page");
         }
         const auto revision = square_revision_;
-        auto response = co_await client.call("/luna/feed/playlist-square", {}, glz::write_json(Json{{"category_id", category_id}}).value());
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
+        auto response = co_await ok(co_await client.call("/luna/feed/playlist-square", {}, json::write(Json{{"category_id", category_id}})));
         if (revision != square_revision_) {
             co_return std::unexpected("Qishui Music list changed; refresh the page");
         }
         Batch result;
-        for (const auto &item : array(field(*response, "items"))) {
-            auto parsed = collect_discovery(item, result.cards);
-            if (!parsed) {
-                co_return std::unexpected(parsed.error());
-            }
+        for (const auto &item : json::array(json::field(response, "items"))) {
+            co_await ok(collect_discovery(item, result.cards));
         }
         // This is a recommendation feed: repeated requests return another batch, without a cursor.
         // Keep overlapping recommendations once, and stop requesting when a batch adds nothing.
         std::erase_if(result.cards, [this](const Card &card) {
             return !square_seen_.insert(card.id).second;
         });
-        const bool more = boolean(field(*response, "has_more")) && !result.cards.empty();
+        const bool more = json::boolean(json::field(response, "has_more")) && !result.cards.empty();
         result.next_offset = more ? offset + 1 : -1;
         result.total = static_cast<int>(square_seen_.size()) + more;
         co_return result;
@@ -948,158 +871,98 @@ namespace lyren::qishui {
 
     Task<Result<std::vector<Track>>> Qishui::similar(std::string id) {
         Json body{{"media_list", media(std::move(id))}, {"scene_name", "player"}};
-        auto response = co_await client.call("/luna/pc/media/related", {}, glz::write_json(body).value());
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        co_return track_list(array(field(*response, "items")));
+        auto response = co_await ok(co_await client.call("/luna/pc/media/related", {}, json::write(body)));
+        co_return track_list(json::array(json::field(response, "items")));
     }
 
     Task<Result<AlbumInfo>> Qishui::album(std::string id) {
-        auto response = co_await client.call("/luna/pc/albums/" + encode(id), {{"ignore_tracks", "false"}});
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        const auto &info = field(*response, "album_info");
+        auto response = co_await ok(co_await client.call("/luna/pc/albums/" + encoding::url_encode(id), {{"ignore_tracks", "false"}}));
+        const auto &info = json::field(response, "album_info");
         if (!info.is_object()) {
             co_return std::unexpected("Qishui Music returned no album");
         }
         AlbumInfo result;
-        result.artist = artists(field(info, "artists"));
-        const auto people = array(field(info, "artists"));
+        result.artist = artists(json::field(info, "artists"));
+        const auto people = json::array(json::field(info, "artists"));
         if (!people.empty()) {
-            result.artist_id = string(field(people.front(), "id"));
+            result.artist_id = json::text(people.front(), "id");
         }
-        result.company = string(field(info, "company"));
-        for (const auto &line : array(field(info, "pclines"))) {
+        result.company = json::text(info, "company");
+        for (const auto &line : json::array(json::field(info, "pclines"))) {
             if (!result.about.empty()) {
                 result.about += '\n';
             }
-            result.about += string(line);
+            result.about += json::text(line);
         }
-        if (const auto milliseconds = number(field(info, "release_date")); milliseconds > 0 && milliseconds < 253402300800000.0) {
+        if (const auto milliseconds = json::number(json::field(info, "release_date")); milliseconds > 0 && milliseconds < 253402300800000.0) {
             const auto seconds = static_cast<time_t>(milliseconds / 1000);
-            std::tm date;
+            std::tm date{};
             gmtime_r(&seconds, &date);
-            char formatted[16];
-            std::strftime(formatted, sizeof formatted, "%Y-%m-%d", &date);
-            result.date = formatted;
+            result.date = std::format("{:04d}-{:02d}-{:02d}", date.tm_year + 1900, date.tm_mon + 1, date.tm_mday);
         }
-        auto parsed = track_list(array(field(*response, "tracks")));
-        if (!parsed) {
-            co_return std::unexpected(parsed.error());
-        }
-        result.tracks = std::move(*parsed);
-        if (logged_in()) {
-            sync_collection_cache();
-            if (!saved_albums_ || Clock::now() - saved_albums_at_ >= 5min) {
-                if (auto saved = co_await collected_albums(); !saved) {
-                    log::debug("qishui album collected state unavailable: {}", saved.error());
-                }
-            }
-            if (saved_albums_) {
-                result.collected = saved_albums_->contains(id);
-            }
-        }
+        result.tracks = co_await ok(track_list(json::array(json::field(response, "tracks"))));
         co_return result;
     }
 
     Task<Result<ArtistInfo>> Qishui::artist(std::string id) {
-        auto response = co_await client.call("/luna/pc/artists/" + encode(id), {{"locate_item_id", ""}});
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        const auto &info = field(*response, "artist_info");
+        auto response = co_await ok(co_await client.call("/luna/pc/artists/" + encoding::url_encode(id), {{"locate_item_id", ""}}));
+        const auto &info = json::field(response, "artist_info");
         if (!info.is_object()) {
             co_return std::unexpected("Qishui Music returned no artist");
         }
-        ArtistInfo result{.name = string(field(info, "name")), .avatar = image(field(info, "url_avatar")), .songs = count(field(info, "count_tracks"))};
-        if (logged_in()) {
-            sync_collection_cache();
-            if (!followed_artists_ || Clock::now() - followed_artists_at_ >= 5min) {
-                if (auto saved = co_await followed_artists(); !saved) {
-                    log::debug("qishui artist follow state unavailable: {}", saved.error());
-                }
-            }
-            if (followed_artists_) {
-                result.followed = followed_artists_->contains(id);
-            }
-        }
-        co_return result;
+        co_return ArtistInfo{.name = json::text(info, "name"), .avatar = image(json::field(info, "url_avatar")), .songs = json::count(json::field(info, "count_tracks"))};
     }
 
     Task<Result<Batch>> Qishui::artist_page(std::string id, int offset, bool albums) {
-        auto page = begin_page(std::string(albums ? "artist_albums:" : "artist_songs:") + id, id, offset);
-        if (!page) {
-            co_return std::unexpected(page.error());
-        }
-        Query query{{"cursor", page->cursor}, {"count", albums ? "30" : "100"}};
+        auto page = co_await ok(begin_page(std::string(albums ? "artist_albums:" : "artist_songs:") + id, id, offset));
+        Query query{{"cursor", page.cursor}, {"count", albums ? "30" : "100"}};
         if (!albums) {
             query.emplace_back("sort_type", "0");
         }
-        auto response = co_await client.call("/luna/pc/artists/" + encode(id) + (albums ? "/albums" : "/tracks"), std::move(query));
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
+        auto response = co_await ok(co_await client.call("/luna/pc/artists/" + encoding::url_encode(id) + (albums ? "/albums" : "/tracks"), std::move(query)));
         Batch result;
         if (albums) {
-            auto parsed = card_list(array(field(*response, "albums")), CardKind::album);
-            if (!parsed) {
-                co_return std::unexpected(parsed.error());
-            }
-            result.cards = std::move(*parsed);
+            result.cards = co_await ok(card_list(json::array(json::field(response, "albums")), CardKind::album));
         } else {
-            auto parsed = track_list(array(field(*response, "tracks")));
-            if (!parsed) {
-                co_return std::unexpected(parsed.error());
-            }
-            result.tracks = std::move(*parsed);
+            result.tracks = co_await ok(track_list(json::array(json::field(response, "tracks"))));
         }
-        const bool more = boolean(field(*response, "has_more"));
-        std::string next = more ? string(field(*response, "next_cursor")) : "";
+        const bool more = json::boolean(json::field(response, "has_more"));
+        std::string next = more ? json::text(response, "next_cursor") : "";
         if (more && next.empty()) {
             co_return std::unexpected("Qishui Music returned no artist continuation");
         }
-        auto done = finish_page(*page, std::move(next), result);
-        if (!done) {
-            co_return std::unexpected(done.error());
-        }
+        co_await ok(finish_page(page, std::move(next), result));
         co_return result;
     }
 
     Task<Result<Batch>> Qishui::artist_songs(std::string id, int offset) {
-        co_return co_await artist_page(std::move(id), offset, false);
+        return artist_page(std::move(id), offset, false);
     }
     Task<Result<Batch>> Qishui::artist_albums(std::string id, int offset) {
-        co_return co_await artist_page(std::move(id), offset, true);
+        return artist_page(std::move(id), offset, true);
     }
 
     Task<Result<CommentPage>> Qishui::comments(Subject subject, std::string id, bool, int, std::string cursor) {
         if (subject == Subject::album) {
             co_return std::unexpected("Qishui Music does not provide album comments");
         }
-        auto response = co_await client.call(
-            "/luna/pc/comments", {{"group_id", id}, {"group_type", subject == Subject::song ? "0" : "4"}, {"cursor", cursor}, {"count", "20"}, {"image_strategy", "3"}});
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        co_return parse_comments(*response, client.get("user_id"));
+        auto response = co_await ok(co_await client.call(
+            "/luna/pc/comments", {{"group_id", id}, {"group_type", subject == Subject::song ? "0" : "4"}, {"cursor", cursor}, {"count", "20"}, {"image_strategy", "3"}}));
+        co_return parse_comments(response, client.get("user_id"));
     }
 
     Task<Result<CommentPage>> Qishui::comment_replies(Subject subject, std::string id, std::string root, int, std::string cursor) {
-        auto response =
-            co_await client.call("/luna/pc/comments/" + encode(root) + "/replies",
-                                 {{"group_id", id}, {"group_type", subject == Subject::song ? "0" : "4"}, {"cursor", cursor}, {"count", "20"}, {"image_strategy", "3"}});
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        co_return parse_comments(*response, client.get("user_id"), root);
+        auto response = co_await ok(
+            co_await client.call("/luna/pc/comments/" + encoding::url_encode(root) + "/replies",
+                                 {{"group_id", id}, {"group_type", subject == Subject::song ? "0" : "4"}, {"cursor", cursor}, {"count", "20"}, {"image_strategy", "3"}}));
+        co_return parse_comments(response, client.get("user_id"), root);
     }
 
     Task<Result<void>> Qishui::like_comment(Subject, std::string resource, std::string id, bool on) {
         auto [root, reply] = comment_id(id);
-        co_return co_await write("/luna/pc/comments/action",
-                                 Json{{"comment_id", root}, {"reply_id", reply}, {"group_id", resource}, {"type", on ? 1 : 3}, {"scene_name", "comment_detail"}});
+        return write(
+            "/luna/pc/comments/action",
+            Json{{"comment_id", std::move(root)}, {"reply_id", std::move(reply)}, {"group_id", std::move(resource)}, {"type", on ? 1 : 3}, {"scene_name", "comment_detail"}});
     }
 
     Task<Result<std::string>> Qishui::post_comment(Subject subject, std::string id, std::string content, std::string reply, std::string root) {
@@ -1114,11 +977,8 @@ namespace lyren::qishui {
                 body["reply_to_reply_id"] = child;
             }
         }
-        auto response = co_await client.call("/luna/pc/comments/create", {}, glz::write_json(body).value(), Operation::write);
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        std::string created = string(field(*response, "created_comment"));
+        auto response = co_await ok(co_await client.call("/luna/pc/comments/create", {}, json::write(body), Operation::write));
+        std::string created = json::text(response, "created_comment");
         if (created.empty()) {
             co_return std::unexpected("Qishui Music did not confirm the posted comment");
         }
@@ -1127,41 +987,8 @@ namespace lyren::qishui {
 
     Task<Result<void>> Qishui::delete_comment(Subject, std::string, std::string id) {
         auto [root, reply] = comment_id(id);
-        co_return co_await write("/luna/pc/comments/delete", Json{{"comment_id", root}, {"reply_id", reply}});
+        return write("/luna/pc/comments/delete", Json{{"comment_id", std::move(root)}, {"reply_id", std::move(reply)}});
     }
-
-    namespace {
-        // Materialize domain values page by page; discard the JSON tree before fetching the next page.
-        template <class T, class Parse>
-        Task<Result<T>> read_pages(Client &client, std::string path, std::string name, Query query, T result, Parse parse) {
-            std::unordered_set<std::string> cursors;
-            std::string cursor;
-            for (;;) {
-                auto fields = query;
-                fields.emplace_back("cursor", cursor);
-                fields.emplace_back("count", "100");
-                auto response = co_await client.call(path, std::move(fields));
-                if (!response) {
-                    co_return std::unexpected(response.error());
-                }
-                const auto &items = field(*response, name);
-                if (!items.is_null() && !items.is_array()) {
-                    co_return std::unexpected("Qishui Music returned an invalid list");
-                }
-                if (auto parsed = parse(array(items), result); !parsed) {
-                    co_return std::unexpected(parsed.error());
-                }
-                if (!boolean(field(*response, "has_more"))) {
-                    break;
-                }
-                cursor = string(field(*response, "next_cursor"));
-                if (cursor.empty() || !cursors.insert(cursor).second) {
-                    co_return std::unexpected("Qishui Music returned an invalid list continuation");
-                }
-            }
-            co_return result;
-        }
-    } // namespace
 
     Task<Result<std::pair<Card, std::vector<Card>>>> Qishui::user_playlists(std::string uid) {
         using Library = std::pair<Card, std::vector<Card>>;
@@ -1173,7 +1000,7 @@ namespace lyren::qishui {
                                                   if (!parsed) {
                                                       return std::unexpected(parsed.error());
                                                   }
-                                                  if (number(field(item, "type")) == 1) {
+                                                  if (json::number(json::field(item, "type")) == 1) {
                                                       out.first = std::move(*parsed);
                                                       out.first.owned = out.first.collectable = out.first.commentable = false;
                                                   } else {
@@ -1184,87 +1011,71 @@ namespace lyren::qishui {
                                               return {};
                                           });
         }
-        auto result = co_await read_pages(client, "/luna/pc/me/playlist", "playlists", {}, Library{Card{.source = Source::qishui, .commentable = false}, {}},
-                                          [](std::span<const Json> items, Library &out) -> Result<void> {
-                                              for (const auto &item : items) {
-                                                  auto parsed = card(item, CardKind::playlist, true);
-                                                  if (!parsed) {
-                                                      return std::unexpected(parsed.error());
-                                                  }
-                                                  if (number(field(item, "type")) == 1) {
-                                                      out.first = std::move(*parsed);
-                                                      out.first.owned = out.first.collectable = out.first.commentable = false;
-                                                  } else {
-                                                      out.second.push_back(std::move(*parsed));
-                                                  }
-                                              }
-                                              return {};
-                                          });
-        if (!result) {
-            co_return std::unexpected(result.error());
-        }
+        auto result = co_await ok(co_await read_pages(client, "/luna/pc/me/playlist", "playlists", {}, Library{Card{.source = Source::qishui, .commentable = false}, {}},
+                                                      [](std::span<const Json> items, Library &out) -> Result<void> {
+                                                          for (const auto &item : items) {
+                                                              auto parsed = card(item, CardKind::playlist, true);
+                                                              if (!parsed) {
+                                                                  return std::unexpected(parsed.error());
+                                                              }
+                                                              if (json::number(json::field(item, "type")) == 1) {
+                                                                  out.first = std::move(*parsed);
+                                                                  out.first.owned = out.first.collectable = out.first.commentable = false;
+                                                              } else {
+                                                                  out.second.push_back(std::move(*parsed));
+                                                              }
+                                                          }
+                                                          return {};
+                                                      }));
         const std::string owner_id = uid.empty() ? client.get("user_id") : uid;
-        if (result->first.id.empty() && !owner_id.empty()) {
+        if (result.first.id.empty() && !owner_id.empty()) {
             // The system likes playlist is exposed by the user catalogue, not always by the created-list catalogue.
-            auto liked = co_await read_pages(client, "/luna/pc/user/playlist", "playlists", {{"user_id", owner_id}, {"scene", "aweme_user_profile"}},
-                                             Card{.source = Source::qishui, .commentable = false}, [](std::span<const Json> items, Card &out) -> Result<void> {
-                                                 for (const auto &item : items) {
-                                                     if (number(field(item, "type")) != 1) {
-                                                         continue;
-                                                     }
-                                                     auto parsed = card(item, CardKind::playlist);
-                                                     if (!parsed) {
-                                                         return std::unexpected(parsed.error());
-                                                     }
-                                                     out = std::move(*parsed);
-                                                     out.owned = out.collectable = out.commentable = false;
-                                                 }
-                                                 return {};
-                                             });
-            if (!liked) {
-                co_return std::unexpected(liked.error());
-            }
-            result->first = std::move(*liked);
+            result.first = co_await ok(co_await read_pages(client, "/luna/pc/user/playlist", "playlists", {{"user_id", owner_id}, {"scene", "aweme_user_profile"}},
+                                                           Card{.source = Source::qishui, .commentable = false}, [](std::span<const Json> items, Card &out) -> Result<void> {
+                                                               for (const auto &item : items) {
+                                                                   if (json::number(json::field(item, "type")) != 1) {
+                                                                       continue;
+                                                                   }
+                                                                   auto parsed = card(item, CardKind::playlist);
+                                                                   if (!parsed) {
+                                                                       return std::unexpected(parsed.error());
+                                                                   }
+                                                                   out = std::move(*parsed);
+                                                                   out.owned = out.collectable = out.commentable = false;
+                                                               }
+                                                               return {};
+                                                           }));
         }
-        auto saved = co_await collected_playlists();
-        if (!saved) {
-            co_return std::unexpected(saved.error());
-        }
-        auto &playlists = result->second;
-        playlists.reserve(playlists.size() + saved->size());
+        auto saved = co_await ok(co_await collected_playlists());
+        auto &playlists = result.second;
+        playlists.reserve(playlists.size() + saved.size());
         std::unordered_set<std::string_view> ids;
-        ids.reserve(playlists.size() + saved->size());
+        ids.reserve(playlists.size() + saved.size());
         for (const auto &playlist : playlists) {
             ids.insert(playlist.id);
         }
-        for (auto &playlist : *saved) {
+        for (auto &playlist : saved) {
             if (ids.contains(playlist.id)) {
                 continue;
             }
             playlists.push_back(std::move(playlist));
             ids.insert(playlists.back().id); // reserve above keeps all borrowed IDs stable
         }
-        liked_playlist_id_ = result->first.id;
+        liked_playlist_id_ = result.first.id;
         co_return result;
     }
 
     Task<Result<std::vector<std::string>>> Qishui::liked_ids(std::string uid) {
         if (liked_playlist_id_.empty()) {
-            auto playlists = co_await user_playlists(std::move(uid));
-            if (!playlists) {
-                co_return std::unexpected(playlists.error());
-            }
+            (void)co_await ok(co_await user_playlists(std::move(uid)));
         }
         std::vector<std::string> result;
         if (liked_playlist_id_.empty()) {
             co_return result;
         }
-        auto songs = co_await tracks({.source = Source::qishui, .id = liked_playlist_id_});
-        if (!songs) {
-            co_return std::unexpected(songs.error());
-        }
-        result.reserve(songs->size());
-        for (auto &song : *songs) {
+        auto songs = co_await ok(co_await tracks({.source = Source::qishui, .id = liked_playlist_id_}));
+        result.reserve(songs.size());
+        for (auto &song : songs) {
             result.push_back(std::move(song.id));
         }
         co_return result;
@@ -1274,10 +1085,7 @@ namespace lyren::qishui {
         if (!logged_in()) {
             co_return std::unexpected("Sign in to Qishui Music and try again");
         }
-        auto response = co_await client.call(std::move(path), {}, glz::write_json(body).value(), Operation::write);
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
+        (void)co_await ok(co_await client.call(std::move(path), {}, json::write(body), Operation::write));
         co_return Result<void>{};
     }
 
@@ -1286,41 +1094,23 @@ namespace lyren::qishui {
         if (on) {
             body["scene"] = "";
         }
-        co_return co_await write(std::string("/luna/pc/me/collection/media") + (on ? "" : "/delete"), std::move(body));
+        return write(std::string("/luna/pc/me/collection/media") + (on ? "" : "/delete"), std::move(body));
     }
 
     Task<Result<void>> Qishui::collection(std::string kind, std::string id, bool on) {
         Json body;
         body[kind + "_ids"] = Json::array_t{Json(std::move(id))};
-        co_return co_await write("/luna/pc/me/collection/" + kind + (on ? "" : "/delete"), std::move(body));
+        return write("/luna/pc/me/collection/" + kind + (on ? "" : "/delete"), std::move(body));
     }
 
     Task<Result<void>> Qishui::follow(std::string id, bool on) {
-        auto r = co_await collection("artist", id, on);
-        sync_collection_cache();
-        if (r && followed_artists_) {
-            if (on) {
-                followed_artists_->insert(std::move(id));
-            } else {
-                followed_artists_->erase(id);
-            }
-        }
-        co_return r;
+        return collection("artist", std::move(id), on);
     }
     Task<Result<void>> Qishui::collect(std::string id, bool on) {
-        auto r = co_await collection("album", id, on);
-        sync_collection_cache();
-        if (r && saved_albums_) {
-            if (on) {
-                saved_albums_->insert(std::move(id));
-            } else {
-                saved_albums_->erase(id);
-            }
-        }
-        co_return r;
+        return collection("album", std::move(id), on);
     }
     Task<Result<void>> Qishui::collect_playlist(std::string id, bool on) {
-        co_return co_await collection("playlist", std::move(id), on);
+        return collection("playlist", std::move(id), on);
     }
 
     Task<Result<std::vector<Card>>> Qishui::collections(CardKind kind) {
@@ -1331,7 +1121,7 @@ namespace lyren::qishui {
                                   if (!item.contains(type)) {
                                       continue;
                                   }
-                                  auto parsed = card(field(item, type), kind);
+                                  auto parsed = card(json::field(item, type), kind);
                                   if (!parsed) {
                                       return std::unexpected(parsed.error());
                                   }
@@ -1345,60 +1135,34 @@ namespace lyren::qishui {
         return collections(CardKind::playlist);
     }
     Task<Result<std::vector<Card>>> Qishui::collected_albums() {
-        auto r = co_await collections(CardKind::album);
-        if (r && logged_in()) {
-            sync_collection_cache();
-            std::unordered_set<std::string> ids;
-            ids.reserve(r->size());
-            for (const auto &card : *r) {
-                ids.insert(card.id);
-            }
-            saved_albums_ = std::move(ids);
-            saved_albums_at_ = Clock::now();
-        }
-        co_return r;
+        return collections(CardKind::album);
     }
 
     Task<Result<std::vector<Card>>> Qishui::followed_artists() {
-        auto r =
-            co_await read_pages(client, "/luna/me/collection/artist", "artists", {}, std::vector<Card>{}, [](std::span<const Json> items, std::vector<Card> &out) -> Result<void> {
-                for (const auto &item : items) {
-                    auto parsed = card(item, CardKind::artist);
-                    if (!parsed) {
-                        return std::unexpected(parsed.error());
-                    }
-                    out.push_back(std::move(*parsed));
+        return read_pages(client, "/luna/me/collection/artist", "artists", {}, std::vector<Card>{}, [](std::span<const Json> items, std::vector<Card> &out) -> Result<void> {
+            for (const auto &item : items) {
+                auto parsed = card(item, CardKind::artist);
+                if (!parsed) {
+                    return std::unexpected(parsed.error());
                 }
-                return {};
-            });
-        if (r && logged_in()) {
-            sync_collection_cache();
-            std::unordered_set<std::string> ids;
-            ids.reserve(r->size());
-            for (const auto &card : *r) {
-                ids.insert(card.id);
+                out.push_back(std::move(*parsed));
             }
-            followed_artists_ = std::move(ids);
-            followed_artists_at_ = Clock::now();
-        }
-        co_return r;
+            return {};
+        });
     }
 
     Task<Result<Card>> Qishui::create_playlist(std::string name, bool hidden) {
-        Json body{{"name", name}, {"is_private", hidden}};
-        auto response = co_await client.call("/luna/pc/me/playlist", {}, glz::write_json(body).value(), Operation::write);
-        if (!response) {
-            co_return std::unexpected(response.error());
-        }
-        co_return card(field(*response, "playlist"), CardKind::playlist, true);
+        Json body{{"name", std::move(name)}, {"is_private", hidden}};
+        auto response = co_await ok(co_await client.call("/luna/pc/me/playlist", {}, json::write(body), Operation::write));
+        co_return card(json::field(response, "playlist"), CardKind::playlist, true);
     }
 
     Task<Result<void>> Qishui::rename_playlist(std::string id, std::string name) {
-        co_return co_await write("/luna/pc/me/playlist/update", Json{{"playlist_id", id}, {"name", name}});
+        return write("/luna/pc/me/playlist/update", Json{{"playlist_id", std::move(id)}, {"name", std::move(name)}});
     }
 
     Task<Result<void>> Qishui::delete_playlist(std::string id) {
-        co_return co_await write("/luna/pc/me/playlist/delete", Json{{"playlist_ids", Json::array_t{Json(std::move(id))}}});
+        return write("/luna/pc/me/playlist/delete", Json{{"playlist_ids", Json::array_t{Json(std::move(id))}}});
     }
 
     Task<Result<void>> Qishui::edit_playlist(std::string id, std::vector<Track> tracks, bool add) {
@@ -1406,7 +1170,7 @@ namespace lyren::qishui {
         for (auto &track : tracks) {
             items.get_array().push_back(Json{{"id", std::move(track.id)}, {"type", "track"}});
         }
-        co_return co_await write(std::string("/luna/pc/me/playlist/media/") + (add ? "append" : "delete"), Json{{"playlist_id", id}, {"media", items}});
+        return write(std::string("/luna/pc/me/playlist/media/") + (add ? "append" : "delete"), Json{{"playlist_id", std::move(id)}, {"media", std::move(items)}});
     }
 
     Task<Result<void>> Qishui::reorder_playlist(std::string id, std::vector<Track> tracks) {
@@ -1415,7 +1179,7 @@ namespace lyren::qishui {
         for (const auto &track : tracks) {
             order.push_back(Json{{"id", track.id}, {"type", "track"}});
         }
-        co_return co_await write("/luna/me/playlist/media/sort", Json{{"playlist_id", id}, {"media", order}});
+        return write("/luna/me/playlist/media/sort", Json{{"playlist_id", std::move(id)}, {"media", std::move(order)}});
     }
 
     Task<Result<std::vector<Track>>> Qishui::recent_plays() {
@@ -1442,7 +1206,7 @@ namespace lyren::qishui {
 
     Task<void> Qishui::report_play(std::string id, std::string, int seconds) {
         for (auto &item : played_media_) {
-            if (string(field(item, "media_id")) == id) {
+            if (json::text_view(json::field(item, "media_id")) == id) {
                 item["played_mills"] = static_cast<int64_t>(seconds) * 1000;
                 break;
             }

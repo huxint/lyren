@@ -39,31 +39,12 @@ namespace lyren::wl {
                 self(d)->decoration_configure(mode);
             },
     };
-    static const wp_fractional_scale_v1_listener fractional_listener{
-        .preferred_scale =
-            [](void *d, wp_fractional_scale_v1 *, uint32_t scale) {
-                self(d)->preferred_scale(scale);
-            },
-    };
-    static const wl_callback_listener frame_listener{
-        .done =
-            [](void *d, wl_callback *cb, uint32_t) {
-                wl_callback_destroy(cb);
-                self(d)->frame_done();
-            },
-    };
 
     Window::Window(Display &display, Callbacks cb, int width, int height)
-    : display_(display),
+    : Surface(display),
       cb_(std::move(cb)),
       width_(width),
       height_(height) {
-        surface_ = wl_compositor_create_surface(display_.compositor);
-        wl_surface_set_user_data(surface_, static_cast<SurfaceSink *>(this));
-        viewport_ = wp_viewporter_get_viewport(display_.viewporter, surface_);
-        fractional_ = wp_fractional_scale_manager_v1_get_fractional_scale(display_.fractional_scale, surface_);
-        wp_fractional_scale_v1_add_listener(fractional_, &fractional_listener, this);
-
         xdg_surface_ = xdg_wm_base_get_xdg_surface(display_.wm_base, surface_);
         xdg_surface_add_listener(xdg_surface_, &xdg_surface_listener_, this);
         toplevel_ = xdg_surface_get_toplevel(xdg_surface_);
@@ -91,11 +72,8 @@ namespace lyren::wl {
         if (decoration_) {
             zxdg_toplevel_decoration_v1_destroy(decoration_);
         }
-        wp_fractional_scale_v1_destroy(fractional_);
-        wp_viewport_destroy(viewport_);
         xdg_toplevel_destroy(toplevel_);
         xdg_surface_destroy(xdg_surface_);
-        wl_surface_destroy(surface_);
     }
 
     void Window::set_title(const std::string &title) {
@@ -198,11 +176,7 @@ namespace lyren::wl {
         }
     }
 
-    void Window::preferred_scale(uint32_t scale120) {
-        if (scale120 == scale120_) {
-            return;
-        }
-        scale120_ = scale120;
+    void Window::on_scale_changed() {
         geometry_dirty_ = true;
         if (cb_.configure) {
             cb_.configure();
@@ -216,8 +190,7 @@ namespace lyren::wl {
         }
     }
 
-    void Window::frame_done() {
-        frame_pending_ = false;
+    void Window::on_frame_done() {
         if (cb_.frame) {
             cb_.frame();
         }
@@ -231,16 +204,11 @@ namespace lyren::wl {
         if (geometry_dirty_) {
             geometry_dirty_ = false;
             xdg_surface_set_window_geometry(xdg_surface_, margin_, margin_, width_, height_);
-            wp_viewport_set_destination(viewport_, surface_width(), surface_height());
-
-            wl_region *input = wl_compositor_create_region(display_.compositor);
+            set_viewport(surface_width(), surface_height());
             int b = margin_ ? resize_border_ : 0;
-            wl_region_add(input, margin_ - b, margin_ - b, width_ + 2 * b, height_ + 2 * b);
-            wl_surface_set_input_region(surface_, input);
-            wl_region_destroy(input);
+            set_input_region(margin_ - b, margin_ - b, width_ + 2 * b, height_ + 2 * b);
         }
-        wl_callback_add_listener(wl_surface_frame(surface_), &frame_listener, this);
-        frame_pending_ = true;
+        request_frame();
     }
 
 } // namespace lyren::wl

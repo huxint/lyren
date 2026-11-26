@@ -4,6 +4,7 @@
 #include <atomic>
 #include <optional>
 
+#include "core/encoding.hpp"
 #include "core/i18n.hpp"
 #include "http_server.hpp"
 #include "media/lyrics.hpp"
@@ -250,7 +251,7 @@ TEST_CASE("QQ QR callbacks preserve status redirect and escaped nicknames") {
 }
 
 TEST_CASE("QQ OAuth fields use percent encoding and query decoding") {
-    CHECK(qq::form({{"code", "a+b"}, {"state", "中文\n&="}}) == "code=a%2Bb&state=%E4%B8%AD%E6%96%87%0A%26%3D");
+    CHECK(encoding::query_string({{"code", "a+b"}, {"state", "中文\n&="}}) == "code=a%2Bb&state=%E4%B8%AD%E6%96%87%0A%26%3D");
     CHECK(qq::query_value("https://y.qq.com/callback?code=a%2Bb", "code") == "a+b");
     CHECK(qq::query_value("https://y.qq.com/callback?state=%E4%B8%AD%E6%96%87%0A%26%3D", "state") == "中文\n&=");
     CHECK(qq::query_value("https://y.qq.com/callback?code=a+b", "code") == "a b");

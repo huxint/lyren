@@ -18,10 +18,11 @@ namespace lyren {
         struct SignIn {
             std::optional<Source> source; // empty: none is under way
             double since = -10;           // when the step on show changed
-            // The code to scan: modules row by row, or the service's own picture, kept in the image cache as "qr".
+            // The code to scan: modules row by row, or the service's own encoded image bytes (decoded by the view).
             std::vector<uint8_t> modules;
             int size = 0;
-            bool image = false;
+            std::string image_bytes;
+            uint64_t image_gen = 0;
             std::optional<QrStatus> status;
             std::string error;
             std::string settings; // pasted or composed connection settings
@@ -39,7 +40,7 @@ namespace lyren {
             std::optional<SessionCheck> check;
 
             bool has_code() const {
-                return image || (size > 0 && !modules.empty());
+                return !image_bytes.empty() || (size > 0 && !modules.empty());
             }
         };
 
@@ -88,7 +89,8 @@ namespace lyren {
         Loop::TimerId save_timer_ = 0;
         uint64_t save_gen_ = 0;
         SignIn sign_in_;
-        uint64_t gen_ = 0; // disowns the sign-in requests under way
+        uint64_t gen_ = 0;          // disowns the sign-in requests under way
+        uint64_t qr_image_gen_ = 0; // identifies each QR image payload for the view
     };
 
 } // namespace lyren

@@ -1,7 +1,4 @@
 #pragma once
-#include <optional>
-#include <unordered_set>
-
 #include "bodian/client.hpp"
 #include "media/provider.hpp"
 
@@ -74,15 +71,11 @@ namespace lyren::bodian {
         Task<Result<std::string>> post_comment(Subject subject, std::string id, std::string content, std::string reply = {}, std::string root = {}) override;
 
     private:
-        void sync_collection_cache();
         Task<Result<Card>> liked_playlist(std::string uid);
         Task<Result<std::vector<Card>>> collections(CardKind kind);
         Task<Result<void>> set_collection(std::string id, int source, bool on);
         std::string qr_key_;
         uint64_t qr_gen_ = 0;
-        std::string collection_uid_;
-        std::optional<std::unordered_set<std::string>> followed_artists_;
-        Clock::time_point followed_artists_at_{};
     };
 
 } // namespace lyren::bodian

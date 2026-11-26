@@ -4,7 +4,10 @@
 #include <sys/eventfd.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+
+#include <algorithm>
 #include <array>
+#include <functional>
 
 namespace lyren {
 
@@ -14,12 +17,13 @@ namespace lyren {
       eventfd_(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)) {
         watch(timerfd_, EPOLLIN, [this](uint32_t) {
             uint64_t n;
-            read(timerfd_, &n, sizeof n);
+            static_cast<void>(read(timerfd_, &n, sizeof n));
+            armed_deadline_ = Clock::time_point::max();
             run_timers();
         });
         watch(eventfd_, EPOLLIN, [this](uint32_t) {
             uint64_t n;
-            read(eventfd_, &n, sizeof n);
+            static_cast<void>(read(eventfd_, &n, sizeof n));
             run_posted();
         });
     }
@@ -43,47 +47,61 @@ namespace lyren {
 
     Loop::TimerId Loop::at(Clock::time_point when, std::move_only_function<void() &> fn) {
         TimerId id = next_timer_++;
-        auto at = timer_queue_.emplace(when, id);
-        timers_.emplace(id, std::pair{at, std::move(fn)});
-        if (at == timer_queue_.begin()) {
-            arm_timer();
-        }
+        timers_.emplace(id, std::move(fn));
+        timer_heap_.push_back({when, id});
+        std::ranges::push_heap(timer_heap_, std::greater<>{});
         return id;
     }
 
     void Loop::cancel(TimerId id) {
-        auto it = timers_.find(id);
-        if (it == timers_.end()) {
+        if (id == 0 || timers_.erase(id) == 0) {
             return;
         }
-        bool earliest = it->second.first == timer_queue_.begin();
-        timer_queue_.erase(it->second.first);
-        timers_.erase(it);
-        if (earliest) {
-            arm_timer();
+        if (timer_heap_.size() > timers_.size() * 2 + 64) {
+            std::erase_if(timer_heap_, [this](const TimerEntry &e) {
+                return !timers_.contains(e.id);
+            });
+            std::ranges::make_heap(timer_heap_, std::greater<>{});
+        }
+    }
+
+    void Loop::prune_timers() {
+        while (!timer_heap_.empty() && !timers_.contains(timer_heap_.front().id)) {
+            std::ranges::pop_heap(timer_heap_, std::greater<>{});
+            timer_heap_.pop_back();
         }
     }
 
     void Loop::arm_timer() {
+        prune_timers();
+        const Clock::time_point next = timer_heap_.empty() ? Clock::time_point::max() : timer_heap_.front().when;
+        if (next == armed_deadline_) {
+            return;
+        }
+        armed_deadline_ = next;
         itimerspec spec{};
-        if (!timer_queue_.empty()) {
-            auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(timer_queue_.begin()->first.time_since_epoch()).count();
+        if (next != Clock::time_point::max()) {
+            const auto ns = std::max<int64_t>(1, std::chrono::duration_cast<std::chrono::nanoseconds>(next.time_since_epoch()).count());
             spec.it_value = {.tv_sec = ns / 1'000'000'000, .tv_nsec = ns % 1'000'000'000};
-            if (spec.it_value.tv_sec == 0 && spec.it_value.tv_nsec == 0) {
-                spec.it_value.tv_nsec = 1;
-            }
         }
         timerfd_settime(timerfd_, TFD_TIMER_ABSTIME, &spec, nullptr);
     }
 
     void Loop::run_timers() {
-        auto now = Clock::now();
-        while (!timer_queue_.empty() && timer_queue_.begin()->first <= now) {
-            auto timer = timers_.extract(timer_queue_.begin()->second);
-            timer_queue_.erase(timer.mapped().first);
-            timer.mapped().second();
+        const auto now = Clock::now();
+        for (;;) {
+            prune_timers();
+            if (timer_heap_.empty() || timer_heap_.front().when > now) {
+                break;
+            }
+            std::ranges::pop_heap(timer_heap_, std::greater<>{});
+            const TimerId id = timer_heap_.back().id;
+            timer_heap_.pop_back();
+            auto node = timers_.extract(id);
+            if (node) {
+                node.mapped()();
+            }
         }
-        arm_timer();
     }
 
     void Loop::post(std::move_only_function<void() &> fn) {
@@ -134,6 +152,7 @@ namespace lyren {
             if (!running_) {
                 break;
             }
+            arm_timer();
             if (hook_.before) {
                 hook_.before();
             }

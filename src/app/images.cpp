@@ -236,26 +236,25 @@ namespace lyren {
                         gfx::Image img;
                         std::string error = std::move(r.error);
                         const bool transient = !error.empty() || r.status >= 500;
-                        float hue = -1, luma = 0;
+                        float hue = -1;
                         const bool blurred = key.variant == 0;
                         if (error.empty() && r.status == 200) {
                             const std::span<const uint8_t> body{reinterpret_cast<const uint8_t *>(r.body.data()), r.body.size()};
                             img = key.variant & whole ? gfx::decode_fit(body, key.variant & ~whole, error) : gfx::decode_square(body, blurred ? 96 : key.variant, error);
                             if (img.w) {
-                                gfx::Image small = gfx::downscale(img, blur_px, blur_px);
-                                hue = gfx::dominant_hue(small);
-                                luma = gfx::mean_luma(small);
                                 if (blurred) {
-                                    gfx::blur(small, 5);
-                                    img = std::move(small);
+                                    img = gfx::downscale(img, blur_px, blur_px);
+                                    gfx::blur(img, 5);
+                                } else if (!(key.variant & whole)) {
+                                    hue = img.w > 64 ? gfx::dominant_hue(gfx::downscale(img, blur_px, blur_px)) : gfx::dominant_hue(img);
                                 }
                             }
                         } else if (error.empty()) {
                             error = "HTTP " + std::to_string(r.status);
                         }
-                        loader->loop.post([loader, key = std::move(key), ticket, background, img = std::move(img), hue, luma, error = std::move(error), transient] {
+                        loader->loop.post([loader, key = std::move(key), ticket, background, img = std::move(img), hue, error = std::move(error), transient] {
                             if (loader->owner) {
-                                loader->owner->complete(key, ticket, background, img, hue, luma, error, transient);
+                                loader->owner->complete(key, ticket, background, img, hue, error, transient);
                             }
                         });
                     });
@@ -266,7 +265,7 @@ namespace lyren {
         }
     }
 
-    void Images::complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &img, float hue, float luma, const std::string &error, bool transient) {
+    void Images::complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &img, float hue, const std::string &error, bool transient) {
         --in_flight_;
         background_in_flight_ -= background;
         auto it = entries_.find(key);
@@ -283,7 +282,6 @@ namespace lyren {
                 e.ready_at = now_();
                 e.w = img.w, e.h = img.h;
                 e.hue = hue;
-                e.luma = luma;
                 e.retries = 0;
             } else if (transient && e.retries < 2) {
                 // A reset stream or a busy server usually serves the image a moment later; the next frame that wants
@@ -346,20 +344,6 @@ namespace lyren {
             erase(it);
         }
         schedule_evict();
-    }
-
-    void Images::prefetch(std::span<const Card> cards) {
-        const auto px = static_cast<uint32_t>(tier(160.f * scale_));
-        for (const auto &card : cards.first(std::min(cards.size(), 12uz))) {
-            prefetch(card.cover, px);
-        }
-    }
-
-    void Images::prefetch(std::span<const Track> tracks) {
-        const auto px = static_cast<uint32_t>(tier(40.f * scale_));
-        for (const auto &track : tracks.first(std::min(tracks.size(), 24uz))) {
-            prefetch(track.cover, px);
-        }
     }
 
 } // namespace lyren

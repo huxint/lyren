@@ -14,7 +14,17 @@ namespace lyren {
     namespace ease = ui::ease;
 
     Shell::Shell(ShellDeps d, SavedState saved)
-    : env{d.loop, d.http, d.providers, d.images, d.config, std::move(d.redraw), std::move(d.now), {}},
+    : env{.loop = d.loop,
+          .http = d.http,
+          .providers = d.providers,
+          .config = d.config,
+          .redraw = std::move(d.redraw),
+          .now = std::move(d.now),
+          .prefetch_image =
+              [&images = d.images](std::string_view url, uint32_t px, bool logical) {
+                  images.prefetch(url, logical ? static_cast<uint32_t>(Images::tier(static_cast<float>(px) * images.scale())) : px);
+              }},
+      images(d.images),
       playback(env, d.player, d.silent, saved),
       library(env),
       social(env, library),
@@ -34,7 +44,7 @@ namespace lyren {
       bar(*this),
       stage(*this, saved),
       desktop(*this, saved),
-      set_setting_(std::move(d.set_setting)),
+      set_settings_(std::move(d.set_settings)),
       open_config_(std::move(d.open_config)),
       desktop_changed_(std::move(d.desktop_changed)) {
         set_language(env.config.interface.language);
@@ -80,7 +90,7 @@ namespace lyren {
         });
     }
 
-    void Shell::save(std::optional<std::pair<int, int>> window) {
+    void Shell::save(std::optional<std::pair<int, int>> window, bool flush_accounts) {
         if (window) {
             window_ = window;
         }
@@ -92,7 +102,9 @@ namespace lyren {
         stage.save(state);
         desktop.save(state);
         save_state(state);
-        accounts.flush();
+        if (flush_accounts) {
+            accounts.flush();
+        }
     }
 
     void Shell::config_changed() {
@@ -103,7 +115,7 @@ namespace lyren {
         // -2: not known yet (cover still loading), -1: a colourless cover.
         float hue = 0.98f;
         if (const Track *track = playback.current()) {
-            const auto &art = env.images.get(track->cover, static_cast<uint32_t>(Images::tier(stage.cover_px())));
+            const auto &art = images.get(track->cover, static_cast<uint32_t>(Images::tier(stage.cover_px())));
             hue = art.ready ? art.hue : art.failed ? -1 : -2;
         }
         auto color = [](float h, bool on_dark) {
@@ -174,6 +186,7 @@ namespace lyren {
         // A closed account dialog cannot install a late sign-in.
         if (accounts.sign_in().source && !ui.modal_open()) {
             accounts.cancel();
+            images.erase("qr");
         }
         // Going anywhere leaves the stage.
         if (const uint64_t visit = browser.navigations(); visit != visit_) {
@@ -218,7 +231,7 @@ namespace lyren {
             stage.art(ui, strip, stage_page, up, wide);
         }
         keys(ui);
-        env.images.end_frame();
+        images.end_frame();
     }
 
     void Shell::page(ui::Ui &ui, Rect area) {

@@ -142,41 +142,41 @@ namespace lyren::qishui {
             if (!value.is_object()) {
                 return;
             }
-            if (auto own = text(field(field(value, "encrypt_info"), "spade_a")); !own.empty()) {
+            if (auto own = json::text_view(json::field(json::field(value, "encrypt_info"), "spade_a")); !own.empty()) {
                 auth = own;
             }
-            if (auto own = number(field(value, "video_duration")); own > 0) {
+            if (auto own = json::number(json::field(value, "video_duration")); own > 0) {
                 duration = own;
             }
             const bool pascal = value.contains("MainPlayUrl") || value.contains("BackupPlayUrl");
-            auto url = text(field(value, pascal ? "MainPlayUrl" : "main_play_url"));
+            auto url = json::text_view(json::field(value, pascal ? "MainPlayUrl" : "main_play_url"));
             if (url.empty()) {
-                url = text(field(value, "main_url"));
+                url = json::text_view(json::field(value, "main_url"));
             }
             if (url.empty()) {
-                url = text(field(value, pascal ? "BackupPlayUrl" : "backup_play_url"));
+                url = json::text_view(json::field(value, pascal ? "BackupPlayUrl" : "backup_play_url"));
             }
             if (url.empty()) {
-                url = text(field(value, "backup_url"));
+                url = json::text_view(json::field(value, "backup_url"));
             }
             if (!url.empty()) {
-                const auto &meta = field(value, "video_meta");
-                if (auto own = text(field(value, pascal ? "PlayAuth" : "play_auth")); !own.empty()) {
+                const auto &meta = json::field(value, "video_meta");
+                if (auto own = json::text_view(json::field(value, pascal ? "PlayAuth" : "play_auth")); !own.empty()) {
                     auth = own;
                 }
-                if (auto own = number(field(value, pascal ? "Duration" : "duration")); own > 0) {
+                if (auto own = json::number(json::field(value, pascal ? "Duration" : "duration")); own > 0) {
                     duration = own;
                 }
-                auto quality = text(field(value, pascal ? "Quality" : "quality"));
+                auto quality = json::text_view(json::field(value, pascal ? "Quality" : "quality"));
                 if (quality.empty()) {
-                    quality = text(field(value, "definition"));
+                    quality = json::text_view(json::field(value, "definition"));
                 }
                 if (quality.empty()) {
-                    quality = text(field(meta, "quality"));
+                    quality = json::text_view(json::field(meta, "quality"));
                 }
-                double bitrate = number(field(value, pascal ? "Bitrate" : "bitrate"));
+                double bitrate = json::number(json::field(value, pascal ? "Bitrate" : "bitrate"));
                 if (bitrate <= 0) {
-                    bitrate = number(field(meta, "bitrate"));
+                    bitrate = json::number(json::field(meta, "bitrate"));
                 }
                 if ((url.starts_with("https://") || url.starts_with("http://")) && quality != "spatial" && quality != "immersive") {
                     select(Candidate{url, quality, auth, duration, bitrate, quality_rank(quality)});
@@ -203,8 +203,8 @@ namespace lyren::qishui {
                 best = item;
             }
         };
-        const auto &player = field(response, "track_player");
-        const auto &raw_model = field(player, "video_model");
+        const auto &player = json::field(response, "track_player");
+        const auto &raw_model = json::field(player, "video_model");
         Json model;
         if (raw_model.is_string()) {
             if (glz::read_json(model, raw_model.get<std::string>())) {
@@ -214,8 +214,8 @@ namespace lyren::qishui {
         } else {
             candidates(raw_model, select);
         }
-        candidates(field(field(field(response, "track"), "audio_info"), "play_info_list"), select);
-        candidates(field(field(field(response, "Result"), "Data"), "PlayInfoList"), select);
+        candidates(json::field(json::field(json::field(response, "track"), "audio_info"), "play_info_list"), select);
+        candidates(json::field(json::field(json::field(response, "Result"), "Data"), "PlayInfoList"), select);
         if (!best) {
             return std::unexpected("Qishui Music did not provide playable audio for this account");
         }

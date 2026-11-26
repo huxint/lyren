@@ -87,6 +87,22 @@ TEST_CASE("resetting a color override restores the selected theme") {
     CHECK(set_config_value("[theme.colors]\nbg = \"#000\"", "theme.colors", "bg", "") == "[theme.colors]\n");
 }
 
+TEST_CASE("save_settings applies a batch of changes in a single write") {
+    const auto path = std::filesystem::temp_directory_path() / "lyren-test-batch-config.toml";
+    std::filesystem::remove(path);
+    ConfigFile file{.path = path};
+    const std::array<SettingChange, 3> batch{{
+        {"theme", "font_size", "16"},
+        {"theme", "motion", "1.5"},
+        {"playback", "normalize", "true"},
+    }};
+    REQUIRE(save_settings(file, batch).has_value());
+    CHECK(file.config.theme.font_size == 16);
+    CHECK(file.config.theme.motion == 1.5);
+    CHECK(file.config.playback.normalize);
+    std::filesystem::remove(path);
+}
+
 TEST_CASE("light theme separates surfaces and keeps text readable") {
     Config config;
     config.theme.mode = ThemeMode::light;

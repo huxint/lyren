@@ -162,6 +162,8 @@ namespace lyren {
         };
 
         void set_current(int i, bool replacing_queue = false);
+        void reset_shuffle(bool clear_failures = true);
+        void stop_skip_run();
         void replace(const std::vector<Track> &list, int i);
         void start(double at = 0, bool play = true, int direction = 1);
         void step(int delta, bool automatic);

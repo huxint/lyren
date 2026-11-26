@@ -44,8 +44,6 @@ namespace lyren {
     }
 
     void PlayerBar::transport(ui::Ui &ui, Rect r) {
-        auto &p = ui.painter();
-        const auto &t = ui.theme();
         const float cx = std::round(r.x + r.w / 2), cy = r.y + r.h / 2;
         static constexpr std::array<std::string_view, 3> mode_icons{"repeat", "repeat-1", "shuffle"}, mode_names{"Repeat all", "Repeat one", "Shuffle"};
         const auto mode = static_cast<size_t>(playback_.mode());
@@ -59,40 +57,9 @@ namespace lyren {
         if (ui.icon_button(ui.id("prev"), {cx - 66, cy - 16, 32, 32}, "skip-back-fill", 17, false, lyren::tr("Previous"))) {
             playback_.skip(-1);
         }
-        {
-            // Play and pause turn into each other; a ring turns round them while the song is on its way.
-            const ui::Id id = ui.id("play");
-            const Rect at{cx - 18, cy - 18, 36, 36};
-            const auto it = ui.interact(id, at);
-            if (it.hovered) {
-                ui.cursor = wl::Cursor::pointer;
-            }
-            const auto [hot, down] = ui.feel(id, it);
-            const Rect disc = at.inset(-1.5f * hot + 2.f * down);
-            p.rect(disc, t.text, disc.w / 2);
-            const float morph = ui.anim(ui.id("play-morph"), playback_.playing() ? 1 : 0, 240, ease::emphasized);
-            {
-                // The triangle's weight sits left of its box, so it stands a little right of the centre.
-                Fade fade(p, 1 - morph);
-                p.set_zoom((15 - 5 * morph) / 15.f, disc.x + disc.w / 2, disc.y + disc.h / 2);
-                Rect glyph = ui::center(disc, 15, 15);
-                glyph.x += 1;
-                p.icon("play-fill", glyph, t.bg);
-                p.set_zoom(1);
-            }
-            {
-                Fade fade(p, morph);
-                p.set_zoom((10 + 5 * morph) / 15.f, disc.x + disc.w / 2, disc.y + disc.h / 2);
-                p.icon("pause-fill", ui::center(disc, 15, 15), t.bg);
-                p.set_zoom(1);
-            }
-            if (const float ring = ui.anim(ui.id("play-ring"), playback_.waiting() ? 1 : 0, 200); ring > 0.01f) {
-                Fade fade(p, ring);
-                ui.spinner(disc.inset(-4), t.accent, 2);
-            }
-            if (it.clicked) {
-                playback_.toggle();
-            }
+        // Play and pause turn into each other; a ring turns round them while the song is on its way.
+        if (play_morph_button(ui, ui.id("play"), {cx - 18, cy - 18, 36, 36}, playback_.playing(), 15, false, playback_.waiting())) {
+            playback_.toggle();
         }
         if (ui.icon_button(ui.id("next"), {cx + 34, cy - 16, 32, 32}, "skip-forward-fill", 17, false, lyren::tr("Next"))) {
             playback_.skip(1);
@@ -110,7 +77,7 @@ namespace lyren {
         const bool seekable = playback_.current() && duration > 0;
 
         // The clock stands at the string's ends: where the song is, and how long it is.
-        const std::string whole = mmss(duration);
+        const auto whole = mmss(duration);
         const auto numbers = t.style(type::micro, t.faint(), text::tabular_nums);
         const float clock_w = std::ceil(std::max(p.measure(whole, numbers), p.measure("0:00", numbers))) + 2;
         const Rect elapsed = ui::cut_left(r, clock_w), total = ui::cut_right(r, clock_w);
@@ -227,7 +194,7 @@ namespace lyren {
             return;
         }
         const double at = std::clamp(pointer, 0.f, 1.f) * duration;
-        const std::string time = mmss(at);
+        const auto time = mmss(at);
         const LyricLine *line = playback_.line_at(*playback_.current(), at);
         const std::string_view words = line ? std::string_view(line->text) : std::string_view{};
         const auto time_style = t.style(type::caption, t.text_dim, text::tabular_nums), words_style = t.style(type::label, t.text, text::medium);
@@ -257,7 +224,7 @@ namespace lyren {
         float volume = playback_.volume();
         if (slider_w > 8) {
             Fade fade(p, std::clamp(slider_w / 84, 0.f, 1.f));
-            if (ui.slider(ui.id("volume"), slider, volume, {.accent = false})) {
+            if (ui.slider(ui.id("volume"), slider, volume, false)) {
                 playback_.set_volume(volume);
             }
         }
@@ -330,9 +297,7 @@ namespace lyren {
             x -= step;
         }
         // The button keeps its place while the next song's lyrics load.
-        const bool translated = std::ranges::any_of(playback_.lyrics(), [](const LyricLine &line) {
-            return !line.translation.empty();
-        });
+        const bool translated = has_translation(playback_.lyrics());
         const ui::Id id = ui.id("translation"), present_id = ui::sub_id(id, 1);
         const float present = ui.spring(present_id, playback_.lyrics_loading() ? ui.spring_value(present_id, 0) : translated ? 1 : 0, 260);
         if (present > 0.01f) {

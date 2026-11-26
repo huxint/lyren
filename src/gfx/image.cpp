@@ -110,6 +110,31 @@ namespace lyren::gfx {
             return spans;
         }
 
+        void add_weighted_pixel(float *r0, float *r1, const BoxSpan &xs, float wy0, float wy1, const uint8_t *p) {
+            const float w00 = wy0 * xs.w0;
+            for (int c = 0; c < 4; ++c) {
+                r0[xs.i0 * 4 + c] += p[c] * w00;
+            }
+            if (xs.w1 > 0.f) {
+                const float w01 = wy0 * xs.w1;
+                for (int c = 0; c < 4; ++c) {
+                    r0[xs.i1 * 4 + c] += p[c] * w01;
+                }
+            }
+            if (wy1 > 0.f) {
+                const float w10 = wy1 * xs.w0;
+                for (int c = 0; c < 4; ++c) {
+                    r1[xs.i0 * 4 + c] += p[c] * w10;
+                }
+                if (xs.w1 > 0.f) {
+                    const float w11 = wy1 * xs.w1;
+                    for (int c = 0; c < 4; ++c) {
+                        r1[xs.i1 * 4 + c] += p[c] * w11;
+                    }
+                }
+            }
+        }
+
         // Two-row rolling box accumulator for sequential scanline downscaling (keeps accumulator memory at O(out_w)).
         struct RollingBoxScaler {
             uint32_t cw = 0, ch = 0, out_w = 0, out_h = 0, cur_j = 0;
@@ -118,18 +143,24 @@ namespace lyren::gfx {
             std::vector<BoxSpan> xspans;
             std::vector<float> row0, row1;
 
+            void reset(uint32_t cw_in, uint32_t ch_in, uint32_t ow, uint32_t oh) {
+                cw = cw_in;
+                ch = ch_in;
+                out_w = ow;
+                out_h = oh;
+                cur_j = 0;
+                sx = static_cast<double>(cw_in) / ow;
+                sy = static_cast<double>(ch_in) / oh;
+                inv_area = static_cast<float>(1.0 / (sx * sy));
+                xspans = build_box_spans(cw_in, ow);
+                row0.assign(static_cast<size_t>(ow) * 4, 0.f);
+                row1.assign(static_cast<size_t>(ow) * 4, 0.f);
+            }
+
             RollingBoxScaler() = default;
-            RollingBoxScaler(uint32_t cw_in, uint32_t ch_in, uint32_t ow, uint32_t oh)
-            : cw(cw_in),
-              ch(ch_in),
-              out_w(ow),
-              out_h(oh),
-              sx(static_cast<double>(cw_in) / ow),
-              sy(static_cast<double>(ch_in) / oh),
-              inv_area(static_cast<float>(1.0 / (sx * sy))),
-              xspans(build_box_spans(cw_in, ow)),
-              row0(static_cast<size_t>(ow) * 4, 0.f),
-              row1(static_cast<size_t>(ow) * 4, 0.f) {}
+            RollingBoxScaler(uint32_t cw_in, uint32_t ch_in, uint32_t ow, uint32_t oh) {
+                reset(cw_in, ch_in, ow, oh);
+            }
 
             void flush_row(uint8_t *dst, uint32_t j) {
                 uint8_t *out = dst + static_cast<size_t>(j) * out_w * 4;
@@ -157,33 +188,11 @@ namespace lyren::gfx {
                     wy1 = static_cast<float>(cy + 1.0 - ysplit);
                 }
                 for (uint32_t cx = 0; cx < cw; ++cx) {
-                    const auto &xs = xspans[cx];
                     const uint8_t *p = src_rgba + static_cast<size_t>(cx) * 4;
                     if ((p[0] | p[1] | p[2] | p[3]) == 0) {
                         continue;
                     }
-                    const float w00 = wy0 * xs.w0;
-                    for (int c = 0; c < 4; ++c) {
-                        row0[xs.i0 * 4 + c] += p[c] * w00;
-                    }
-                    if (xs.w1 > 0.f) {
-                        const float w01 = wy0 * xs.w1;
-                        for (int c = 0; c < 4; ++c) {
-                            row0[xs.i1 * 4 + c] += p[c] * w01;
-                        }
-                    }
-                    if (wy1 > 0.f) {
-                        const float w10 = wy1 * xs.w0;
-                        for (int c = 0; c < 4; ++c) {
-                            row1[xs.i0 * 4 + c] += p[c] * w10;
-                        }
-                        if (xs.w1 > 0.f) {
-                            const float w11 = wy1 * xs.w1;
-                            for (int c = 0; c < 4; ++c) {
-                                row1[xs.i1 * 4 + c] += p[c] * w11;
-                            }
-                        }
-                    }
+                    add_weighted_pixel(row0.data(), row1.data(), xspans[cx], wy0, wy1, p);
                 }
             }
 
@@ -202,6 +211,8 @@ namespace lyren::gfx {
             std::string error;
             std::vector<uint8_t> row;
             std::vector<float> acc;
+            std::vector<BoxSpan> xspans, yspans;
+            RollingBoxScaler scaler;
         };
 
         void premultiply_rgba(uint8_t *px, size_t count) {
@@ -245,10 +256,9 @@ namespace lyren::gfx {
                 static constexpr std::array<uint32_t, 7> px0{0, 4, 0, 2, 0, 1, 0}, pdx{8, 8, 4, 4, 2, 2, 1};
                 static constexpr std::array<uint32_t, 7> py0{0, 0, 4, 0, 2, 0, 1}, pdy{8, 8, 8, 4, 4, 2, 2};
                 const bool direct = tb.out_w == tb.cw && tb.out_h == tb.ch;
-                std::vector<BoxSpan> xspans, yspans;
                 if (!direct) {
-                    xspans = build_box_spans(tb.cw, tb.out_w);
-                    yspans = build_box_spans(tb.ch, tb.out_h);
+                    st.xspans = build_box_spans(tb.cw, tb.out_w);
+                    st.yspans = build_box_spans(tb.ch, tb.out_h);
                     st.acc.assign(static_cast<size_t>(tb.out_w) * tb.out_h * 4, 0.f);
                 }
                 for (int pass = 0; pass < passes; ++pass) {
@@ -272,35 +282,13 @@ namespace lyren::gfx {
                                 std::copy_n(p, 4, dst_row + static_cast<size_t>(x - tb.x0) * 4);
                             }
                         } else {
-                            const auto &ys = yspans[cy];
+                            const auto &ys = st.yspans[cy];
                             float *r0 = st.acc.data() + static_cast<size_t>(ys.i0) * tb.out_w * 4;
                             float *r1 = st.acc.data() + static_cast<size_t>(ys.i1) * tb.out_w * 4;
                             for (; x < tb.x0 + tb.cw; x += dx) {
                                 uint8_t *p = st.row.data() + static_cast<size_t>(x) * 4;
                                 premultiply_rgba(p, 4);
-                                const auto &xs = xspans[x - tb.x0];
-                                const float w00 = ys.w0 * xs.w0;
-                                for (int c = 0; c < 4; ++c) {
-                                    r0[xs.i0 * 4 + c] += p[c] * w00;
-                                }
-                                if (xs.w1 > 0.f) {
-                                    const float w01 = ys.w0 * xs.w1;
-                                    for (int c = 0; c < 4; ++c) {
-                                        r0[xs.i1 * 4 + c] += p[c] * w01;
-                                    }
-                                }
-                                if (ys.w1 > 0.f) {
-                                    const float w10 = ys.w1 * xs.w0;
-                                    for (int c = 0; c < 4; ++c) {
-                                        r1[xs.i0 * 4 + c] += p[c] * w10;
-                                    }
-                                    if (xs.w1 > 0.f) {
-                                        const float w11 = ys.w1 * xs.w1;
-                                        for (int c = 0; c < 4; ++c) {
-                                            r1[xs.i1 * 4 + c] += p[c] * w11;
-                                        }
-                                    }
-                                }
+                                add_weighted_pixel(r0, r1, st.xspans[x - tb.x0], ys.w0, ys.w1, p);
                             }
                         }
                     }
@@ -328,7 +316,7 @@ namespace lyren::gfx {
                 return;
             }
 
-            RollingBoxScaler scaler(tb.cw, tb.ch, tb.out_w, tb.out_h);
+            st.scaler.reset(tb.cw, tb.ch, tb.out_w, tb.out_h);
             for (uint32_t y = 0; y < tb.y0 + tb.ch; ++y) {
                 png_read_row(png, st.row.data(), nullptr);
                 if (y < tb.y0) {
@@ -336,9 +324,9 @@ namespace lyren::gfx {
                 }
                 uint8_t *src = st.row.data() + static_cast<size_t>(tb.x0) * 4;
                 premultiply_rgba(src, static_cast<size_t>(tb.cw) * 4);
-                scaler.add_row(st.img.px.data(), y - tb.y0, src);
+                st.scaler.add_row(st.img.px.data(), y - tb.y0, src);
             }
-            scaler.finish(st.img.px.data());
+            st.scaler.finish(st.img.px.data());
         }
 
         bool run_png(png_structp png, png_infop info, PngState *st) {
@@ -592,7 +580,7 @@ namespace lyren::gfx {
                         yspans = build_box_spans(tb.ch, tb.out_h);
                         acc.assign(static_cast<size_t>(tb.out_w) * tb.out_h * 4, 0.f);
                     }
-                    constexpr int starts[]{0, 4, 2, 1}, steps[]{8, 8, 4, 2};
+                    constexpr std::array<int, 4> starts{0, 4, 2, 1}, steps{8, 8, 4, 2};
                     for (int pass = 0; pass < 4; ++pass) {
                         for (int y = starts[pass]; y < d.Height; y += steps[pass]) {
                             if (DGifGetLine(gif, line.data(), d.Width) == GIF_ERROR) {
@@ -617,29 +605,7 @@ namespace lyren::gfx {
                                     if (!p[3]) {
                                         continue;
                                     }
-                                    const auto &xs = xspans[cx];
-                                    const float w00 = ys.w0 * xs.w0;
-                                    for (int c = 0; c < 4; ++c) {
-                                        r0[xs.i0 * 4 + c] += p[c] * w00;
-                                    }
-                                    if (xs.w1 > 0.f) {
-                                        const float w01 = ys.w0 * xs.w1;
-                                        for (int c = 0; c < 4; ++c) {
-                                            r0[xs.i1 * 4 + c] += p[c] * w01;
-                                        }
-                                    }
-                                    if (ys.w1 > 0.f) {
-                                        const float w10 = ys.w1 * xs.w0;
-                                        for (int c = 0; c < 4; ++c) {
-                                            r1[xs.i0 * 4 + c] += p[c] * w10;
-                                        }
-                                        if (xs.w1 > 0.f) {
-                                            const float w11 = ys.w1 * xs.w1;
-                                            for (int c = 0; c < 4; ++c) {
-                                                r1[xs.i1 * 4 + c] += p[c] * w11;
-                                            }
-                                        }
-                                    }
+                                    add_weighted_pixel(r0, r1, xspans[cx], ys.w0, ys.w1, p);
                                 }
                             }
                         }
@@ -723,25 +689,38 @@ namespace lyren::gfx {
     }
 
     Image downscale(const Image &src, uint32_t w, uint32_t h) {
+        if (w == src.w && h == src.h) {
+            return src;
+        }
         Image out{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 4)};
-        double sx = static_cast<double>(src.w) / w, sy = static_cast<double>(src.h) / h;
+        if (w <= src.w && h <= src.h) {
+            RollingBoxScaler scaler(src.w, src.h, w, h);
+            for (uint32_t y = 0; y < src.h; ++y) {
+                scaler.add_row(out.px.data(), y, src.px.data() + static_cast<size_t>(y) * src.w * 4);
+            }
+            scaler.finish(out.px.data());
+            return out;
+        }
+        const double sx = static_cast<double>(src.w) / w, sy = static_cast<double>(src.h) / h;
         for (uint32_t y = 0; y < h; ++y) {
-            double y0 = y * sy, y1 = y0 + sy;
+            const double y0 = y * sy, y1 = y0 + sy;
             for (uint32_t x = 0; x < w; ++x) {
-                double x0 = x * sx, x1 = x0 + sx, acc[4] = {}, area = 0;
+                const double x0 = x * sx, x1 = x0 + sx;
+                std::array<double, 4> acc{};
+                double area = 0;
                 for (uint32_t yy = static_cast<uint32_t>(y0); yy < std::min<uint32_t>(src.h, static_cast<uint32_t>(std::ceil(y1))); ++yy) {
-                    double wy = std::min(y1, yy + 1.0) - std::max(y0, static_cast<double>(yy));
+                    const double wy = std::min(y1, yy + 1.0) - std::max(y0, static_cast<double>(yy));
                     for (uint32_t xx = static_cast<uint32_t>(x0); xx < std::min<uint32_t>(src.w, static_cast<uint32_t>(std::ceil(x1))); ++xx) {
-                        double wgt = wy * (std::min(x1, xx + 1.0) - std::max(x0, static_cast<double>(xx)));
+                        const double wgt = wy * (std::min(x1, xx + 1.0) - std::max(x0, static_cast<double>(xx)));
                         const uint8_t *p = &src.px[(static_cast<size_t>(yy) * src.w + xx) * 4];
-                        for (int c = 0; c < 4; ++c) {
+                        for (size_t c = 0; c < 4; ++c) {
                             acc[c] += p[c] * wgt;
                         }
                         area += wgt;
                     }
                 }
                 uint8_t *o = &out.px[(static_cast<size_t>(y) * w + x) * 4];
-                for (int c = 0; c < 4; ++c) {
+                for (size_t c = 0; c < 4; ++c) {
                     o[c] = static_cast<uint8_t>(std::lround(acc[c] / area));
                 }
             }
@@ -817,14 +796,6 @@ namespace lyren::gfx {
         }
         double h = std::atan2(y, x) / (2 * std::numbers::pi);
         return static_cast<float>(h < 0 ? h + 1 : h);
-    }
-
-    float mean_luma(const Image &img) {
-        double sum = 0;
-        for (size_t i = 0; i < img.px.size(); i += 4) {
-            sum += 0.2126 * img.px[i] + 0.7152 * img.px[i + 1] + 0.0722 * img.px[i + 2];
-        }
-        return img.px.empty() ? 0 : static_cast<float>(sum / (255.0 * static_cast<double>(img.px.size() / 4)));
     }
 
 } // namespace lyren::gfx

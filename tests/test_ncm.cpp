@@ -377,8 +377,9 @@ TEST_CASE("NetEase listening rankings keep plays and scores, and report privacy"
     REQUIRE(all);
     CHECK(all->tracks.empty());
     auto hidden = parse_ranking({.code = -2, .body = R"({"code":-2})", .error = "无权限访问"}, false);
-    REQUIRE_FALSE(hidden);
-    CHECK(hidden.error() == "This listening ranking is private");
+    REQUIRE(hidden);
+    CHECK(hidden->hidden);
+    CHECK(hidden->tracks.empty());
     CHECK_FALSE(parse_ranking({.error = "Network connection failed"}, true));
 }
 

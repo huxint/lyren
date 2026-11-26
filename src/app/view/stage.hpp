@@ -61,6 +61,7 @@ namespace lyren {
         // it set off a little later than the ones above, so the change ripples down; jumps and the wheel move them as one.
         std::vector<ui::Spring> line_y_;
         std::vector<float> line_aim_;
+        std::vector<ui::Painter::Lift> lyric_lifts_;
         float manual_ = 0;
         int focus_ = 0; // what the view centres on: 2i is line i, 2i - 1 the pause before it
         bool ripple_ = false;

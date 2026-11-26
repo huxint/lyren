@@ -59,7 +59,7 @@ namespace lyren {
             gen = lib.gen;
         }
         lib.account = *a;
-        env_.images.prefetch(a->avatar, 64);
+        env_.prefetch(a->avatar, 64);
         if (account_changed) {
             emit({.kind = Event::Kind::account, .source = source});
         }
@@ -109,6 +109,7 @@ namespace lyren {
         fresh.playlist_gen = lib.playlist_gen + 1;
         fresh.collection_gen = lib.collection_gen + 1;
         fresh.square_gen = lib.square_gen + 1;
+        fresh.radio_gen = lib.radio_gen + 1;
         for (size_t tab = 0; tab < fresh.release_gen.size(); ++tab) {
             fresh.release_gen[tab] = lib.release_gen[tab] + 1;
         }
@@ -301,7 +302,9 @@ namespace lyren {
         }
         const bool on = !liked(track);
         if (on) {
-            pop_key_ = key(track), pop_time_ = env_.now();
+            pop_source_ = track.source;
+            pop_id_ = track.id;
+            pop_time_ = env_.now();
         }
         env_.notify(std::string(lyren::tr(on ? "Added to liked songs" : "Removed from liked songs")), on ? "heart-fill" : "heart-off");
         const Source source = track.source;
@@ -356,7 +359,7 @@ namespace lyren {
         lib.playlists_loaded = true;
         lib.error.clear();
         reconcile_all(source, Preference::playlist, revision);
-        env_.images.prefetch(lib.playlists);
+        env_.prefetch(lib.playlists);
         emit({.kind = Event::Kind::playlists, .source = source});
     }
 
@@ -548,20 +551,17 @@ namespace lyren {
         }
         auto list = cached;
         const uint64_t gen = ++list->gen;
-        list->loading = true;
-        list->error.clear();
+        list->begin();
         env_.redraw();
         auto r = co_await env_.provider(source).features.exclusions.list(kind);
         if (gen != list->gen || shelf(source).dislikes[static_cast<size_t>(kind)] != list) {
             co_return;
         }
-        list->loading = false;
-        list->loaded = true;
         if (r) {
             list->items = std::move(*r);
-            list->since = env_.now();
+            list->succeed(env_.now(), true);
         } else {
-            list->error = r.error();
+            list->fail(r.error(), env_.now());
         }
         env_.redraw();
     }

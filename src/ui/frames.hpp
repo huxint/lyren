@@ -4,7 +4,7 @@
 #include "core/loop.hpp"
 #include "ui/ui.hpp"
 
-namespace lyren {
+namespace lyren::ui {
 
     // When one surface draws. A change draws at the next chance, but never before the compositor's frame callback;
     // animation frames are capped at render.max_fps; a frame can also be due at a set time.
@@ -20,7 +20,7 @@ namespace lyren {
         // At the start of render: false when there is nothing to draw or the last frame is still on its way.
         bool begin();
         // At the end of render: schedules the next frame from what the UI asked for.
-        void after(const ui::Ui &ui, Clock::time_point frame_start, Clock::time_point epoch, int max_fps);
+        void after(const Ui &ui, Clock::time_point frame_start, Clock::time_point epoch, int max_fps);
 
     private:
         void schedule();
@@ -32,4 +32,4 @@ namespace lyren {
         Loop::TimerId pace_timer_ = 0, wake_timer_ = 0;
     };
 
-} // namespace lyren
+} // namespace lyren::ui

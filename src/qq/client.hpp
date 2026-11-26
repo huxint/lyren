@@ -46,7 +46,9 @@ namespace lyren::qq {
         bool logged_in() const {
             return !get("musickey").empty();
         }
-        const std::string &get(std::string_view key) const;
+        const std::string &get(std::string_view key) const {
+            return lyren::get(session, key);
+        }
 
         Task<Reply> call(std::vector<Rpc> parts, Comm comm = Comm::app, net::Retry retry = net::Retry::network);
 

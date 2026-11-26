@@ -174,3 +174,74 @@ TEST_CASE("both starts its tasks together and preserves result order") {
         CHECK(out == std::pair{3, 4});
     }
 }
+
+TEST_CASE("destroying suspended tasks cancels sleep and both branches cleanly") {
+    Loop loop;
+    bool woke_a = false, woke_b = false;
+    int destroyed = 0;
+    struct Guard {
+        int &n;
+        ~Guard() {
+            ++n;
+        }
+    };
+    auto make_branch = [&](Clock::duration d, bool &woke) -> Task<int> {
+        Guard g{destroyed};
+        co_await lyren::sleep{loop, d};
+        woke = true;
+        co_return 1;
+    };
+    {
+        Task<std::pair<int, int>> active;
+        CHECK_FALSE(active);
+        active = both(make_branch(50ms, woke_a), make_branch(60ms, woke_b));
+        CHECK(active);
+        // Start and suspend inside a parent task that is destroyed when replaced.
+        Task<void> runner;
+        auto run_both = [](Task<std::pair<int, int>> t) -> Task<void> {
+            co_await std::move(t);
+        };
+        runner = run_both(std::move(active));
+        // Replace with an empty task before awaiting: destroys unstarted runner cleanly.
+        runner = {};
+    }
+    CHECK(destroyed == 0);
+    // Now actually start a sleep + both, then destroy while suspended.
+    struct Stepper {
+        struct promise_type {
+            Stepper get_return_object() {
+                return Stepper{std::coroutine_handle<promise_type>::from_promise(*this)};
+            }
+            std::suspend_never initial_suspend() noexcept {
+                return {};
+            }
+            std::suspend_always final_suspend() noexcept {
+                return {};
+            }
+            void return_void() noexcept {}
+            void unhandled_exception() {
+                std::terminate();
+            }
+        };
+        std::coroutine_handle<promise_type> h;
+        ~Stepper() {
+            if (h) {
+                h.destroy();
+            }
+        }
+    };
+    {
+        auto s = [](Task<std::pair<int, int>> t) -> Stepper {
+            co_await std::move(t);
+        }(both(make_branch(15ms, woke_a), make_branch(20ms, woke_b)));
+        CHECK(destroyed == 0);
+    }
+    // Both branches' local guards were destroyed immediately when the suspended Stepper died.
+    CHECK(destroyed == 2);
+    loop.after(30ms, [&] {
+        loop.quit();
+    });
+    loop.run();
+    CHECK_FALSE(woke_a);
+    CHECK_FALSE(woke_b);
+}

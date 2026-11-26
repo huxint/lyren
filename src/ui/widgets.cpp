@@ -120,8 +120,7 @@ namespace lyren::ui {
         return it.clicked;
     }
 
-    bool Ui::slider(Id id, Rect r, float &value, SliderStyle style) {
-        constexpr float tau = 2 * std::numbers::pi_v<float>;
+    bool Ui::slider(Id id, Rect r, float &value, bool accent) {
         const Theme &t = *theme_;
         auto it = interact(id, r);
         if (it.hovered || it.held) {
@@ -129,110 +128,75 @@ namespace lyren::ui {
         }
         bool changed = false;
         if (it.pressed || it.held) {
-            float raw = (in_->x - r.x) / r.w;
-            // A press on the unavailable stretch does not move the value; a drag keeps following the pointer.
-            if (it.held || (raw >= style.span_from && raw <= style.span_to)) {
-                float v = std::clamp(raw, style.span_from, style.span_to);
-                changed = v != value;
-                value = v;
-            }
+            const float v = std::clamp((in_->x - r.x) / r.w, 0.f, 1.f);
+            changed = v != value;
+            value = v;
         }
-        float hot = spring(sub_id(id, 0x51), it.hovered || it.held ? 1.f : 0.f, 180, 0.25f);
-        float press = spring(sub_id(id, 0x52), it.held ? 1.f : 0.f, 160, 0.34f);
-        float hot_clamped = std::clamp(hot, 0.f, 1.f);
-        float th = 2.6f + 1.4f * hot_clamped;
-        float cy = r.y + r.h / 2;
-        float sx0 = r.x + r.w * std::clamp(style.span_from, 0.f, 1.f), sx1 = r.x + r.w * std::clamp(style.span_to, style.span_from, 1.f);
-        float filled = std::clamp(r.x + r.w * value - sx0, 0.f, sx1 - sx0);
-        // What the file cannot play shows as a dotted line at the rail's height.
-        for (float x = r.x; x + 3 <= sx0; x += 7) {
-            p_->rect({x, cy - 1, 3, 2}, t.text.with_alpha(0.10f), 1);
-        }
-        for (float x = sx1 + 4; x + 3 <= r.right(); x += 7) {
-            p_->rect({x, cy - 1, 3, 2}, t.text.with_alpha(0.10f), 1);
-        }
-        Color fill = style.accent ? t.accent : t.text_dim.mix(t.text, hot_clamped);
-        bool flowing = style.wave > 0 && filled > 0 && t.motion > 0;
-        float phase = flowing ? -static_cast<float>(std::fmod(now * 1.4, 1.0)) * tau : 0;
-        p_->wave({sx0, cy - th / 2, sx1 - sx0, th}, filled, style.wave, 26, phase, fill, t.text.with_alpha(0.14f));
-        if (flowing) {
-            animating_ = true;
-        }
-        for (auto [a, b] : style.marked) {
-            float x0 = std::max({r.x + r.w * a, sx0 + filled, sx0}), x1 = std::min(r.x + r.w * b, sx1);
-            if (x1 - x0 > 0.5f) {
-                p_->rect({x0, cy - th / 2, x1 - x0, th}, t.text.with_alpha(0.12f), th / 2);
-            }
-        }
-        // A marked window under the rail; a nearly empty one shows as a dot.
-        if (style.band_from >= 0 && style.band_to > style.band_from) {
-            float x0 = r.x + r.w * style.band_from, x1 = r.x + r.w * style.band_to;
-            if (x1 - x0 < 3) {
-                float mid_x = (x0 + x1) / 2;
-                x0 = mid_x - 1.5f, x1 = mid_x + 1.5f;
-            }
-            p_->rect({x0, cy + th / 2 + 2.5f, x1 - x0, 2.5f}, t.accent.with_alpha(0.30f + 0.18f * hot_clamped), 1.25f);
-        }
-        float knob = 10.5f * hot + 1.8f * press;
+        const float hot = spring(sub_id(id, 0x51), it.hovered || it.held ? 1.f : 0.f, 180, 0.25f);
+        const float press = spring(sub_id(id, 0x52), it.held ? 1.f : 0.f, 160, 0.34f);
+        const float hot_clamped = std::clamp(hot, 0.f, 1.f);
+        const float th = 2.6f + 1.4f * hot_clamped;
+        const float cy = r.y + r.h / 2;
+        const float filled = std::clamp(r.w * value, 0.f, r.w);
+        const Color fill = accent ? t.accent : t.text_dim.mix(t.text, hot_clamped);
+        p_->wave({r.x, cy - th / 2, r.w, th}, filled, 0, 26, 0, fill, t.text.with_alpha(0.14f));
+        const float knob = 10.5f * hot + 1.8f * press;
         if (knob > 0.5f) {
-            Rect k{sx0 + filled - knob / 2, cy - knob / 2, knob, knob};
+            const Rect k{r.x + filled - knob / 2, cy - knob / 2, knob, knob};
             p_->shadow(k, knob / 2, 8, t.shadow.with_alpha(hot_clamped));
             p_->rect(k, white, knob / 2);
         }
         return changed;
     }
 
-    bool Ui::tabs(Id id, Rect r, std::span<const std::string_view> labels, int &selected, TabStyle style) {
+    bool Ui::tabs(Id id, Rect r, std::span<const std::string_view> labels, int &selected) {
+        if (labels.empty()) {
+            return false;
+        }
         const Theme &t = *theme_;
-        int n = static_cast<int>(labels.size());
-        bool pill = style == TabStyle::pill;
-        TextStyle st = t.style(pill ? type::label : type::lead, t.text, text::medium);
+        const TextStyle st = t.style(type::lead, t.text, text::medium);
         constexpr float gap = 28;
 
-        // Tab extents: label widths, plus an equal share of the leftover width for pills.
-        float pad = 0;
-        if (pill) {
-            float total = 0;
-            for (auto l : labels) {
-                total += p_->measure(l, st);
-            }
-            pad = (r.w - total) / static_cast<float>(n);
-        }
-        auto cell = [&](int i) -> Rect {
-            float x = r.x;
-            for (int k = 0; k < i; ++k) {
-                x += p_->measure(labels[static_cast<size_t>(k)], st) + (pill ? pad : gap);
-            }
-            return {x, r.y, p_->measure(labels[static_cast<size_t>(i)], st) + pad, r.h};
+        std::array<float, 16> widths{};
+        auto width_of = [&](size_t i) {
+            return i < widths.size() ? widths[i] : p_->measure(labels[i], st);
         };
+        float sel_x = 0, sel_w = 0, cur_x = 0;
+        for (size_t i = 0; i < labels.size(); ++i) {
+            const float w = p_->measure(labels[i], st);
+            if (i < widths.size()) {
+                widths[i] = w;
+            }
+            if (static_cast<int>(i) == selected) {
+                sel_x = cur_x;
+                sel_w = w;
+            }
+            cur_x += w + gap;
+        }
         // The indicator springs within the bar, so it stays under its tab while the bar itself moves. Its leading edge
         // sets off first and the trailing one follows, so it stretches towards the new tab and contracts as it lands.
-        Rect sel = cell(selected);
-        const float to0 = sel.x - r.x, to1 = to0 + sel.w;
+        const float to0 = sel_x, to1 = sel_x + sel_w;
         const bool rightwards = to0 > spring_value(sub_id(id, 1), to0);
         const float x0 = spring(sub_id(id, 1), to0, rightwards ? 380 : 220), x1 = spring(sub_id(id, 2), to1, rightwards ? 220 : 380);
         const float ix = r.x + x0, iw = x1 - x0;
-        if (pill) {
-            p_->rect(r, t.text.with_alpha(0.06f), t.round(r.h));
-            p_->rect({ix + 2, r.y + 2, iw - 4, r.h - 4}, t.elevated.mix(t.text, 0.06f), t.round(r.h - 4));
-        }
         bool changed = false;
-        for (int i = 0; i < n; ++i) {
-            Rect c = cell(i);
-            auto it = interact(sub_id(id, 0x100 + static_cast<uint64_t>(i)), pill ? c : c.inset(-gap / 2, 0));
+        float x = r.x;
+        for (size_t i = 0; i < labels.size(); ++i) {
+            const float w = width_of(i);
+            const Rect c{x, r.y, w, r.h};
+            auto it = interact(sub_id(id, 0x100 + i), c.inset(-gap / 2, 0));
             if (it.hovered) {
                 cursor = wl::Cursor::pointer;
             }
-            if (it.clicked && selected != i) {
-                selected = i, changed = true;
+            if (it.clicked && selected != static_cast<int>(i)) {
+                selected = static_cast<int>(i), changed = true;
             }
-            float hot = anim(sub_id(id, 0x100 + static_cast<uint64_t>(i)), it.hovered ? 1 : 0, 120);
-            Color fg = i == selected ? t.text : t.text_dim.mix(t.text, hot * 0.6f);
-            label(c, labels[static_cast<size_t>(i)], {.size = st.size, .color = fg, .features = st.features}, pill ? Align::center : Align::left);
+            const float hot = anim(sub_id(id, 0x100 + i), it.hovered ? 1 : 0, 120);
+            const Color fg = static_cast<int>(i) == selected ? t.text : t.text_dim.mix(t.text, hot * 0.6f);
+            p_->text_in(c, labels[i], {.size = st.size, .color = fg, .features = st.features});
+            x += w + gap;
         }
-        if (!pill) {
-            p_->rect({ix, r.bottom() - 2, iw, 2}, t.accent, 1);
-        }
+        p_->rect({ix, r.bottom() - 2, iw, 2}, t.accent, 1);
         return changed;
     }
 
@@ -312,18 +276,13 @@ namespace lyren::ui {
             const float h = std::max(w, r.h * (0.25f + 0.75f * dance * live));
             p_->rect({r.x + w * static_cast<float>(2 * i), r.bottom() - h, w, h}, color, w / 2);
         }
-        if (live > 0) {
-            animating_ = true;
+        if (live >= 1) {
+            wake(now + 0.05);
         }
     }
 
     void Ui::label(Rect r, std::string_view s, const TextStyle &style, Align align) {
-        if (align != Align::left) {
-            float w = std::min(p_->measure(s, style), r.w);
-            r.x += align == Align::center ? (r.w - w) / 2 : r.w - w;
-            r.w = w + 0.5f;
-        }
-        p_->text_in(r, s, style);
+        p_->text_in(r, s, style, align);
     }
 
 } // namespace lyren::ui

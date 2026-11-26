@@ -3,7 +3,6 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
-#include <zlib.h>
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
@@ -11,6 +10,7 @@
 #include <memory>
 #include <optional>
 
+#include "core/crypto.hpp"
 #include "core/encoding.hpp"
 
 namespace lyren::ncm {
@@ -38,31 +38,13 @@ namespace lyren::ncm {
             return out;
         }
         std::string encrypt(std::string_view key, std::string_view input) {
-            auto ctx = cipher_context();
-            EVP_EncryptInit_ex(ctx.get(), key.size() == 16 ? EVP_aes_128_ecb() : EVP_aes_256_ecb(), nullptr, reinterpret_cast<const unsigned char *>(key.data()), nullptr);
-            std::string out(input.size() + 16, '\0');
-            int n = 0, tail = 0;
-            auto *dst = reinterpret_cast<unsigned char *>(out.data());
-            EVP_EncryptUpdate(ctx.get(), dst, &n, reinterpret_cast<const unsigned char *>(input.data()), static_cast<int>(input.size()));
-            EVP_EncryptFinal_ex(ctx.get(), dst + n, &tail);
-            out.resize(static_cast<size_t>(n + tail));
-            return out;
+            return crypto::aes_ecb_encrypt(key, input);
         }
         Result<std::string> decrypt(std::string_view key, std::string_view input) {
-            if (input.empty() || input.size() % 16 != 0) {
-                return std::unexpected("NetEase Music returned an invalid encrypted response");
+            if (auto out = crypto::aes_ecb_decrypt(key, input)) {
+                return std::move(*out);
             }
-            auto ctx = cipher_context();
-            EVP_DecryptInit_ex(ctx.get(), key.size() == 16 ? EVP_aes_128_ecb() : EVP_aes_256_ecb(), nullptr, reinterpret_cast<const unsigned char *>(key.data()), nullptr);
-            std::string out(input.size(), '\0');
-            int n = 0, tail = 0;
-            auto *dst = reinterpret_cast<unsigned char *>(out.data());
-            EVP_DecryptUpdate(ctx.get(), dst, &n, reinterpret_cast<const unsigned char *>(input.data()), static_cast<int>(input.size()));
-            if (EVP_DecryptFinal_ex(ctx.get(), dst + n, &tail) != 1) {
-                return std::unexpected("NetEase Music returned an invalid encrypted response");
-            }
-            out.resize(static_cast<size_t>(n + tail));
-            return out;
+            return std::unexpected("NetEase Music returned an invalid encrypted response");
         }
         std::string scalar(const glz::raw_json &raw) {
             if (!raw.str.starts_with('"')) {
@@ -170,26 +152,10 @@ namespace lyren::ncm {
         if (!plain || !plain->starts_with("\x1f\x8b")) {
             return plain;
         }
-        z_stream stream{};
-        stream.next_in = reinterpret_cast<Bytef *>(plain->data());
-        stream.avail_in = static_cast<uInt>(plain->size());
-        if (inflateInit2(&stream, 16 + MAX_WBITS) != Z_OK) {
-            return std::unexpected("Could not decompress the NetEase Music response");
+        if (auto inflated = encoding::inflate(*plain, 16 + 15)) {
+            return std::move(*inflated);
         }
-        std::string result;
-        std::array<char, 16384> buffer;
-        int status;
-        do {
-            stream.next_out = reinterpret_cast<Bytef *>(buffer.data());
-            stream.avail_out = static_cast<uInt>(buffer.size());
-            status = inflate(&stream, Z_NO_FLUSH);
-            result.append(buffer.data(), buffer.size() - stream.avail_out);
-        } while (status == Z_OK);
-        inflateEnd(&stream);
-        if (status != Z_STREAM_END) {
-            return std::unexpected("NetEase Music returned an invalid compressed response");
-        }
-        return result;
+        return std::unexpected("NetEase Music returned an invalid compressed response");
     }
 
 } // namespace lyren::ncm

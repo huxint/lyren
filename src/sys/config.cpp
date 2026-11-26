@@ -166,10 +166,12 @@ namespace lyren {
         return f;
     }
 
-    Result<void> save_setting(ConfigFile &f, std::string_view section, std::string_view key, std::string_view value) {
+    Result<void> save_settings(ConfigFile &f, std::span<const SettingChange> changes) {
         std::ifstream in(f.path);
         std::string text = in ? std::string{std::istreambuf_iterator<char>(in), {}} : std::string(default_config_text());
-        text = set_config_value(text, section, key, value);
+        for (const auto &change : changes) {
+            text = set_config_value(text, change.section, change.key, change.value);
+        }
         auto c = parse_config(text);
         if (!c) {
             return std::unexpected(describe_config_error(c.error()));

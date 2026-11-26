@@ -4,6 +4,7 @@
 #include <cmath>
 #include <ctime>
 #include <format>
+#include <inplace_vector>
 
 #include "app/view/draw.hpp"
 #include "app/view/shell.hpp"
@@ -72,9 +73,10 @@ namespace lyren {
         }
 
         // Pictures: one at its own shape, more as square thumbnails three to a row (two for two or four).
-        std::vector<Rect> picture_layout(const std::vector<Picture> &pictures, float x, float y, float w) {
-            std::vector<Rect> out;
-            if (pictures.size() == 1) {
+        std::inplace_vector<Rect, 9> picture_layout(const std::vector<Picture> &pictures, float x, float y, float w) {
+            std::inplace_vector<Rect, 9> out;
+            const size_t count = std::min<size_t>(pictures.size(), 9);
+            if (count == 1) {
                 const Picture &picture = pictures.front();
                 const float aspect = std::clamp(picture.w > 0 && picture.h > 0 ? static_cast<float>(picture.w) / static_cast<float>(picture.h) : 4.f / 3, 0.56f, 2.2f);
                 const float max_w = std::min(w, look::picture_w), max_h = look::picture_h;
@@ -82,9 +84,9 @@ namespace lyren {
                 return out;
             }
             constexpr float space = 6;
-            const size_t cols = pictures.size() == 2 || pictures.size() == 4 ? 2 : 3;
+            const size_t cols = count == 2 || count == 4 ? 2 : 3;
             const float size = std::floor(std::min(look::thumb, (w - space * static_cast<float>(cols - 1)) / static_cast<float>(cols)));
-            for (size_t i = 0; i < pictures.size(); ++i) {
+            for (size_t i = 0; i < count; ++i) {
                 out.push_back({x + static_cast<float>(i % cols) * (size + space), y + static_cast<float>(i / cols) * (size + space), size, size});
             }
             return out;
@@ -172,11 +174,8 @@ namespace lyren {
             }
         }
 
-        size_t characters = 0;
-        for (size_t i = 0; i < draft.text.size(); i = utf8::next(draft.text, i)) {
-            ++characters;
-        }
-        ui.label({r.x, r.bottom() - control::large, 120, control::large}, std::to_string(characters), t.style(type::caption, t.faint(), text::tabular_nums));
+        ui.label({r.x, r.bottom() - control::large, 120, control::large}, int_text(static_cast<int64_t>(utf8::count(draft.text))),
+                 t.style(type::caption, t.faint(), text::tabular_nums));
         // A post needs words unless it shares a song or passes one on.
         const bool blank = draft.text.find_first_not_of(" \t\r\n") == std::string::npos;
         if (dialog_actions(ui, r, lyren::tr("Post"), !draft.sending && (!blank || draft.track || draft.forward), "send")) {
@@ -317,7 +316,7 @@ namespace lyren {
                     float aspect = picture.w > 0 && picture.h > 0 ? static_cast<float>(picture.w) / static_cast<float>(picture.h) : 1;
                     if (boxes.size() == 1) {
                         // Whole, at its own shape.
-                        const auto &e = env_.images.picture(picture.url, static_cast<uint32_t>(Images::tier(std::max(box.w, box.h) * p.scale())));
+                        const auto &e = images_.picture(picture.url, static_cast<uint32_t>(Images::tier(std::max(box.w, box.h) * p.scale())));
                         const float shown = e.ready ? ui.progress(e.ready_at, 320, ease::standard) : 0;
                         if (shown < 1) {
                             p.rect(box, t.fill(1.4f), t.radius);

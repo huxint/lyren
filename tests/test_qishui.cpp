@@ -16,12 +16,12 @@ using qishui::Json;
 
 namespace {
     template <class T>
-    Result<T> run(Loop &loop, Task<Result<T>> task) {
-        std::optional<Result<T>> result;
+    T run(Loop &loop, Task<T> task) {
+        std::optional<T> result;
         const auto timeout = loop.after(5s, [&] {
             loop.quit();
         });
-        spawn([](Loop &loop, Task<Result<T>> task, std::optional<Result<T>> &result) -> Task<void> {
+        spawn([](Loop &loop, Task<T> task, std::optional<T> &result) -> Task<void> {
             result = co_await std::move(task);
             loop.quit();
         }(loop, std::move(task), result));
@@ -37,7 +37,7 @@ namespace {
         return request.substr(request.find("\r\n\r\n") + 4);
     }
 
-    Json json(std::string_view text) {
+    Json parse_json(std::string_view text) {
         Json value;
         REQUIRE_FALSE(glz::read_json(value, text));
         return value;
@@ -54,7 +54,7 @@ namespace {
             }
             CHECK(request.starts_with("POST /sign "));
             if (check_signature) {
-                check_signature(json(body(request)));
+                check_signature(parse_json(body(request)));
             }
             return test::ok(R"({"ok":true,"headers":{"X-Helios":"test-helios","X-MEDUSA":"test-medusa"}})");
         }};
@@ -79,7 +79,7 @@ TEST_CASE("Qishui signs the exact URL, Cookie and body that reach the gateway") 
     auto signature = signed_request.get_future();
     test::Server api([&](std::string_view request) {
         auto signed_value = signature.get();
-        const auto url = qishui::string(qishui::field(signed_value, "url"));
+        const auto url = lyren::json::text(signed_value, "url");
         CHECK(request.starts_with("POST " + url.substr(url.find('/', 8)) + " HTTP/1.1\r\n"));
         CHECK(body(request) == payload);
         CHECK(request.contains("cookie: sessionid=old\r\n"));
@@ -92,12 +92,12 @@ TEST_CASE("Qishui signs the exact URL, Cookie and body that reach the gateway") 
     });
     Context c(api.url());
     c.check_signature = [&](const Json &value) {
-        CHECK(qishui::string(qishui::field(value, "method")) == "POST");
-        CHECK(qishui::string(qishui::field(value, "body")) == payload);
-        const auto &headers = qishui::field(value, "headers");
-        CHECK(qishui::string(qishui::field(headers, "cookie")) == "sessionid=old");
-        CHECK(qishui::string(qishui::field(headers, "x-ss-stub")) == "C7E0576C535E599BCDBFE3D546C43041");
-        const auto url = qishui::string(qishui::field(value, "url"));
+        CHECK(lyren::json::text(value, "method") == "POST");
+        CHECK(lyren::json::text(value, "body") == payload);
+        const auto &headers = lyren::json::field(value, "headers");
+        CHECK(lyren::json::text(headers, "cookie") == "sessionid=old");
+        CHECK(lyren::json::text(headers, "x-ss-stub") == "C7E0576C535E599BCDBFE3D546C43041");
+        const auto url = lyren::json::text(value, "url");
         CHECK(url.contains("item_types=album&item_types=playlist&q=%E9%9F%B3%E4%B9%90%20%26"));
         CHECK(url.contains("device_id=test-device"));
         signed_request.set_value(value);
@@ -148,13 +148,13 @@ TEST_CASE("Qishui search uses group cursors and playlist writes retain string ID
             return test::ok(R"({"result_groups":[{"id":"tracks","has_more":false,"next_cursor":"","data":[]}]})");
         }
         CHECK(request.starts_with("POST /luna/me/playlist/media/sort?"));
-        const auto value = json(body(request));
-        CHECK(qishui::string(qishui::field(value, "playlist_id")) == "9007199254740995");
-        const auto rows = qishui::array(qishui::field(value, "media"));
+        const auto value = parse_json(body(request));
+        CHECK(lyren::json::text(value, "playlist_id") == "9007199254740995");
+        const auto rows = lyren::json::array(lyren::json::field(value, "media"));
         REQUIRE(rows.size() == 2);
-        CHECK(qishui::field(rows[0], "id").is_string());
-        CHECK(qishui::string(qishui::field(rows[0], "id")) == "18446744073709551615");
-        CHECK(qishui::string(qishui::field(rows[1], "id")) == "9007199254740993");
+        CHECK(lyren::json::field(rows[0], "id").is_string());
+        CHECK(lyren::json::text(rows[0], "id") == "18446744073709551615");
+        CHECK(lyren::json::text(rows[1], "id") == "9007199254740993");
         ++writes;
         return test::ok(R"({"status_info":{"status_msg":""}})");
     });
@@ -185,22 +185,22 @@ TEST_CASE("Qishui playlist batches sign all media and never replay a lost respon
     std::atomic<int> writes = 0;
     test::Server api([&](std::string_view request) {
         CHECK(request.starts_with(add ? "POST /luna/pc/me/playlist/media/append?" : "POST /luna/pc/me/playlist/media/delete?"));
-        auto value = json(body(request));
-        CHECK(qishui::string(qishui::field(value, "playlist_id")) == "9007199254740995");
-        auto media = qishui::array(qishui::field(value, "media"));
+        auto value = parse_json(body(request));
+        CHECK(lyren::json::text(value, "playlist_id") == "9007199254740995");
+        auto media = lyren::json::array(lyren::json::field(value, "media"));
         REQUIRE(media.size() == 2);
-        CHECK(qishui::field(media[0], "id").is_string());
-        CHECK(qishui::string(qishui::field(media[0], "id")) == "9007199254740993");
-        CHECK(qishui::string(qishui::field(media[1], "id")) == "18446744073709551615");
-        CHECK(qishui::string(qishui::field(media[0], "type")) == "track");
-        CHECK(qishui::string(qishui::field(media[1], "type")) == "track");
+        CHECK(lyren::json::field(media[0], "id").is_string());
+        CHECK(lyren::json::text(media[0], "id") == "9007199254740993");
+        CHECK(lyren::json::text(media[1], "id") == "18446744073709551615");
+        CHECK(lyren::json::text(media[0], "type") == "track");
+        CHECK(lyren::json::text(media[1], "type") == "track");
         ++writes;
         return lost ? std::string{} : test::ok(R"({"status_info":{"status_msg":""}})");
     });
     Context c(api.url());
     c.check_signature = [&](const Json &value) {
-        auto payload = json(qishui::string(qishui::field(value, "body")));
-        CHECK(qishui::array(qishui::field(payload, "media")).size() == 2);
+        auto payload = parse_json(lyren::json::text(value, "body"));
+        CHECK(lyren::json::array(lyren::json::field(payload, "media")).size() == 2);
     };
     std::vector<Track> tracks{{.id = "9007199254740993", .source = Source::qishui}, {.id = "18446744073709551615", .source = Source::qishui}};
     auto result = run(c.loop, c.service.edit_playlist("9007199254740995", std::move(tracks), add));
@@ -211,15 +211,15 @@ TEST_CASE("Qishui playlist batches sign all media and never replay a lost respon
 TEST_CASE("Qishui comment replies keep their root and uncertain writes are not repeated") {
     std::atomic<int> actions = 0;
     test::Server api([&](std::string_view request) {
-        const auto value = json(body(request));
-        CHECK(qishui::string(qishui::field(value, "comment_id")) == "root");
-        CHECK(qishui::string(qishui::field(value, "reply_id")) == "reply");
-        CHECK(qishui::number(qishui::field(value, "type")) == 3);
+        const auto value = parse_json(body(request));
+        CHECK(lyren::json::text(value, "comment_id") == "root");
+        CHECK(lyren::json::text(value, "reply_id") == "reply");
+        CHECK(lyren::json::number(lyren::json::field(value, "type")) == 3);
         ++actions;
         return std::string{};
     });
     Context c(api.url());
-    const auto response = json(
+    const auto response = parse_json(
         R"({"count":5,"has_more":true,"cursor":"reply-page","reply_infos":[{"id":"reply","content":"回复","user":{"id":"7","nickname":"我"},"count_digged":2,"user_digged":true}]})");
     auto replies = qishui::parse_comments(response, "7", "root");
     REQUIRE(replies);
@@ -293,7 +293,7 @@ TEST_CASE("Qishui media selects full audio, decodes stream keys and retains word
     REQUIRE(key);
     CHECK(*key == expected);
     CHECK_FALSE(qishui::stream_key("bad"));
-    auto response = json(
+    auto response = parse_json(
         R"({"track_player":{"video_model":{"video_list":[{"main_url":"https://audio.example/preview","quality":"lossless","duration":30},{"main_url":"https://audio.example/full?auth=keep","quality":"highest","duration":240}]}}})");
     response["track_player"]["video_model"]["encrypt_info"]["spade_a"] = auth;
     auto stream = qishui::parse_stream(response, Quality::lossless, 240);
@@ -303,14 +303,15 @@ TEST_CASE("Qishui media selects full audio, decodes stream keys and retains word
     REQUIRE(stream->decrypt_key);
     CHECK(*stream->decrypt_key == expected);
     auto model = qishui::parse_stream(
-        json(
+        parse_json(
             R"({"track_player":{"video_model":{"video_duration":240,"video_list":[{"main_url":"https://audio.example/high","video_meta":{"quality":"highest","bitrate":257475}},{"main_url":"https://audio.example/low","video_meta":{"quality":"medium","bitrate":65437}}]}}})"),
         Quality::standard, 240);
     REQUIRE(model);
     CHECK(model->url == "https://audio.example/low");
     CHECK(model->level == "medium");
     auto preview = qishui::parse_stream(
-        json(R"({"Result":{"Data":{"PlayInfoList":[{"MainPlayUrl":"","BackupPlayUrl":"https://audio.example/clip","Quality":"medium","Duration":30}]}}})"), Quality::hires, 240);
+        parse_json(R"({"Result":{"Data":{"PlayInfoList":[{"MainPlayUrl":"","BackupPlayUrl":"https://audio.example/clip","Quality":"medium","Duration":30}]}}})"), Quality::hires,
+        240);
     REQUIRE(preview);
     CHECK(preview->trial);
     CHECK(preview->url == "https://audio.example/clip");
@@ -370,9 +371,9 @@ TEST_CASE("Qishui public discovery reads nested playlists and deduplicates the r
             return test::ok(R"({"blocks":[{"inner_block":[{"resources":[{"entity":{"playlist":{"id":"nested","title":"推荐歌单"}}}]}]}]})");
         }
         CHECK(request.starts_with("POST /luna/feed/playlist-square?"));
-        const auto value = json(body(request));
+        const auto value = parse_json(body(request));
         CHECK(value.get_object().size() == 1);
-        CHECK(qishui::number(qishui::field(value, "category_id")) == 0);
+        CHECK(lyren::json::number(lyren::json::field(value, "category_id")) == 0);
         if (++batches == 1) {
             return test::ok(R"({"has_more":true,"items":[{"entity":{"playlist":{"id":"a","title":"歌单甲"}}},{"entity":{"playlist":{"id":"b","title":"歌单乙"}}}]})");
         }
@@ -413,12 +414,12 @@ TEST_CASE("Qishui SEO playback follows player info and passes its key to the str
             ++metadata_reads;
             CHECK(request.contains("track_id=123"));
             CHECK(request.contains("device_platform=web"));
-            Json response = json(R"({"seo_track":{"track":{"id":"123","duration":1000}},"lyric":{"content":"[00:00.00]音乐"},"track_player":{}})");
+            Json response = parse_json(R"({"seo_track":{"track":{"id":"123","duration":1000}},"lyric":{"content":"[00:00.00]音乐"},"track_player":{}})");
             response["track_player"]["url_player_info"] = base + "/player";
             return test::ok(glz::write_json(response).value());
         }
         if (request.starts_with("GET /player ")) {
-            Json response = json(
+            Json response = parse_json(
                 R"({"Result":{"Data":{"PlayInfoList":[{"MainPlayUrl":"","Duration":1,"Quality":"highest","PlayAuth":"nb0T+1u8EvVZvBL3X7sR9UG4DvdfpybeXacm3FugJd6loioycGFk"}]}}})");
             response["Result"]["Data"]["PlayInfoList"].get_array()[0]["MainPlayUrl"] = base + "/audio";
             return test::ok(glz::write_json(response).value());
@@ -546,36 +547,22 @@ TEST_CASE("Qishui lenient cookie parsing, signer error attribution, diagnostic c
         set_language(prev_lang);
 
         signer_mode = 401;
-        std::optional<SessionCheck> chk401;
-        spawn([&]() -> Task<void> {
-            chk401 = co_await qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value());
-            loop.quit();
-        }());
-        loop.run();
-        REQUIRE(chk401);
-        CHECK(chk401->signer.state == SessionCheck::State::failed);
-        CHECK_FALSE(chk401->ok());
+        auto chk401 = run(loop, qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value()));
+        CHECK(chk401.signer.state == SessionCheck::State::failed);
+        CHECK_FALSE(chk401.ok());
 
         signer_mode = 200;
-        std::optional<SessionCheck> chk_anon, chk_user;
-        spawn([&]() -> Task<void> {
-            chk_anon = co_await qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value());
-            chk_user = co_await qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url(), "cookie", "Cookie: sessionid=ok; "}).value());
-            loop.quit();
-        }());
-        loop.run();
-        REQUIRE(chk_anon);
-        CHECK(chk_anon->ok());
-        CHECK(chk_anon->account.state == SessionCheck::State::skipped);
-        REQUIRE(chk_user);
-        CHECK(chk_user->ok());
-        CHECK(chk_user->account.state == SessionCheck::State::ok);
-        CHECK(chk_user->account.detail.contains("阿弦"));
+        auto chk_anon = run(loop, qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value()));
+        auto chk_user = run(loop, qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url(), "cookie", "Cookie: sessionid=ok; "}).value()));
+        CHECK(chk_anon.ok());
+        CHECK(chk_anon.account.state == SessionCheck::State::skipped);
+        CHECK(chk_user.ok());
+        CHECK(chk_user.account.state == SessionCheck::State::ok);
+        CHECK(chk_user.account.detail.contains("阿弦"));
     }
 
-    SUBCASE("user_playlists fallback uses session user_id and album/artist cache collection state and tolerate 500s") {
+    SUBCASE("user_playlists fallback uses session user_id and album() does not block on collection pagination") {
         std::atomic<int> mixed_fetches{0};
-        std::atomic<bool> fail_collections{false};
         test::Server api([&](std::string_view req) {
             if (req.starts_with("GET /luna/pc/me/playlist?")) {
                 return test::ok(R"({"playlists":[{"id":"created1","title":"自建","type":0}],"has_more":false})");
@@ -589,9 +576,6 @@ TEST_CASE("Qishui lenient cookie parsing, signer error attribution, diagnostic c
                 ++mixed_fetches;
                 if (req.contains("item_types=playlist")) {
                     return test::ok(R"({"mixed_collections":[],"has_more":false})");
-                }
-                if (fail_collections.load()) {
-                    return std::string("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
                 }
                 return test::ok(R"({"mixed_collections":[{"album":{"id":"alb-1","name":"已藏专辑"}}],"has_more":false})");
             }
@@ -608,19 +592,14 @@ TEST_CASE("Qishui lenient cookie parsing, signer error attribution, diagnostic c
 
         const auto a1 = run(c.loop, c.service.album("alb-1"));
         REQUIRE(a1);
-        CHECK(a1->collected);
-        const auto a2 = run(c.loop, c.service.album("alb-2"));
-        REQUIRE(a2);
-        CHECK_FALSE(a2->collected);
-        // Second album detail reuses the cached saved-album set instead of paginating again.
-        CHECK(mixed_fetches == 1);
+        CHECK_FALSE(a1->collected.has_value());
+        CHECK(mixed_fetches == 0);
 
-        // Even when the collection endpoint fails on a fresh session, album() still loads cleanly.
-        Context c2(api.url());
-        fail_collections = true;
-        const auto a3 = run(c2.loop, c2.service.album("alb-1"));
-        REQUIRE_MESSAGE(a3.has_value(), (a3 ? std::string{} : a3.error()));
-        CHECK_FALSE(a3->collected);
+        const auto saved = run(c.loop, c.service.collected_albums());
+        REQUIRE(saved);
+        REQUIRE(saved->size() == 1);
+        CHECK(saved->front().id == "alb-1");
+        CHECK(mixed_fetches == 1);
     }
 
     SUBCASE("custom device_id, iid, and fp override /config and persist for editing") {
@@ -647,15 +626,9 @@ TEST_CASE("Qishui lenient cookie parsing, signer error attribution, diagnostic c
 
         // 2. Non-empty /config identity is overridden selectively by custom fields without marking defaults as custom.
         empty_identity = false;
-        std::optional<SessionCheck> chk;
-        spawn([&]() -> Task<void> {
-            chk = co_await qs.check_session(glz::write_json(glz::obj{"signer_url", signer.url(), "device_id", "override_d"}).value());
-            loop.quit();
-        }());
-        loop.run();
-        REQUIRE(chk);
-        CHECK(chk->ok());
-        CHECK(chk->identity.detail.contains("override_d"));
+        auto chk = run(loop, qs.check_session(glz::write_json(glz::obj{"signer_url", signer.url(), "device_id", "override_d"}).value()));
+        CHECK(chk.ok());
+        CHECK(chk.identity.detail.contains("override_d"));
 
         auto r2 = run(loop, qs.import_session(glz::write_json(glz::obj{"signer_url", signer.url(), "device_id", "override_d"}).value()));
         REQUIRE_MESSAGE(r2.has_value(), (r2 ? std::string{} : r2.error()));

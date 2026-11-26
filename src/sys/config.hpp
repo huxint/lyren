@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -88,10 +89,14 @@ namespace lyren {
         std::string error; // last load error; config keeps the previous good value
         std::string text;  // as last read or written, so saving the same text again changes nothing
     };
+    struct SettingChange {
+        std::string_view section, key, value;
+    };
+
     ConfigFile load_config();
-    // Writes one setting into the file and reloads f.config from the new text. The file is left alone when the result
-    // does not parse, e.g. because of a broken hand edit elsewhere.
-    Result<void> save_setting(ConfigFile &f, std::string_view section, std::string_view key, std::string_view value);
+    // Writes one or more settings into the file in a single atomic replace and reloads f.config from the new text.
+    // The file is left alone when the result does not parse, e.g. because of a broken hand edit elsewhere.
+    Result<void> save_settings(ConfigFile &f, std::span<const SettingChange> changes);
 
     // Watches the config file and calls on_change after each save (debounced).
     class ConfigWatcher {

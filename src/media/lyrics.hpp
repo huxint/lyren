@@ -1,5 +1,7 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -39,5 +41,11 @@ namespace lyren {
     int lyric_at(const std::vector<LyricLine> &lines, double t);
     // Index of the last word of line started by t, or -1 before the first.
     int word_at(const LyricLine &line, double t);
+    // True when any lyric line carries a translation.
+    inline bool has_translation(std::span<const LyricLine> lines) {
+        return std::ranges::any_of(lines, [](const LyricLine &line) {
+            return !line.translation.empty();
+        });
+    }
 
 } // namespace lyren

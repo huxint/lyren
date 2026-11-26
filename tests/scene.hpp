@@ -503,7 +503,7 @@ namespace lyren::test {
                     .providers = {service, service, service, service, service},
                     .images = images_,
                     .config = config_,
-                    .set_setting = [](std::string_view, std::string_view, std::string_view) {},
+                    .set_settings = [](std::span<const SettingChange>) {},
                     .desktop_changed = [] {},
                     .open_config = [] {},
                     .redraw = [] {},

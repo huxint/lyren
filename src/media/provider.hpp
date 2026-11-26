@@ -16,7 +16,7 @@ namespace lyren {
 
     // Only expose actions supported by the platform's protocol.
     struct Capabilities {
-        std::array<bool, 5> search{true, true, true, true}; // tracks, albums, artists, playlists, users
+        std::array<bool, 5> search{true, true, true, true, false}; // tracks, albums, artists, playlists, users
         bool toplists = false, square = false, radio = false, radio_dislike = false;
         bool similar = false, artist_intro = false;
         bool library = false, likes = false;

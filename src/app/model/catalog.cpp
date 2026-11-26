@@ -19,8 +19,8 @@ namespace lyren {
             listing.since = env_.now();
         }
         listing.loaded = true;
-        env_.images.prefetch(batch->tracks);
-        env_.images.prefetch(batch->cards);
+        env_.prefetch(batch->tracks);
+        env_.prefetch(batch->cards);
         listing.next_offset = batch->next_offset;
         listing.tracks.append_range(std::views::as_rvalue(batch->tracks));
         listing.cards.append_range(std::views::as_rvalue(batch->cards));
@@ -59,7 +59,7 @@ namespace lyren {
             co_return;
         }
         lib.daily_lists = std::move(*r);
-        env_.images.prefetch(lib.daily_lists);
+        env_.prefetch(lib.daily_lists);
         lib.daily_since = env_.now();
         env_.redraw();
     }
@@ -230,13 +230,12 @@ namespace lyren {
             return;
         }
         const auto &recent = shelf(source).recent_plays;
-        if (recent.loading || recent.refreshing) {
+        if (recent.busy()) {
             return;
         }
-        const double now = env_.now();
         if (!recent.loaded || (!recent.error.empty() && recent.tracks.empty())) {
             spawn(load_recent_plays(source, true));
-        } else if (now >= recent.retry_at && (now - recent.fetched_at >= 60.0 || (recent.stale && now - recent.fetched_at >= 10.0))) {
+        } else if (recent.due(env_.now(), 60.0, 10.0)) {
             spawn(load_recent_plays(source, false));
         }
     }
@@ -249,34 +248,18 @@ namespace lyren {
         }
         const bool background = !force && recent.loaded && !recent.tracks.empty();
         const uint64_t gen = ++recent.gen, account_gen = lib.account_gen;
-        if (background) {
-            recent.refreshing = true;
-        } else {
-            recent.loading = true;
-            recent.error.clear();
-        }
+        recent.begin(background);
         auto r = co_await env_.provider(source).features.recent_plays();
         if (gen != recent.gen || account_gen != lib.account_gen) {
             co_return;
         }
-        recent.loading = recent.refreshing = false;
         if (r) {
             const bool had_tracks = !recent.tracks.empty();
-            recent.loaded = true;
-            recent.stale = false;
-            recent.error.clear();
-            recent.fetched_at = env_.now();
-            recent.retry_at = -1e9;
-            if (!had_tracks) {
-                recent.since = env_.now();
-            }
+            recent.succeed(env_.now(), !had_tracks);
             recent.tracks = std::move(*r);
-            env_.images.prefetch(recent.tracks);
-        } else if (background) {
-            recent.retry_at = env_.now() + 15.0;
+            env_.prefetch(recent.tracks);
         } else {
-            recent.loaded = true;
-            recent.error = r.error();
+            recent.fail(r.error(), env_.now(), background);
         }
         env_.redraw();
     }
@@ -307,18 +290,18 @@ namespace lyren {
 
     Task<void> Library::load_radio(Source source) {
         Shelf &lib = shelf(source);
-        const uint64_t gen = lib.gen;
+        const uint64_t gen = ++lib.radio_gen;
         lib.radio_loading = true;
         lib.radio_error.clear();
         auto r = co_await env_.provider(source).fm();
-        if (gen != lib.gen) {
+        if (gen != lib.radio_gen) {
             co_return;
         }
         lib.radio_loading = false;
         const bool pending = std::exchange(lib.radio_pending, false);
         if (r) {
             const size_t before = lib.radio.size();
-            env_.images.prefetch(*r);
+            env_.prefetch(*r);
             lib.radio.append_range(std::views::as_rvalue(*r));
             if (pending && lib.radio.size() > before) {
                 if (before > 0 && lib.radio_pos + 1 < static_cast<int>(lib.radio.size())) {

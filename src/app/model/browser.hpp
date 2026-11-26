@@ -1,16 +1,16 @@
 #pragma once
 #include <array>
-#include <inplace_vector>
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_set>
+#include <string_view>
 #include <vector>
 
 #include "app/env.hpp"
 #include "app/model/fetch.hpp"
 #include "app/model/library.hpp"
 #include "app/model/social.hpp"
+#include "core/string_map.hpp"
 
 namespace lyren {
 
@@ -77,7 +77,7 @@ namespace lyren {
             int selected = -1, anchor = -1;
             bool choosing = false;
             const std::vector<Track> *list = nullptr;
-            std::unordered_set<std::string> chosen;
+            StringHashSet chosen;
 
             // The picked songs of tracks, in its order.
             std::vector<Track> of(const std::vector<Track> &tracks) const;
@@ -187,18 +187,35 @@ namespace lyren {
             std::string id;
             std::shared_ptr<Artist> artist;
         };
-        static constexpr int built_in_slot(Page page) {
+        struct PageMeta {
+            bool needs_login = false;
+            bool listed = false;
+            int built_in_slot = -1;
+            std::string_view title;
+            std::string_view subtitle;
+        };
+        static constexpr PageMeta page_meta(Page page) {
             switch (page) {
                 case Page::liked:
-                    return 0;
+                    return {.needs_login = true, .listed = true, .built_in_slot = 0, .title = "Liked songs"};
                 case Page::daily:
-                    return 1;
+                    return {.needs_login = true, .listed = true, .built_in_slot = 1, .title = "Daily mix"};
                 case Page::radar:
-                    return 2;
+                    return {.listed = true, .built_in_slot = 2, .title = "Radar", .subtitle = "Favorites and new discoveries"};
                 case Page::cloud:
-                    return 3;
+                    return {.needs_login = true, .listed = true, .built_in_slot = 3, .title = "My cloud", .subtitle = "Songs uploaded to your cloud"};
+                case Page::recent:
+                    return {.title = "Recently played"};
+                case Page::fm:
+                case Page::collection:
+                case Page::dislikes:
+                    return {.needs_login = true};
+                case Page::playlist:
+                case Page::album:
+                case Page::similar:
+                    return {.listed = true};
                 default:
-                    return -1;
+                    return {};
             }
         }
         static void trim_history(std::vector<Route> &stack);
@@ -221,8 +238,8 @@ namespace lyren {
         Route route_;
         std::vector<Route> history_, forward_;
         std::array<std::array<std::shared_ptr<TrackList>, 4>, platforms.size()> built_in_lists_{};
-        std::inplace_vector<CachedList, 16> list_cache_;
-        std::inplace_vector<CachedArtist, 12> artist_cache_;
+        LruCache<CachedList, 16> list_cache_;
+        LruCache<CachedArtist, 12> artist_cache_;
         uint64_t serial_ = 0, navigations_ = 0;
         std::string today_;
         int daily_slot_ = -1;

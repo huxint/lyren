@@ -5,7 +5,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 #include "app/env.hpp"
@@ -29,7 +28,7 @@ namespace lyren {
         };
         struct DislikeList : Fetch {
             std::vector<Dislike> items;
-            std::unordered_set<std::string> pending; // being written
+            StringHashSet pending; // being written
         };
         struct RecentPlays : Fetch {
             std::vector<Track> tracks;
@@ -48,11 +47,11 @@ namespace lyren {
             // signed in; preference_gen orders reads against the writes they may have missed.
             uint64_t gen = 0, account_gen = 0, preference_gen = 0, playlist_gen = 0;
             std::array<StringMap<Edit>, 5> preferences;
-            std::unordered_set<std::string> playlist_writes; // playlists being changed; "" while one is created
+            StringHashSet playlist_writes; // playlists being changed; "" while one is created
             std::vector<Card> playlists, daily_lists;
             double daily_since = -10;
             Card liked; // the playlist behind the liked songs
-            std::unordered_set<std::string> liked_ids;
+            StringHashSet liked_ids;
             bool playlists_loaded = false;
             std::string error; // why the account's data did not load
 
@@ -74,6 +73,7 @@ namespace lyren {
 
             std::vector<Track> radio;
             int radio_pos = 0;
+            uint64_t radio_gen = 0;
             bool radio_loading = false;
             bool radio_pending = false; // waiting for the next batch after reaching the end
             std::string radio_error;
@@ -136,7 +136,7 @@ namespace lyren {
         }
         // When the song was last liked, for the heart's pop; long ago otherwise.
         double liked_at(const Track &t) const {
-            return pop_key_ == key(t) ? pop_time_ : -10;
+            return pop_source_ == t.source && pop_id_ == t.id ? pop_time_ : -10;
         }
         // What shows for something the service reported as value: the listener's own change, if there is one.
         bool kept(Source source, Preference kind, std::string_view id, bool value) const;
@@ -157,7 +157,7 @@ namespace lyren {
 
         // Playlists.
         bool writing(Source source, std::string_view playlist) const {
-            return shelf(source).playlist_writes.contains(std::string(playlist));
+            return shelf(source).playlist_writes.contains(playlist);
         }
         // One write per playlist at a time; false, with a note, when it cannot start.
         bool begin_write(const Card &playlist);
@@ -209,7 +209,8 @@ namespace lyren {
         Env &env_;
         std::array<Shelf, platforms.size()> shelves_;
         std::vector<std::move_only_function<void(const Event &)>> listeners_;
-        std::string pop_key_; // the song liked last, and when
+        std::optional<Source> pop_source_; // the song liked last, and when
+        std::string pop_id_;
         double pop_time_ = -10;
     };
 

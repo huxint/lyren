@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "app/env.hpp"
+#include "app/images.hpp"
 #include "app/model/accounts.hpp"
 #include "app/model/browser.hpp"
 #include "app/model/comments.hpp"
@@ -40,8 +41,8 @@ namespace lyren {
         Providers providers;
         Images &images;
         const Config &config;
-        // Changes a setting in the config file; value is TOML. config reflects it once this returns.
-        std::move_only_function<void(std::string_view section, std::string_view key, std::string_view value)> set_setting;
+        // Applies one or more TOML setting changes atomically; config reflects them once this returns.
+        std::move_only_function<void(std::span<const SettingChange>)> set_settings;
         std::move_only_function<void()> desktop_changed;
         std::move_only_function<void()> open_config;                 // in the user's editor
         std::move_only_function<void()> redraw;                      // async results arrived
@@ -63,8 +64,8 @@ namespace lyren {
         void draw(ui::Ui &ui, ui::Rect area, const ui::Theme &stage_theme);
         // Accent taken from the current cover, cross-faded after a change.
         ui::Color accent(double now, bool dark, bool &animating);
-        // window: the size to remember, unless the window is maximized.
-        void save(std::optional<std::pair<int, int>> window = {});
+        // window: the size to remember, unless the window is maximized. flush_accounts: block to flush credentials on exit.
+        void save(std::optional<std::pair<int, int>> window = {}, bool flush_accounts = false);
         void config_changed();
 
         // What the parts ask of the window and of each other.
@@ -82,7 +83,11 @@ namespace lyren {
         // Opens the comments on something in the panel. follows: the current song's, which the stage keeps up with.
         void open_comments(Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows = false);
         void set_setting(std::string_view section, std::string_view key, std::string_view value) {
-            set_setting_(section, key, value);
+            const SettingChange one{section, key, value};
+            set_settings_({&one, 1});
+        }
+        void set_settings(std::span<const SettingChange> changes) {
+            set_settings_(changes);
         }
         void open_config() {
             open_config_();
@@ -92,6 +97,7 @@ namespace lyren {
         }
 
         Env env;
+        Images &images;
         Playback playback;
         Library library;
         Social social;
@@ -118,7 +124,7 @@ namespace lyren {
         void page(ui::Ui &ui, ui::Rect area);
         void keys(ui::Ui &ui);
 
-        std::move_only_function<void(std::string_view, std::string_view, std::string_view)> set_setting_;
+        std::move_only_function<void(std::span<const SettingChange>)> set_settings_;
         std::move_only_function<void()> open_config_, desktop_changed_;
         const ui::Theme *stage_theme_ = nullptr;
         bool compact_ = false;

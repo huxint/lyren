@@ -1,7 +1,4 @@
 #pragma once
-#include <optional>
-#include <unordered_set>
-
 #include "media/provider.hpp"
 #include "qq/client.hpp"
 
@@ -141,7 +138,6 @@ namespace lyren::qq {
         }
 
     private:
-        void sync_collection_cache();
         Task<Result<void>> renew_once();
         struct Renewal {
             Result<void> result;
@@ -155,9 +151,6 @@ namespace lyren::qq {
         uint64_t qr_gen_ = 0;
         net::CookieJar qr_cookies_;
         std::string js_version_, oauth_state_;
-        std::string collection_uid_;
-        std::optional<std::unordered_set<std::string>> saved_albums_, followed_artists_;
-        Clock::time_point saved_albums_at_{}, followed_artists_at_{};
     };
 
 } // namespace lyren::qq

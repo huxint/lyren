@@ -20,29 +20,10 @@ namespace lyren::wl {
                 self(d)->closed();
             },
     };
-    static const wp_fractional_scale_v1_listener fractional_listener{
-        .preferred_scale =
-            [](void *d, wp_fractional_scale_v1 *, uint32_t scale) {
-                self(d)->preferred_scale(scale);
-            },
-    };
-    static const wl_callback_listener frame_listener{
-        .done =
-            [](void *d, wl_callback *cb, uint32_t) {
-                wl_callback_destroy(cb);
-                self(d)->frame_done();
-            },
-    };
 
     LayerSurface::LayerSurface(Display &display, Callbacks cb, bool above_windows)
-    : display_(display),
+    : Surface(display),
       cb_(std::move(cb)) {
-        surface_ = wl_compositor_create_surface(display_.compositor);
-        wl_surface_set_user_data(surface_, static_cast<SurfaceSink *>(this));
-        viewport_ = wp_viewporter_get_viewport(display_.viewporter, surface_);
-        fractional_ = wp_fractional_scale_manager_v1_get_fractional_scale(display_.fractional_scale, surface_);
-        wp_fractional_scale_v1_add_listener(fractional_, &fractional_listener, this);
-
         layer_ = zwlr_layer_shell_v1_get_layer_surface(display_.layer_shell, surface_, nullptr, above_windows ? ZWLR_LAYER_SHELL_V1_LAYER_TOP : ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
                                                        "lyren-lyrics");
         zwlr_layer_surface_v1_add_listener(layer_, &layer_listener, this);
@@ -57,16 +38,7 @@ namespace lyren::wl {
     }
 
     LayerSurface::~LayerSurface() {
-        if (display_.input->pointer_focus() == this) {
-            display_.input->pointer_leave(surface_);
-        }
-        if (frame_callback_) {
-            wl_callback_destroy(frame_callback_);
-        }
-        wp_fractional_scale_v1_destroy(fractional_);
-        wp_viewport_destroy(viewport_);
         zwlr_layer_surface_v1_destroy(layer_);
-        wl_surface_destroy(surface_);
     }
 
     void LayerSurface::set_input(int x, int y, int w, int h) {
@@ -92,19 +64,14 @@ namespace lyren::wl {
         }
     }
 
-    void LayerSurface::preferred_scale(uint32_t scale120) {
-        if (scale120 == scale120_) {
-            return;
-        }
-        scale120_ = scale120;
+    void LayerSurface::on_scale_changed() {
         dirty_ = true;
         if (cb_.configure) {
             cb_.configure();
         }
     }
 
-    void LayerSurface::frame_done() {
-        frame_callback_ = nullptr;
+    void LayerSurface::on_frame_done() {
         if (cb_.frame) {
             cb_.frame();
         }
@@ -117,14 +84,10 @@ namespace lyren::wl {
         }
         if (dirty_) {
             dirty_ = false;
-            wp_viewport_set_destination(viewport_, width_, height_);
-            wl_region *input = wl_compositor_create_region(display_.compositor);
-            wl_region_add(input, input_[0], input_[1], input_[2], input_[3]);
-            wl_surface_set_input_region(surface_, input);
-            wl_region_destroy(input);
+            set_viewport(width_, height_);
+            set_input_region(input_[0], input_[1], input_[2], input_[3]);
         }
-        frame_callback_ = wl_surface_frame(surface_);
-        wl_callback_add_listener(frame_callback_, &frame_listener, this);
+        request_frame();
     }
 
 } // namespace lyren::wl

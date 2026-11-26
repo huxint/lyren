@@ -55,6 +55,18 @@ namespace lyren {
         float studio_card_radius(const ui::Theme &t) {
             return t.radius_l() * 0.8f;
         }
+
+        void skeleton_list(ui::Ui &ui, float x, float y, float w, size_t count, float row_h, float thumb, float thumb_r) {
+            const float text_x = x + thumb + 12, text_w = std::max(0.f, w - thumb - 12);
+            const float thumb_y = (row_h - thumb) / 2;
+            for (size_t i = 0; i < count; ++i) {
+                const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
+                ui.skeleton({x, y + thumb_y, thumb, thumb}, thumb_r);
+                ui.skeleton({text_x, y + thumb_y + 6, text_w * (0.45f + 0.35f * k), 10}, 5);
+                ui.skeleton({text_x, y + thumb_y + 24, text_w * (0.28f + 0.25f * (1 - k)), 9}, 4.5f);
+                y += row_h;
+            }
+        }
     } // namespace
 
     ProfileView::ProfileView(Shell &shell)
@@ -132,12 +144,13 @@ namespace lyren {
             return library_.toggle_follow_user(source, person);
         }
         // Unfollowing is one step further away than following.
-        ui.open_menu(r.x, r.bottom() + 6,
-                     {{"user-minus", std::string(lyren::tr("Unfollow")),
-                       [this, source, person] {
-                           library_.toggle_follow_user(source, person);
-                       },
-                       true}});
+        std::vector<ui::MenuItem> items;
+        items.push_back({"user-minus", std::string(lyren::tr("Unfollow")),
+                         [this, source, person] {
+                             library_.toggle_follow_user(source, person);
+                         },
+                         true});
+        ui.open_menu(r.x, r.bottom() + 6, std::move(items));
     }
 
     void ProfileView::show(ui::Ui &ui, const Listener &page, Section section) {
@@ -204,7 +217,7 @@ namespace lyren {
             const float wash_h = std::max(0.f, full_h - shift);
             const Rect band{clip.x, clip.y, clip.w, wash_h};
             const float rad = std::min(corner, wash_h / 2);
-            const auto *image = who.background.empty() ? nullptr : &env_.images.get(who.background, 128, true);
+            const auto *image = who.background.empty() ? nullptr : &images_.get(who.background, 128, true);
             if (image && image->ready && wash_h > 0) {
                 {
                     Fade wash(p, ui.progress(image->ready_at, 480, ease::standard) * (t.dark ? 0.30f : 0.17f) * scroll_fade);
@@ -431,13 +444,7 @@ namespace lyren {
         } else if (text_w > 0) {
             std::string_view about = !page->info && !page->error.empty() ? lyren::tr(page->error) : std::string_view(who.signature);
             // Two lines never show more than this of it, however long it runs.
-            if (about.size() > about_limit) {
-                size_t cut = about_limit;
-                while (cut > 0 && (static_cast<unsigned char>(about[cut]) & 0xc0) == 0x80) {
-                    --cut;
-                }
-                about = about.substr(0, cut);
-            }
+            about = utf8::truncate_bytes(about, about_limit);
             const auto style = t.style(type::label, t.text_dim);
             const float w = std::min(text_w, 720.f);
             int shown = 0;
@@ -926,62 +933,15 @@ namespace lyren {
             }
             float ry = box.y + head_h + 5;
             if (recent_tracks.empty()) {
-                for (size_t i = 0; i < shown; ++i) {
-                    const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
-                    ui.skeleton({box.x + 16, ry + 6, 38, 38}, t.radius_s());
-                    ui.skeleton({box.x + 66, ry + 12, (box.w - 86) * (0.45f + 0.35f * k), 10}, 5);
-                    ui.skeleton({box.x + 66, ry + 30, (box.w - 86) * (0.28f + 0.25f * (1 - k)), 9}, 4.5f);
-                    ry += row_h;
-                }
+                skeleton_list(ui, box.x + 16, ry, box.w - 32, shown, row_h, 38, t.radius_s());
             } else {
                 const bool show_time = box.w >= 420;
                 const double since = std::max(page->section_since, cloud_recent ? lib.recent_plays.since : page->since);
                 ui.push_id(ui.id("overview-recent"));
                 for (size_t i = 0; i < shown; ++i) {
-                    const Track &track = recent_tracks[i];
                     const float in = ui.cascade(since, static_cast<int>(i));
                     Fade fade(p, in);
-                    const Rect row{box.x + 8, ry + (1 - in) * 8, box.w - 16, row_h};
-                    const ui::Id id = item_id(ui, track);
-                    const auto it = ui.interact(id, row);
-                    const auto [hot, down] = ui.feel(id, it, pace::quick);
-                    if (hot > 0) {
-                        p.rect(row.inset(down, 2 + down), t.fill(hot), t.radius_s());
-                    }
-                    const Rect art{row.x + 8, row.y + 6, 38, 38};
-                    const bool on = playback_.is_current(track);
-                    const float veil = std::max(hot, on ? 1.f : 0.f);
-                    cover(ui, art, track.cover, t.radius_s(), veil > 0.5f ? "" : "music");
-                    if (veil > 0) {
-                        p.rect(art, ui::Color{0, 0, 0, 0.42f * veil}, t.radius_s());
-                        if (on && playback_.playing() && hot < 0.5f) {
-                            ui.equalizer(ui::sub_id(id, 1), ui::center(art, 13, 13), white, true);
-                        } else {
-                            Rect glyph = ui::center(art, 13, 13);
-                            glyph.x += on && playback_.playing() ? 0 : 1;
-                            p.icon(on && playback_.playing() ? "pause-fill" : "play-fill", glyph, white.with_alpha(veil));
-                        }
-                    }
-                    const float time_w = show_time && track.duration > 0 ? 48.f : 0.f;
-                    const float tx = art.right() + 12, tw = std::max(0.f, row.right() - tx - time_w - 12);
-                    p.text(tx, row.y + 22, track.title, t.style(type::label, on ? t.accent : t.text, text::medium), tw);
-                    p.text(tx, row.y + 40, track.artist, t.style(type::caption, t.text_dim), tw);
-                    if (time_w > 0) {
-                        ui.label({row.right() - time_w - 8, row.y, time_w, row.h}, mmss(track.duration), t.style(type::caption, t.faint(), text::tabular_nums), Align::right);
-                    }
-                    if (it.hovered) {
-                        ui.cursor = wl::Cursor::pointer;
-                    }
-                    if (it.clicked) {
-                        if (on) {
-                            playback_.toggle();
-                        } else {
-                            playback_.play(recent_tracks, static_cast<int>(i));
-                        }
-                    }
-                    if (it.right_clicked) {
-                        shell_.tracks.menu(ui, it.px, it.py, recent_tracks, static_cast<int>(i));
-                    }
+                    compact_track_row(ui, {box.x + 8, ry + (1 - in) * 8, box.w - 16, row_h}, recent_tracks, i, 0, show_time);
                     ry += row_h;
                 }
                 ui.pop_id();
@@ -998,7 +958,7 @@ namespace lyren {
             const float min_w = round ? 130.f : 150.f;
             const auto limit = static_cast<size_t>(CardGrid::columns(col_w, min_w));
             const auto slice = all_cards.first(std::min(all_cards.size(), limit));
-            section_heading(ui, r.x, y, col_w - 36, title, std::to_string(total_count));
+            section_heading(ui, r.x, y, col_w - 36, title, int_text(static_cast<int64_t>(total_count)));
             if (ui.icon_button(ui::sub_id(ui.id(key), 0xaa), {r.x + col_w - 28, y - 1, 28, 28}, "chevron-right", 16, false, lyren::tr("See all"))) {
                 on_all();
             }
@@ -1160,15 +1120,9 @@ namespace lyren {
 
         float ry = box.y + head_h + 6;
         if (!chart.loaded) {
-            for (size_t i = 0; i < shown; ++i) {
-                const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
-                ui.skeleton({box.x + 16, ry + 9, 38, 38}, t.radius_s());
-                ui.skeleton({box.x + 66, ry + 15, (box.w - 86) * (0.5f + 0.4f * k), 10}, 5);
-                ui.skeleton({box.x + 66, ry + 33, (box.w - 86) * (0.3f + 0.3f * (1 - k)), 9}, 4.5f);
-                ry += row_h;
-            }
+            skeleton_list(ui, box.x + 16, ry, box.w - 32, shown, row_h, 38, t.radius_s());
         } else if (tracks.empty()) {
-            const bool hidden = chart.error == "This listening ranking is private";
+            const bool hidden = chart.ranking.hidden;
             p.icon(hidden ? "lock" : "headphones", {box.x + 16, ry + 11, 14, 14}, t.faint());
             ui.label({box.x + 38, ry + 8, box.w - 54, 20},
                      lyren::tr(hidden                ? "Their ranking is private"
@@ -1178,54 +1132,65 @@ namespace lyren {
         } else {
             ui.push_id(ui.id("rail-songs"));
             for (size_t i = 0; i < shown; ++i) {
-                const Track &track = tracks[i];
                 const float in = ui.cascade(std::max(page->section_since, chart.since), static_cast<int>(i));
                 Fade fade(p, in);
-                const Rect row{box.x + 8, ry + (1 - in) * 8, box.w - 16, row_h};
-                const ui::Id id = item_id(ui, track);
-                const auto it = ui.interact(id, row);
-                const auto [hot, down] = ui.feel(id, it, pace::quick);
-                if (hot > 0) {
-                    p.rect(row.inset(down, 2 + down), t.fill(hot), t.radius_s());
-                }
-                ui.label({row.x + 4, row.y, 18, row.h - 4}, std::to_string(i + 1),
-                         t.style(type::caption, i < 3 ? t.accent.with_alpha(0.85f) : t.faint(), text::semibold | text::tabular_nums), Align::center);
-                const Rect art{row.x + 26, row.y + 8, 38, 38};
-                const bool on = playback_.is_current(track);
-                const float veil = std::max(hot, on ? 1.f : 0.f);
-                cover(ui, art, track.cover, t.radius_s(), veil > 0.5f ? "" : "music");
-                if (veil > 0) {
-                    p.rect(art, ui::Color{0, 0, 0, 0.42f * veil}, t.radius_s());
-                    if (on && playback_.playing() && hot < 0.5f) {
-                        ui.equalizer(ui::sub_id(id, 1), ui::center(art, 13, 13), white, true);
-                    } else {
-                        Rect glyph = ui::center(art, 13, 13);
-                        glyph.x += on && playback_.playing() ? 0 : 1;
-                        p.icon(on && playback_.playing() ? "pause-fill" : "play-fill", glyph, white.with_alpha(veil));
-                    }
-                }
-                const float tx = art.right() + 12, tw = row.right() - tx - 8;
-                p.text(tx, row.y + 23, track.title, t.style(type::label, on ? t.accent : t.text, text::medium), tw);
-                p.text(tx, row.y + 41, track.artist, t.style(type::caption, t.text_dim), tw);
-                if (it.hovered) {
-                    ui.cursor = wl::Cursor::pointer;
-                }
-                if (it.clicked) {
-                    if (on) {
-                        playback_.toggle();
-                    } else {
-                        playback_.play(tracks, static_cast<int>(i));
-                    }
-                }
-                if (it.right_clicked) {
-                    shell_.tracks.menu(ui, it.px, it.py, tracks, static_cast<int>(i));
-                }
+                compact_track_row(ui, {box.x + 8, ry + (1 - in) * 8, box.w - 16, row_h}, tracks, i, static_cast<int>(i + 1), false);
                 ry += row_h;
             }
             ui.pop_id();
         }
         ui.pop_clip();
         return box.h;
+    }
+
+    void ProfileView::compact_track_row(ui::Ui &ui, Rect row, const std::vector<Track> &tracks, size_t i, int rank, bool show_time) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const Track &track = tracks[i];
+        const ui::Id id = item_id(ui, track);
+        const auto it = ui.interact(id, row);
+        const auto [hot, down] = ui.feel(id, it, pace::quick);
+        if (hot > 0) {
+            p.rect(row.inset(down, 2 + down), t.fill(hot), t.radius_s());
+        }
+        if (rank > 0) {
+            ui.label({row.x + 4, row.y, 18, row.h - 4}, int_text(rank),
+                     t.style(type::caption, rank <= 3 ? t.accent.with_alpha(0.85f) : t.faint(), text::semibold | text::tabular_nums), Align::center);
+        }
+        const Rect art{row.x + (rank > 0 ? 26.f : 8.f), row.y + (row.h - 38) / 2, 38, 38};
+        const bool on = playback_.is_current(track);
+        const float veil = std::max(hot, on ? 1.f : 0.f);
+        cover(ui, art, track.cover, t.radius_s(), veil > 0.5f ? "" : "music");
+        if (veil > 0) {
+            p.rect(art, ui::Color{0, 0, 0, 0.42f * veil}, t.radius_s());
+            if (on && playback_.playing() && hot < 0.5f) {
+                ui.equalizer(ui::sub_id(id, 1), ui::center(art, 13, 13), white, true);
+            } else {
+                Rect glyph = ui::center(art, 13, 13);
+                glyph.x += on && playback_.playing() ? 0 : 1;
+                p.icon(on && playback_.playing() ? "pause-fill" : "play-fill", glyph, white.with_alpha(veil));
+            }
+        }
+        const float time_w = show_time && track.duration > 0 ? 48.f : 0.f;
+        const float tx = art.right() + 12, tw = std::max(0.f, row.right() - tx - time_w - (time_w > 0 ? 12.f : 8.f));
+        p.text(tx, row.y + (rank > 0 ? 23.f : 22.f), track.title, t.style(type::label, on ? t.accent : t.text, text::medium), tw);
+        p.text(tx, row.y + (rank > 0 ? 41.f : 40.f), track.artist, t.style(type::caption, t.text_dim), tw);
+        if (time_w > 0) {
+            ui.label({row.right() - time_w - 8, row.y, time_w, row.h}, mmss(track.duration), t.style(type::caption, t.faint(), text::tabular_nums), Align::right);
+        }
+        if (it.hovered) {
+            ui.cursor = wl::Cursor::pointer;
+        }
+        if (it.clicked) {
+            if (on) {
+                playback_.toggle();
+            } else {
+                playback_.play(tracks, static_cast<int>(i));
+            }
+        }
+        if (it.right_clicked) {
+            shell_.tracks.menu(ui, it.px, it.py, tracks, static_cast<int>(i));
+        }
     }
 
     float ProfileView::rail(ui::Ui &ui, Rect r, const Listener &page, const RailPlan &plan, bool include_repeat, float repeat_h_override) {
@@ -1275,15 +1240,7 @@ namespace lyren {
 
             ui.push_id(ui.id("rail-faces"));
             if (follows.items.empty()) {
-                const size_t skel_rows = std::max<size_t>(plan.follow_rows, 2);
-                float py = box.y + head_h + 6;
-                for (size_t i = 0; i < skel_rows; ++i) {
-                    const float k = std::fmod(static_cast<float>(i) * 0.618f, 1.f);
-                    ui.skeleton({box.x + 16, py + 7, 34, 34}, 17);
-                    ui.skeleton({box.x + 62, py + 12, (box.w - 82) * (0.42f + 0.35f * k), 10}, 5);
-                    ui.skeleton({box.x + 62, py + 29, (box.w - 82) * (0.28f + 0.25f * (1 - k)), 9}, 4.5f);
-                    py += person_h;
-                }
+                skeleton_list(ui, box.x + 16, box.y + head_h + 6, box.w - 32, std::max<size_t>(plan.follow_rows, 2), person_h, 34, 17);
             } else {
                 const float list_k = ui.anim(ui.id("rail-follow-mode"), plan.follows_list ? 1.f : 0.f, pace::steady);
                 const double since = std::max(page->section_since, follows.since);
@@ -1390,7 +1347,7 @@ namespace lyren {
                 social_.load_chart(page, page->chart_tab);
             }
             const Rect room{r.x, top, r.w, 300};
-            if (chart.error == "This listening ranking is private") {
+            if (chart.ranking.hidden) {
                 empty(ui, room, "lock", lyren::tr("Their ranking is private"), lyren::tr("Only they can see what they play most"));
             } else if (!page_status(ui, room, !chart.loaded, chart.error, false, Placeholder::rows)) {
                 empty(ui, room, "headphones", lyren::tr("Nothing played yet"));
@@ -1431,7 +1388,7 @@ namespace lyren {
                 ui.equalizer(ui.id("playing"), ui::center(rank, 14, 14), t.accent, playback_.playing());
             } else {
                 // The first three stand out.
-                ui.label(rank, std::to_string(i + 1), i < 3 ? t.style(type::lead, t.accent, text::semibold | text::tabular_nums) : numbers, Align::center);
+                ui.label(rank, int_text(i + 1), i < 3 ? t.style(type::lead, t.accent, text::semibold | text::tabular_nums) : numbers, Align::center);
             }
             const Rect art{rank.right() + 6, row.y + 8, 40, 40};
             cover(ui, art, track.cover, t.radius_s());
@@ -1499,7 +1456,7 @@ namespace lyren {
             if (cards.empty()) {
                 return;
             }
-            section_heading(ui, r.x, y, r.w, title, std::to_string(cards.size()));
+            section_heading(ui, r.x, y, r.w, title, int_text(static_cast<int64_t>(cards.size())));
             y += 42;
             if (const int i = card_grid(ui, {r.x, y, r.w, 0}, ui.id(key), cards, false, since); i >= 0) {
                 picked = cards[static_cast<size_t>(i)];
@@ -1542,8 +1499,8 @@ namespace lyren {
                 show(ui, page, Section::collection);
             }
         } else {
-            section_heading(ui, bar.x, bar.y + 4, bar.w - control::medium - 16, lyren::tr(artists ? "Artists" : "Albums"),
-                            res.cards.empty() ? std::string() : std::to_string(res.cards.size()));
+            const auto note = res.cards.empty() ? SmallText<24>{} : int_text(static_cast<int64_t>(res.cards.size()));
+            section_heading(ui, bar.x, bar.y + 4, bar.w - control::medium - 16, lyren::tr(artists ? "Artists" : "Albums"), note);
         }
 
         const float top = bar.bottom() + 16;
@@ -1606,41 +1563,31 @@ namespace lyren {
         const size_t rows = (list.items.size() + cols - 1) / cols;
         const Rect clip = ui.clip();
         const double since = std::max(page->section_since, list.since);
+        size_t begin_i = 0, end_i = list.items.size();
+        if (!reflowing) {
+            if (rows == 0 || clip.bottom() < top) {
+                end_i = 0;
+            } else {
+                const auto first_row = static_cast<size_t>(std::max(0, static_cast<int>(std::floor((clip.y - top - 12.f) / step))));
+                const auto last_row = std::min(rows - 1, static_cast<size_t>(std::max(0, static_cast<int>(std::floor((clip.bottom() - top) / step)))));
+                begin_i = first_row <= last_row ? first_row * cols : end_i;
+                end_i = first_row <= last_row ? std::min(list.items.size(), (last_row + 1) * cols) : end_i;
+            }
+        }
         int shown = 0;
         ui.push_id(ui.id(fans ? "fans" : "follows"));
-        if (reflowing) {
-            for (size_t i = 0; i < list.items.size(); ++i) {
-                const ui::Id pid = ui.id(list.items[i].id);
-                const float c = ui.spring(ui::sub_id(pid, 0xc0), static_cast<float>(i % cols), CardGrid::reflow_ms);
-                const float rw = ui.spring(ui::sub_id(pid, 0xc1), static_cast<float>(i / cols), CardGrid::reflow_ms);
-                Rect cell{r.x + c * (cell_w + gap), top + rw * step, cell_w, row_h};
-                if (cell.bottom() < clip.y || cell.y > clip.bottom()) {
-                    continue;
-                }
-                const float in = ui.cascade(since, shown++);
-                Fade fade(p, in);
-                cell.y += (1 - in) * 10;
-                person(ui, cell, card.source, list.items[i]);
+        for (size_t i = begin_i; i < end_i; ++i) {
+            const ui::Id pid = ui.id(list.items[i].id);
+            const float c = ui.spring(ui::sub_id(pid, 0xc0), static_cast<float>(i % cols), CardGrid::reflow_ms);
+            const float rw = ui.spring(ui::sub_id(pid, 0xc1), static_cast<float>(i / cols), CardGrid::reflow_ms);
+            Rect cell{r.x + c * (cell_w + gap), top + rw * step, cell_w, row_h};
+            if (cell.bottom() < clip.y || cell.y > clip.bottom()) {
+                continue;
             }
-        } else if (rows > 0 && clip.bottom() >= top) {
-            const auto first_row = static_cast<size_t>(std::max(0, static_cast<int>(std::floor((clip.y - top - 12.f) / step))));
-            const auto last_row = std::min(rows - 1, static_cast<size_t>(std::max(0, static_cast<int>(std::floor((clip.bottom() - top) / step)))));
-            if (first_row <= last_row) {
-                const size_t end_i = std::min(list.items.size(), (last_row + 1) * cols);
-                for (size_t i = first_row * cols; i < end_i; ++i) {
-                    const ui::Id pid = ui.id(list.items[i].id);
-                    const float c = ui.spring(ui::sub_id(pid, 0xc0), static_cast<float>(i % cols), CardGrid::reflow_ms);
-                    const float rw = ui.spring(ui::sub_id(pid, 0xc1), static_cast<float>(i / cols), CardGrid::reflow_ms);
-                    Rect cell{r.x + c * (cell_w + gap), top + rw * step, cell_w, row_h};
-                    if (cell.bottom() < clip.y || cell.y > clip.bottom()) {
-                        continue;
-                    }
-                    const float in = ui.cascade(since, shown++);
-                    Fade fade(p, in);
-                    cell.y += (1 - in) * 10;
-                    person(ui, cell, card.source, list.items[i]);
-                }
-            }
+            const float in = ui.cascade(since, shown++);
+            Fade fade(p, in);
+            cell.y += (1 - in) * 10;
+            person(ui, cell, card.source, list.items[i]);
         }
         ui.pop_id();
         const float end = top + static_cast<float>(rows) * (row_h + gap);

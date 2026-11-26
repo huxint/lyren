@@ -33,17 +33,6 @@ namespace lyren {
             static constexpr size_t preview_limit = 480;
         };
 
-        std::string_view utf8_prefix(std::string_view text, size_t limit) {
-            if (text.size() <= limit) {
-                return text;
-            }
-            size_t cut = limit;
-            while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xc0) == 0x80) {
-                --cut;
-            }
-            return text.substr(0, cut);
-        }
-
         std::string_view first_line(std::string_view text) {
             const size_t start = text.find_first_not_of(" \t\r\n");
             if (start == text.npos) {
@@ -236,7 +225,7 @@ namespace lyren {
             ui.label({time_x, ry + 1, bar.right() - time_x, 22}, reply->root.time, t.style(type::micro, t.faint()));
         }
         const float line_h = std::round(t.fs(type::label) * 1.55f);
-        const std::string_view root_preview = utf8_prefix(reply->root.text, C::preview_limit);
+        const std::string_view root_preview = utf8::truncate_bytes(reply->root.text, C::preview_limit);
         const auto lines = tw > 0 && !root_preview.empty() ? p.wrap_lines(root_preview, t.fs(type::label), tw) : std::vector<std::string_view>{};
         const size_t max_lines = compact ? 1 : 3;
         const size_t shown = std::min(lines.size(), max_lines);
@@ -453,11 +442,7 @@ namespace lyren {
                 ui::Enabled still_open(ui, live, 1);
                 float count_w = 0;
                 if (has_text) {
-                    size_t n = 0;
-                    for (size_t i = 0; i < draft->text.size(); i = utf8::next(draft->text, i)) {
-                        ++n;
-                    }
-                    const std::string count = std::to_string(n);
+                    const auto count = int_text(static_cast<int64_t>(utf8::count(draft->text)));
                     const auto cs = t.style(type::micro, t.faint(), text::tabular_nums);
                     count_w = std::ceil(p.measure(count, cs)) + 8;
                     ui.label({foot.x + left_w - count_w, foot.y, count_w, footer_h}, count, cs, Align::right);
@@ -601,7 +586,7 @@ namespace lyren {
     void CommentsView::picture(ui::Ui &ui, const Comment &c, Rect r) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        const auto &e = env_.images.picture(c.image, static_cast<uint32_t>(Images::tier(std::max(r.w, r.h) * p.scale())));
+        const auto &e = images_.picture(c.image, static_cast<uint32_t>(Images::tier(std::max(r.w, r.h) * p.scale())));
         const float a = e.ready ? ui.progress(e.ready_at, 320, ease::standard) : 0;
         const float aspect = e.ready && e.h ? static_cast<float>(e.w) / static_cast<float>(e.h) : 1;
         if (c.sticker) {

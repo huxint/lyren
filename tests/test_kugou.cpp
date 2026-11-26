@@ -64,11 +64,11 @@ TEST_CASE("KuGou device registration encrypts a persistent Linux identity") {
     REQUIRE(EVP_DecryptUpdate(aes.get(), out, &first, reinterpret_cast<const unsigned char *>(encrypted.data()), static_cast<int>(encrypted.size())) == 1);
     REQUIRE(EVP_DecryptFinal_ex(aes.get(), out + first, &last) == 1);
     plain.resize(static_cast<size_t>(first + last));
-    auto device = kugou::json::parse(plain);
+    auto device = kugou::parse_json(plain);
     REQUIRE(device);
-    CHECK(kugou::json::text(*device, "uuid") == client.get("mid"));
-    CHECK(kugou::json::text(*device, "brand") == "Linux");
-    CHECK(kugou::json::text(*device, "device") == "lyren");
+    CHECK(json::text(*device, "uuid") == client.get("mid"));
+    CHECK(json::text(*device, "brand") == "Linux");
+    CHECK(json::text(*device, "device") == "lyren");
 
     client.session["dfid"] = "registered-device";
     const auto query = client.common();
@@ -125,7 +125,7 @@ TEST_CASE("KuGou verification challenges are distinguished from request failures
         const auto expected = selected == Language::en ? "KuGou Music requires security verification (20028)" : "酷狗音乐要求安全验证（20028）";
         for (auto body : {R"({"status":0,"error_code":20028})", R"({"status":0,"errcode":"20028"})"}) {
             set_language(selected);
-            auto account = kugou::json::response(body, true);
+            auto account = kugou::parse_response(body, true);
             auto stream = kugou::parse_stream(body, false, "128");
             set_language(before);
             REQUIRE_FALSE(account);
@@ -134,7 +134,7 @@ TEST_CASE("KuGou verification challenges are distinguished from request failures
             CHECK(stream.error() == expected);
         }
     }
-    auto explained = kugou::json::response(R"({"status":0,"error_code":20028,"error_msg":"请先完成手机验证"})");
+    auto explained = kugou::parse_response(R"({"status":0,"error_code":20028,"error_msg":"请先完成手机验证"})");
     REQUIRE_FALSE(explained);
     CHECK(explained.error() == "请先完成手机验证");
 }

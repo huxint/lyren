@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <memory>
+#include <utility>
 
 #include "core/task.hpp"
 #include "net/http.hpp"
@@ -12,26 +14,64 @@ namespace lyren::net {
         network
     };
 
+    namespace detail {
+        struct FetchState {
+            std::coroutine_handle<> h;
+            Response res;
+            bool cancelled = false; // loop thread only
+        };
+
+        inline Http::Id start_fetch(Loop &loop, Http &http, const Request &req, std::shared_ptr<FetchState> &state, std::coroutine_handle<> h) {
+            state = std::make_shared<FetchState>();
+            state->h = h;
+            return http.request(req, [&loop, st = state](Response r) {
+                loop.post([st = std::move(st), r = std::move(r)]() mutable {
+                    if (st->cancelled) {
+                        return;
+                    }
+                    st->res = std::move(r);
+                    if (auto resume = std::exchange(st->h, {})) {
+                        resume.resume();
+                    }
+                });
+            });
+        }
+    } // namespace detail
+
     // co_await fetch{loop, http, req}: runs the request and resumes on the loop thread.
+    // Destroying the suspended coroutine cancels the HTTP request and drops any in-flight completion.
     struct fetch {
         Loop &loop;
         Http &http;
         Request req;
-        Response res;
+        std::shared_ptr<detail::FetchState> state;
+        Http::Id id = 0;
+
+        fetch(Loop &loop, Http &http, Request req) noexcept
+        : loop(loop),
+          http(http),
+          req(std::move(req)) {}
+        fetch(const fetch &) = delete;
+        fetch &operator=(const fetch &) = delete;
+        ~fetch() {
+            if (state) {
+                state->cancelled = true;
+                state->h = {};
+                if (id) {
+                    http.cancel(id);
+                }
+            }
+        }
 
         bool await_ready() const noexcept {
             return false;
         }
         void await_suspend(std::coroutine_handle<> h) {
-            http.request(std::move(req), [this, h](Response r) {
-                loop.post([this, h, r = std::move(r)]() mutable {
-                    res = std::move(r);
-                    h.resume();
-                });
-            });
+            id = detail::start_fetch(loop, http, req, state, h);
         }
         Response await_resume() {
-            return std::move(res);
+            id = 0;
+            return std::move(state->res);
         }
     };
 

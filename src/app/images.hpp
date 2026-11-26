@@ -15,9 +15,6 @@
 
 namespace lyren {
 
-    struct Track;
-    struct Card;
-
     // Cover art as textures. Downloads feed a small decode pool; uploads and cache access stay on the loop thread.
     class Images {
     public:
@@ -26,7 +23,6 @@ namespace lyren {
             bool ready = false, failed = false;
             double ready_at = 0; // for the fade-in; for failures, when to try again
             float hue = -1;      // dominant hue, negative for colourless images
-            float luma = 0;      // mean luminance (0..1)
             uint32_t px = 0;
             uint32_t w = 0, h = 0; // texture size; a picture keeps its aspect
             size_t bytes = 0;      // pixel bytes, reserved until decoding completes
@@ -43,6 +39,9 @@ namespace lyren {
         static int tier(float d);
         // Display scale factor, used to size the HiDPI VRAM budget and match prefetch tiers to drawn covers.
         void set_scale(float scale);
+        float scale() const {
+            return scale_;
+        }
         // url is the original cover URL; resizing it for the service happens only when a download starts.
         // A cached size can stand in while a sharper image loads. blurred uses a separate, small background image.
         const Entry &get(std::string_view url, uint32_t px, bool blurred = false);
@@ -50,8 +49,6 @@ namespace lyren {
         const Entry &picture(std::string_view url, uint32_t px);
         // Best effort: queued pixels and entries must fit the cache budget.
         void prefetch(std::string_view url, uint32_t px, bool blurred = false);
-        void prefetch(std::span<const Track> tracks);
-        void prefetch(std::span<const Card> cards);
         void put(std::string_view key, uint32_t px, const gfx::Image &image); // generated images, such as the login QR code
         void erase(std::string_view key);
         void end_frame();
@@ -79,7 +76,7 @@ namespace lyren {
         void schedule_evict();
         size_t budget() const;
         // transient: the download failed in the network or on the server, not in the image itself.
-        void complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &image, float hue, float luma, const std::string &error, bool transient);
+        void complete(CacheKey::View key, uint64_t ticket, bool background, const gfx::Image &image, float hue, const std::string &error, bool transient);
 
         Loop &loop_;
         net::Http &http_;

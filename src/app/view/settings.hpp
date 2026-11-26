@@ -17,6 +17,12 @@ namespace lyren {
         void draw(ui::Ui &ui, ui::Rect r);
 
     private:
+        struct Rows;
+        void appearance_tab(ui::Ui &ui, Rows &rows, bool &moving);
+        void playback_tab(ui::Ui &ui, Rows &rows);
+        void lyrics_tab(ui::Ui &ui, Rows &rows);
+        void services_tab(ui::Ui &ui, Rows &rows);
+        void general_tab(ui::Ui &ui, Rows &rows);
         void ensure_preview_themes();
         void theme_mock(ui::Ui &ui, ui::Rect r, const ui::Theme &look);
         void desktop_mock(ui::Ui &ui, ui::Rect r, bool island);

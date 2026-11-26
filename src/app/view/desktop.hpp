@@ -18,10 +18,10 @@ namespace lyren {
         DesktopLyrics(Shell &shell, const SavedState &saved);
 
         bool enabled() const {
-            return dl_enabled_;
+            return enabled_;
         }
         bool is_island() const {
-            return dl_island_;
+            return is_island_;
         }
         void set_enabled(bool enabled);
         void set_island(bool island);
@@ -58,6 +58,24 @@ namespace lyren {
             float duration = 620;
         };
 
+        struct FloatingState {
+            float x = 0, bottom = 48; // offset from centre, height above bottom
+            DesktopSnap snap;
+            bool locked = false, dragging = false;
+            float grab_x = 0, grab_y = 0;
+            FloatingLines lines;
+        };
+
+        struct IslandState {
+            float x = 0, y = 10; // offset from centre and top edge
+            DesktopSnap snap;
+            bool moving = false, dragged = false;
+            float grab_x = 0, grab_y = 0, from_x = 0, from_y = 0;
+            bool seeking = false;
+            float seek_v = 0; // normalized song position, [0, 1]
+            LineChange line;
+        };
+
         // Notes the line on show; returns how far the change to it has gone, 0..1.
         float show_line(ui::Ui &ui, LineChange &change, std::string_view text, std::string_view sub, bool timed);
         // Frames for desktop lyrics: continuous while a word-timed line is sung, otherwise one when the next line starts.
@@ -66,21 +84,10 @@ namespace lyren {
         void floating_text(ui::Ui &ui, float center, float baseline, std::string_view text, const LyricLine *live, float size, float max_width, ui::Color color, ui::Color rest,
                            float focus, uint8_t features = 0, float outline_scale = 1.f);
 
-        // Floating lyrics: offset from the screen's centre, height above the bottom, click-through.
-        float dl_x_ = 0, dl_bottom_ = 48;
-        // The island: its offset from the centre and from the top edge, and where a drag on it started.
-        float island_x_ = 0, island_y_ = 10;
-        DesktopSnap dl_snap_, island_snap_;
-        bool island_moving_ = false, island_dragged_ = false;
-        float island_grab_x_ = 0, island_grab_y_ = 0, island_from_x_ = 0, island_from_y_ = 0;
-        bool dl_locked_ = false, dl_dragging_ = false;
-        bool dl_enabled_ = false, dl_island_ = false;
-        float dl_grab_x_ = 0, dl_grab_y_ = 0;
-        LineChange island_line_;
-        FloatingLines floating_lines_;
+        bool enabled_ = false, is_island_ = false;
+        FloatingState floating_;
+        IslandState island_;
         std::vector<ui::Painter::Lift> lyric_lifts_; // the wave under a word-timed line
-        bool island_dragging_ = false;
-        float island_drag_v_ = 0; // normalized song position, [0, 1]
     };
 
 } // namespace lyren

@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "app/env.hpp"
+#include "app/images.hpp"
 #include "app/model/accounts.hpp"
 #include "app/model/browser.hpp"
 #include "app/model/comments.hpp"
@@ -62,14 +63,16 @@ namespace lyren {
         void empty(ui::Ui &ui, ui::Rect r, std::string_view icon, std::string_view title, std::string_view detail = {});
         // The size of a heart that pops when its song has just been liked.
         float heart_size(ui::Ui &ui, const Track &track, float size) const;
-        // The heart of a song, where its platform keeps likes. True when it was drawn.
-        bool heart(ui::Ui &ui, ui::Id id, ui::Rect r, const Track &track, float size = 18);
+        // The heart of a song, where its platform keeps likes. When deferred is given, clicks record the track there
+        // instead of toggling immediately (safe while iterating a list that may erase the row). True when drawn.
+        bool heart(ui::Ui &ui, ui::Id id, ui::Rect r, const Track &track, float size = 18, std::optional<Track> *deferred = nullptr);
         // Draws cards in responsive columns from r's top-left; returns the clicked index or -1.
         int card_grid(ui::Ui &ui, ui::Rect r, ui::Id id, std::span<const Card> cards, bool round, double since);
         bool card(ui::Ui &ui, ui::Id id, ui::Rect r, const Card &c, bool round);
 
         Shell &shell_;
         Env &env_;
+        Images &images_;
         Playback &playback_;
         Library &library_;
         Social &social_;

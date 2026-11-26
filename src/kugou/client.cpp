@@ -22,19 +22,6 @@ namespace lyren::kugou {
                                                        "X51HBNnEl5HXqTW6lQ7LC8jr9fWZTwusknp+sVGzwd40MwP6U5yDE27M/X1+UR4tvOG"
                                                        "Oqp94TJtQ1EPnWGWXngpeIW5GxoQGao1rmYWAu6oi1z9XkChrsUdC6DJE5E221wf/4WL"
                                                        "FxwAtRQIDAQAB\n-----END PUBLIC KEY-----\n";
-
-        void append_escaped(std::string &out, std::string_view value) {
-            constexpr std::string_view digits = "0123456789ABCDEF";
-            for (unsigned char c : value) {
-                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
-                    out += static_cast<char>(c);
-                } else {
-                    out += '%';
-                    out += digits[c >> 4];
-                    out += digits[c & 15];
-                }
-            }
-        }
     } // namespace
 
     std::string sign(const Params &query, std::string_view body, std::string_view salt) {
@@ -64,9 +51,9 @@ namespace lyren::kugou {
         char separator = '?';
         for (const auto &[name, value] : query) {
             url += separator;
-            append_escaped(url, name);
+            encoding::append_url_encoded(url, name);
             url += '=';
-            append_escaped(url, value);
+            encoding::append_url_encoded(url, value);
             separator = '&';
         }
         if (!salt.empty()) {
@@ -76,12 +63,6 @@ namespace lyren::kugou {
         }
         headers.emplace_back("Content-Type: application/json");
         return {.url = std::move(url), .body = std::move(body), .headers = std::move(headers)};
-    }
-
-    const std::string &Client::get(std::string_view name) const {
-        static const std::string empty;
-        auto it = session.find(name);
-        return it == session.end() ? empty : it->second;
     }
 
     bool Client::logged_in() const {
@@ -136,15 +117,8 @@ namespace lyren::kugou {
             device[std::string(sensor) + "Value"] = "";
         }
         const auto plain = json::write(device), digest = crypto::md5_hex(secret);
-        std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> aes(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
-        EVP_EncryptInit_ex(aes.get(), EVP_aes_128_cbc(), nullptr, reinterpret_cast<const unsigned char *>(digest.data()),
-                           reinterpret_cast<const unsigned char *>(digest.data() + 16));
-        std::string body(plain.size() + 16, '\0');
-        int first = 0, last = 0;
-        auto *out = reinterpret_cast<unsigned char *>(body.data());
-        EVP_EncryptUpdate(aes.get(), out, &first, reinterpret_cast<const unsigned char *>(plain.data()), static_cast<int>(plain.size()));
-        EVP_EncryptFinal_ex(aes.get(), out + first, &last);
-        body.resize(static_cast<size_t>(first + last));
+        const std::string_view view(digest);
+        const auto body = crypto::aes_cbc_encrypt(view.substr(0, 16), view.substr(16, 16), plain);
         auto req = request("https://userservice.kugou.com/risk/v3/r_register_dev", query, encoding::base64(body), android_salt, headers(query));
         // The encrypted Base64 is the entire form body, without a field name or JSON quotes.
         req.headers.back() = "Content-Type: application/x-www-form-urlencoded";
@@ -154,23 +128,18 @@ namespace lyren::kugou {
     Result<std::string> parse_device_response(std::string_view body, std::string_view secret) {
         std::string plain;
         // Service errors may be plain JSON; successful registration replies are AES-CBC bytes.
-        if (!json::parse(body)) {
+        if (!parse_json(body)) {
             const auto digest = crypto::md5_hex(secret);
-            std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> aes(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
-            EVP_DecryptInit_ex(aes.get(), EVP_aes_128_cbc(), nullptr, reinterpret_cast<const unsigned char *>(digest.data()),
-                               reinterpret_cast<const unsigned char *>(digest.data() + 16));
-            plain.resize(body.size() + 16);
-            int first = 0, last = 0;
-            auto *out = reinterpret_cast<unsigned char *>(plain.data());
-            if (EVP_DecryptUpdate(aes.get(), out, &first, reinterpret_cast<const unsigned char *>(body.data()), static_cast<int>(body.size())) != 1 ||
-                EVP_DecryptFinal_ex(aes.get(), out + first, &last) != 1) {
+            const std::string_view view(digest);
+            auto decoded = crypto::aes_cbc_decrypt(view.substr(0, 16), view.substr(16, 16), body);
+            if (!decoded) {
                 return std::unexpected(std::string(tr("KuGou Music returned an invalid device registration")));
             }
-            plain.resize(static_cast<size_t>(first + last));
+            plain = std::move(*decoded);
             body = plain;
         }
-        return json::response(body, true).and_then([](const json::Value &value) -> Result<std::string> {
-            const auto *dfid = json::get(json::get(value, "data"), "dfid").get_if<std::string>();
+        return parse_response(body, true).and_then([](const json::Value &value) -> Result<std::string> {
+            const auto *dfid = json::field(json::field(value, "data"), "dfid").get_if<std::string>();
             if (!dfid || dfid->empty() || *dfid == "-") {
                 return std::unexpected(std::string(tr("KuGou Music returned an invalid device registration")));
             }
@@ -192,19 +161,9 @@ namespace lyren::kugou {
         for (auto byte : random) {
             secret += alphabet[byte % alphabet.size()];
         }
-        auto req = device_request(secret);
-        if (!req) {
-            co_return std::unexpected(req.error());
-        }
-        auto reply = co_await send(std::move(*req), net::Retry::never);
-        if (!reply) {
-            co_return std::unexpected(reply.error());
-        }
-        auto dfid = parse_device_response(*reply, secret);
-        if (!dfid) {
-            co_return std::unexpected(dfid.error());
-        }
-        session["dfid"] = std::move(*dfid);
+        auto req = co_await ok(device_request(secret));
+        auto reply = co_await ok(co_await send(std::move(req), net::Retry::never));
+        session["dfid"] = co_await ok(parse_device_response(reply, secret));
         if (on_session) {
             on_session();
         }

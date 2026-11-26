@@ -2,17 +2,14 @@
 
 #include <linux/input-event-codes.h>
 #include <malloc.h>
-#include <png.h>
+#include <spawn.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <format>
 #include <fstream>
-#include <spawn.h>
-#include <sstream>
-#include <sys/wait.h>
+#include <utility>
 
 #include "core/log.hpp"
 #include "core/i18n.hpp"
@@ -87,7 +84,7 @@ namespace lyren {
               request_redraw();
           },
           [this] {
-              return std::chrono::duration<double>(Clock::now() - start_).count();
+              return now();
           }),
       shell_(ShellDeps{.loop = loop,
                        .http = http_,
@@ -95,13 +92,15 @@ namespace lyren {
                        .providers = {ncm_, qq_, qishui_, kugou_, bodian_},
                        .images = images_,
                        .config = config_.config,
-                       .set_setting =
-                           [this](std::string_view section, std::string_view key, std::string_view value) {
+                       .set_settings =
+                           [this](std::span<const SettingChange> changes) {
                                Config previous = config_.config;
-                               if (auto r = save_setting(config_, section, key, value); !r) {
+                               if (auto r = save_settings(config_, changes); !r) {
                                    return toast(r.error());
                                }
-                               log::info("config: {}.{} = {}", section, key, value);
+                               for (const auto &c : changes) {
+                                   log::info("config: {}.{} = {}", c.section, c.key, c.value);
+                               }
                                // Theme and font resources can only change after the current frame finishes.
                                loop_.defer([this, previous] {
                                    config_updated(previous);
@@ -130,7 +129,7 @@ namespace lyren {
                            },
                        .now =
                            [this] {
-                               return std::chrono::duration<double>(Clock::now() - start_).count();
+                               return now();
                            },
                        .silent = !script.empty(),
                        .bus = bus,
@@ -143,7 +142,7 @@ namespace lyren {
                            }},
              saved_),
       script_(std::move(script)),
-      frames_(
+      main_(
           loop,
           [this] {
               return window_->frame_pending();
@@ -151,7 +150,7 @@ namespace lyren {
           [this] {
               render();
           }),
-      lyric_frames_(
+      overlay_(
           loop,
           [this] {
               return lyrics_ && lyrics_->frame_pending();
@@ -170,7 +169,7 @@ namespace lyren {
                         return;
                     }
                     note_input();
-                    frames_.request();
+                    main_.frames.request();
                 },
             .close =
                 [this] {
@@ -178,7 +177,7 @@ namespace lyren {
                 },
             .frame =
                 [this] {
-                    frames_.frame_done();
+                    main_.frames.frame_done();
                 },
             .pointer =
                 [this](const wl::PointerEvent &e) {
@@ -201,7 +200,7 @@ namespace lyren {
         saved_ = {};
         window_ = std::make_unique<wl::Window>(display_, std::move(cb), w, h);
         window_->set_title("Lyren");
-        target_ = renderer_.create_target(display_.display, window_->surface());
+        main_.target = renderer_.create_target(display_.display, window_->surface());
         apply_config(true);
         if (!config_.error.empty()) {
             toast(describe_config_error(config_.error));
@@ -218,22 +217,17 @@ namespace lyren {
     }
 
     App::~App() {
-        shell_.save(window_->maximized() ? std::nullopt : std::optional{std::pair{window_->width(), window_->height()}});
+        shell_.save(window_->maximized() ? std::nullopt : std::optional{std::pair{window_->width(), window_->height()}}, true);
         if (lyrics_) {
             close_desktop_lyrics();
         }
-        renderer_.destroy_target(target_);
+        renderer_.destroy_target(main_.target);
         loop_.cancel(idle_timer_);
     }
 
     void App::load_text(const std::string &family) {
-        painter_.reset();
-        atlas_.reset();
-        shaper_.reset();
-        fonts_ = std::make_unique<text::Fonts>(family);
-        shaper_ = std::make_unique<text::Shaper>(*fonts_);
-        atlas_ = std::make_unique<text::Atlas>(renderer_, *fonts_);
-        painter_ = std::make_unique<ui::Painter>(*atlas_, *shaper_, *fonts_);
+        text_.reset();
+        text_.emplace(renderer_, family);
     }
 
     void App::apply_config(bool initial) {
@@ -278,7 +272,7 @@ namespace lyren {
 
     void App::toast(std::string message) {
         log::warn("{}", message);
-        ui_.toast(std::move(message), "triangle-alert", true);
+        main_.ui.toast(std::move(message), "triangle-alert", true);
         request_redraw();
     }
 
@@ -287,8 +281,33 @@ namespace lyren {
         if (!window_) {
             return;
         }
-        frames_.request();
-        lyric_frames_.request();
+        main_.frames.request();
+        overlay_.frames.request();
+    }
+
+    void App::schedule_shaper_gc() {
+        if (shaper_gc_scheduled_) {
+            return;
+        }
+        shaper_gc_scheduled_ = true;
+        loop_.defer([this] {
+            shaper_gc_scheduled_ = false;
+            if (text_) {
+                text_->shaper.end_frame();
+            }
+        });
+    }
+
+    template <class Prepare>
+    void App::present(Surface &surf, uint32_t bw, uint32_t bh, bool force, Prepare &&prepare) {
+        schedule_shaper_gc();
+        // Pointer motion over static areas rebuilds an identical frame; skip presenting it.
+        auto prims = text_->painter.prims();
+        uint64_t hash = frame_key(prims, bw, bh, renderer_.texture_version());
+        if (hash != surf.hash || force) {
+            renderer_.draw(*surf.target, prims, {}, std::forward<Prepare>(prepare));
+            surf.hash = hash;
+        }
     }
 
     // Once input stops for a while, give back font pages and freed heap; glyphs live in the atlas.
@@ -305,7 +324,7 @@ namespace lyren {
                     self(5s - elapsed);
                     return;
                 }
-                fonts_->trim();
+                text_->fonts.trim();
                 malloc_trim(0);
             });
         };
@@ -313,38 +332,33 @@ namespace lyren {
     }
 
     void App::render() {
-        if (!frames_.begin()) {
+        if (!main_.frames.begin()) {
             return;
         }
         auto start = Clock::now();
-        double now = std::chrono::duration<double>(start - start_).count();
-        renderer_.resize(*target_, window_->buffer_width(), window_->buffer_height());
-        input_.mods = display_.input->mods();
+        double t = elapsed(start);
+        const uint32_t bw = window_->buffer_width(), bh = window_->buffer_height();
+        renderer_.resize(*main_.target, bw, bh);
+        main_.input.mods = display_.input->mods();
         // A full atlas is cleared mid-frame; the second pass redraws with the events already handled.
         for (int pass = 0; pass < 2; ++pass) {
-            atlas_->begin_frame();
-            build(now);
-            input_.consumed();
-            if (!atlas_->reset()) {
+            text_->atlas.begin_frame();
+            build(t);
+            main_.input.consumed();
+            if (!text_->atlas.reset()) {
                 break;
             }
         }
-        shaper_->end_frame();
-        // Pointer motion over static areas rebuilds an identical frame; skip presenting it.
-        auto prims = painter_->prims();
-        uint64_t hash = frame_key(prims, window_->buffer_width(), window_->buffer_height(), renderer_.texture_version());
-        if (hash != frame_hash_ || window_->configure_pending()) {
-            renderer_.draw(*target_, prims, {}, [this] {
-                window_->prepare_present();
-            });
-            frame_hash_ = hash;
-        }
+        present(main_, bw, bh, window_->configure_pending(), [this] {
+            window_->prepare_present();
+        });
         after_frame(start);
     }
 
     void App::build(double now) {
         float m = static_cast<float>(window_->margin()), w = static_cast<float>(window_->width()), h = static_cast<float>(window_->height());
-        auto &p = *painter_;
+        auto &p = text_->painter;
+        auto &ui = main_.ui;
         const float scale = static_cast<float>(window_->scale());
         images_.set_scale(scale);
         p.begin(scale, m, m);
@@ -362,22 +376,22 @@ namespace lyren {
         }
         p.rect({0, 0, w, h}, theme_.bg, radius, floating ? theme_.surface_edge(1.1f) : ui::Color{}, floating ? 1 : 0);
 
-        ui_.window_radius = radius;
-        ui_.toast_bottom = PlayerBar::height + 12;
-        ui_.begin(p, frame_theme_, w, h, now, input_);
+        ui.window_radius = radius;
+        ui.toast_bottom = PlayerBar::height + 12;
+        ui.begin(p, frame_theme_, w, h, now, main_.input);
         if (accent_moving) {
-            ui_.keep_animating();
+            ui.keep_animating();
         }
         ui::Rect area{0, 0, w, h};
         ui::Rect bar = ui::cut_top(area, titlebar_h);
         // The title bar takes input before the page but is drawn over it, since the stage reaches under it.
         p.defer(true);
-        titlebar(bar, shell_.stage.raised(ui_));
+        titlebar(bar, shell_.stage.raised(ui));
         p.defer(false);
-        shell_.draw(ui_, area, stage_theme_);
+        shell_.draw(ui, area, stage_theme_);
         p.draw_deferred();
-        ui_.end();
-        for (auto &a : input_.actions) {
+        ui.end();
+        for (auto &a : main_.input.actions) {
             if (a.press && !a.consumed) {
                 caption_press(a);
             }
@@ -385,21 +399,22 @@ namespace lyren {
     }
 
     void App::titlebar(ui::Rect bar, float stage) {
-        auto &p = *painter_;
+        auto &p = text_->painter;
+        auto &ui = main_.ui;
         ui::Theme mixed = frame_theme_.mix(stage_theme_, stage);
-        const auto &saved = ui_.use_theme(mixed);
+        const auto &saved = ui.use_theme(mixed);
         const auto &t = mixed;
         ui::Rect r = bar;
         if (window_->client_side()) {
             ui::Rect ctl = ui::cut_right(r, 3 * 36 + 2 * 4 + 16);
             float x = ctl.x + 4, y = bar.y + (bar.h - 28) / 2;
-            if (window_button(ui_.id("win-min"), {x, y, 36, 28}, "minus", 16, false)) {
+            if (window_button(ui.id("win-min"), {x, y, 36, 28}, "minus", 16, false)) {
                 window_->minimize();
             }
-            if (window_button(ui_.id("win-max"), {x + 40, y, 36, 28}, window_->maximized() ? "copy" : "square", 14, false)) {
+            if (window_button(ui.id("win-max"), {x + 40, y, 36, 28}, window_->maximized() ? "copy" : "square", 14, false)) {
                 window_->toggle_maximize();
             }
-            if (window_button(ui_.id("win-close"), {x + 80, y, 36, 28}, "x", 16, true)) {
+            if (window_button(ui.id("win-close"), {x + 80, y, 36, 28}, "x", 16, true)) {
                 loop_.quit();
             }
             const float shown = 1 - stage;
@@ -411,18 +426,19 @@ namespace lyren {
         } else {
             ui::cut_left(r, 8);
         }
-        shell_.chrome.top_bar(ui_, r, bar.w / 2);
-        ui_.use_theme(saved);
+        shell_.chrome.top_bar(ui, r, bar.w / 2);
+        ui.use_theme(saved);
     }
 
     bool App::window_button(ui::Id id, ui::Rect r, std::string_view icon, float size, bool close) {
-        auto &p = *painter_;
-        const auto &t = ui_.theme();
-        auto it = ui_.interact(id, r);
+        auto &p = text_->painter;
+        auto &ui = main_.ui;
+        const auto &t = ui.theme();
+        auto it = ui.interact(id, r);
         if (it.hovered) {
-            ui_.cursor = wl::Cursor::pointer;
+            ui.cursor = wl::Cursor::pointer;
         }
-        float hot = ui_.anim(id, it.hovered ? 1 : 0, ui::pace::quick);
+        float hot = ui.anim(id, it.hovered ? 1 : 0, ui::pace::quick);
         bool down = it.held && it.hovered;
         ui::Color fg = window_->activated() ? t.text : t.text_dim;
         if (hot > 0) {
@@ -453,30 +469,30 @@ namespace lyren {
     }
 
     void App::after_frame(Clock::time_point frame_start) {
+        auto &ui = main_.ui;
         if (display_.input->pointer_focus() == window_.get()) {
-            display_.input->set_cursor(resize_edges_ ? cursor_for(resize_edges_) : ui_.cursor);
+            display_.input->set_cursor(resize_edges_ ? cursor_for(resize_edges_) : ui.cursor);
         }
-        wl::TextInputState ti = ui_.text_input;
-        if (ti.enabled) {
-            ti.x += window_->margin(), ti.y += window_->margin();
+        if (ui.text_input.enabled) {
+            ui.text_input.x += window_->margin(), ui.text_input.y += window_->margin();
         }
-        display_.input->set_text_input(std::move(ti));
-        if (ui_.copy) {
-            display_.clipboard->set_text(std::move(*ui_.copy), display_.input->serial());
-            ui_.copy.reset();
+        display_.input->set_text_input(ui.text_input);
+        if (ui.copy) {
+            display_.clipboard->set_text(std::move(*ui.copy), display_.input->serial());
+            ui.copy.reset();
         }
-        if (std::exchange(ui_.want_paste, false)) {
+        if (std::exchange(ui.want_paste, false)) {
             display_.clipboard->get_text([this](std::string s) {
-                input_.paste = std::move(s);
+                main_.input.paste = std::move(s);
                 request_redraw();
             });
         }
 
         // A frame that handled input may have changed what the desktop lyrics show.
-        if (ui_.needs_redraw()) {
-            lyric_frames_.request();
+        if (ui.needs_redraw()) {
+            overlay_.frames.request();
         }
-        frames_.after(ui_, frame_start, start_, config_.config.render.max_fps);
+        main_.frames.after(ui, frame_start, start_, config_.config.render.max_fps);
     }
 
     void App::sync_desktop_lyrics() {
@@ -489,7 +505,7 @@ namespace lyren {
             wl::LayerSurface::Callbacks cb{
                 .configure =
                     [this] {
-                        lyric_frames_.request();
+                        overlay_.frames.request();
                     },
                 .closed =
                     [this] {
@@ -500,7 +516,7 @@ namespace lyren {
                     },
                 .frame =
                     [this] {
-                        lyric_frames_.frame_done();
+                        overlay_.frames.frame_done();
                     },
                 .pointer =
                     [this](const wl::PointerEvent &e) {
@@ -509,70 +525,65 @@ namespace lyren {
             };
             // A scripted run keeps them under the windows, out of the way of whoever uses the desktop.
             lyrics_ = std::make_unique<wl::LayerSurface>(display_, std::move(cb), script_.empty());
-            lyrics_target_ = renderer_.create_target(display_.display, lyrics_->surface());
-            lyrics_hash_ = 0;
+            overlay_.target = renderer_.create_target(display_.display, lyrics_->surface());
+            overlay_.hash = 0;
         } else if (!want && lyrics_) {
             close_desktop_lyrics();
         }
-        lyric_frames_.request();
+        overlay_.frames.request();
     }
 
     void App::close_desktop_lyrics() {
         if (!lyrics_) {
             return;
         }
-        renderer_.destroy_target(lyrics_target_);
-        lyrics_target_ = nullptr;
+        renderer_.destroy_target(overlay_.target);
+        overlay_.target = nullptr;
         lyrics_.reset();
-        lyrics_input_ = {};
+        overlay_.input = {};
     }
 
     void App::render_lyrics() {
-        if (!lyrics_ || !lyric_frames_.begin()) {
+        if (!lyrics_ || !overlay_.frames.begin()) {
             return;
         }
         auto start = Clock::now();
-        double now = std::chrono::duration<double>(start - start_).count();
+        double t = elapsed(start);
         float w = static_cast<float>(lyrics_->width()), h = static_cast<float>(lyrics_->height());
-        renderer_.resize(*lyrics_target_, lyrics_->buffer_width(), lyrics_->buffer_height());
-        lyrics_input_.mods = display_.input->mods();
+        const uint32_t bw = lyrics_->buffer_width(), bh = lyrics_->buffer_height();
+        renderer_.resize(*overlay_.target, bw, bh);
+        overlay_.input.mods = display_.input->mods();
         ui::Rect input;
         for (int pass = 0; pass < 2; ++pass) {
-            atlas_->begin_frame();
-            painter_->begin(static_cast<float>(lyrics_->scale()), 0, 0);
+            text_->atlas.begin_frame();
+            text_->painter.begin(static_cast<float>(lyrics_->scale()), 0, 0);
             // Desktop lyrics sit over any wallpaper: light on dark, like the stage.
             bool accent_moving = false;
-            lyrics_theme_ = theme_.stage(theme_.auto_accent ? shell_.accent(now, true, accent_moving) : theme_.accent);
-            lyrics_ui_.begin(*painter_, lyrics_theme_, w, h, now, lyrics_input_);
+            lyrics_theme_ = theme_.stage(theme_.auto_accent ? shell_.accent(t, true, accent_moving) : theme_.accent);
+            overlay_.ui.begin(text_->painter, lyrics_theme_, w, h, t, overlay_.input);
             if (accent_moving) {
-                lyrics_ui_.keep_animating();
+                overlay_.ui.keep_animating();
             }
-            input = shell_.desktop.draw(lyrics_ui_, w, h);
-            lyrics_ui_.end();
-            lyrics_input_.consumed();
-            if (!atlas_->reset()) {
+            input = shell_.desktop.draw(overlay_.ui, w, h);
+            overlay_.ui.end();
+            overlay_.input.consumed();
+            if (!text_->atlas.reset()) {
                 break;
             }
         }
-        shaper_->end_frame();
         lyrics_->set_input(static_cast<int>(std::floor(input.x)), static_cast<int>(std::floor(input.y)), static_cast<int>(std::ceil(input.w)),
                            static_cast<int>(std::ceil(input.h)));
-        auto prims = painter_->prims();
-        uint64_t hash = frame_key(prims, lyrics_->buffer_width(), lyrics_->buffer_height(), renderer_.texture_version());
-        if (hash != lyrics_hash_ || lyrics_->needs_commit()) {
-            renderer_.draw(*lyrics_target_, prims, {}, [this] {
-                lyrics_->prepare_present();
-            });
-            lyrics_hash_ = hash;
-        }
+        present(overlay_, bw, bh, lyrics_->needs_commit(), [this] {
+            lyrics_->prepare_present();
+        });
         if (display_.input->pointer_focus() == lyrics_.get()) {
-            display_.input->set_cursor(lyrics_ui_.cursor);
+            display_.input->set_cursor(overlay_.ui.cursor);
         }
-        lyric_frames_.after(lyrics_ui_, start, start_, config_.config.render.max_fps);
+        overlay_.frames.after(overlay_.ui, start, start_, config_.config.render.max_fps);
     }
 
     void App::on_lyrics_pointer(const wl::PointerEvent &e) {
-        auto &in = lyrics_input_;
+        auto &in = overlay_.input;
         switch (e.type) {
             case wl::PointerEvent::enter:
                 in.left_down = false;
@@ -598,24 +609,25 @@ namespace lyren {
             case wl::PointerEvent::scroll:
                 return;
         }
-        lyric_frames_.request();
+        overlay_.frames.request();
     }
 
     void App::on_pointer(const wl::PointerEvent &e) {
+        auto &in = main_.input;
         float m = static_cast<float>(window_->margin()), w = static_cast<float>(window_->width()), h = static_cast<float>(window_->height());
         float x = e.x - m, y = e.y - m;
         switch (e.type) {
             case wl::PointerEvent::enter:
-                input_.left_down = false;
+                in.left_down = false;
                 [[fallthrough]];
             case wl::PointerEvent::motion:
-                input_.x = x, input_.y = y;
-                input_.inside = x >= 0 && y >= 0 && x < w && y < h;
-                resize_edges_ = input_.inside || input_.left_down ? 0 : edges_at(x, y, w, h);
-                display_.input->set_cursor(resize_edges_ ? cursor_for(resize_edges_) : ui_.cursor);
+                in.x = x, in.y = y;
+                in.inside = x >= 0 && y >= 0 && x < w && y < h;
+                resize_edges_ = in.inside || in.left_down ? 0 : edges_at(x, y, w, h);
+                display_.input->set_cursor(resize_edges_ ? cursor_for(resize_edges_) : main_.ui.cursor);
                 break;
             case wl::PointerEvent::leave:
-                input_.inside = input_.left_down = false;
+                in.inside = in.left_down = false;
                 resize_edges_ = 0;
                 break;
             case wl::PointerEvent::press: {
@@ -628,25 +640,25 @@ namespace lyren {
                 bool dbl = e.button == last_press_button_ && e.time - last_press_time_ < 400 && std::abs(x - last_press_x_) < 4 && std::abs(y - last_press_y_) < 4;
                 last_press_time_ = dbl ? 0 : e.time, last_press_button_ = e.button;
                 last_press_x_ = x, last_press_y_ = y;
-                input_.actions.push_back({.x = x, .y = y, .button = e.button, .press = true, .double_click = dbl, .mods = display_.input->mods()});
+                in.actions.push_back({.x = x, .y = y, .button = e.button, .press = true, .double_click = dbl, .mods = display_.input->mods()});
                 if (e.button == BTN_LEFT) {
-                    input_.left_down = true;
+                    in.left_down = true;
                 }
                 break;
             }
             case wl::PointerEvent::release:
                 if (e.button == BTN_LEFT) {
-                    input_.left_down = false;
+                    in.left_down = false;
                 }
-                input_.actions.push_back({.x = x, .y = y, .button = e.button, .press = false, .mods = display_.input->mods()});
+                in.actions.push_back({.x = x, .y = y, .button = e.button, .press = false, .mods = display_.input->mods()});
                 break;
             case wl::PointerEvent::scroll:
-                input_.scroll_x += e.dx, input_.scroll_y += e.dy;
-                input_.wheel |= e.wheel, input_.scroll_stop |= e.stop;
+                in.scroll_x += e.dx, in.scroll_y += e.dy;
+                in.wheel |= e.wheel, in.scroll_stop |= e.stop;
                 break;
         }
         note_input();
-        frames_.request();
+        main_.frames.request();
     }
 
     void App::on_key(const wl::KeyEvent &e) {
@@ -658,149 +670,20 @@ namespace lyren {
             loop_.quit();
             return;
         } else {
-            input_.keys.push_back(e);
+            main_.input.keys.push_back(e);
         }
         request_redraw();
     }
 
     void App::on_text_input(const wl::TextInputEvent &e) {
         log::debug("text input: preedit \"{}\" cursor {}, commit \"{}\", delete {}/{}", e.preedit, e.preedit_cursor, e.commit, e.delete_before, e.delete_after);
-        input_.preedit = e.preedit;
-        input_.preedit_cursor = e.preedit_cursor;
-        input_.commit += e.commit;
-        input_.delete_before += e.delete_before;
-        input_.delete_after += e.delete_after;
+        main_.input.preedit = e.preedit;
+        main_.input.preedit_cursor = e.preedit_cursor;
+        main_.input.commit += e.commit;
+        main_.input.delete_before += e.delete_before;
+        main_.input.delete_after += e.delete_after;
         note_input();
-        frames_.request();
-    }
-
-    static void write_png(const std::string &path, const uint8_t *bgra, uint32_t w, uint32_t h) {
-        std::vector<uint8_t> px(bgra, bgra + static_cast<size_t>(w) * h * 4);
-        for (size_t i = 0; i < px.size(); i += 4) {
-            if (int a = px[i + 3]; a && a < 255) {
-                for (int c = 0; c < 3; ++c) {
-                    px[i + c] = static_cast<uint8_t>(std::min(255, px[i + c] * 255 / a));
-                }
-            }
-        }
-        png_image img{};
-        img.version = PNG_IMAGE_VERSION, img.width = w, img.height = h, img.format = PNG_FORMAT_BGRA;
-        if (!png_image_write_to_file(&img, path.c_str(), 0, px.data(), 0, nullptr)) {
-            log::warn("cannot write {}: {}", path, img.message);
-        }
-    }
-
-    void App::run_script(size_t i) {
-        while (waitpid(-1, nullptr, WNOHANG) > 0) {
-        }
-        float m = static_cast<float>(window_->margin());
-        auto ms = [this] {
-            return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start_).count());
-        };
-        while (i < script_.size()) {
-            std::istringstream in(script_[i++]);
-            std::string cmd, rest;
-            in >> cmd;
-            // "lyrics CMD …" sends a pointer command or a shot to the desktop lyrics instead of the window.
-            bool to_lyrics = cmd == "lyrics";
-            if (to_lyrics) {
-                in >> cmd;
-            }
-            std::getline(in >> std::ws, rest);
-            std::istringstream args(rest);
-            if (cmd.empty() || cmd[0] == '#') {
-                continue;
-            }
-            if (to_lyrics && !lyrics_) {
-                log::warn("script line {}: desktop lyrics are off", i);
-                continue;
-            }
-            auto pointer = [&](wl::PointerEvent e, uint32_t mods = 0) {
-                auto &frame = to_lyrics ? lyrics_input_ : input_;
-                const size_t before = frame.actions.size();
-                if (to_lyrics) {
-                    on_lyrics_pointer(e);
-                } else {
-                    e.x += m, e.y += m;
-                    on_pointer(e);
-                }
-                if (frame.actions.size() != before) {
-                    frame.actions.back().mods = mods;
-                }
-            };
-            if (cmd == "wait") {
-                int n = 0;
-                args >> n;
-                loop_.after(std::chrono::milliseconds(n), [this, i] {
-                    run_script(i);
-                });
-                return;
-            }
-            float x = 0, y = 0;
-            std::string how;
-            if (cmd == "move" || cmd == "click" || cmd == "press" || cmd == "release") {
-                args >> x >> y >> how;
-            }
-            const uint32_t pointer_mods = (how.contains("ctrl") ? wl::mod_ctrl : 0) | (how.contains("shift") ? wl::mod_shift : 0);
-            if (cmd == "move") {
-                pointer({.type = wl::PointerEvent::motion, .x = x, .y = y, .time = ms()});
-            } else if (cmd == "click") {
-                uint32_t button = how == "right" ? BTN_RIGHT : how == "back" ? BTN_SIDE : BTN_LEFT;
-                pointer({.type = wl::PointerEvent::motion, .x = x, .y = y, .time = ms()});
-                for (int k = how == "double" ? 2 : 1; k > 0; --k) {
-                    pointer({.type = wl::PointerEvent::press, .x = x, .y = y, .button = button, .time = ms()}, pointer_mods);
-                    pointer({.type = wl::PointerEvent::release, .x = x, .y = y, .button = button, .time = ms()}, pointer_mods);
-                }
-            } else if (cmd == "press" || cmd == "release") {
-                pointer({.type = wl::PointerEvent::motion, .x = x, .y = y, .time = ms()});
-                pointer({.type = cmd == "press" ? wl::PointerEvent::press : wl::PointerEvent::release, .x = x, .y = y, .button = BTN_LEFT, .time = ms()}, pointer_mods);
-            } else if (cmd == "scroll") {
-                float dy = 0;
-                args >> dy >> how;
-                on_pointer({.type = wl::PointerEvent::scroll, .x = input_.x + m, .y = input_.y + m, .dy = dy, .wheel = how == "wheel"});
-            } else if (cmd == "key") {
-                // e.g. "key ctrl+shift+Left"
-                uint32_t mods = 0;
-                for (size_t plus; (plus = rest.find('+')) != std::string::npos && plus > 0; rest.erase(0, plus + 1)) {
-                    std::string mod = rest.substr(0, plus);
-                    mods |= mod == "ctrl" ? wl::mod_ctrl : mod == "shift" ? wl::mod_shift : mod == "alt" ? wl::mod_alt : 0;
-                }
-                wl::KeyEvent e{.keysym = xkb_keysym_from_name(rest.c_str(), XKB_KEYSYM_NO_FLAGS), .mods = mods, .pressed = true};
-                std::array<char, 8> buf;
-                if (!(mods & wl::mod_ctrl) && xkb_keysym_to_utf8(e.keysym, buf.data(), buf.size()) > 1 && static_cast<unsigned char>(buf[0]) >= 0x20) {
-                    e.text = buf.data();
-                }
-                on_key(e);
-            } else if (cmd == "commit" || cmd == "preedit") {
-                wl::TextInputEvent e;
-                (cmd == "commit" ? e.commit : e.preedit) = rest;
-                e.preedit_cursor = cmd == "preedit" ? static_cast<int>(rest.size()) : -1;
-                on_text_input(e);
-            } else if (cmd == "shot") {
-                renderer_.capture_next(to_lyrics ? *lyrics_target_ : *target_, [this, path = rest, next = i](const uint8_t *px, uint32_t w, uint32_t h) {
-                    write_png(path, px, w, h);
-                    loop_.defer([this, next] {
-                        run_script(next);
-                    });
-                });
-                (to_lyrics ? lyrics_hash_ : frame_hash_) = 0;
-                request_redraw();
-                return;
-            } else if (cmd == "resize") {
-                int w = 0, h = 0;
-                args >> w >> h;
-                window_->set_size(std::max(w, 720), std::max(h, 480));
-                request_redraw();
-            } else if (cmd == "exec") {
-                pid_t pid;
-                std::array<const char *, 4> argv = {"sh", "-c", rest.c_str(), nullptr};
-                posix_spawnp(&pid, "sh", nullptr, nullptr, const_cast<char *const *>(argv.data()), environ);
-            } else if (cmd == "quit") {
-                loop_.quit();
-            } else {
-                log::warn("script line {}: unknown command \"{}\"", i, cmd);
-            }
-        }
+        main_.frames.request();
     }
 
 } // namespace lyren

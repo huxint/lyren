@@ -167,8 +167,33 @@ namespace lyren::wl {
         }
     }
 
-    void Input::set_text_input(TextInputState s) {
-        ti_want_ = s.enabled ? std::move(s) : TextInputState{};
+    void Input::detach(const SurfaceSink *s) {
+        if (pointer_focus_ == s) {
+            pointer_focus_ = nullptr;
+        }
+        if (key_focus_ == s) {
+            stop_repeat();
+            key_focus_ = nullptr;
+        }
+        if (text_focus_ == s) {
+            text_focus_ = nullptr;
+            ti_sent_ = {};
+        }
+    }
+
+    void Input::set_text_input(const TextInputState &s) {
+        if (s.enabled) {
+            if (ti_want_ != s) {
+                ti_want_.enabled = true;
+                ti_want_.x = s.x, ti_want_.y = s.y, ti_want_.w = s.w, ti_want_.h = s.h;
+                ti_want_.surrounding.assign(s.surrounding);
+                ti_want_.cursor = s.cursor, ti_want_.anchor = s.anchor;
+            }
+        } else if (ti_want_.enabled) {
+            ti_want_.enabled = false;
+            ti_want_.x = ti_want_.y = ti_want_.w = ti_want_.h = ti_want_.cursor = ti_want_.anchor = 0;
+            ti_want_.surrounding.clear();
+        }
         flush_text_input();
     }
 

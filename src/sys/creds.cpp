@@ -38,17 +38,6 @@ namespace lyren::creds {
             std::optional<Params> parameters;
         };
 
-        std::mutex blob_mutex;
-        std::condition_variable blob_cv;
-        uint64_t next_seq = 0;
-        uint64_t written_seq = 0;
-        size_t active_writers = 0;
-
-        uint64_t claim_write_seq() {
-            std::lock_guard lock(blob_mutex);
-            return ++next_seq;
-        }
-
         bool write_all(int fd, std::string_view data) {
             size_t off = 0;
             while (off < data.size()) {
@@ -233,50 +222,175 @@ namespace lyren::creds {
             return parse_reply(reply);
         }
 
-        Result<void> write_blob(const Params &r, uint64_t seq) {
-            std::lock_guard lock(blob_mutex);
-            if (seq < written_seq) {
-                return {};
-            }
-            auto path = paths::state_dir() / "credentials", tmp = path;
-            tmp += ".tmp";
-            int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-            std::string blob = r.blob.value_or("") + "\n";
-            bool ok = fd >= 0 && write_all(fd, blob) && fsync(fd) == 0;
-            if (fd >= 0) {
-                close(fd);
-            }
-            if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
-                return std::unexpected(std::format("Could not save credentials: {}", std::strerror(errno)));
-            }
-            written_seq = std::max(written_seq, seq);
-            return {};
-        }
-
-        // Offloads fsync + rename from the UI loop thread; eventfd decouples worker lifetime from Loop destruction.
-        struct SaveBlob {
-            struct Shared {
+        // Persistent background writer offloading fsync + rename from the UI loop thread; keeps only the latest blob.
+        struct BlobWriter {
+            struct Completion {
                 int efd = -1;
                 Result<void> result{};
-                ~Shared() {
+                bool done = false;
+                ~Completion() {
                     if (efd >= 0) {
                         close(efd);
                     }
                 }
             };
+
+            std::mutex mu;
+            std::condition_variable_any cv;
+            std::condition_variable done_cv;
+            uint64_t next_seq = 0;
+            uint64_t written_seq = 0;
+            std::optional<Params> pending;
+            uint64_t pending_seq = 0;
+            std::vector<std::shared_ptr<Completion>> waiters;
+            bool writing = false;
+            std::jthread worker;
+
+            uint64_t claim_seq() {
+                std::lock_guard lock(mu);
+                return ++next_seq;
+            }
+
+            static Result<void> write_file(const Params &r) {
+                auto path = paths::state_dir() / "credentials", tmp = path;
+                tmp += ".tmp";
+                int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+                std::string blob = r.blob.value_or("") + "\n";
+                bool ok = fd >= 0 && write_all(fd, blob) && fsync(fd) == 0;
+                if (fd >= 0) {
+                    close(fd);
+                }
+                if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
+                    return std::unexpected(std::format("Could not save credentials: {}", std::strerror(errno)));
+                }
+                return {};
+            }
+
+            static void signal(const std::shared_ptr<Completion> &c, const Result<void> &res) {
+                c->result = res;
+                const uint64_t one = 1;
+                static_cast<void>(::write(c->efd, &one, sizeof one));
+            }
+
+            void submit(Params params, uint64_t seq, std::shared_ptr<Completion> done) {
+                std::unique_lock lock(mu);
+                if (seq < written_seq || (pending && seq < pending_seq)) {
+                    lock.unlock();
+                    signal(done, {});
+                    return;
+                }
+                pending = std::move(params);
+                pending_seq = seq;
+                waiters.push_back(std::move(done));
+                if (!worker.joinable()) {
+                    worker = std::jthread([this](std::stop_token stop) {
+                        run(std::move(stop));
+                    });
+                }
+                cv.notify_one();
+            }
+
+            Result<void> write_sync(const Params &params, uint64_t seq) {
+                std::vector<std::shared_ptr<Completion>> superseded;
+                {
+                    std::unique_lock lock(mu);
+                    done_cv.wait(lock, [this] {
+                        return !writing;
+                    });
+                    if (seq < written_seq) {
+                        return {};
+                    }
+                    if (pending && pending_seq <= seq) {
+                        pending.reset();
+                        superseded = std::move(waiters);
+                    }
+                    writing = true;
+                }
+                auto res = write_file(params);
+                {
+                    std::lock_guard lock(mu);
+                    if (res) {
+                        written_seq = std::max(written_seq, seq);
+                    }
+                    writing = false;
+                }
+                done_cv.notify_all();
+                for (const auto &w : superseded) {
+                    signal(w, res);
+                }
+                return res;
+            }
+
+            void run(std::stop_token stop) {
+                for (;;) {
+                    Params params;
+                    uint64_t seq = 0;
+                    bool stale = false;
+                    std::vector<std::shared_ptr<Completion>> batch;
+                    {
+                        std::unique_lock lock(mu);
+                        cv.wait(lock, stop, [this] {
+                            return pending.has_value();
+                        });
+                        if (!pending) {
+                            return;
+                        }
+                        done_cv.wait(lock, [this] {
+                            return !writing;
+                        });
+                        if (!pending) {
+                            continue;
+                        }
+                        params = std::move(*pending);
+                        pending.reset();
+                        seq = pending_seq;
+                        stale = seq < written_seq;
+                        batch = std::move(waiters);
+                        writing = true;
+                    }
+                    const Result<void> res = stale ? Result<void>{} : write_file(params);
+                    {
+                        std::lock_guard lock(mu);
+                        if (res) {
+                            written_seq = std::max(written_seq, seq);
+                        }
+                        writing = false;
+                    }
+                    done_cv.notify_all();
+                    for (const auto &w : batch) {
+                        signal(w, res);
+                    }
+                }
+            }
+        };
+
+        BlobWriter &blob_writer() {
+            static BlobWriter writer;
+            return writer;
+        }
+
+        // Awaits BlobWriter completion over an eventfd; destroying the coroutine cancels wakeup cleanly.
+        struct SaveBlob {
             Loop &loop;
             Params params;
             uint64_t seq;
-            std::shared_ptr<Shared> shared;
+            std::shared_ptr<BlobWriter::Completion> shared;
 
+            ~SaveBlob() {
+                if (shared && !shared->done && shared->efd >= 0) {
+                    shared->done = true;
+                    loop.unwatch(shared->efd);
+                }
+            }
             bool await_ready() const noexcept {
                 return false;
             }
             void await_suspend(std::coroutine_handle<> h) {
-                shared = std::make_shared<Shared>();
+                shared = std::make_shared<BlobWriter::Completion>();
                 shared->efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
                 if (shared->efd < 0) {
-                    shared->result = write_blob(params, seq);
+                    shared->result = blob_writer().write_sync(params, seq);
+                    shared->done = true;
                     loop.defer([h] {
                         h.resume();
                     });
@@ -286,23 +400,12 @@ namespace lyren::creds {
                     uint64_t v = 0;
                     static_cast<void>(read(s->efd, &v, sizeof v));
                     loop.unwatch(s->efd);
-                    h.resume();
-                });
-                {
-                    std::lock_guard lock(blob_mutex);
-                    ++active_writers;
-                }
-                std::thread([s = shared, p = std::move(params), seq = seq] {
-                    s->result = write_blob(p, seq);
-                    {
-                        std::lock_guard lock(blob_mutex);
-                        if (--active_writers == 0) {
-                            blob_cv.notify_all();
-                        }
+                    if (!s->done) {
+                        s->done = true;
+                        h.resume();
                     }
-                    const uint64_t one = 1;
-                    static_cast<void>(write(s->efd, &one, sizeof one));
-                }).detach();
+                });
+                blob_writer().submit(std::move(params), seq, shared);
             }
             Result<void> await_resume() noexcept {
                 return std::move(shared->result);
@@ -326,7 +429,7 @@ namespace lyren::creds {
     }
 
     Task<Result<void>> save(Loop &loop, std::string plaintext) {
-        const uint64_t seq = claim_write_seq();
+        const uint64_t seq = blob_writer().claim_seq();
         auto encrypted = co_await call(loop, "Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext)));
         if (!encrypted) {
             co_return std::unexpected(encrypted.error());
@@ -335,18 +438,12 @@ namespace lyren::creds {
     }
 
     Result<void> save_sync(std::string_view plaintext) {
-        const uint64_t seq = claim_write_seq();
+        const uint64_t seq = blob_writer().claim_seq();
         auto encrypted = call_sync("Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext)));
-        {
-            std::unique_lock lock(blob_mutex);
-            blob_cv.wait(lock, [] {
-                return active_writers == 0;
-            });
-        }
         if (!encrypted) {
             return std::unexpected(encrypted.error());
         }
-        return write_blob(*encrypted, seq);
+        return blob_writer().write_sync(*encrypted, seq);
     }
 
     std::string to_json(const Credentials &c) {

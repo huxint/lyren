@@ -54,17 +54,6 @@ namespace lyren {
                 return {std::lerp(x, to.x, k), std::lerp(y, to.y, k), std::lerp(title, to.title, k), std::lerp(sub, to.sub, k), std::lerp(gap, to.gap, k), std::lerp(w, to.w, k)};
             }
         };
-
-        // The quality a service granted, in the listener's words.
-        std::string_view quality_name(std::string_view level) {
-            return level == "standard" || level == "medium"  ? lyren::tr("Standard")
-                   : level == "higher"                       ? lyren::tr("High")
-                   : level == "exhigh" || level == "highest" ? lyren::tr("Very high")
-                   : level == "lossless"                     ? lyren::tr("Lossless")
-                   : level == "hires" || level == "hi_res"   ? "Hi-Res"
-                   : level == "aac96"                        ? "AAC 96 kbps"
-                                                             : level;
-        }
     } // namespace
 
     Stage::Stage(Shell &shell, const SavedState &saved)
@@ -161,7 +150,7 @@ namespace lyren {
         const float change = ui.progress(playback_.changed_at(), 520);
         const int preview_px = Images::tier(small.w * p.scale()), sharp_px = Images::tier((wide_ ? 420.f : stacked.cover.w) * p.scale());
         auto artwork = [&](const std::string &url) {
-            const auto &preview = env_.images.get(url, static_cast<uint32_t>(preview_px));
+            const auto &preview = images_.get(url, static_cast<uint32_t>(preview_px));
             const float shown = preview.ready ? ui.progress(preview.ready_at, 320, ease::standard) : 0;
             if (shown < 1) {
                 p.rect(cover, t.fill(1.4f), radius);
@@ -174,7 +163,7 @@ namespace lyren {
                 p.image(cover, preview.tex, radius);
             }
             if (np > 0 && sharp_px > preview_px) {
-                if (const auto &sharp = env_.images.get(url, static_cast<uint32_t>(sharp_px)); sharp.ready) {
+                if (const auto &sharp = images_.get(url, static_cast<uint32_t>(sharp_px)); sharp.ready) {
                     Fade fade(p, ui.progress(sharp.ready_at, 240, ease::standard));
                     p.image(cover, sharp.tex, radius);
                 }
@@ -335,7 +324,7 @@ namespace lyren {
         p.rect(window, t.bg.mix(t.accent, 0.045f), radius);
         const Rect uv = cover_uv(1, window.w / window.h);
         auto backdrop = [&](const std::string &url, float alpha) {
-            if (const auto &e = env_.images.get(url, 128, true); e.ready) {
+            if (const auto &e = images_.get(url, 128, true); e.ready) {
                 Fade art(p, alpha * ui.progress(e.ready_at, 480, ease::standard) * 0.24f);
                 p.image(window, e.tex, radius, white, uv);
             }
@@ -509,7 +498,6 @@ namespace lyren {
         ui.push_clip({r.x - 12, r.y, r.w + 24 + time_gutter, r.h});
         ui.push_id(ui.id("lyrics"));
         int shown = 0;
-        std::vector<ui::Painter::Lift> lifts;
         // Lines fade out gently towards the top and the bottom of the view.
         auto edge = [&](float top, float h) {
             return smooth01(std::min(top - r.y, r.bottom() - top - h) / 92);
@@ -567,14 +555,14 @@ namespace lyren {
             float y = top;
             auto row = [&](std::string_view s, const TextStyle &style, float lh, ui::Color color, bool wiped) {
                 const float x = r.x + (r.w - std::min(p.measure(s, style), r.w)) / 2 * centered;
-                lifts.clear();
+                lyric_lifts_.clear();
                 if (wiped) {
                     p.set_wipe(x + lyric_sung_x(p, l, s, style.size, soft, now, style.features), soft, unsung);
                 }
                 if (&style == &main && on > 0 && !l.words.empty() && t.motion > 0) {
-                    fill_lyric_wave(lifts, p.shape(l.text, style), l, s, style.size, now, on);
+                    fill_lyric_wave(lyric_lifts_, p.shape(l.text, style), l, s, style.size, now, on);
                 }
-                p.set_lifts(lifts);
+                p.set_lifts(lyric_lifts_);
                 p.text(x, y + lh * 0.72f, s, {.size = style.size, .color = color, .features = style.features}, r.w);
                 p.set_lifts({});
                 p.clear_wipe();

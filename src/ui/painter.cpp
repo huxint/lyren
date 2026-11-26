@@ -37,6 +37,21 @@ namespace lyren::ui {
         return p;
     }
 
+    gfx::Prim &Painter::emit_rect(gfx::Kind kind, Rect r) {
+        return emit(kind, (r.x + ox_) * scale_, (r.y + oy_) * scale_, (r.right() + ox_) * scale_, (r.bottom() + oy_) * scale_);
+    }
+
+    void Painter::emit_gradient(Rect r, Color a, Color b, float radius, uint32_t flag) {
+        if (r.w <= 0 || r.h <= 0 || std::max(a.a, b.a) * alpha_ <= 1.f / 512.f) {
+            return;
+        }
+        auto &p = emit_rect(gfx::Kind::rect, r);
+        premul(p.color, a);
+        premul(p.color2, b);
+        p.radii.fill(radius * scale_);
+        p.info[2] = flag;
+    }
+
     gfx::Prim &Painter::emit_zoomed(gfx::Kind kind, float x0, float y0, float w, float h) {
         if (zoom_ == 1) {
             return emit(kind, x0, y0, x0 + w, y0 + h);
@@ -76,8 +91,7 @@ namespace lyren::ui {
         if (r.w <= 0 || r.h <= 0 || fill.a * alpha_ <= 1.f / 512.f) {
             return;
         }
-        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_, x1 = (r.right() + ox_) * scale_, y1 = (r.bottom() + oy_) * scale_;
-        auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
+        auto &p = emit_rect(gfx::Kind::rect, r);
         premul(p.color, fill);
         std::ranges::transform(radii, p.radii.begin(), [this](float radius) {
             return radius * scale_;
@@ -85,34 +99,18 @@ namespace lyren::ui {
     }
 
     void Painter::gradient(Rect r, Color top, Color bottom, float radius) {
-        if (r.w <= 0 || r.h <= 0 || std::max(top.a, bottom.a) * alpha_ <= 1.f / 512.f) {
-            return;
-        }
-        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_, x1 = (r.right() + ox_) * scale_, y1 = (r.bottom() + oy_) * scale_;
-        auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
-        premul(p.color, top);
-        premul(p.color2, bottom);
-        p.radii.fill(radius * scale_);
-        p.info[2] = gfx::flag_gradient;
+        emit_gradient(r, top, bottom, radius, gfx::flag_gradient);
     }
 
     void Painter::hgradient(Rect r, Color left, Color right, float radius) {
-        if (r.w <= 0 || r.h <= 0 || std::max(left.a, right.a) * alpha_ <= 1.f / 512.f) {
-            return;
-        }
-        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_, x1 = (r.right() + ox_) * scale_, y1 = (r.bottom() + oy_) * scale_;
-        auto &p = emit(gfx::Kind::rect, x0, y0, x1, y1);
-        premul(p.color, left);
-        premul(p.color2, right);
-        p.radii.fill(radius * scale_);
-        p.info[2] = gfx::flag_hgradient;
+        emit_gradient(r, left, right, radius, gfx::flag_hgradient);
     }
 
     void Painter::shadow(Rect r, float radius, float blur, Color color, bool cutout) {
         if (r.w <= 0 || r.h <= 0 || color.a * alpha_ <= 1.f / 512.f) {
             return;
         }
-        auto &p = emit(gfx::Kind::shadow, (r.x + ox_) * scale_, (r.y + oy_) * scale_, (r.right() + ox_) * scale_, (r.bottom() + oy_) * scale_);
+        auto &p = emit_rect(gfx::Kind::shadow, r);
         premul(p.color, color);
         p.radii.fill(radius * scale_);
         p.params[1] = std::max(0.5f, blur * 0.5f * scale_);
@@ -146,8 +144,7 @@ namespace lyren::ui {
         if (r.w <= 0 || r.h <= 0 || tint.a * alpha_ <= 1.f / 512.f) {
             return;
         }
-        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_, x1 = (r.right() + ox_) * scale_, y1 = (r.bottom() + oy_) * scale_;
-        auto &p = emit(gfx::Kind::image, x0, y0, x1, y1);
+        auto &p = emit_rect(gfx::Kind::image, r);
         premul(p.color, tint);
         p.radii.fill(radius * scale_);
         p.uv[0] = uv.x, p.uv[1] = uv.y, p.uv[2] = uv.right(), p.uv[3] = uv.bottom();
@@ -155,8 +152,7 @@ namespace lyren::ui {
     }
 
     void Painter::arc(Rect r, float thickness, float start, float sweep, Color color) {
-        float x0 = (r.x + ox_) * scale_, y0 = (r.y + oy_) * scale_;
-        auto &p = emit(gfx::Kind::arc, x0, y0, x0 + r.w * scale_, y0 + r.h * scale_);
+        auto &p = emit_rect(gfx::Kind::arc, r);
         premul(p.color, color);
         p.params[0] = thickness * scale_, p.params[1] = start, p.params[2] = sweep;
     }
@@ -245,8 +241,7 @@ namespace lyren::ui {
         runs_.push_back({std::string(s), {left, top, right - left, bottom - top}, alpha, ellipsized || clipped, icon});
     }
 
-    float Painter::text(float x, float baseline, std::string_view s, const TextStyle &style, float max_width) {
-        const auto &shaped = shaper_.shape(s, style.features);
+    float Painter::text_shaped(float x, float baseline, std::string_view s, const text::Shaped &shaped, const TextStyle &style, float max_width) {
         float width = shaped.width * style.size;
         if (width <= max_width) {
             glyphs(shaped, shaped.glyphs.size(), x, baseline, style);
@@ -279,9 +274,23 @@ namespace lyren::ui {
         return (cut + dots.width) * style.size;
     }
 
-    float Painter::text_in(Rect r, std::string_view s, const TextStyle &style) {
-        float a = ascent(style.size), d = descent(style.size);
-        return text(r.x, r.y + (r.h - a - d) / 2 + a, s, style, r.w);
+    float Painter::text(float x, float baseline, std::string_view s, const TextStyle &style, float max_width) {
+        return text_shaped(x, baseline, s, shaper_.shape(s, style.features), style, max_width);
+    }
+
+    float Painter::text_in(Rect r, std::string_view s, const TextStyle &style, Align align) {
+        const auto &shaped = shaper_.shape(s, style.features);
+        float x = r.x;
+        float max_w = r.w;
+        if (align != Align::left) {
+            const float measured = shaped.width * style.size;
+            if (measured <= r.w) {
+                x += align == Align::center ? (r.w - measured) / 2 : r.w - measured;
+                max_w = measured + 0.5f;
+            }
+        }
+        const float a = ascent(style.size), d = descent(style.size);
+        return text_shaped(x, r.y + (r.h - a - d) / 2 + a, s, shaped, style, max_w);
     }
 
     float Painter::measure(std::string_view s, const TextStyle &style) {
@@ -298,10 +307,11 @@ namespace lyren::ui {
     }
 
     // Greedy line breaking at spaces and around CJK characters, from a single shaping pass. The lines point into s.
-    std::vector<std::string_view> Painter::wrap(std::string_view s, float size, float width, uint8_t features) {
+    void Painter::wrap_into(std::vector<std::string_view> &out, std::string_view s, float size, float width, uint8_t features) {
         const text::Shaped &sh = shape(s, {.size = size, .features = features});
         if (sh.width * size <= width || sh.glyphs.size() < 2) {
-            return {s};
+            out.push_back(s);
+            return;
         }
         auto at = [&](uint32_t byte) {
             size_t i = byte;
@@ -314,7 +324,6 @@ namespace lyren::ui {
         auto closing = [&](uint32_t byte) {
             return std::u32string_view(U"，。、；：？！）」』》〉】”’…").contains(at(byte));
         };
-        std::vector<std::string_view> out;
         auto emit = [&](size_t from, size_t to) {
             std::string_view v = s.substr(from, to - from);
             while (v.ends_with(' ')) {
@@ -341,14 +350,18 @@ namespace lyren::ui {
             }
         }
         emit(g[start].cluster, s.size());
+    }
+
+    std::vector<std::string_view> Painter::wrap(std::string_view s, float size, float width, uint8_t features) {
+        std::vector<std::string_view> out;
+        wrap_into(out, s, size, width, features);
         return out;
     }
 
     std::vector<std::string_view> Painter::wrap_lines(std::string_view s, float size, float width, uint8_t features) {
         std::vector<std::string_view> out;
         for (auto part : std::views::split(s, '\n')) {
-            auto lines = wrap(std::string_view(part.begin(), part.end()), size, width, features);
-            out.insert(out.end(), lines.begin(), lines.end());
+            wrap_into(out, std::string_view(part.begin(), part.end()), size, width, features);
         }
         return out;
     }

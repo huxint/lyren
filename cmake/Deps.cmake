@@ -57,10 +57,6 @@ find_package(Threads REQUIRED)
 add_library(nexus INTERFACE)
 target_include_directories(nexus SYSTEM INTERFACE ${nexus_SOURCE_DIR}/include)
 target_link_libraries(nexus INTERFACE Threads::Threads)
-target_compile_options(nexus INTERFACE
-  $<$<COMPILE_LANGUAGE:CXX>:-fcontracts>
-  $<$<COMPILE_LANGUAGE:CXX>:$<IF:$<CONFIG:Debug>,-fcontract-evaluation-semantic=enforce,-fcontract-evaluation-semantic=ignore>>)
-target_link_options(nexus INTERFACE -fcontracts)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(

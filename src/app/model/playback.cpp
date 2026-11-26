@@ -6,6 +6,7 @@
 #include <format>
 
 #include "app/state.hpp"
+#include "core/encoding.hpp"
 #include "core/i18n.hpp"
 #include "core/log.hpp"
 
@@ -16,9 +17,7 @@ namespace lyren {
             std::string out = std::format("{}:{}:{}", key(t), s.level, s.trial ? "trial" : "full");
             if (s.decrypt_key) {
                 out += ':';
-                for (uint8_t b : *s.decrypt_key) {
-                    std::format_to(std::back_inserter(out), "{:02x}", b);
-                }
+                out += encoding::hex({reinterpret_cast<const char *>(s.decrypt_key->data()), s.decrypt_key->size()});
             }
             return out;
         }
@@ -39,7 +38,7 @@ namespace lyren {
         rng_ ^= static_cast<uint64_t>(std::time(nullptr));
         audio::Spool::set_cache_limit(silent_ ? 0 : (static_cast<uint64_t>(std::max(0, env_.config.playback.cache_size)) << 20));
         sort_history();
-        env_.images.prefetch(queue_);
+        env_.prefetch(queue_);
         player_.on_change = [this] {
             on_player();
         };
@@ -209,13 +208,26 @@ namespace lyren {
         current_ = i;
     }
 
+    void Playback::reset_shuffle(bool clear_failures) {
+        shuffle_history_.clear();
+        shuffle_next_ = -1;
+        failed_.clear();
+        if (clear_failures) {
+            failures_ = 0;
+        }
+    }
+
+    void Playback::stop_skip_run() {
+        failures_ = 0;
+        failed_.clear();
+        want_play_ = false;
+        publish();
+    }
+
     void Playback::replace(const std::vector<Track> &list, int i) {
         set_current(i, true);
         queue_ = list;
-        shuffle_history_.clear();
-        shuffle_next_ = -1;
-        failures_ = 0;
-        failed_.clear();
+        reset_shuffle();
         start();
     }
 
@@ -268,19 +280,14 @@ namespace lyren {
         }
         const int at = current_ < 0 ? 0 : current_ + 1;
         queue_.insert(queue_.begin() + at, std::move(track));
-        shuffle_history_.clear();
-        shuffle_next_ = -1;
-        failures_ = 0;
-        failed_.clear();
+        reset_shuffle();
         radio_ = false;
         set_current(at);
         start();
     }
 
     void Playback::play_next(Track track) {
-        shuffle_history_.clear();
-        shuffle_next_ = -1;
-        failed_.clear();
+        reset_shuffle(false);
         if (!current()) {
             // Nothing is on: the song becomes the current one, ready to play.
             queue_.insert(queue_.begin(), std::move(track));
@@ -307,9 +314,7 @@ namespace lyren {
             changed_at_ = env_.now();
         }
         queue_.erase(queue_.begin() + i);
-        shuffle_history_.clear();
-        shuffle_next_ = -1;
-        failed_.clear();
+        reset_shuffle(false);
         if (i < current_) {
             --current_;
         } else if (i == current_) {
@@ -335,10 +340,7 @@ namespace lyren {
         set_current(-1, true);
         queue_.clear();
         radio_ = false;
-        shuffle_history_.clear();
-        shuffle_next_ = -1;
-        failures_ = 0;
-        failed_.clear();
+        reset_shuffle();
         halt();
         drop_lyrics();
         touch();
@@ -443,9 +445,7 @@ namespace lyren {
 
     void Playback::set_mode(Mode mode) {
         mode_ = mode;
-        shuffle_next_ = -1;
-        shuffle_history_.clear();
-        failed_.clear();
+        reset_shuffle(false);
         touch();
     }
 
@@ -540,15 +540,20 @@ namespace lyren {
             return;
         }
         const int n = static_cast<int>(queue_.size());
+        auto next_linear = [&] {
+            for (int tries = 1; tries <= n; ++tries) {
+                const int cand = ((current_ + delta * tries) % n + n) % n;
+                if (!failed_.contains(cand)) {
+                    return cand;
+                }
+            }
+            return -1;
+        };
         int i = -1;
         if (mode_ == Mode::shuffle && delta > 0) {
             i = next_index();
             if (i < 0) {
-                failures_ = 0;
-                failed_.clear();
-                want_play_ = false;
-                publish();
-                return;
+                return stop_skip_run();
             }
             if (!failed_.contains(current_)) {
                 shuffle_history_.push_back(current_);
@@ -564,35 +569,15 @@ namespace lyren {
                 }
             }
             if (i < 0) {
-                for (int tries = 1; tries <= n; ++tries) {
-                    const int cand = ((current_ + delta * tries) % n + n) % n;
-                    if (!failed_.contains(cand)) {
-                        i = cand;
-                        break;
-                    }
-                }
+                i = next_linear();
             }
             if (i < 0) {
-                failures_ = 0;
-                failed_.clear();
-                want_play_ = false;
-                publish();
-                return;
+                return stop_skip_run();
             }
         } else {
-            for (int tries = 1; tries <= n; ++tries) {
-                const int cand = ((current_ + delta * tries) % n + n) % n;
-                if (!failed_.contains(cand)) {
-                    i = cand;
-                    break;
-                }
-            }
+            i = next_linear();
             if (i < 0) {
-                failures_ = 0;
-                failed_.clear();
-                want_play_ = false;
-                publish();
-                return;
+                return stop_skip_run();
             }
         }
         set_current(i);
@@ -655,10 +640,7 @@ namespace lyren {
                 if (failed_.size() < queue_.size()) {
                     step(skip_direction_, true);
                 } else {
-                    failures_ = 0;
-                    failed_.clear();
-                    want_play_ = false;
-                    publish();
+                    stop_skip_run();
                 }
                 co_return env_.redraw();
             }
@@ -748,7 +730,7 @@ namespace lyren {
             history_[static_cast<size_t>(track.source)].push_back(track);
         }
         for (const auto &songs : history_) {
-            env_.images.prefetch(songs);
+            env_.prefetch(songs);
         }
     }
 

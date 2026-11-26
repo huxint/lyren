@@ -36,6 +36,10 @@ int main(int argc, char **argv) {
 
     // Signals arrive through the loop; threads created later inherit the blocked mask.
     signal(SIGPIPE, SIG_IGN);
+    struct sigaction chld{};
+    chld.sa_handler = SIG_DFL;
+    chld.sa_flags = SA_NOCLDWAIT;
+    sigaction(SIGCHLD, &chld, nullptr);
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);

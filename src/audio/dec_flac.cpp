@@ -13,7 +13,7 @@ namespace lyren::audio {
         class Flac final : public Decoder {
         public:
             explicit Flac(Spool &s)
-            : s_(s) {}
+            : cursor_{s} {}
             ~Flac() override {
                 FLAC__stream_decoder_delete(d_);
             }
@@ -70,25 +70,23 @@ namespace lyren::audio {
             }
 
             static FLAC__StreamDecoderReadStatus read_cb(const FLAC__StreamDecoder *, FLAC__byte buf[], size_t *n, void *ud) {
-                auto *d = self(ud);
-                *n = d->s_.read(d->pos_, buf, *n);
-                d->pos_ += *n;
+                *n = self(ud)->cursor_.read(buf, *n);
                 return *n ? FLAC__STREAM_DECODER_READ_STATUS_CONTINUE : FLAC__STREAM_DECODER_READ_STATUS_END_OF_STREAM;
             }
             static FLAC__StreamDecoderSeekStatus seek_cb(const FLAC__StreamDecoder *, FLAC__uint64 off, void *ud) {
-                self(ud)->pos_ = off;
+                self(ud)->cursor_.pos = off;
                 return FLAC__STREAM_DECODER_SEEK_STATUS_OK;
             }
             static FLAC__StreamDecoderTellStatus tell_cb(const FLAC__StreamDecoder *, FLAC__uint64 *off, void *ud) {
-                *off = self(ud)->pos_;
+                *off = self(ud)->cursor_.pos;
                 return FLAC__STREAM_DECODER_TELL_STATUS_OK;
             }
             static FLAC__StreamDecoderLengthStatus length_cb(const FLAC__StreamDecoder *, FLAC__uint64 *len, void *ud) {
-                *len = self(ud)->s_.size();
+                *len = self(ud)->cursor_.size();
                 return *len ? FLAC__STREAM_DECODER_LENGTH_STATUS_OK : FLAC__STREAM_DECODER_LENGTH_STATUS_ERROR;
             }
             static FLAC__bool eof_cb(const FLAC__StreamDecoder *, void *ud) {
-                return self(ud)->pos_ >= self(ud)->s_.size();
+                return self(ud)->cursor_.eof();
             }
 
             static FLAC__StreamDecoderWriteStatus write_cb(const FLAC__StreamDecoder *, const FLAC__Frame *f, const FLAC__int32 *const in[], void *ud) {
@@ -122,9 +120,9 @@ namespace lyren::audio {
                 self(ud)->bad_ = true;
             }
 
-            Spool &s_;
+            SpoolCursor cursor_;
             FLAC__StreamDecoder *d_ = FLAC__stream_decoder_new();
-            uint64_t pos_ = 0, end_sample_ = 0;
+            uint64_t end_sample_ = 0;
             bool bad_ = false;
             std::vector<float> buf_; // one decoded block
             size_t head_ = 0;

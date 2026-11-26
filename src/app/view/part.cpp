@@ -55,6 +55,7 @@ namespace lyren {
     Part::Part(Shell &shell)
     : shell_(shell),
       env_(shell.env),
+      images_(shell.images),
       playback_(shell.playback),
       library_(shell.library),
       social_(shell.social),
@@ -66,7 +67,7 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const int px = Images::tier(r.w * p.scale());
-        const auto &e = env_.images.get(url, static_cast<uint32_t>(px));
+        const auto &e = images_.get(url, static_cast<uint32_t>(px));
         const float shown = e.ready ? ui.progress(e.ready_at, 320, ease::standard) : 0;
         if (shown < 1) {
             if (!url.empty() && !e.failed) {
@@ -89,7 +90,7 @@ namespace lyren {
     }
 
     float Part::cover_hue(const std::string &url, float size) {
-        const auto &e = env_.images.get(url, static_cast<uint32_t>(Images::tier(size)));
+        const auto &e = images_.get(url, static_cast<uint32_t>(Images::tier(size)));
         return e.ready ? e.hue : e.failed ? -1 : -2;
     }
 
@@ -160,7 +161,7 @@ namespace lyren {
         return size * (k < 0.55f ? 1 + 0.32f * std::sin(pi * k / 0.55f) : 1 - 0.06f * std::sin(pi * (k - 0.55f) / 0.45f));
     }
 
-    bool Part::heart(ui::Ui &ui, ui::Id id, Rect r, const Track &track, float size) {
+    bool Part::heart(ui::Ui &ui, ui::Id id, Rect r, const Track &track, float size, std::optional<Track> *deferred) {
         if (!provider(track).capabilities.likes) {
             return false;
         }
@@ -184,7 +185,11 @@ namespace lyren {
             ui.tooltip(id, r, lyren::tr(liked ? "Unlike" : "Like"));
         }
         if (it.clicked) {
-            library_.toggle_like(track);
+            if (deferred) {
+                *deferred = track;
+            } else {
+                library_.toggle_like(track);
+            }
         }
         return true;
     }
@@ -237,7 +242,7 @@ namespace lyren {
             Rect c = g.cell(r.x, r.y, i, item);
             if (c.bottom() < clip.y || c.y > clip.bottom()) {
                 if (c.bottom() >= clip.y - clip.h && c.y <= clip.bottom() + clip.h) {
-                    env_.images.prefetch(cards[i].cover, static_cast<uint32_t>(Images::tier(c.w * ui.painter().scale())));
+                    images_.prefetch(cards[i].cover, static_cast<uint32_t>(Images::tier(c.w * ui.painter().scale())));
                 }
                 continue;
             }

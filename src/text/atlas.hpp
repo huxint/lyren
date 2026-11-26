@@ -19,9 +19,9 @@ namespace lyren::text {
     };
 
     // Glyphs and icons, shelf-packed: coverage in an R8 sheet, colour emoji in a premultiplied BGRA sheet made when the
-    // first one is drawn. When a sheet is full it grows once (R8 1024² → 2048², BGRA 512² → 1024²), after that both are
-    // cleared; reset() tells the frame builder to start the frame again. Sampled linearly: entries drawn at their own
-    // size land on texel centres and stay exact, scaled ones (Painter::set_zoom) are filtered.
+    // first one is drawn. When a sheet is full it grows once (R8 1024² → 2048², BGRA 512² → 1024²), after that that
+    // sheet is cleared; reset() tells the frame builder to start the frame again. Sampled linearly: entries drawn at
+    // their own size land on texel centres and stay exact, scaled ones (Painter::set_zoom) are filtered.
     class Atlas {
     public:
         Atlas(gfx::Renderer &renderer, Fonts &fonts);

@@ -1,7 +1,5 @@
 #include "kugou/kugou.hpp"
 
-#include <zlib.h>
-
 #include <array>
 
 #include "core/encoding.hpp"
@@ -19,26 +17,10 @@ namespace lyren::kugou {
             for (size_t i = 0; i < compressed.size(); ++i) {
                 compressed[i] ^= static_cast<char>(key[i % key.size()]);
             }
-            z_stream z{};
-            if (inflateInit(&z) != Z_OK) {
-                return std::unexpected("Could not decode KuGou Music lyrics");
+            if (auto plain = encoding::inflate(compressed, 15, 8u << 20)) {
+                return std::move(*plain);
             }
-            z.next_in = reinterpret_cast<Bytef *>(compressed.data());
-            z.avail_in = static_cast<uInt>(compressed.size());
-            std::string result;
-            int status = Z_OK;
-            while (status == Z_OK && result.size() < 8 * 1024 * 1024) {
-                std::array<char, 16384> buffer;
-                z.next_out = reinterpret_cast<Bytef *>(buffer.data());
-                z.avail_out = buffer.size();
-                status = inflate(&z, Z_NO_FLUSH);
-                result.append(buffer.data(), buffer.size() - z.avail_out);
-            }
-            inflateEnd(&z);
-            if (status != Z_STREAM_END) {
-                return std::unexpected("Invalid KuGou Music lyric data");
-            }
-            return result;
+            return std::unexpected("Invalid KuGou Music lyric data");
         }
 
     } // namespace
@@ -52,7 +34,7 @@ namespace lyren::kugou {
     }
 
     Result<std::vector<LyricLine>> parse_lyric_download(std::string_view body) {
-        auto parsed = json::parse(body);
+        auto parsed = parse_json(body);
         if (!parsed) {
             return std::unexpected(parsed.error());
         }

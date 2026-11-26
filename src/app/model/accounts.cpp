@@ -9,7 +9,7 @@
 #include "app/model/library.hpp"
 #include "core/i18n.hpp"
 #include "core/log.hpp"
-#include "gfx/image.hpp"
+#include "core/string_map.hpp"
 
 namespace lyren {
 
@@ -43,6 +43,9 @@ namespace lyren {
     }
 
     Accounts::~Accounts() {
+        for (const auto &entry : platforms) {
+            env_.provider(entry.source).on_session_changed(nullptr);
+        }
         flush();
     }
 
@@ -173,16 +176,16 @@ namespace lyren {
         if (glz::read_json(map, json_text.substr(first, last - first + 1))) {
             return false;
         }
-        auto get_val = [&](std::string_view key) -> std::string {
-            const auto it = map.find(key);
-            return it == map.end() ? std::string{} : it->second;
+        auto first_val = [&](std::string_view a, std::string_view b) {
+            const auto v = get(map, a);
+            return std::string(v.empty() ? get(map, b) : v);
         };
-        sign_in_.signer_url = get_val("signer_url");
-        sign_in_.signer_token = get_val("signer_token");
-        sign_in_.cookie = !get_val("cookie").empty() ? get_val("cookie") : get_val("cookie_jar");
-        sign_in_.device_id = !get_val("device_id").empty() ? get_val("device_id") : get_val("custom_device_id");
-        sign_in_.iid = !get_val("iid").empty() ? get_val("iid") : get_val("custom_iid");
-        sign_in_.fp = !get_val("fp").empty() ? get_val("fp") : get_val("custom_fp");
+        sign_in_.signer_url = std::string(get(map, "signer_url"));
+        sign_in_.signer_token = std::string(get(map, "signer_token"));
+        sign_in_.cookie = first_val("cookie", "cookie_jar");
+        sign_in_.device_id = first_val("device_id", "custom_device_id");
+        sign_in_.iid = first_val("iid", "custom_iid");
+        sign_in_.fp = first_val("fp", "custom_fp");
         if (!sign_in_.device_id.empty() || !sign_in_.iid.empty() || !sign_in_.fp.empty()) {
             sign_in_.show_advanced = true;
         }
@@ -223,16 +226,12 @@ namespace lyren {
         if (p.capabilities.session_import) {
             sign_in_.structured = true;
             const auto &s = p.session();
-            auto get_val = [&](std::string_view key) -> std::string {
-                const auto it = s.find(key);
-                return it == s.end() ? std::string{} : it->second;
-            };
-            sign_in_.signer_url = get_val("signer_url");
-            sign_in_.signer_token = get_val("signer_token");
-            sign_in_.cookie = get_val("cookie_jar");
-            sign_in_.device_id = get_val("custom_device_id");
-            sign_in_.iid = get_val("custom_iid");
-            sign_in_.fp = get_val("custom_fp");
+            sign_in_.signer_url = std::string(get(s, "signer_url"));
+            sign_in_.signer_token = std::string(get(s, "signer_token"));
+            sign_in_.cookie = std::string(get(s, "cookie_jar"));
+            sign_in_.device_id = std::string(get(s, "custom_device_id"));
+            sign_in_.iid = std::string(get(s, "custom_iid"));
+            sign_in_.fp = std::string(get(s, "custom_fp"));
             sign_in_.show_advanced = !sign_in_.device_id.empty() || !sign_in_.iid.empty() || !sign_in_.fp.empty();
         } else if (p.capabilities.qr_login) {
             spawn(scan());
@@ -244,7 +243,6 @@ namespace lyren {
         if (sign_in_.source) {
             env_.provider(*sign_in_.source).cancel_login();
         }
-        env_.images.erase("qr");
         sign_in_ = {.since = env_.now()};
     }
 
@@ -294,7 +292,6 @@ namespace lyren {
             co_return;
         }
         sign_in_ = {.since = env_.now()};
-        env_.images.erase("qr");
         const auto &account = library_.shelf(source).account;
         if (account) {
             env_.notify(lyren::trf("Signed in as {}", account->name), "circle-check");
@@ -344,7 +341,6 @@ namespace lyren {
         const Source source = *sign_in_.source;
         Provider &provider = env_.provider(source);
         provider.cancel_login();
-        env_.images.erase("qr");
         sign_in_ = {.source = source, .since = sign_in_.since};
         auto code = co_await provider.qr_start();
         if (gen != gen_) {
@@ -355,12 +351,8 @@ namespace lyren {
             co_return env_.redraw();
         }
         if (!code->image.empty()) {
-            auto picture = gfx::decode_square({reinterpret_cast<const uint8_t *>(code->image.data()), code->image.size()}, 512, sign_in_.error);
-            if (!picture.w) {
-                co_return env_.redraw();
-            }
-            env_.images.put("qr", 512, picture);
-            sign_in_.image = true;
+            sign_in_.image_bytes = std::move(code->image);
+            sign_in_.image_gen = ++qr_image_gen_;
         } else if (QRcode *q = QRcode_encodeString(code->text.c_str(), 0, QR_ECLEVEL_H, QR_MODE_8, 1)) {
             sign_in_.size = q->width;
             sign_in_.modules.resize(static_cast<size_t>(q->width) * static_cast<size_t>(q->width));

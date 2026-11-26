@@ -1,5 +1,7 @@
 #pragma once
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -21,9 +23,30 @@ namespace lyren {
     // What stays dark whatever the theme: the modules of a QR code, the body of a record.
     inline constexpr ui::Color ink{0.07f, 0.07f, 0.08f, 1};
 
-    inline std::string mmss(double seconds) {
+    // Stack-backed formatted string for hot per-frame UI paths (zero heap allocations).
+    template <size_t N = 24>
+    struct SmallText {
+        std::array<char, N> buf{};
+        size_t len = 0;
+
+        operator std::string_view() const {
+            return {buf.data(), len};
+        }
+    };
+
+    inline SmallText<16> mmss(double seconds) {
+        SmallText<16> out;
         const auto whole = static_cast<uint32_t>(std::max(0.0, seconds));
-        return std::format("{}:{:02}", whole / 60, whole % 60);
+        const auto res = std::format_to_n(out.buf.data(), out.buf.size(), "{}:{:02}", whole / 60, whole % 60);
+        out.len = static_cast<size_t>(res.out - out.buf.data());
+        return out;
+    }
+
+    inline SmallText<24> int_text(int64_t n) {
+        SmallText<24> out;
+        const auto res = std::to_chars(out.buf.data(), out.buf.data() + out.buf.size(), n);
+        out.len = static_cast<size_t>(res.ptr - out.buf.data());
+        return out;
     }
 
     // Multiplies the painter's alpha for one scope.
@@ -182,13 +205,18 @@ namespace lyren {
             return {};
         }
         const std::time_t at = static_cast<std::time_t>(ms / 1000), now = std::time(nullptr);
-        std::tm a, n;
+        static thread_local std::time_t cached_sec = -1;
+        static thread_local std::tm cached_now{};
+        if (now != cached_sec) {
+            localtime_r(&now, &cached_now);
+            cached_sec = now;
+        }
+        std::tm a{};
         localtime_r(&at, &a);
-        localtime_r(&now, &n);
-        if (a.tm_year == n.tm_year && a.tm_yday == n.tm_yday) {
+        if (a.tm_year == cached_now.tm_year && a.tm_yday == cached_now.tm_yday) {
             return std::format("{:02}:{:02}", a.tm_hour, a.tm_min);
         }
-        if (a.tm_year == n.tm_year) {
+        if (a.tm_year == cached_now.tm_year) {
             return std::format("{}/{} {:02}:{:02}", a.tm_mon + 1, a.tm_mday, a.tm_hour, a.tm_min);
         }
         return std::format("{}/{}/{}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
@@ -357,6 +385,42 @@ namespace lyren {
         }
         ui::Enabled possible(ui, enabled);
         return ui.button(ui.id("dialog-ok"), ok, action, kind, icon);
+    }
+
+    // Circular play/pause button whose icons morph into each other; optionally shows a loading ring while buffering.
+    inline bool play_morph_button(ui::Ui &ui, ui::Id id, ui::Rect r, bool playing, float icon_size, bool accent = false, bool waiting = false) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const auto it = ui.interact(id, r);
+        if (it.hovered) {
+            ui.cursor = wl::Cursor::pointer;
+        }
+        const auto [hot, down] = ui.feel(id, it);
+        const ui::Rect disc = r.inset(-1.5f * hot + 2.f * down);
+        const ui::Color bg = accent ? t.accent.mix(white, 0.08f * hot) : t.text;
+        const ui::Color fg = accent ? t.on_accent() : t.bg;
+        p.rect(disc, bg, disc.w / 2);
+        const float morph = ui.anim(ui::sub_id(id, 1), playing ? 1.f : 0.f, 240, ui::ease::emphasized);
+        {
+            // The triangle's weight sits left of its box, so it stands a little right of the centre.
+            Fade fade(p, 1 - morph);
+            p.set_zoom((icon_size - 5 * morph) / icon_size, disc.x + disc.w / 2, disc.y + disc.h / 2);
+            ui::Rect glyph = ui::center(disc, icon_size, icon_size);
+            glyph.x += 1;
+            p.icon("play-fill", glyph, fg);
+            p.set_zoom(1);
+        }
+        {
+            Fade fade(p, morph);
+            p.set_zoom((icon_size - 5 + 5 * morph) / icon_size, disc.x + disc.w / 2, disc.y + disc.h / 2);
+            p.icon("pause-fill", ui::center(disc, icon_size, icon_size), fg);
+            p.set_zoom(1);
+        }
+        if (const float ring = ui.anim(ui::sub_id(id, 2), waiting ? 1.f : 0.f, 200); ring > 0.01f) {
+            Fade fade(p, ring);
+            ui.spinner(disc.inset(-4), t.accent, 2);
+        }
+        return it.clicked;
     }
 
     // With thousands separators: 12,345.

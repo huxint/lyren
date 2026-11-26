@@ -71,6 +71,7 @@ namespace lyren {
         // Framed "On repeat" track card, shared between the studio rail and the narrow overview.
         float repeat_height(const Listener &page, size_t max_rows) const;
         float repeat_card(ui::Ui &ui, ui::Rect r, const Listener &page, size_t max_rows);
+        void compact_track_row(ui::Ui &ui, ui::Rect row, const std::vector<Track> &tracks, size_t i, int rank, bool show_time);
         void person(ui::Ui &ui, ui::Rect r, Source source, const Person &person);
         void ensure_own_playlists(Source source);
         // Turns the page to a section, its top in sight.

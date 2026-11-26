@@ -34,6 +34,12 @@ namespace lyren::ui {
         }
     };
 
+    enum class Align : uint8_t {
+        left,
+        center,
+        right
+    };
+
     // A local displacement of a progress string, in logical pixels.
     struct Pluck {
         float at = 0, lift = 0, spread = 1;
@@ -72,11 +78,12 @@ namespace lyren::ui {
 
         // Draws one line with its baseline at y, ellipsized to max_width. Returns the drawn width.
         float text(float x, float baseline, std::string_view s, const TextStyle &style, float max_width = std::numeric_limits<float>::infinity());
-        // Draws text vertically centred in r.
-        float text_in(Rect r, std::string_view s, const TextStyle &style);
+        // Draws text vertically centred in r, aligned horizontally within it.
+        float text_in(Rect r, std::string_view s, const TextStyle &style, Align align = Align::left);
         float measure(std::string_view s, const TextStyle &style);
         // Display text wraps at word and CJK boundaries; returned views borrow s. features: as in the style it is
         // drawn with, since a heavier weight is wider.
+        void wrap_into(std::vector<std::string_view> &out, std::string_view s, float size, float width, uint8_t features = 0);
         std::vector<std::string_view> wrap(std::string_view s, float size, float width, uint8_t features = 0);
         // Explicit line breaks and blank lines stay.
         std::vector<std::string_view> wrap_lines(std::string_view s, float size, float width, uint8_t features = 0);
@@ -162,9 +169,12 @@ namespace lyren::ui {
     private:
         void premul(std::array<float, 4> &out, Color c) const;
         gfx::Prim &emit(gfx::Kind kind, float x0, float y0, float x1, float y1);
+        gfx::Prim &emit_rect(gfx::Kind kind, Rect r);
+        void emit_gradient(Rect r, Color a, Color b, float radius, uint32_t flag);
         gfx::Prim &emit_zoomed(gfx::Kind kind, float x0, float y0, float w, float h);
         float snap(float v) const;
         void glyphs(const text::Shaped &shaped, size_t count, float x, float baseline, const TextStyle &style);
+        float text_shaped(float x, float baseline, std::string_view s, const text::Shaped &shaped, const TextStyle &style, float max_width);
         void note(std::string_view s, float x, float baseline, float width, const TextStyle &style, bool ellipsized);
         // box: as given to the drawing call, before zoom and clipping.
         void note(std::string_view s, Rect box, float alpha, bool ellipsized, bool icon);

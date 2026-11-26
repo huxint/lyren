@@ -67,7 +67,7 @@ namespace lyren {
         // Replaces any cached page for who with a fresh load, keeping the active section and tabs.
         std::shared_ptr<Page> reload(Card who);
         // The sections the listener's platform can fill, in the order they show.
-        std::vector<Section> sections(const Card &who) const;
+        std::inplace_vector<Section, 6> sections(const Card &who) const;
         void show(const std::shared_ptr<Page> &page, Section section);
         void load_people(std::shared_ptr<Page> page, bool fans);
         void load_chart(std::shared_ptr<Page> page, int tab);
@@ -100,6 +100,8 @@ namespace lyren {
         Task<void> send();
 
     private:
+        bool is_own(const Card &who) const;
+        std::shared_ptr<Page> find_page(const Card &who, bool touch);
         std::shared_ptr<Page> create(Card who, const Page *previous = nullptr, bool reloading = false);
         Task<void> load_profile(std::shared_ptr<Page> page, bool reloading = false);
         Task<void> fetch_people(std::shared_ptr<Page> page, bool fans, uint64_t gen);
@@ -115,7 +117,7 @@ namespace lyren {
         Library &library_;
         std::vector<std::weak_ptr<Page>> pages_;
         std::array<std::shared_ptr<Page>, platforms.size()> own_pages_{};
-        std::inplace_vector<std::shared_ptr<Page>, 8> other_pages_;
+        LruCache<std::shared_ptr<Page>, 8> other_pages_;
         std::array<std::shared_ptr<Posts>, platforms.size()> feeds_;
         Likes likes_;
         Removals removals_;

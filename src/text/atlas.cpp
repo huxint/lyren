@@ -1,60 +1,13 @@
 #include "text/atlas.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstring>
 
+#include "gfx/image.hpp"
 #include "text/icons.hpp"
 
 namespace lyren::text {
-
-    namespace {
-        // Shrinks a premultiplied BGRA bitmap to w × h, no larger than it, with an area average, so a large emoji
-        // strike stays smooth at text sizes.
-        std::vector<uint8_t> shrink(const uint8_t *src, int sw, int sh, int pitch, int w, int h) {
-            const float fx = static_cast<float>(sw) / static_cast<float>(w), fy = static_cast<float>(sh) / static_cast<float>(h);
-            // Rows first, then columns; weights are the overlap of each source pixel with the destination one.
-            auto spans = [](int n, float f, int limit) {
-                std::vector<std::vector<std::pair<int, float>>> out(static_cast<size_t>(n));
-                for (int i = 0; i < n; ++i) {
-                    const float a = static_cast<float>(i) * f, b = a + f;
-                    for (int s = static_cast<int>(a); s < std::min(limit, static_cast<int>(std::ceil(b))); ++s) {
-                        out[static_cast<size_t>(i)].emplace_back(s, (std::min(b, s + 1.f) - std::max(a, static_cast<float>(s))) / f);
-                    }
-                }
-                return out;
-            };
-            const auto across = spans(w, fx, sw), down = spans(h, fy, sh);
-            std::vector<float> rows(static_cast<size_t>(w) * sh * 4);
-            for (int y = 0; y < sh; ++y) {
-                const uint8_t *line = src + static_cast<ptrdiff_t>(y) * pitch;
-                for (int x = 0; x < w; ++x) {
-                    float *o = &rows[(static_cast<size_t>(y) * w + x) * 4];
-                    for (auto [s, k] : across[static_cast<size_t>(x)]) {
-                        for (int c = 0; c < 4; ++c) {
-                            o[c] += k * line[s * 4 + c];
-                        }
-                    }
-                }
-            }
-            std::vector<uint8_t> out(static_cast<size_t>(w) * h * 4);
-            for (int y = 0; y < h; ++y) {
-                for (int x = 0; x < w; ++x) {
-                    std::array<float, 4> sum{};
-                    for (auto [s, k] : down[static_cast<size_t>(y)]) {
-                        for (int c = 0; c < 4; ++c) {
-                            sum[static_cast<size_t>(c)] += k * rows[(static_cast<size_t>(s) * w + x) * 4 + c];
-                        }
-                    }
-                    for (int c = 0; c < 4; ++c) {
-                        out[(static_cast<size_t>(y) * w + x) * 4 + c] = static_cast<uint8_t>(std::clamp(std::lround(sum[static_cast<size_t>(c)]), 0l, 255l));
-                    }
-                }
-            }
-            return out;
-        }
-    } // namespace
 
     Atlas::Atlas(gfx::Renderer &renderer, Fonts &fonts)
     : renderer_(renderer),
@@ -97,12 +50,15 @@ namespace lyren::text {
             full.size = full.max;
             full.texture = renderer_.create_texture(full.size, full.size, full.format, true);
         }
-        for (Sheet *s : {&mono_, &color_}) {
-            s->shelves.clear();
-            s->next_y = 0;
+        full.shelves.clear();
+        full.next_y = 0;
+        const bool is_color = &full == &color_;
+        std::erase_if(glyphs_, [is_color](const auto &kv) {
+            return kv.second.color == is_color;
+        });
+        if (!is_color) {
+            icons_.clear();
         }
-        glyphs_.clear();
-        icons_.clear();
         reset_ = true;
     }
 
@@ -155,8 +111,17 @@ namespace lyren::text {
         const FT_Bitmap &b = slot->bitmap;
         const float scale = std::min(1.f, size / ppem(strike));
         const int w = std::max(1, static_cast<int>(std::lround(b.width * scale))), h = std::max(1, static_cast<int>(std::lround(b.rows * scale)));
-        const auto px = shrink(b.buffer, static_cast<int>(b.width), static_cast<int>(b.rows), b.pitch, w, h);
-        return add(color_, w, h, static_cast<int>(std::lround(slot->bitmap_left * scale)), static_cast<int>(std::lround(slot->bitmap_top * scale)), px.data(), w * 4);
+        const int left = static_cast<int>(std::lround(slot->bitmap_left * scale));
+        const int top = static_cast<int>(std::lround(slot->bitmap_top * scale));
+        if (w == static_cast<int>(b.width) && h == static_cast<int>(b.rows)) {
+            return add(color_, w, h, left, top, b.buffer, b.pitch);
+        }
+        gfx::Image src{b.width, b.rows, std::vector<uint8_t>(static_cast<size_t>(b.width) * b.rows * 4)};
+        for (uint32_t y = 0; y < b.rows; ++y) {
+            std::memcpy(src.px.data() + static_cast<size_t>(y) * b.width * 4, b.buffer + static_cast<ptrdiff_t>(y) * b.pitch, static_cast<size_t>(b.width) * 4);
+        }
+        const gfx::Image dst = gfx::downscale(src, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+        return add(color_, w, h, left, top, dst.px.data(), w * 4);
     }
 
     const AtlasEntry &Atlas::glyph(uint16_t face, uint32_t gid, float size, int subpixel) {

@@ -9,10 +9,11 @@
 #include <format>
 #include <iterator>
 #include <limits>
+#include <source_location>
 #include <variant>
 
 #include "core/encoding.hpp"
-#include "core/result_task.hpp"
+#include "core/log.hpp"
 
 namespace lyren::bodian {
 
@@ -200,12 +201,17 @@ namespace lyren::bodian {
         constexpr glz::opts lax{.error_on_unknown_keys = false};
 
         template <class T>
-        Result<T> parse(const Reply &reply) {
+        Result<T> parse(const Reply &reply, std::source_location origin = std::source_location::current()) {
             if (!reply.error.empty()) {
                 return std::unexpected(reply.error);
             }
             Envelope<T> value;
-            if (glz::read<lax>(value, reply.body) || !value.data) {
+            if (auto e = glz::read<lax>(value, reply.body)) {
+                log::warn("bodian {} at line {}: {} at byte {} ({} bytes)", origin.function_name(), origin.line(), glz::format_error(e.ec), e.count, reply.body.size());
+                return std::unexpected("Could not parse server response");
+            }
+            if (!value.data) {
+                log::warn("bodian {} at line {}: missing data ({} bytes)", origin.function_name(), origin.line(), reply.body.size());
                 return std::unexpected("Could not parse server response");
             }
             return std::move(*value.data);
@@ -469,12 +475,9 @@ namespace lyren::bodian {
         Task<Result<std::vector<Track>>> all_tracks(Client &client, std::string path, Query query = {}, bool sign = false) {
             std::vector<Track> out;
             for (int offset = 0; offset >= 0;) {
-                auto page = co_await track_page<Key>(client, path, query, offset, 100, sign);
-                if (!page) {
-                    co_return std::unexpected(std::move(page).error());
-                }
-                out.insert(out.end(), std::make_move_iterator(page->tracks.begin()), std::make_move_iterator(page->tracks.end()));
-                offset = page->next_offset;
+                auto page = co_await ok(co_await track_page<Key>(client, path, query, offset, 100, sign));
+                out.insert(out.end(), std::make_move_iterator(page.tracks.begin()), std::make_move_iterator(page.tracks.end()));
+                offset = page.next_offset;
             }
             co_return out;
         }
@@ -700,37 +703,31 @@ namespace lyren::bodian {
     }
 
     Task<Result<Stream>> Bodian::stream(Track item, Quality quality) {
-        auto song = parse<Song>(co_await client.call({.path = "service/music/info", .query = {{"musicId", item.id}}, .sign = true}));
-        co_return co_await and_then(std::move(song), [this, quality](Song song) -> Task<Result<Stream>> {
-            if (!song.id) {
-                co_return std::unexpected("Could not parse server response");
-            }
-            const std::string id = std::to_string(song.id);
-            const std::string free_sign = song.payInfo ? song.payInfo->freeSign.value_or("") : "";
-            auto body = glz::write_json(glz::obj{"musicId", song.id, "freeSign", free_sign}).value();
-            auto rights = parse<Rights>(co_await client.call(
-                {.path = "play/music/v2/checkRight", .query = {{"musicId", id}, {"freeSign", free_sign}}, .body = std::move(body), .method = "GET", .sign = true}));
-            co_return co_await and_then(std::move(rights), [this, quality, song = std::move(song), id, free_sign](Rights rights) -> Task<Result<Stream>> {
-                if (rights.status != 4) {
-                    co_return trial_stream(std::move(rights)).transform([&](Stream stream) {
-                        add_playback_metadata(stream, song);
-                        return stream;
-                    });
-                }
-                co_return co_await and_then(audio_spec(song, quality), [this, &song, &id, &free_sign](std::string br) -> Task<Result<Stream>> {
-                    auto body = glz::write_json(glz::obj{"devId", client.get("devid"), "musicId", song.id, "br", br, "freeSign", free_sign}).value();
-                    auto reply = co_await client.call({.path = "play/music/v2/audioUrl",
-                                                       .query = {{"devId", client.get("devid")}, {"musicId", id}, {"br", br}, {"freeSign", free_sign}},
-                                                       .body = std::move(body),
-                                                       .method = "GET",
-                                                       .sign = true});
-                    co_return parse_stream(reply).transform([&](Stream stream) {
-                        add_playback_metadata(stream, song);
-                        return stream;
-                    });
-                });
-            });
-        });
+        auto song = co_await ok(parse<Song>(co_await client.call({.path = "service/music/info", .query = {{"musicId", item.id}}, .sign = true})));
+        if (!song.id) {
+            co_return std::unexpected("Could not parse server response");
+        }
+        const std::string id = std::to_string(song.id);
+        const std::string free_sign = song.payInfo ? song.payInfo->freeSign.value_or("") : "";
+        auto rights = co_await ok(parse<Rights>(co_await client.call({.path = "play/music/v2/checkRight",
+                                                                      .query = {{"musicId", id}, {"freeSign", free_sign}},
+                                                                      .body = glz::write_json(glz::obj{"musicId", song.id, "freeSign", free_sign}).value(),
+                                                                      .method = "GET",
+                                                                      .sign = true})));
+        if (rights.status != 4) {
+            auto stream = co_await ok(trial_stream(std::move(rights)));
+            add_playback_metadata(stream, song);
+            co_return stream;
+        }
+        auto br = co_await ok(audio_spec(song, quality));
+        auto reply = co_await client.call({.path = "play/music/v2/audioUrl",
+                                           .query = {{"devId", client.get("devid")}, {"musicId", id}, {"br", br}, {"freeSign", free_sign}},
+                                           .body = glz::write_json(glz::obj{"devId", client.get("devid"), "musicId", song.id, "br", br, "freeSign", free_sign}).value(),
+                                           .method = "GET",
+                                           .sign = true});
+        auto stream = co_await ok(parse_stream(reply));
+        add_playback_metadata(stream, song);
+        co_return stream;
     }
 
     Task<Result<std::vector<LyricLine>>> Bodian::lyrics(Track item) {
@@ -767,71 +764,62 @@ namespace lyren::bodian {
                 return tracks_of(std::move(data.musicList));
             });
         }
-        co_return co_await and_then(playlist_id(card.id), [this](PlaylistId id) -> Task<Result<std::vector<Track>>> {
-            co_return co_await all_tracks<"list">(client, std::format("service/playlist/{}/musicList", id.id), {{"source", std::to_string(id.source)}}, true);
-        });
+        auto id = co_await ok(playlist_id(card.id));
+        co_return co_await all_tracks<"list">(client, std::format("service/playlist/{}/musicList", id.id), {{"source", std::to_string(id.source)}}, true);
     }
 
     Task<Result<std::vector<Card>>> Bodian::recommended_playlists() {
-        auto home = parse<Home>(co_await client.call({.path = "service/home/index"}));
-        co_return co_await and_then(std::move(home), [this](Home home) -> Task<Result<std::vector<Card>>> {
-            if (!home.moduleList) {
-                co_return std::unexpected("Could not parse server response");
+        auto home = co_await ok(parse<Home>(co_await client.call({.path = "service/home/index"})));
+        if (!home.moduleList) {
+            co_return std::unexpected("Could not parse server response");
+        }
+        std::vector<Card> out;
+        for (const auto &module : *home.moduleList) {
+            if (module.type != 3 && module.type != 4 && module.type != 5 && module.type != 10 && module.type != 11) {
+                continue;
             }
-            std::vector<Card> out;
-            for (const auto &module : *home.moduleList) {
-                if (module.type != 3 && module.type != 4 && module.type != 5 && module.type != 10 && module.type != 11) {
-                    continue;
+            auto reply = co_await client.call({.path = "service/home/module", .query = {{"moduleId", std::to_string(module.id)}}});
+            if (!reply.error.empty()) {
+                co_return std::unexpected(reply.error);
+            }
+            if (module.type == 5) {
+                auto data = co_await ok(parse<ModuleData<Playlist>>(reply));
+                if (data.songList) {
+                    for (auto &playlist : *data.songList) {
+                        if (playlist.id) {
+                            out.push_back(playlist_card(std::move(playlist), 13));
+                        }
+                    }
                 }
-                auto reply = co_await client.call({.path = "service/home/module", .query = {{"moduleId", std::to_string(module.id)}}});
-                if (!reply.error.empty()) {
-                    co_return std::unexpected(reply.error);
-                }
-                if (module.type == 5) {
-                    auto data = parse<ModuleData<Playlist>>(reply);
-                    if (!data) {
-                        co_return std::unexpected(std::move(data).error());
+            } else {
+                auto data = co_await ok(parse<ModuleData<Group>>(reply));
+                if (module.type == 3 || module.type == 10) {
+                    if (data.musicList && !data.musicList->empty()) {
+                        auto &cover = data.musicList->front();
+                        out.push_back({.source = Source::bodian,
+                                       .id = "module:" + std::to_string(module.id),
+                                       .title = module.name.value_or(""),
+                                       .cover = take(cover.albumPic, cover.albumPic120),
+                                       .count = static_cast<int>(data.musicList->size()),
+                                       .count_kind = Card::Count::songs,
+                                       .commentable = false});
                     }
-                    if (data->songList) {
-                        for (auto &playlist : *data->songList) {
-                            if (playlist.id) {
-                                out.push_back(playlist_card(std::move(playlist), 13));
-                            }
+                } else if (data.songList) {
+                    for (auto &group : *data.songList) {
+                        std::string cover;
+                        if (group.songs && !group.songs->empty()) {
+                            cover = take(group.songs->front().albumPic, group.songs->front().albumPic120);
                         }
-                    }
-                } else {
-                    auto data = parse<ModuleData<Group>>(reply);
-                    if (!data) {
-                        co_return std::unexpected(std::move(data).error());
-                    }
-                    if (module.type == 3 || module.type == 10) {
-                        if (data->musicList && !data->musicList->empty()) {
-                            auto &cover = data->musicList->front();
-                            out.push_back({.source = Source::bodian,
-                                           .id = "module:" + std::to_string(module.id),
-                                           .title = module.name.value_or(""),
-                                           .cover = take(cover.albumPic, cover.albumPic120),
-                                           .count = static_cast<int>(data->musicList->size()),
-                                           .count_kind = Card::Count::songs,
-                                           .commentable = false});
-                        }
-                    } else if (data->songList) {
-                        for (auto &group : *data->songList) {
-                            std::string cover;
-                            if (group.songs && !group.songs->empty()) {
-                                cover = take(group.songs->front().albumPic, group.songs->front().albumPic120);
-                            }
-                            out.push_back({.source = Source::bodian,
-                                           .id = std::format("ai:{}:{}", group.id, group.passRecName.value_or("")),
-                                           .title = group.title.value_or(group.passRecName.value_or(module.name.value_or(""))),
-                                           .cover = std::move(cover),
-                                           .commentable = false});
-                        }
+                        out.push_back({.source = Source::bodian,
+                                       .id = std::format("ai:{}:{}", group.id, group.passRecName.value_or("")),
+                                       .title = group.title.value_or(group.passRecName.value_or(module.name.value_or(""))),
+                                       .cover = std::move(cover),
+                                       .commentable = false});
                     }
                 }
             }
-            co_return out;
-        });
+        }
+        co_return out;
     }
 
     Task<Result<std::vector<Card>>> Bodian::toplists() {
@@ -914,134 +902,101 @@ namespace lyren::bodian {
             });
     }
 
-    void Bodian::sync_collection_cache() {
-        const std::string uid = logged_in() ? client.get("uid") : std::string{};
-        if (collection_uid_ != uid) {
-            collection_uid_ = uid;
-            followed_artists_.reset();
-            followed_artists_at_ = {};
-        }
-    }
-
     Task<Result<ArtistInfo>> Bodian::artist(std::string id) {
-        auto detail = parse<ArtistData>(co_await client.call({.path = "service/artist/" + id}));
-        co_return co_await and_then(std::move(detail), [this, id = std::move(id)](ArtistData data) -> Task<Result<ArtistInfo>> {
-            if (!data.artistInfo) {
-                co_return std::unexpected("Could not parse server response");
-            }
-            auto &artist = *data.artistInfo;
-            ArtistInfo out{.name = take(artist.name),
-                           .alias = take(artist.aliasName),
-                           .avatar = take(artist.pic),
-                           .songs = std::max(0, artist.musicCnt),
-                           .albums = std::max(0, artist.albumCnt)};
-            if (logged_in()) {
-                sync_collection_cache();
-                if (!followed_artists_ || Clock::now() - followed_artists_at_ >= 5min) {
-                    (void)co_await followed_artists();
-                }
-                if (followed_artists_) {
-                    out.followed = followed_artists_->contains(id);
-                }
-            }
-            co_return out;
-        });
+        auto data = co_await ok(parse<ArtistData>(co_await client.call({.path = "service/artist/" + id})));
+        if (!data.artistInfo) {
+            co_return std::unexpected("Could not parse server response");
+        }
+        auto &artist = *data.artistInfo;
+        co_return ArtistInfo{
+            .name = take(artist.name), .alias = take(artist.aliasName), .avatar = take(artist.pic), .songs = std::max(0, artist.musicCnt), .albums = std::max(0, artist.albumCnt)};
     }
 
     Task<Result<AlbumInfo>> Bodian::album(std::string id) {
-        auto detail = parse<AlbumData>(co_await client.call({.path = "service/album/" + id}));
-        co_return co_await and_then(std::move(detail), [this, id = std::move(id)](AlbumData data) -> Task<Result<AlbumInfo>> {
-            if (!data.albumInfo) {
-                co_return std::unexpected("Could not parse server response");
-            }
-            auto songs = co_await all_tracks(client, "service/album/music/" + id);
-            if (!songs) {
-                co_return std::unexpected(std::move(songs).error());
-            }
-            auto &album = *data.albumInfo;
-            AlbumInfo out{.artist = take(album.artist),
-                          .artist_id = album.artistId ? std::to_string(album.artistId) : "",
-                          .date = take(album.showtime),
-                          .about = take(album.info),
-                          .tracks = std::move(*songs)};
-            if (logged_in()) {
-                auto state = parse<CollectStates>(co_await client.call({.path = "service/collect/multipleState", .query = {{"source", "6"}, {"sourceIds", id}}, .sign = true}));
-                if (state && state->result) {
-                    for (const auto &item : *state->result) {
-                        if (std::to_string(item.id) == id) {
-                            out.collected = item.collect;
-                        }
+        auto data = co_await ok(parse<AlbumData>(co_await client.call({.path = "service/album/" + id})));
+        if (!data.albumInfo) {
+            co_return std::unexpected("Could not parse server response");
+        }
+        auto songs = co_await ok(co_await all_tracks(client, "service/album/music/" + id));
+        auto &album = *data.albumInfo;
+        AlbumInfo out{.artist = take(album.artist),
+                      .artist_id = album.artistId ? std::to_string(album.artistId) : "",
+                      .date = take(album.showtime),
+                      .about = take(album.info),
+                      .tracks = std::move(songs)};
+        if (logged_in()) {
+            auto state = parse<CollectStates>(co_await client.call({.path = "service/collect/multipleState", .query = {{"source", "6"}, {"sourceIds", id}}, .sign = true}));
+            if (state && state->result) {
+                for (const auto &item : *state->result) {
+                    if (std::to_string(item.id) == id) {
+                        out.collected = item.collect;
                     }
                 }
             }
-            co_return out;
-        });
+        }
+        co_return out;
     }
 
     Task<Result<QrCode>> Bodian::qr_start() {
         const uint64_t generation = ++qr_gen_;
         qr_key_.clear();
-        auto reply = parse<Qr>(co_await client.call({.path = "ucenter/login/qrCode", .sign = true}));
-        co_return std::move(reply).and_then([this, generation](Qr data) -> Result<QrCode> {
-            if (generation != qr_gen_) {
-                return std::unexpected("Login cancelled");
-            }
-            if (!data.qrCode || data.qrCode->empty()) {
-                return std::unexpected("Could not parse server response");
-            }
-            qr_key_ = std::move(*data.qrCode);
-            return QrCode{.text = "https://bodian-oia.kuwo.cn/bodian/download.html?pageName=login_pc&pt=3&id=" + form_encode(qr_key_)};
-        });
+        auto data = co_await ok(parse<Qr>(co_await client.call({.path = "ucenter/login/qrCode", .sign = true})));
+        if (generation != qr_gen_) {
+            co_return std::unexpected("Login cancelled");
+        }
+        if (!data.qrCode || data.qrCode->empty()) {
+            co_return std::unexpected("Could not parse server response");
+        }
+        qr_key_ = std::move(*data.qrCode);
+        co_return QrCode{.text = "https://bodian-oia.kuwo.cn/bodian/download.html?pageName=login_pc&pt=3&id=" + encoding::url_encode(qr_key_, encoding::UrlStyle::form)};
     }
 
     Task<Result<QrStatus>> Bodian::qr_poll() {
         const uint64_t generation = qr_gen_;
-        auto status = parse<Qr>(co_await client.call({.path = "ucenter/login/qrCodeStatus", .query = {{"qrCode", qr_key_}}, .sign = true}));
+        auto reply_status = parse<Qr>(co_await client.call({.path = "ucenter/login/qrCodeStatus", .query = {{"qrCode", qr_key_}}, .sign = true}));
         if (generation != qr_gen_) {
             co_return QrStatus{.state = QrState::expired};
         }
-        co_return co_await and_then(std::move(status), [this, generation](Qr data) -> Task<Result<QrStatus>> {
-            if (data.status == 1) {
-                co_return QrStatus{};
+        auto data = co_await ok(std::move(reply_status));
+        if (data.status == 1) {
+            co_return QrStatus{};
+        }
+        if (data.status == 2) {
+            co_return QrStatus{.state = QrState::expired};
+        }
+        if (data.status != 3) {
+            co_return std::unexpected("Could not parse server response");
+        }
+        auto reply = co_await client.call({.path = "ucenter/users/login", .body = glz::write_json(glz::obj{"authType", 10, "qrCode", qr_key_}).value(), .sign = true});
+        if (generation != qr_gen_) {
+            co_return QrStatus{.state = QrState::expired};
+        }
+        if (reply.code == 11027) {
+            co_return QrStatus{.state = QrState::scanned};
+        }
+        auto login = co_await ok(parse<Login>(reply));
+        std::string id;
+        for (const auto *value : {&login.id, &login.bid, login.userInfo ? &login.userInfo->id : &login.id}) {
+            if (!*value) {
+                continue;
             }
-            if (data.status == 2) {
-                co_return QrStatus{.state = QrState::expired};
-            }
-            if (data.status != 3) {
+            std::string current = number_text(**value);
+            if (!id_number(current) || (!id.empty() && id != current)) {
                 co_return std::unexpected("Could not parse server response");
             }
-            auto reply = co_await client.call({.path = "ucenter/users/login", .body = glz::write_json(glz::obj{"authType", 10, "qrCode", qr_key_}).value(), .sign = true});
-            if (generation != qr_gen_) {
-                co_return QrStatus{.state = QrState::expired};
-            }
-            if (reply.code == 11027) {
-                co_return QrStatus{.state = QrState::scanned};
-            }
-            co_return parse<Login>(reply).and_then([this](Login login) -> Result<QrStatus> {
-                std::string id;
-                for (const auto *value : {&login.id, &login.bid, login.userInfo ? &login.userInfo->id : &login.id}) {
-                    if (!*value) {
-                        continue;
-                    }
-                    std::string current = number_text(**value);
-                    if (!id_number(current) || (!id.empty() && id != current)) {
-                        return std::unexpected("Could not parse server response");
-                    }
-                    id = std::move(current);
-                }
-                if (id.empty() || !login.token || login.token->empty()) {
-                    return std::unexpected("Could not parse server response");
-                }
-                client.session["uid"] = std::move(id);
-                client.session["token"] = std::move(*login.token);
-                client.session["nickname"] = login.userInfo ? take(login.userInfo->nickname) : "";
-                client.session["avatar"] = login.userInfo ? take(login.userInfo->headImg) : "";
-                if (client.on_session) {
-                    client.on_session();
-                }
-                return QrStatus{.state = QrState::confirmed, .nickname = client.get("nickname"), .avatar = client.get("avatar")};
-            });
-        });
+            id = std::move(current);
+        }
+        if (id.empty() || !login.token || login.token->empty()) {
+            co_return std::unexpected("Could not parse server response");
+        }
+        client.session["uid"] = std::move(id);
+        client.session["token"] = std::move(*login.token);
+        client.session["nickname"] = login.userInfo ? take(login.userInfo->nickname) : "";
+        client.session["avatar"] = login.userInfo ? take(login.userInfo->headImg) : "";
+        if (client.on_session) {
+            client.on_session();
+        }
+        co_return QrStatus{.state = QrState::confirmed, .nickname = client.get("nickname"), .avatar = client.get("avatar")};
     }
 
     Task<Result<Account>> Bodian::account() {
@@ -1105,7 +1060,6 @@ namespace lyren::bodian {
     Task<void> Bodian::logout() {
         cancel_login();
         client.clear_login();
-        sync_collection_cache();
         co_return;
     }
 
@@ -1122,75 +1076,62 @@ namespace lyren::bodian {
 
     Task<Result<std::pair<Card, std::vector<Card>>>> Bodian::user_playlists(std::string uid) {
         const bool own = uid.empty() || uid == client.get("uid");
-        auto liked = co_await liked_playlist(uid);
-        co_return co_await and_then(std::move(liked), [this, uid = std::move(uid), own](Card liked) -> Task<Result<std::pair<Card, std::vector<Card>>>> {
-            auto created = parse<Page<Playlist, "playLists">>(co_await client.call({.path = "service/playlist/userCreate", .query = {{"userId", uid}}, .sign = true}));
-            co_return co_await and_then(std::move(created),
-                                        [this, liked = std::move(liked), own](Page<Playlist, "playLists"> created) mutable -> Task<Result<std::pair<Card, std::vector<Card>>>> {
-                                            Result<std::vector<Card>> saved(std::in_place);
-                                            if (own) {
-                                                saved = co_await collected_playlists();
-                                            }
-                                            co_return std::move(saved).transform([&](std::vector<Card> saved) {
-                                                std::vector<Card> playlists;
-                                                playlists.reserve((created.items ? created.items->size() : 0) + saved.size());
-                                                if (created.items) {
-                                                    for (auto &playlist : *created.items) {
-                                                        if (!playlist.id) {
-                                                            continue;
-                                                        }
-                                                        auto card = playlist_card(std::move(playlist), 5, true);
-                                                        if (card.id != liked.id) {
-                                                            playlists.push_back(std::move(card));
-                                                        }
-                                                    }
-                                                }
-                                                playlists.insert(playlists.end(), std::make_move_iterator(saved.begin()), std::make_move_iterator(saved.end()));
-                                                return std::pair{std::move(liked), std::move(playlists)};
-                                            });
-                                        });
-        });
+        auto liked = co_await ok(co_await liked_playlist(uid));
+        auto created = co_await ok(parse<Page<Playlist, "playLists">>(co_await client.call({.path = "service/playlist/userCreate", .query = {{"userId", uid}}, .sign = true})));
+        std::vector<Card> saved;
+        if (own) {
+            saved = co_await ok(co_await collected_playlists());
+        }
+        std::vector<Card> playlists;
+        playlists.reserve((created.items ? created.items->size() : 0) + saved.size());
+        if (created.items) {
+            for (auto &playlist : *created.items) {
+                if (!playlist.id) {
+                    continue;
+                }
+                auto card = playlist_card(std::move(playlist), 5, true);
+                if (card.id != liked.id) {
+                    playlists.push_back(std::move(card));
+                }
+            }
+        }
+        playlists.insert(playlists.end(), std::make_move_iterator(saved.begin()), std::make_move_iterator(saved.end()));
+        co_return std::pair{std::move(liked), std::move(playlists)};
     }
 
     Task<Result<std::vector<std::string>>> Bodian::liked_ids(std::string uid) {
-        co_return co_await and_then(co_await liked_playlist(std::move(uid)), [this](Card liked) -> Task<Result<std::vector<std::string>>> {
-            if (liked.id.empty()) {
-                co_return std::vector<std::string>{};
-            }
-            co_return (co_await tracks(std::move(liked))).transform([](std::vector<Track> songs) {
-                std::vector<std::string> ids;
-                ids.reserve(songs.size());
-                for (auto &song : songs) {
-                    ids.push_back(std::move(song.id));
-                }
-                return ids;
-            });
-        });
+        auto liked = co_await ok(co_await liked_playlist(std::move(uid)));
+        if (liked.id.empty()) {
+            co_return std::vector<std::string>{};
+        }
+        auto songs = co_await ok(co_await tracks(std::move(liked)));
+        std::vector<std::string> ids;
+        ids.reserve(songs.size());
+        for (auto &song : songs) {
+            ids.push_back(std::move(song.id));
+        }
+        co_return ids;
     }
 
     Task<Result<void>> Bodian::like(Track track, bool on) {
-        co_return co_await and_then(co_await liked_playlist(client.get("uid")), [this, track = std::move(track), on](Card liked) mutable -> Task<Result<void>> {
-            if (liked.id.empty()) {
-                co_return std::unexpected("The account has no liked-songs playlist");
-            }
-            co_return co_await edit_playlist(liked.id, std::move(track), on);
-        });
+        auto liked = co_await ok(co_await liked_playlist(client.get("uid")));
+        if (liked.id.empty()) {
+            co_return std::unexpected("The account has no liked-songs playlist");
+        }
+        co_return co_await edit_playlist(liked.id, std::move(track), on);
     }
 
     Task<Result<std::vector<Card>>> Bodian::collections(CardKind kind) {
         std::vector<Card> out;
         for (int offset = 0; offset >= 0;) {
-            auto page = parse_page<Collected, "playLists">(
+            auto page = co_await ok(parse_page<Collected, "playLists">(
                 co_await client.call({.path = "service/collect/4/list",
                                       .query = {{"userId", client.get("uid")}, {"fromUid", client.get("uid")}, {"pn", std::to_string(offset / 100 + 1)}, {"rn", "100"}},
-                                      .sign = true}));
-            if (!page) {
-                co_return std::unexpected(std::move(page).error());
-            }
-            if (!page->items || page->items->empty()) {
+                                      .sign = true})));
+            if (!page.items || page.items->empty()) {
                 break;
             }
-            for (auto &item : *page->items) {
+            for (auto &item : *page.items) {
                 const bool album = item.sourceType == 6 || item.albumId != 0;
                 if ((kind == CardKind::album) != album) {
                     continue;
@@ -1215,7 +1156,7 @@ namespace lyren::bodian {
                                                  .isPrivate = item.isPrivate}));
                 }
             }
-            offset = 100 < *page->total - offset ? offset + 100 : -1;
+            offset = 100 < *page.total - offset ? offset + 100 : -1;
         }
         co_return out;
     }
@@ -1234,55 +1175,30 @@ namespace lyren::bodian {
             auto reply = co_await client.call({.path = "service/collect/7/list",
                                                .query = {{"userId", client.get("uid")}, {"fromUid", client.get("uid")}, {"pn", std::to_string(offset / 100 + 1)}, {"rn", "100"}},
                                                .sign = true});
-            auto page = card_page<Artist, "artistList">(reply, offset, 100, artist_card);
-            if (!page) {
-                co_return std::unexpected(std::move(page).error());
-            }
-            out.insert(out.end(), std::make_move_iterator(page->cards.begin()), std::make_move_iterator(page->cards.end()));
-            offset = page->next_offset;
-        }
-        if (logged_in()) {
-            sync_collection_cache();
-            std::unordered_set<std::string> ids;
-            ids.reserve(out.size());
-            for (const auto &card : out) {
-                ids.insert(card.id);
-            }
-            followed_artists_ = std::move(ids);
-            followed_artists_at_ = Clock::now();
+            auto page = co_await ok(card_page<Artist, "artistList">(reply, offset, 100, artist_card));
+            out.insert(out.end(), std::make_move_iterator(page.cards.begin()), std::make_move_iterator(page.cards.end()));
+            offset = page.next_offset;
         }
         co_return out;
     }
 
     Task<Result<void>> Bodian::set_collection(std::string id, int source, bool on) {
-        auto resource = id_number(id);
+        auto resource = co_await ok(id_number(id));
         auto uid = id_number(client.get("uid"));
-        if (!resource) {
-            co_return std::unexpected(std::move(resource).error());
-        }
         if (!uid) {
             co_return std::unexpected("Sign in to continue");
         }
         std::string body;
         if (source == 7) {
-            body = glz::write_json(glz::obj{"source", source, "sourceId", std::array{*resource}, "op", on ? 1 : 2, "uid", *uid, "token", client.get("token")}).value();
+            body = glz::write_json(glz::obj{"source", source, "sourceId", std::array{resource}, "op", on ? 1 : 2, "uid", *uid, "token", client.get("token")}).value();
         } else {
-            body = glz::write_json(glz::obj{"source", source, "sourceId", std::array{*resource}, "op", on ? 1 : 2, "uid", *uid}).value();
+            body = glz::write_json(glz::obj{"source", source, "sourceId", std::array{resource}, "op", on ? 1 : 2, "uid", *uid}).value();
         }
         co_return write_result(co_await client.call({.path = "service/collect", .body = std::move(body), .sign = true}));
     }
 
     Task<Result<void>> Bodian::follow(std::string artist, bool on) {
-        auto r = co_await set_collection(artist, 7, on);
-        sync_collection_cache();
-        if (r && followed_artists_) {
-            if (on) {
-                followed_artists_->insert(std::move(artist));
-            } else {
-                followed_artists_->erase(artist);
-            }
-        }
-        co_return r;
+        co_return co_await set_collection(std::move(artist), 7, on);
     }
 
     Task<Result<void>> Bodian::collect(std::string album, bool on) {
@@ -1290,9 +1206,8 @@ namespace lyren::bodian {
     }
 
     Task<Result<void>> Bodian::collect_playlist(std::string id, bool on) {
-        co_return co_await and_then(playlist_id(id), [this, on](PlaylistId id) -> Task<Result<void>> {
-            co_return co_await set_collection(std::to_string(id.id), 4, on);
-        });
+        auto pid = co_await ok(playlist_id(id));
+        co_return co_await set_collection(std::to_string(pid.id), 4, on);
     }
 
     Task<Result<Card>> Bodian::create_playlist(std::string name, bool hidden) {
@@ -1306,44 +1221,34 @@ namespace lyren::bodian {
     }
 
     Task<Result<void>> Bodian::rename_playlist(std::string id, std::string name) {
-        co_return co_await and_then(playlist_id(id), [this, name = std::move(name)](PlaylistId id) -> Task<Result<void>> {
-            auto detail =
-                parse<Playlist>(co_await client.call({.path = std::format("service/playlist/info/{}", id.id), .query = {{"source", std::to_string(id.source)}}, .sign = true}));
-            co_return co_await and_then(std::move(detail), [this, id, name = std::move(name)](Playlist detail) -> Task<Result<void>> {
-                std::vector<uint64_t> categories;
-                if (detail.categories) {
-                    for (const auto &category : *detail.categories) {
-                        categories.push_back(category.id);
-                    }
-                }
-                auto body =
-                    glz::write_json(glz::obj{"id", id.id, "name", name, "description", view(detail.description), "pic", view(detail.pic), "categoryList", categories}).value();
-                co_return write_result(co_await client.call({.path = "service/playlist", .body = std::move(body), .method = "PUT", .sign = true}));
-            });
-        });
+        auto pid = co_await ok(playlist_id(id));
+        auto detail = co_await ok(
+            parse<Playlist>(co_await client.call({.path = std::format("service/playlist/info/{}", pid.id), .query = {{"source", std::to_string(pid.source)}}, .sign = true})));
+        std::vector<uint64_t> categories;
+        if (detail.categories) {
+            for (const auto &category : *detail.categories) {
+                categories.push_back(category.id);
+            }
+        }
+        auto body = glz::write_json(glz::obj{"id", pid.id, "name", name, "description", view(detail.description), "pic", view(detail.pic), "categoryList", categories}).value();
+        co_return write_result(co_await client.call({.path = "service/playlist", .body = std::move(body), .method = "PUT", .sign = true}));
     }
 
     Task<Result<void>> Bodian::delete_playlist(std::string id) {
-        co_return co_await and_then(playlist_id(id), [this](PlaylistId id) -> Task<Result<void>> {
-            co_return write_result(
-                co_await client.call({.path = "service/playlist", .body = glz::write_json(glz::obj{"playlistIds", std::array{id.id}}).value(), .method = "DELETE", .sign = true}));
-        });
+        auto pid = co_await ok(playlist_id(id));
+        co_return write_result(
+            co_await client.call({.path = "service/playlist", .body = glz::write_json(glz::obj{"playlistIds", std::array{pid.id}}).value(), .method = "DELETE", .sign = true}));
     }
 
     Task<Result<void>> Bodian::edit_playlist(std::string id, std::vector<Track> tracks, bool add) {
-        co_return co_await and_then(playlist_id(id), [this, tracks = std::move(tracks), add](PlaylistId id) -> Task<Result<void>> {
-            std::vector<uint64_t> songs;
-            songs.reserve(tracks.size());
-            for (const auto &track : tracks) {
-                auto song = id_number(track.id);
-                if (!song) {
-                    co_return std::unexpected(song.error());
-                }
-                songs.push_back(*song);
-            }
-            auto body = glz::write_json(glz::obj{"playListId", id.id, "musicIdList", songs}).value();
-            co_return write_result(co_await client.call({.path = add ? "service/playlist/music" : "service/playlist/music/delete", .body = std::move(body), .sign = true}));
-        });
+        auto pid = co_await ok(playlist_id(id));
+        std::vector<uint64_t> songs;
+        songs.reserve(tracks.size());
+        for (const auto &track : tracks) {
+            songs.push_back(co_await ok(id_number(track.id)));
+        }
+        auto body = glz::write_json(glz::obj{"playListId", pid.id, "musicIdList", songs}).value();
+        co_return write_result(co_await client.call({.path = add ? "service/playlist/music" : "service/playlist/music/delete", .body = std::move(body), .sign = true}));
     }
 
     Result<CommentPage> parse_comments(const Reply &reply, std::string_view uid) {

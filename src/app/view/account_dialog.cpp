@@ -4,6 +4,7 @@
 
 #include "app/view/draw.hpp"
 #include "core/i18n.hpp"
+#include "gfx/image.hpp"
 
 namespace lyren {
 
@@ -13,8 +14,18 @@ namespace lyren {
     namespace pace = ui::pace;
     namespace control = ui::control;
 
+    void AccountDialog::clear_qr() {
+        if (qr_gen_ != 0) {
+            images_.erase("qr");
+            qr_gen_ = 0;
+            qr_ready_ = false;
+            qr_error_.clear();
+        }
+    }
+
     void AccountDialog::open(ui::Ui &ui) {
         had_feedback_ = false;
+        clear_qr();
         accounts_.cancel();
         ui.open_modal(460, std::min(540.f, ui.height - 40), [this](ui::Ui &u, Rect r) {
             body(u, r);
@@ -28,6 +39,7 @@ namespace lyren {
         Fade fade(ui.painter(), in);
         r.x += (1 - in) * 32 * (sign_in.source ? 1 : -1);
         if (!sign_in.source) {
+            clear_qr();
             ui.resize_modal(460, std::min(540.f, ui.height - 40));
             return list(ui, r);
         }
@@ -316,12 +328,30 @@ namespace lyren {
         // The code keeps its white card in every theme: phones read dark modules on white.
         const Rect card = ui::center({r.x, r.y + 76, r.w, 240}, 228, 228);
         p.rect(card, white, 14);
+        if (!sign_in.image_bytes.empty()) {
+            if (qr_gen_ != sign_in.image_gen) {
+                qr_gen_ = sign_in.image_gen;
+                qr_ready_ = false;
+                qr_error_.clear();
+                auto picture = gfx::decode_square({reinterpret_cast<const uint8_t *>(sign_in.image_bytes.data()), sign_in.image_bytes.size()}, 512, qr_error_);
+                if (picture.w) {
+                    images_.put("qr", 512, picture);
+                    qr_ready_ = true;
+                } else {
+                    images_.erase("qr");
+                }
+            }
+        } else {
+            clear_qr();
+        }
         const QrState state = sign_in.status ? sign_in.status->state : QrState::waiting;
-        const bool failed = !sign_in.error.empty();
-        if (sign_in.has_code()) {
+        const std::string_view error_text = !sign_in.error.empty() ? std::string_view(sign_in.error) : std::string_view(qr_error_);
+        const bool failed = !error_text.empty();
+        const bool has_code = !sign_in.image_bytes.empty() ? qr_ready_ : sign_in.has_code();
+        if (has_code) {
             const Rect code = card.inset(14);
-            if (sign_in.image) {
-                p.image(code, env_.images.get("qr", 512).tex, 0);
+            if (!sign_in.image_bytes.empty()) {
+                p.image(code, images_.get("qr", 512).tex, 0);
             } else {
                 // Modules as horizontal runs, so a row is a few rectangles.
                 const int n = sign_in.size;
@@ -368,8 +398,8 @@ namespace lyren {
         std::string headline, detail;
         bool busy = false;
         if (failed) {
-            headline = sign_in.status ? lyren::tr("Sign-in incomplete") : lyren::tr("Could not get a QR code"), detail = lyren::tr(sign_in.error);
-        } else if (!sign_in.has_code()) {
+            headline = sign_in.status ? lyren::tr("Sign-in incomplete") : lyren::tr("Could not get a QR code"), detail = lyren::tr(error_text);
+        } else if (!has_code) {
             headline = lyren::tr("Generating QR code"), busy = true;
         } else if (state == QrState::waiting) {
             headline = lyren::tr("Waiting for scan"), detail = lyren::tr("Scan, then confirm on your phone"), busy = true;

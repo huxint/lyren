@@ -16,6 +16,13 @@ TEST_CASE("utf8 decode and boundaries") {
     CHECK(utf8::next(s, 1) == 4);
     CHECK(utf8::prev(s, s.size()) == 4);
     CHECK(utf8::prev(s, 4) == 1);
+    CHECK(utf8::count(s) == 3);
+    CHECK(utf8::truncate_bytes(s, 0) == "");
+    CHECK(utf8::truncate_bytes(s, 1) == "a");
+    CHECK(utf8::truncate_bytes(s, 3) == "a");
+    CHECK(utf8::truncate_bytes(s, 4) == "a周");
+    CHECK(utf8::truncate_bytes(s, 7) == "a周");
+    CHECK(utf8::truncate_bytes(s, 8) == s);
 }
 
 TEST_CASE("malformed utf8 becomes U+FFFD one byte at a time") {

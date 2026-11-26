@@ -49,7 +49,9 @@ namespace lyren::ui {
         layer_rects_.clear();
         layer_ = Layer::base;
         cursor = wl::Cursor::arrow;
-        text_input = {};
+        text_input.enabled = false;
+        text_input.x = text_input.y = text_input.w = text_input.h = text_input.cursor = text_input.anchor = 0;
+        text_input.surrounding.clear();
         animating_ = redraw_ = consumed_ = wheel_taken_ = false;
         wake_ = std::numeric_limits<double>::infinity();
         pressed_id_ = 0;
@@ -399,7 +401,7 @@ namespace lyren::ui {
         r.y += (menu_y_ > y ? 6 : -6) * (1 - in);
         p_->shadow({r.x, r.y + 6, r.w, r.h}, t.radius + 2, 24, t.shadow.with_alpha(t.shadow.a * 0.8f));
         p_->rect(r, t.elevated, t.radius + 2, t.surface_edge(1.3f), 1);
-        std::function<void()> chosen;
+        std::move_only_function<void()> chosen;
         float iy = r.y + pad;
         for (size_t i = 0; i < menu_.size(); ++i) {
             auto &m = menu_[i];
@@ -423,7 +425,7 @@ namespace lyren::ui {
             }
             p_->text_in({row.x + 36, row.y, row.w - 44, row.h}, m.label, {.size = st.size, .color = fg});
             if (it.clicked) {
-                chosen = m.action;
+                chosen = std::move(m.action);
             }
             iy += item_h;
         }
@@ -437,7 +439,7 @@ namespace lyren::ui {
         }
     }
 
-    void Ui::open_modal(float w, float h, std::function<void(Ui &, Rect)> body, bool bare) {
+    void Ui::open_modal(float w, float h, std::move_only_function<void(Ui &, Rect)> body, bool bare) {
         modal_ = std::move(body);
         modal_bare_ = bare;
         modal_w_ = w, modal_h_ = h, modal_time_ = now;
@@ -471,7 +473,8 @@ namespace lyren::ui {
         Rect panel = center(all, spring(id("modal-w"), modal_w_, 300), spring(id("modal-h"), modal_h_, 300));
         panel = panel.inset((1 - shown) * 8);
         panel.y += (1 - shown) * 10;
-        auto body = modal_; // the body may replace the modal while it runs
+        auto body = std::move(modal_); // the body may replace the modal while it runs
+        modal_running_ = true;
         if (modal_bare_) {
             body(*this, panel);
         } else {
@@ -482,6 +485,10 @@ namespace lyren::ui {
             }
             body(*this, panel.inset(28, 24));
         }
+        modal_running_ = false;
+        if (!modal_) {
+            modal_ = std::move(body);
+        }
         interact(id("modal-panel"), panel);
         if (interact(id("modal-backdrop"), all).clicked) {
             close_modal();
@@ -490,28 +497,29 @@ namespace lyren::ui {
         layer_ = Layer::base;
     }
 
-    void Ui::confirm(std::string title, std::string detail, std::string action, std::string icon, std::function<void()> on_confirm) {
-        open_modal(400, 220,
-                   [title = std::move(title), detail = std::move(detail), action = std::move(action), icon = std::move(icon), on_confirm = std::move(on_confirm)](Ui &u, Rect r) {
-                       const Theme &t = u.theme();
-                       u.label({r.x, r.y, r.w - 40, 30}, title, t.style(type::title, t.text, text::semibold));
-                       const TextStyle body = t.style(type::label, t.text_dim);
-                       const auto lines = u.painter().wrap_lines(detail, body.size, r.w);
-                       const size_t shown = std::min<size_t>(lines.size(), 3);
-                       for (size_t i = 0; i < shown; ++i) {
-                           u.label({r.x, r.y + 44 + static_cast<float>(i) * 22, r.w, 22}, lines[i], body);
-                       }
-                       u.resize_modal(400, 48 + 44 + static_cast<float>(std::max<size_t>(shown, 1)) * 22 + 28 + control::large);
-                       const float ok_w = std::max(96.f, u.button_width(action, !icon.empty())), cancel_w = std::max(84.f, u.button_width(tr("Cancel")));
-                       const Rect ok{r.right() - ok_w, r.bottom() - control::large, ok_w, control::large};
-                       if (u.button(u.id("confirm-cancel"), {ok.x - cancel_w - 8, ok.y, cancel_w, ok.h}, tr("Cancel"), ButtonKind::ghost)) {
-                           u.close_modal();
-                       }
-                       if (u.button(u.id("confirm-ok"), ok, action, ButtonKind::danger, icon)) {
-                           u.close_modal();
-                           on_confirm();
-                       }
-                   });
+    void Ui::confirm(std::string title, std::string detail, std::string action, std::string icon, std::move_only_function<void()> on_confirm) {
+        open_modal(
+            400, 220,
+            [title = std::move(title), detail = std::move(detail), action = std::move(action), icon = std::move(icon), on_confirm = std::move(on_confirm)](Ui &u, Rect r) mutable {
+                const Theme &t = u.theme();
+                u.label({r.x, r.y, r.w - 40, 30}, title, t.style(type::title, t.text, text::semibold));
+                const TextStyle body = t.style(type::label, t.text_dim);
+                const auto lines = u.painter().wrap_lines(detail, body.size, r.w);
+                const size_t shown = std::min<size_t>(lines.size(), 3);
+                for (size_t i = 0; i < shown; ++i) {
+                    u.label({r.x, r.y + 44 + static_cast<float>(i) * 22, r.w, 22}, lines[i], body);
+                }
+                u.resize_modal(400, 48 + 44 + static_cast<float>(std::max<size_t>(shown, 1)) * 22 + 28 + control::large);
+                const float ok_w = std::max(96.f, u.button_width(action, !icon.empty())), cancel_w = std::max(84.f, u.button_width(tr("Cancel")));
+                const Rect ok{r.right() - ok_w, r.bottom() - control::large, ok_w, control::large};
+                if (u.button(u.id("confirm-cancel"), {ok.x - cancel_w - 8, ok.y, cancel_w, ok.h}, tr("Cancel"), ButtonKind::ghost)) {
+                    u.close_modal();
+                }
+                if (u.button(u.id("confirm-ok"), ok, action, ButtonKind::danger, icon)) {
+                    u.close_modal();
+                    on_confirm();
+                }
+            });
     }
 
     void Ui::toast(std::string text, std::string icon, bool error) {

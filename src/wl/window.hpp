@@ -3,16 +3,13 @@
 #include <functional>
 #include <string>
 
-#include "wl/input.hpp"
-#include "wl/protocols.hpp"
+#include "wl/surface.hpp"
 
 namespace lyren::wl {
 
-    class Display;
-
     // xdg_toplevel with optional client-side decorations. The surface is larger than the window geometry by a
     // shadow margin on each side; the margin disappears when maximized, tiled or fullscreen.
-    class Window : public SurfaceSink {
+    class Window : public Surface {
     public:
         struct Callbacks {
             std::move_only_function<void()> configure; // size, scale, state or decoration mode changed
@@ -27,9 +24,6 @@ namespace lyren::wl {
         Window(Display &display, Callbacks cb, int width, int height);
         ~Window() override;
 
-        wl_surface *surface() const {
-            return surface_;
-        }
         int width() const {
             return width_;
         }
@@ -45,14 +39,11 @@ namespace lyren::wl {
         int surface_height() const {
             return height_ + 2 * margin_;
         }
-        double scale() const {
-            return scale120_ / 120.0;
-        }
         uint32_t buffer_width() const {
-            return static_cast<uint32_t>(surface_width() * scale120_ / 120.0 + 0.5);
+            return buffer_px(surface_width());
         }
         uint32_t buffer_height() const {
-            return static_cast<uint32_t>(surface_height() * scale120_ / 120.0 + 0.5);
+            return buffer_px(surface_height());
         }
         bool client_side() const {
             return csd_;
@@ -65,10 +56,6 @@ namespace lyren::wl {
         }
         bool activated() const {
             return activated_;
-        }
-        // True between presenting a frame and the compositor's frame callback.
-        bool frame_pending() const {
-            return frame_pending_;
         }
         // A configure arrived that the next presented frame must acknowledge.
         bool configure_pending() const {
@@ -113,23 +100,19 @@ namespace lyren::wl {
         void surface_configure(uint32_t serial);
         void configure_bounds(int w, int h);
         void decoration_configure(uint32_t mode);
-        void preferred_scale(uint32_t scale120);
-        void frame_done();
         void close_requested() {
             cb_.close();
         }
 
     private:
+        void on_scale_changed() override;
+        void on_frame_done() override;
         void update_margin();
 
-        Display &display_;
         Callbacks cb_;
-        wl_surface *surface_ = nullptr;
         xdg_surface *xdg_surface_ = nullptr;
         xdg_toplevel *toplevel_ = nullptr;
         zxdg_toplevel_decoration_v1 *decoration_ = nullptr;
-        wp_viewport *viewport_ = nullptr;
-        wp_fractional_scale_v1 *fractional_ = nullptr;
 
         int width_, height_;
         int pending_w_ = 0, pending_h_ = 0;
@@ -137,10 +120,8 @@ namespace lyren::wl {
         bool maximized_ = false, fullscreen_ = false, activated_ = false, tiled_ = false;
         bool csd_ = true;
         int shadow_ = 0, resize_border_ = 0, margin_ = 0;
-        uint32_t scale120_ = 120;
         uint32_t ack_serial_ = 0;
         bool configured_ = false, needs_ack_ = false, geometry_dirty_ = true;
-        bool frame_pending_ = false;
     };
 
 } // namespace lyren::wl

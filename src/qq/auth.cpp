@@ -85,21 +85,6 @@ namespace lyren::qq {
         return args;
     }
 
-    std::string form(const std::map<std::string, std::string> &fields) {
-        auto encode = [](const std::string &s) {
-            std::unique_ptr<char, decltype(&curl_free)> p(curl_easy_escape(nullptr, s.c_str(), static_cast<int>(s.size())), curl_free);
-            return std::string(p.get());
-        };
-        std::string out;
-        for (const auto &[name, value] : fields) {
-            if (!out.empty()) {
-                out += '&';
-            }
-            out += encode(name) + '=' + encode(value);
-        }
-        return out;
-    }
-
     std::string query_value(std::string_view url, std::string_view name) {
         auto question = url.find('?');
         if (question == url.npos) {

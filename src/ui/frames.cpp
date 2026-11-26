@@ -1,8 +1,8 @@
-#include "app/frames.hpp"
+#include "ui/frames.hpp"
 
 #include <cmath>
 
-namespace lyren {
+namespace lyren::ui {
 
     Frames::Frames(Loop &loop, std::move_only_function<bool()> frame_pending, std::move_only_function<void()> render)
     : loop_(loop),
@@ -46,7 +46,7 @@ namespace lyren {
         return true;
     }
 
-    void Frames::after(const ui::Ui &ui, Clock::time_point frame_start, Clock::time_point epoch, int max_fps) {
+    void Frames::after(const Ui &ui, Clock::time_point frame_start, Clock::time_point epoch, int max_fps) {
         if (ui.needs_redraw()) {
             request();
         } else if (ui.animating()) {
@@ -74,4 +74,4 @@ namespace lyren {
         }
     }
 
-} // namespace lyren
+} // namespace lyren::ui

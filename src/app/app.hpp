@@ -1,9 +1,10 @@
 #pragma once
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "app/frames.hpp"
 #include "app/images.hpp"
 #include "app/state.hpp"
 #include "app/view/shell.hpp"
@@ -21,6 +22,7 @@
 #include "text/atlas.hpp"
 #include "text/fonts.hpp"
 #include "text/shaper.hpp"
+#include "ui/frames.hpp"
 #include "ui/painter.hpp"
 #include "ui/theme.hpp"
 #include "ui/ui.hpp"
@@ -38,7 +40,40 @@ namespace lyren {
         ~App();
 
     private:
+        struct TextStack {
+            text::Fonts fonts;
+            text::Shaper shaper;
+            text::Atlas atlas;
+            ui::Painter painter;
+
+            TextStack(gfx::Renderer &renderer, const std::string &family)
+            : fonts(family),
+              shaper(fonts),
+              atlas(renderer, fonts),
+              painter(atlas, shaper, fonts) {}
+        };
+
+        struct Surface {
+            gfx::Target *target = nullptr;
+            ui::Ui ui;
+            ui::FrameInput input;
+            uint64_t hash = 0;
+            ui::Frames frames;
+
+            Surface(Loop &loop, std::move_only_function<bool()> pending, std::move_only_function<void()> draw)
+            : frames(loop, std::move(pending), std::move(draw)) {}
+        };
+
+        double elapsed(Clock::time_point t) const {
+            return std::chrono::duration<double>(t - start_).count();
+        }
+        double now() const {
+            return elapsed(Clock::now());
+        }
         void request_redraw();
+        void schedule_shaper_gc();
+        template <class Prepare>
+        void present(Surface &surf, uint32_t bw, uint32_t bh, bool force, Prepare &&prepare);
         void render();
         void build(double now);
         // stage: how far the now-playing stage is up; the title bar keeps only the window buttons on it.
@@ -67,19 +102,15 @@ namespace lyren {
 
         Loop &loop_;
         ConfigFile config_;
-        ui::Theme theme_, frame_theme_, stage_theme_;
+        Clock::time_point start_ = Clock::now(), last_input_ = start_;
+        ui::Theme theme_, frame_theme_, stage_theme_, lyrics_theme_;
         wl::Display display_;
         gfx::Context gpu_;
         gfx::Renderer renderer_;
-        std::unique_ptr<text::Fonts> fonts_;
-        std::unique_ptr<text::Shaper> shaper_;
-        std::unique_ptr<text::Atlas> atlas_;
-        std::unique_ptr<ui::Painter> painter_;
+        std::optional<TextStack> text_;
         std::unique_ptr<wl::Window> window_;
-        gfx::Target *target_ = nullptr;
+        std::unique_ptr<wl::LayerSurface> lyrics_;
         ConfigWatcher watcher_;
-        ui::Ui ui_;
-        ui::FrameInput input_;
         SavedState saved_ = load_state();
         net::Http http_;
         audio::Player player_;
@@ -91,22 +122,14 @@ namespace lyren {
         Images images_;
         Shell shell_;
 
-        Clock::time_point start_ = Clock::now(), last_input_ = start_;
-        uint64_t frame_hash_ = 0;
         uint32_t resize_edges_ = 0; // pointer is in the resize band outside the geometry
         uint32_t last_press_time_ = 0, last_press_button_ = 0;
         float last_press_x_ = 0, last_press_y_ = 0;
         Loop::TimerId idle_timer_ = 0;
+        bool shaper_gc_scheduled_ = false;
         std::vector<std::string> script_;
-        Frames frames_;
-
-        std::unique_ptr<wl::LayerSurface> lyrics_;
-        gfx::Target *lyrics_target_ = nullptr;
-        ui::Theme lyrics_theme_;
-        ui::Ui lyrics_ui_;
-        ui::FrameInput lyrics_input_;
-        uint64_t lyrics_hash_ = 0;
-        Frames lyric_frames_;
+        Surface main_;
+        Surface overlay_;
     };
 
 } // namespace lyren

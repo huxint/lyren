@@ -108,23 +108,6 @@ namespace lyren::ui {
         tonal, // the accent as a tint: the main action where there are many of it, as in a list
         danger // primary, for what cannot be undone
     };
-    enum class Align : uint8_t {
-        left,
-        center,
-        right
-    };
-    enum class TabStyle : uint8_t {
-        underline,
-        pill
-    };
-
-    struct SliderStyle {
-        bool accent = true;                              // accent fill, or a neutral one
-        float wave = 0;                                  // amplitude (px) of the moving sine drawn over the filled part
-        std::span<const std::pair<float, float>> marked; // ranges (0..1) drawn lighter on the track, e.g. what is buffered
-        float span_from = 0, span_to = 1;                // the playable stretch; outside it the rail is dotted
-        float band_from = -1, band_to = -1;              // a window under the rail, e.g. the chorus; negative: none
-    };
 
     struct Interaction {
         bool hovered = false;
@@ -146,7 +129,7 @@ namespace lyren::ui {
     struct MenuItem {
         std::string icon;
         std::string label;
-        std::function<void()> action; // empty = separator
+        std::move_only_function<void()> action; // empty = separator
         bool danger = false;
     };
 
@@ -275,8 +258,8 @@ namespace lyren::ui {
         // Wrapped multiline editor. Enter never submits. Unframed editors use the parent's padding and focus ring.
         void text_area(Id id, Rect r, std::string &text, std::string_view placeholder, bool framed = true);
         // Returns true while the user changes the value (0..1).
-        bool slider(Id id, Rect r, float &value, SliderStyle style = {});
-        bool tabs(Id id, Rect r, std::span<const std::string_view> labels, int &selected, TabStyle style = TabStyle::underline);
+        bool slider(Id id, Rect r, float &value, bool accent = true);
+        bool tabs(Id id, Rect r, std::span<const std::string_view> labels, int &selected);
         bool toggle(Id id, Rect r, bool &on);
         // Equal segments under a thumb that glides to the selected one; -1 selects none. True when one is picked.
         bool segmented(Id id, Rect r, std::span<const std::string_view> labels, int &selected);
@@ -310,10 +293,10 @@ namespace lyren::ui {
             return !menu_.empty();
         }
         // bare: no panel, padding or close button around the body, for a picture shown large.
-        void open_modal(float w, float h, std::function<void(Ui &, Rect)> body, bool bare = false);
+        void open_modal(float w, float h, std::move_only_function<void(Ui &, Rect)> body, bool bare = false);
         // A closing modal is still drawn while it fades out but no longer takes input.
         bool modal_open() const {
-            return modal_ && modal_closed_ < 0;
+            return (modal_ || modal_running_) && modal_closed_ < 0;
         }
         // Changes the size of the open modal; the panel animates to it.
         void resize_modal(float w, float h) {
@@ -326,7 +309,7 @@ namespace lyren::ui {
         }
         // A question before something that cannot be undone: a title, what it is about (up to three lines), and the
         // button that goes ahead; on_confirm runs once it is pressed.
-        void confirm(std::string title, std::string detail, std::string action, std::string icon, std::function<void()> on_confirm);
+        void confirm(std::string title, std::string detail, std::string action, std::string icon, std::move_only_function<void()> on_confirm);
         void toast(std::string text, std::string icon = "info", bool error = false);
 
     private:
@@ -351,6 +334,9 @@ namespace lyren::ui {
             bool smooth = false, coasting = false;
             float grab = -1; // thumb drag: pointer offset inside the thumb
         };
+        struct EditLine {
+            size_t from, to;
+        };
         struct EditBox {
             TextEdit edit;
             float scroll_x = 0, scroll_y = 0, preferred_x = -1;
@@ -358,6 +344,9 @@ namespace lyren::ui {
             double blink = 0;
             std::string preedit;
             int preedit_cursor = -1;
+            std::vector<EditLine> lines;
+            std::string cached_text;
+            float cached_size = -1, cached_width = -1;
         };
         struct Toast {
             std::string text, icon;
@@ -376,6 +365,7 @@ namespace lyren::ui {
             return std::max(0.f, s.content - s.view.h);
         }
         void step_scroll(Scroll &s);
+        const std::vector<EditLine> &edit_lines(EditBox &box, std::string_view text, float size, float width);
         void edit_input(Id id, EditBox &box, std::string &text, bool &submitted, float multiline_width = 0);
         void draw_menu();
         void draw_modal();
@@ -403,10 +393,10 @@ namespace lyren::ui {
         std::vector<MenuItem> menu_;
         float menu_x_ = 0, menu_y_ = 0;
         double menu_time_ = 0;
-        std::function<void(Ui &, Rect)> modal_;
+        std::move_only_function<void(Ui &, Rect)> modal_;
         float modal_w_ = 0, modal_h_ = 0;
         double modal_time_ = 0, modal_closed_ = -1;
-        bool modal_bare_ = false;
+        bool modal_bare_ = false, modal_running_ = false;
         std::vector<Toast> toasts_;
         Tip tip_, tip_shown_; // the one asked for this frame, and the one on show (which may be fading out)
         bool tip_asked_ = false;

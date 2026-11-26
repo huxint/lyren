@@ -108,7 +108,7 @@ namespace lyren {
         const int first = static_cast<int>(off / row_h), last = static_cast<int>((off + r.h) / row_h) + 2;
         for (int i = std::max(0, first - 8); i < std::min(last + 16, count); ++i) {
             if (i < first || i > last) {
-                env_.images.prefetch(tracks[static_cast<size_t>(i)].cover, static_cast<uint32_t>(Images::tier(40 * p.scale())));
+                images_.prefetch(tracks[static_cast<size_t>(i)].cover, static_cast<uint32_t>(Images::tier(40 * p.scale())));
             }
         }
         // Rows glide to a new place when the list changes under them; a list that arrives anew starts in place.
@@ -174,7 +174,7 @@ namespace lyren {
         } else if (on) {
             ui.equalizer(ui.id("playing"), ui::center(c.index, 14, 14), t.accent, playback_.playing());
         } else {
-            ui.label(c.index, std::to_string(i + 1), number, Align::center);
+            ui.label(c.index, int_text(i + 1), number, Align::center);
         }
         const Rect art{c.title.x, r.y + (r.h - 40) / 2, 40, 40};
         cover(ui, art, track.cover, t.radius_s());
@@ -182,7 +182,19 @@ namespace lyren {
         const auto title = t.style(type::body, on ? t.accent : t.text, on ? text::medium : 0);
         const float w = p.text(tx, r.y + 25, track.title, title, tw);
         if (!track.alias.empty() && w + 24 < tw) {
-            p.text(tx + w + 6, r.y + 25, "（" + track.alias + "）", t.style(type::body, t.faint()), tw - w - 6);
+            const auto alias_style = t.style(type::body, t.faint());
+            const float rem = tw - w - 6;
+            const float open_w = p.measure("（", alias_style);
+            const float alias_w = p.measure(track.alias, alias_style);
+            const float close_w = p.measure("）", alias_style);
+            float ax = tx + w + 6;
+            ax += p.text(ax, r.y + 25, "（", alias_style, rem);
+            if (open_w + alias_w + close_w <= rem) {
+                ax += p.text(ax, r.y + 25, track.alias, alias_style);
+                p.text(ax, r.y + 25, "）", alias_style);
+            } else if (rem > open_w) {
+                p.text(ax, r.y + 25, track.alias, alias_style, rem - open_w);
+            }
         }
         p.text(tx, r.y + 43, track.artist, t.style(type::caption, t.text_dim), tw);
         if (c.album.w > 0) {
@@ -205,29 +217,8 @@ namespace lyren {
                 return;
             }
         } else {
-            if ((pointed || library_.liked(track)) && provider(track).capabilities.likes) {
-                const ui::Id like_id = ui.id("like");
-                const Rect like_r = ui::center(c.like, 32, 32);
-                const bool liked = library_.liked(track);
-                const auto like_it = ui.interact(like_id, like_r);
-                if (like_it.hovered) {
-                    ui.cursor = wl::Cursor::pointer;
-                }
-                const auto [lhot, ldown] = ui.feel(like_id, like_it);
-                if (lhot > 0) {
-                    const Rect lbg = like_r.inset(ldown * 1.5f);
-                    p.rect(lbg, t.fill((1.25f + 0.65f * ldown) * lhot), t.round(std::min(lbg.w, lbg.h)));
-                }
-                const float zoom = (heart_size(ui, track, 16) - ldown * 1.2f) / 16.f;
-                p.set_zoom(zoom, like_r.x + 16, like_r.y + 16);
-                p.icon(liked ? "heart-fill" : "heart", ui::center(like_r, 16, 16), liked ? t.accent : t.text_dim.mix(t.text, lhot));
-                p.set_zoom(1);
-                if (like_it.hovered && !like_it.held) {
-                    ui.tooltip(like_id, like_r, lyren::tr(liked ? "Unlike" : "Like"));
-                }
-                if (like_it.clicked) {
-                    toggled_like = track;
-                }
+            if (pointed || library_.liked(track)) {
+                heart(ui, ui.id("like"), ui::center(c.like, 32, 32), track, 16, &toggled_like);
             }
             ui.label(c.duration, mmss(track.duration), number, Align::right);
         }
@@ -267,22 +258,22 @@ namespace lyren {
         // One's own playlist can take songs out.
         const bool removable = route.page == Page::playlist && route.card.owned && caps.playlist_edit && route.list && &tracks == &route.list->tracks;
         std::vector<ui::MenuItem> items;
-        auto add = [&](std::string_view icon, std::string_view label, std::function<void()> action, bool danger = false) {
+        auto add = [&](std::string_view icon, std::string_view label, std::move_only_function<void()> action, bool danger = false) {
             items.push_back({std::string(icon), std::string(lyren::tr(label)), std::move(action), danger});
         };
         if (picked.choosing && picked.list == &tracks && picked.chosen.size() > 1 && picked.chosen.contains(track.id)) {
-            const auto songs = picked.of(tracks);
+            auto songs = std::make_shared<std::vector<Track>>(picked.of(tracks));
             add("play", "Play selected", [this, songs] {
-                playback_.play(songs, 0);
+                playback_.play(*songs, 0);
             });
             add("folder-plus", "Add to playlist", [this, &ui, songs] {
-                shell_.dialogs.pick_playlist(ui, songs);
+                shell_.dialogs.pick_playlist(ui, *songs);
             });
             if (removable) {
                 add(
                     "list-minus", "Remove from playlist",
                     [this, playlist = route.card, songs] {
-                        browser_.remove_from_playlist(playlist, songs);
+                        browser_.remove_from_playlist(playlist, *songs);
                     },
                     true);
             }

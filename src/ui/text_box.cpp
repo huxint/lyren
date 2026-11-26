@@ -38,24 +38,27 @@ namespace lyren::ui {
         return size;
     }
 
-    struct EditLine {
-        size_t from, to;
-    };
-
     // Unlike display text, an editor keeps every space and the empty line after a trailing newline.
-    static std::vector<EditLine> edit_lines(Painter &p, std::string_view text, float size, float width) {
-        std::vector<EditLine> lines;
+    const std::vector<Ui::EditLine> &Ui::edit_lines(EditBox &box, std::string_view text, float size, float width) {
+        if (box.cached_size == size && box.cached_width == width && box.cached_text == text) {
+            return box.lines;
+        }
+        box.cached_text.assign(text);
+        box.cached_size = size;
+        box.cached_width = width;
+        box.lines.clear();
+        struct Cluster {
+            size_t byte;
+            float width;
+        };
+        std::vector<Cluster> clusters;
         size_t from = 0;
         for (;;) {
             size_t end = std::min(text.find('\n', from), text.size());
             auto paragraph = text.substr(from, end - from);
-            const auto &sh = p.shape(paragraph, {.size = size});
+            const auto &sh = p_->shape(paragraph, {.size = size});
             const auto &g = sh.glyphs;
-            struct Cluster {
-                size_t byte;
-                float width;
-            };
-            std::vector<Cluster> clusters;
+            clusters.clear();
             for (size_t i = 0; i < g.size();) {
                 size_t next = i + 1;
                 while (next < g.size() && g[next].cluster == g[i].cluster) {
@@ -76,22 +79,23 @@ namespace lyren::ui {
                 used += clusters[i].width;
                 while (i > start && used > width) {
                     size_t cut = word > start ? word : i;
-                    lines.push_back({from + clusters[start].byte, from + clusters[cut].byte});
+                    box.lines.push_back({from + clusters[start].byte, from + clusters[cut].byte});
                     while (start < cut) {
                         used -= clusters[start++].width;
                     }
                 }
             }
-            lines.push_back({from + (clusters.empty() ? 0 : clusters[start].byte), end});
+            box.lines.push_back({from + (clusters.empty() ? 0 : clusters[start].byte), end});
             if (end == text.size()) {
-                return lines;
+                return box.lines;
             }
             from = end + 1;
         }
     }
 
-    static size_t edit_row(const std::vector<EditLine> &lines, size_t byte, bool line_end) {
-        size_t row = static_cast<size_t>(std::ranges::upper_bound(lines, byte, {}, &EditLine::from) - lines.begin() - 1);
+    template <class Line>
+    static size_t edit_row(const std::vector<Line> &lines, size_t byte, bool line_end) {
+        size_t row = static_cast<size_t>(std::ranges::upper_bound(lines, byte, {}, &Line::from) - lines.begin() - 1);
         return line_end && row > 0 && lines[row - 1].to == byte ? row - 1 : row;
     }
 
@@ -136,7 +140,7 @@ namespace lyren::ui {
             bool end = k->keysym == XKB_KEY_End || k->keysym == XKB_KEY_KP_End;
             if (multiline && (up || down || ((home || end) && !(k->mods & wl::mod_ctrl)))) {
                 float size = theme_->fs(type::body);
-                auto lines = edit_lines(*p_, text, size, multiline_width);
+                const auto &lines = edit_lines(box, text, size, multiline_width);
                 size_t row = edit_row(lines, e.cursor, box.line_end);
                 size_t at;
                 if (up || down) {
@@ -303,14 +307,11 @@ namespace lyren::ui {
             if (show_caret && since <= blink_for) {
                 wake(box.blink + (std::floor(since / blink_half) + 1) * blink_half);
             }
-            text_input = {.enabled = true,
-                          .x = static_cast<int>(cx),
-                          .y = static_cast<int>(line_y),
-                          .w = 1,
-                          .h = static_cast<int>(line_h),
-                          .surrounding = text,
-                          .cursor = static_cast<int>(e.cursor),
-                          .anchor = static_cast<int>(e.anchor)};
+            text_input.enabled = true;
+            text_input.x = static_cast<int>(cx), text_input.y = static_cast<int>(line_y);
+            text_input.w = 1, text_input.h = static_cast<int>(line_h);
+            text_input.surrounding.assign(text);
+            text_input.cursor = static_cast<int>(e.cursor), text_input.anchor = static_cast<int>(e.anchor);
         }
         pop_clip();
 
@@ -337,7 +338,7 @@ namespace lyren::ui {
             cursor = wl::Cursor::text;
         }
         auto hit = [&](float x, float y) {
-            auto lines = edit_lines(*p_, text, st.size, inner.w);
+            const auto &lines = edit_lines(box, text, st.size, inner.w);
             size_t row = static_cast<size_t>(std::clamp(std::floor((y - inner.y + box.scroll_y) / line_h), 0.f, static_cast<float>(lines.size() - 1)));
             auto line = std::string_view(text).substr(lines[row].from, lines[row].to - lines[row].from);
             size_t at = lines[row].from + offset_at(p_->shape(line, st), line.size(), (x - inner.x) / st.size);
@@ -389,7 +390,7 @@ namespace lyren::ui {
             show_caret = box.preedit_cursor >= 0;
             caret = pre_begin + std::min(static_cast<size_t>(std::max(box.preedit_cursor, 0)), box.preedit.size());
         }
-        auto lines = edit_lines(*p_, shown, st.size, inner.w);
+        const auto &lines = edit_lines(box, shown, st.size, inner.w);
         size_t caret_row = edit_row(lines, caret, box.line_end);
         float caret_top = static_cast<float>(caret_row) * line_h;
         float max_scroll = std::max(0.f, static_cast<float>(lines.size()) * line_h - inner.h);
@@ -449,14 +450,12 @@ namespace lyren::ui {
             if (show_caret && since <= blink_for) {
                 wake(box.blink + (std::floor(since / blink_half) + 1) * blink_half);
             }
-            text_input = {.enabled = true,
-                          .x = static_cast<int>(cx),
-                          .y = static_cast<int>(std::clamp(cy, inner.y, std::max(inner.y, inner.bottom() - line_h))),
-                          .w = 1,
-                          .h = static_cast<int>(line_h),
-                          .surrounding = text,
-                          .cursor = static_cast<int>(e.cursor),
-                          .anchor = static_cast<int>(e.anchor)};
+            text_input.enabled = true;
+            text_input.x = static_cast<int>(cx);
+            text_input.y = static_cast<int>(std::clamp(cy, inner.y, std::max(inner.y, inner.bottom() - line_h)));
+            text_input.w = 1, text_input.h = static_cast<int>(line_h);
+            text_input.surrounding.assign(text);
+            text_input.cursor = static_cast<int>(e.cursor), text_input.anchor = static_cast<int>(e.anchor);
         }
         pop_clip();
     }

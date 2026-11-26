@@ -49,4 +49,23 @@ namespace lyren::utf8 {
         return i;
     }
 
+    std::size_t count(std::string_view s) {
+        std::size_t n = 0;
+        for (std::size_t i = 0; i < s.size(); i = next(s, i)) {
+            ++n;
+        }
+        return n;
+    }
+
+    std::string_view truncate_bytes(std::string_view s, std::size_t max_bytes) {
+        if (s.size() <= max_bytes) {
+            return s;
+        }
+        std::size_t cut = max_bytes;
+        while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xc0) == 0x80) {
+            --cut;
+        }
+        return s.substr(0, cut);
+    }
+
 } // namespace lyren::utf8

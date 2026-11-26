@@ -323,11 +323,9 @@ namespace lyren {
         if (route.page == Page::recent) {
             if (shelf().recent_tab == 0 || !signed_in()) {
                 const auto &played = playback_.history(browser_.active());
-                route.card.subtitle = lyren::trf("{} songs · On this device", played.size());
                 return list_page(ui, r, played, false, "", std::max(browser_.entered, browser_.tab_since));
             }
             const auto &recent = shelf().recent_plays;
-            route.card.subtitle = lyren::trf("{} songs · From all your devices", recent.tracks.size());
             return list_page(ui, r, recent.tracks, recent.loading, recent.error, std::max(recent.since, browser_.tab_since));
         }
         // No list yet: the account is still loading, or the page waits for a login.
@@ -337,11 +335,6 @@ namespace lyren {
             return list_page(ui, r, none, failed.empty(), failed, browser_.tab_since);
         }
         Browser::TrackList &list = *route.list;
-        if (route.page == Page::liked) {
-            route.card.subtitle = lyren::trf("{} songs", list.tracks.size());
-        } else if (route.page == Page::cloud) {
-            route.card.subtitle = lyren::trf("Cloud uploads · {} songs", list.tracks.size());
-        }
         list_page(ui, r, list.tracks, list.loading, list.error, std::max(list.since, browser_.tab_since));
     }
 
@@ -602,7 +595,6 @@ namespace lyren {
 
     void Pages::fm_page(ui::Ui &ui, Rect r) {
         auto &lib = shelf();
-        auto &p = ui.painter();
         const auto &t = ui.theme();
         page_title(ui, page_frame(r), r.y + 28, lyren::tr(provider().radio_title), lyren::tr("Tuned to what you play"));
         const Rect below{r.x, r.y + 100, r.w, r.h - 100};
@@ -674,38 +666,12 @@ namespace lyren {
                 return;
             }
         }
-        {
-            const ui::Id pid = ui.id("fm-play");
-            const auto it = ui.interact(pid, play_r);
-            if (it.hovered) {
-                ui.cursor = wl::Cursor::pointer;
-            }
-            const auto [hot, down] = ui.feel(pid, it);
-            const Rect pr = play_r.inset(-1.5f * hot + 2.f * down);
-            p.rect(pr, t.accent.mix(white, 0.08f * hot), pr.w / 2);
-            const float morph = ui.anim(ui.id("fm-morph"), active ? 1 : 0, 240, ease::emphasized);
-            const ui::Color fg = t.on_accent();
-            {
-                Fade fade(p, 1 - morph);
-                p.set_zoom((18 - 5 * morph) / 18.f, pr.x + pr.w / 2, pr.y + pr.h / 2);
-                Rect glyph = ui::center(pr, 18, 18);
-                glyph.x += 1;
-                p.icon("play-fill", glyph, fg);
-                p.set_zoom(1);
-            }
-            {
-                Fade fade(p, morph);
-                p.set_zoom((13 + 5 * morph) / 18.f, pr.x + pr.w / 2, pr.y + pr.h / 2);
-                p.icon("pause-fill", ui::center(pr, 18, 18), fg);
-                p.set_zoom(1);
-            }
-            if (it.clicked) {
-                if (on_air) {
-                    playback_.toggle();
-                } else {
-                    lib.radio_pending = false;
-                    playback_.play_radio(browser_.active(), lib.radio, lib.radio_pos);
-                }
+        if (play_morph_button(ui, ui.id("fm-play"), play_r, active, 18, true)) {
+            if (on_air) {
+                playback_.toggle();
+            } else {
+                lib.radio_pending = false;
+                playback_.play_radio(browser_.active(), lib.radio, lib.radio_pos);
             }
         }
         const Rect next_r{play_r.right() + 12, by + 4, 40, 40};
@@ -886,7 +852,7 @@ namespace lyren {
             return;
         }
         constexpr float row_h = 68;
-        const float off = ui.begin_scroll(ui.id("dislikes-" + std::to_string(lib.dislike_tab)), content, row_h * static_cast<float>(list.items.size()));
+        const float off = ui.begin_scroll(ui::sub_id(ui.id("dislikes"), static_cast<uint64_t>(lib.dislike_tab)), content, row_h * static_cast<float>(list.items.size()));
         const size_t first = static_cast<size_t>(off / row_h);
         const size_t last = std::min(list.items.size(), static_cast<size_t>((off + content.h) / row_h) + 1);
         const float restore_w = ui.button_width(lyren::tr("Restore"), true);
@@ -952,12 +918,13 @@ namespace lyren {
         const std::vector<Track> &songs = a.songs.tracks;
         const float bx = play_buttons(ui, tx, head.bottom() - btn_h, songs, btn_h, compact);
         if (a.info && provider(c).capabilities.follow_artists) {
-            const bool on = library_.kept(c.source, Library::Preference::artist, c.id, a.info->followed);
+            const bool fallback = a.info->followed.value_or(false);
+            const bool on = library_.kept(c.source, Library::Preference::artist, c.id, fallback);
             const auto label = on ? lyren::tr("Following") : lyren::tr("Follow");
             const float follow_w = compact ? btn_h : std::max(ui.button_width(lyren::tr("Following"), true), ui.button_width(lyren::tr("Follow"), true));
             if (ui.button(ui.id("follow"), {bx, head.bottom() - btn_h, follow_w, btn_h}, compact ? std::string_view{} : label,
                           on ? ui::ButtonKind::secondary : ui::ButtonKind::tonal, on ? "user-check" : "user-plus", compact ? label : std::string_view{})) {
-                library_.toggle_follow({.kind = CardKind::artist, .source = c.source, .id = c.id, .title = a.info->name, .cover = a.info->avatar}, a.info->followed);
+                library_.toggle_follow({.kind = CardKind::artist, .source = c.source, .id = c.id, .title = a.info->name, .cover = a.info->avatar}, fallback);
             }
         }
 
@@ -1205,8 +1172,22 @@ namespace lyren {
                 }
             }
         } else {
-            const std::string subtitle = page == Page::daily ? lyren::trf("{} · Made for your taste", date_label()) : card_subtitle(c);
-            ui.label({tx, sub_y, tw, 20}, built_in ? lyren::tr(subtitle) : std::string_view(subtitle), sub);
+            std::string subtitle;
+            if (page == Page::daily) {
+                subtitle = lyren::trf("{} · Made for your taste", date_label());
+            } else if (page == Page::recent) {
+                subtitle = shelf().recent_tab == 0 || !signed_in() ? lyren::trf("{} songs · On this device", tracks.size())
+                                                                   : lyren::trf("{} songs · From all your devices", tracks.size());
+            } else if (page == Page::liked && browser_.route().list) {
+                subtitle = lyren::trf("{} songs", tracks.size());
+            } else if (page == Page::cloud && browser_.route().list) {
+                subtitle = lyren::trf("Cloud uploads · {} songs", tracks.size());
+            } else if (built_in) {
+                subtitle = std::string(lyren::tr(c.subtitle));
+            } else {
+                subtitle = card_subtitle(c);
+            }
+            ui.label({tx, sub_y, tw, 20}, subtitle, sub);
         }
         const float next_x = play_buttons(ui, tx, head.bottom() - btn_h, tracks, btn_h, compact);
         list_actions(ui, next_x, head.bottom() - btn_h, btn_h, compact);
@@ -1270,12 +1251,12 @@ namespace lyren {
             if (!browser_.route().list || !browser_.route().list->loaded) {
                 return;
             }
-            const bool on = library_.kept(c.source, Library::Preference::album, c.id, browser_.route().list->album.collected);
+            const bool fallback = browser_.route().list->album.collected.value_or(false);
+            const bool on = library_.kept(c.source, Library::Preference::album, c.id, fallback);
             const float w = std::max(ui.button_width(lyren::tr("Saved"), true), ui.button_width(lyren::tr("Save"), true));
             if (provider(c).capabilities.collect_albums && labelled("collect", on ? lyren::tr("Saved") : lyren::tr("Save"), on ? "star-fill" : "star", w)) {
                 library_.toggle_collect(
-                    {.kind = CardKind::album, .source = c.source, .id = c.id, .title = c.title, .subtitle = browser_.route().list->album.artist, .cover = c.cover},
-                    browser_.route().list->album.collected);
+                    {.kind = CardKind::album, .source = c.source, .id = c.id, .title = c.title, .subtitle = browser_.route().list->album.artist, .cover = c.cover}, fallback);
             }
             if (provider(c).capabilities.comments[1] && square("album-comments", "message-square", lyren::tr("Comments"))) {
                 shell_.open_comments(c.source, Subject::album, browser_.route().list->album.thread, c.title, c.cover);

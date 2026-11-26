@@ -2,7 +2,6 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -53,6 +52,15 @@ namespace lyren {
         }
 
     private:
+        struct TimerEntry {
+            Clock::time_point when;
+            TimerId id;
+            bool operator>(const TimerEntry &o) const noexcept {
+                return when > o.when;
+            }
+        };
+
+        void prune_timers();
         void arm_timer();
         void run_timers();
         void run_posted();
@@ -62,9 +70,9 @@ namespace lyren {
         int eventfd_;
         bool running_ = false;
         std::unordered_map<int, FdHandler> watches_;
-        using TimerQueue = std::multimap<Clock::time_point, TimerId>;
-        TimerQueue timer_queue_;
-        std::unordered_map<TimerId, std::pair<TimerQueue::iterator, std::move_only_function<void() &>>> timers_;
+        std::vector<TimerEntry> timer_heap_;
+        std::unordered_map<TimerId, std::move_only_function<void() &>> timers_;
+        Clock::time_point armed_deadline_ = Clock::time_point::max();
         TimerId next_timer_ = 1;
         std::vector<std::move_only_function<void() &>> deferred_;
         std::mutex post_mutex_;

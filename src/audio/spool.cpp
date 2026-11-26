@@ -139,6 +139,18 @@ namespace lyren::audio {
         return off < it->second ? it->second - off : 0;
     }
 
+    bool Ranges::completes(uint64_t b, uint64_t e, uint64_t size) const {
+        if (size == 0) {
+            return false;
+        }
+        uint64_t cov = available(0);
+        if (b <= cov) {
+            cov = std::max(cov, e);
+            cov += available(cov);
+        }
+        return cov >= size;
+    }
+
     Ranges::Span Ranges::gap(uint64_t from, uint64_t size) const {
         auto it = std::upper_bound(r_.begin(), r_.end(), from, [](uint64_t v, const Span &s) {
             return v < s.first;
@@ -286,47 +298,77 @@ namespace lyren::audio {
         bool promote_now = false;
         {
             std::lock_guard lk(m_);
-            have_.add(offset, offset + d.size());
-            if (req == req_) {
-                pos_ = offset + d.size();
+            promote_now = req == req_ && !closed_ && error_.empty() && size_ != unknown && size_ > 0 && !tmp_path_.empty() && have_.completes(offset, offset + d.size(), size_);
+            if (!promote_now) {
+                have_.add(offset, offset + d.size());
+                if (req == req_) {
+                    pos_ = offset + d.size();
+                }
+                if (waiting_) {
+                    cv_.notify_all();
+                }
+                return;
             }
-            promote_now = req == req_ && !closed_ && error_.empty() && size_ != unknown && size_ > 0 && !tmp_path_.empty() && have_.available(0) == size_;
         }
-        if (promote_now) {
-            promote_cache();
-        }
+        // Promote before exposing the final bytes so UI queries never block on fdatasync while
+        // callers finishing the stream see the promoted cache file immediately.
+        promote_cache();
         std::lock_guard lk(m_);
+        have_.add(offset, offset + d.size());
+        if (req == req_) {
+            pos_ = offset + d.size();
+        }
         if (waiting_) {
             cv_.notify_all();
         }
     }
 
     void Spool::promote_cache() {
-        std::filesystem::path promoted;
+        std::string tmp, dst;
         uint64_t limit = 0;
         {
             std::lock_guard lk(m_);
-            if (tmp_path_.empty() || cache_path_.empty()) {
+            if (cache_invalidated_ || tmp_path_.empty() || cache_path_.empty()) {
                 return;
             }
             limit = cache_limit();
             if (size_ == 0 || size_ == unknown || size_ > limit) {
                 return;
             }
-            ::fdatasync(fd_);
-            if (std::rename(tmp_path_.c_str(), cache_path_.c_str()) != 0) {
-                return;
-            }
-            tmp_path_.clear();
-            promoted = cache_path_;
+            tmp = std::exchange(tmp_path_, {});
+            dst = cache_path_;
         }
-        prune_audio_cache(promoted.parent_path(), limit, promoted);
+        // fd_ is immutable after construction and the caller holds a shared_ptr<Spool>.
+        if (::fdatasync(fd_) != 0) {
+            ::unlink(tmp.c_str());
+            return;
+        }
+        bool promoted = false;
+        {
+            std::lock_guard lk(cache_prune_mutex);
+            bool valid = true;
+            {
+                std::lock_guard slk(m_);
+                valid = !cache_invalidated_ && !cache_path_.empty();
+            }
+            if (valid && std::rename(tmp.c_str(), dst.c_str()) == 0) {
+                promoted = true;
+            } else {
+                ::unlink(tmp.c_str());
+            }
+        }
+        if (promoted) {
+            std::filesystem::path p(dst);
+            prune_audio_cache(p.parent_path(), limit, p);
+        }
     }
 
     void Spool::invalidate_cache() {
         std::string path;
+        std::lock_guard lk(cache_prune_mutex);
         {
-            std::lock_guard lk(m_);
+            std::lock_guard slk(m_);
+            cache_invalidated_ = true;
             path = std::move(cache_path_);
         }
         if (!path.empty()) {
@@ -455,9 +497,14 @@ namespace lyren::audio {
         return waiting_;
     }
 
-    std::vector<Ranges::Span> Spool::ranges() const {
+    std::inplace_vector<Ranges::Span, 16> Spool::ranges() const {
         std::lock_guard lk(m_);
-        return have_.spans();
+        std::inplace_vector<Ranges::Span, 16> out;
+        const auto &spans = have_.spans();
+        for (size_t i = 0; i < spans.size() && i < out.capacity(); ++i) {
+            out.push_back(spans[i]);
+        }
+        return out;
     }
 
     std::pair<uint64_t, uint64_t> Spool::progress() const {

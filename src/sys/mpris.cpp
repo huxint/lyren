@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <inplace_vector>
 #include <vector>
 
 #include "core/log.hpp"
@@ -257,7 +258,7 @@ namespace lyren {
     }
 
     void Mpris::update(const MprisState &s) {
-        std::vector<const char *> changed;
+        std::inplace_vector<const char *, 12> changed;
         auto check = [&](bool differs, const char *property) {
             if (differs) {
                 changed.push_back(property);

@@ -27,7 +27,9 @@ namespace lyren::kugou {
         std::move_only_function<void()> on_session;
         uint64_t session_gen = 0;
 
-        const std::string &get(std::string_view name) const;
+        const std::string &get(std::string_view name) const {
+            return lyren::get(session, name);
+        }
         bool logged_in() const;
         Params common() const;
         std::vector<std::string> headers(const Params &query, std::string_view router = {}) const;

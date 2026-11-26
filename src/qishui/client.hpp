@@ -1,30 +1,23 @@
 #pragma once
-#include <glaze/glaze.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "core/encoding.hpp"
+#include "core/json.hpp"
 #include "core/result.hpp"
 #include "core/string_map.hpp"
 #include "net/fetch.hpp"
 
 namespace lyren::qishui {
 
-    using Json = glz::generic_u64;
+    using Json = lyren::json::Value;
     using Query = std::vector<std::pair<std::string, std::string>>;
     enum class Operation : uint8_t {
         read,
         write
     };
 
-    const Json &field(const Json &value, std::string_view name);
-    std::span<const Json> array(const Json &value);
-    std::string_view text(const Json &value);
-    std::string string(const Json &value);
-    double number(const Json &value);
-    bool boolean(const Json &value);
-    std::string encode(std::string_view value);
-    std::string query_string(const Query &query);
     Result<Json> parse_response(std::string_view body, bool *session_expired = nullptr);
 
     class Client {
@@ -37,7 +30,9 @@ namespace lyren::qishui {
         std::move_only_function<void()> on_session;
         uint64_t generation = 0;
 
-        const std::string &get(std::string_view name) const;
+        const std::string &get(std::string_view name) const {
+            return lyren::get(session, name);
+        }
         bool logged_in() const;
         Task<Result<void>> initialize();
         Task<Result<Json>> call(std::string path, Query query = {}, std::optional<std::string> body = {}, Operation operation = Operation::read);

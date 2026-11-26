@@ -129,7 +129,7 @@ TEST_CASE("previous and next keep their direction through unavailable songs and 
                          .providers = {provider, provider, provider, provider, provider},
                          .images = images,
                          .config = config,
-                         .set_setting = [](std::string_view, std::string_view, std::string_view) {},
+                         .set_settings = [](std::span<const SettingChange>) {},
                          .desktop_changed = [] {},
                          .open_config = [] {},
                          .redraw = [] {},

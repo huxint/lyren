@@ -2,6 +2,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <inplace_vector>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -18,8 +20,9 @@ namespace lyren::audio {
     public:
         using Span = std::pair<uint64_t, uint64_t>;
         void add(uint64_t b, uint64_t e);
-        uint64_t available(uint64_t off) const;       // contiguous bytes present from off
-        Span gap(uint64_t from, uint64_t size) const; // first missing range in [from, size); empty if none
+        uint64_t available(uint64_t off) const;                      // contiguous bytes present from off
+        bool completes(uint64_t b, uint64_t e, uint64_t size) const; // true if adding [b, e) covers [0, size)
+        Span gap(uint64_t from, uint64_t size) const;                // first missing range in [from, size); empty if none
         uint64_t total() const;
         const std::vector<Span> &spans() const {
             return r_;
@@ -50,10 +53,10 @@ namespace lyren::audio {
         void close(); // any thread: stops the download and wakes readers for good
         void invalidate_cache();
         std::string error() const;
-        long status() const;                            // HTTP status of a failed download, 0 for network errors
-        bool waiting() const;                           // a reader is blocked on the network
-        std::pair<uint64_t, uint64_t> progress() const; // bytes present, size
-        std::vector<Ranges::Span> ranges() const;       // byte ranges present
+        long status() const;                                  // HTTP status of a failed download, 0 for network errors
+        bool waiting() const;                                 // a reader is blocked on the network
+        std::pair<uint64_t, uint64_t> progress() const;       // bytes present, size
+        std::inplace_vector<Ranges::Span, 16> ranges() const; // byte ranges present
 
     private:
         Spool() = default;
@@ -71,7 +74,7 @@ namespace lyren::audio {
         std::condition_variable cv_;
         Ranges have_;
         uint64_t size_ = unknown;
-        bool closed_ = false, waiting_ = false, no_ranges_ = false;
+        bool closed_ = false, waiting_ = false, no_ranges_ = false, cache_invalidated_ = false;
         std::string error_;
         net::Http::Id http_id_ = 0; // running request, numbered req_
         uint64_t req_ = 0;
@@ -79,6 +82,33 @@ namespace lyren::audio {
         uint64_t read_pos_ = 0;
         int retries_ = 0;
         long status_ = 0;
+    };
+
+    // Sequential cursor over a Spool for C decoder read/seek/tell callbacks.
+    struct SpoolCursor {
+        Spool &spool;
+        uint64_t pos = 0;
+
+        size_t read(void *buf, size_t n) {
+            const size_t got = spool.read(pos, buf, n);
+            pos += got;
+            return got;
+        }
+        int64_t seek(int64_t off, int whence) {
+            const auto size = static_cast<int64_t>(spool.size());
+            const int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(pos) : whence == SEEK_END ? size : -1;
+            if (base < 0 || off < -base || off > size - base) {
+                return -1;
+            }
+            pos = static_cast<uint64_t>(base + off);
+            return static_cast<int64_t>(pos);
+        }
+        uint64_t size() const {
+            return spool.size();
+        }
+        bool eof() const {
+            return pos >= spool.size();
+        }
     };
 
 } // namespace lyren::audio

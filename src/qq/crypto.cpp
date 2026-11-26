@@ -1,7 +1,6 @@
 #include "qq/crypto.hpp"
 
 #include <openssl/evp.h>
-#include <zlib.h>
 
 #include <array>
 #include <bit>
@@ -142,27 +141,6 @@ namespace lyren::qq {
             return flip(permute(static_cast<uint64_t>(r) << 32 | l, fp, 64));
         }
 
-        // Inflates to the end of the zlib stream; the cipher's padding after it is ignored.
-        std::string unzip(std::string_view data) {
-            z_stream z{};
-            if (inflateInit(&z) != Z_OK) {
-                return {};
-            }
-            z.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data.data()));
-            z.avail_in = static_cast<uInt>(data.size());
-            std::string out;
-            int rc = Z_OK;
-            while (rc == Z_OK) {
-                std::array<char, 16384> buf;
-                z.next_out = reinterpret_cast<Bytef *>(buf.data());
-                z.avail_out = buf.size();
-                rc = inflate(&z, Z_NO_FLUSH);
-                out.append(buf.data(), buf.size() - z.avail_out);
-            }
-            inflateEnd(&z);
-            return rc == Z_STREAM_END ? out : std::string{};
-        }
-
     } // namespace
 
     uint64_t qrc_block(uint64_t block) {
@@ -187,7 +165,7 @@ namespace lyren::qq {
                 data[i + j] = static_cast<char>(b);
             }
         }
-        return unzip(data);
+        return encoding::inflate(data).value_or(std::string{});
     }
 
 } // namespace lyren::qq

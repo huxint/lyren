@@ -17,7 +17,7 @@ namespace lyren {
                 removals_.forget(event.source);
                 feeds_[static_cast<size_t>(event.source)].reset();
                 own_pages_[static_cast<size_t>(event.source)].reset();
-                std::erase_if(other_pages_, [&](const std::shared_ptr<Page> &page) {
+                other_pages_.erase_if([&](const std::shared_ptr<Page> &page) {
                     return page->who.source == event.source;
                 });
             }
@@ -36,10 +36,27 @@ namespace lyren {
         }
     }
 
-    std::vector<Social::Section> Social::sections(const Card &who) const {
+    bool Social::is_own(const Card &who) const {
+        return library_.own(who) || who.owned;
+    }
+
+    std::shared_ptr<Social::Page> Social::find_page(const Card &who, bool touch) {
+        if (is_own(who)) {
+            auto &slot = own_pages_[static_cast<size_t>(who.source)];
+            return slot && slot->who.id == who.id ? slot : std::shared_ptr<Page>{};
+        }
+        auto *found = other_pages_.find(
+            [&](const std::shared_ptr<Page> &page) {
+                return page->who.source == who.source && page->who.id == who.id;
+            },
+            touch);
+        return found ? *found : std::shared_ptr<Page>{};
+    }
+
+    std::inplace_vector<Social::Section, 6> Social::sections(const Card &who) const {
         const auto &caps = env_.provider(who).capabilities;
-        const bool self = library_.own(who) || who.owned;
-        std::vector<Section> out;
+        const bool self = is_own(who);
+        std::inplace_vector<Section, 6> out;
         if (self) {
             out.push_back(Section::overview);
         }
@@ -62,7 +79,7 @@ namespace lyren {
     }
 
     std::shared_ptr<Social::Page> Social::create(Card who, const Page *previous, bool reloading) {
-        const bool self = library_.own(who) || who.owned;
+        const bool self = is_own(who);
         auto page = std::make_shared<Page>();
         page->who = std::move(who);
         page->since = page->section_since = env_.now();
@@ -81,15 +98,10 @@ namespace lyren {
         if (self) {
             own_pages_[static_cast<size_t>(page->who.source)] = page;
         } else {
-            auto it = std::ranges::find_if(other_pages_, [&](const std::shared_ptr<Page> &cached) {
+            other_pages_.erase_if([&](const std::shared_ptr<Page> &cached) {
                 return cached->who.source == page->who.source && cached->who.id == page->who.id;
             });
-            if (it != other_pages_.end()) {
-                other_pages_.erase(it);
-            } else if (other_pages_.size() == other_pages_.capacity()) {
-                other_pages_.erase(other_pages_.begin());
-            }
-            other_pages_.push_back(page);
+            other_pages_.push(page);
         }
         spawn(load_profile(page, reloading));
         if (previous && page->section == Section::chart && page->chart_tab != 0) {
@@ -99,23 +111,8 @@ namespace lyren {
     }
 
     std::shared_ptr<Social::Page> Social::open(Card who) {
-        const bool self = library_.own(who) || who.owned;
-        std::shared_ptr<Page> cached;
-        if (self) {
-            auto &slot = own_pages_[static_cast<size_t>(who.source)];
-            if (slot && slot->who.id == who.id) {
-                cached = slot;
-            }
-        } else {
-            auto it = std::ranges::find_if(other_pages_, [&](const std::shared_ptr<Page> &page) {
-                return page->who.source == who.source && page->who.id == who.id;
-            });
-            if (it != other_pages_.end()) {
-                std::rotate(it, it + 1, other_pages_.end());
-                cached = other_pages_.back();
-            }
-        }
-        if (cached) {
+        const bool self = is_own(who);
+        if (auto cached = find_page(who, true)) {
             if (!cached->loading && !cached->info && !cached->error.empty()) {
                 return create(std::move(who), cached.get());
             }
@@ -131,21 +128,8 @@ namespace lyren {
     }
 
     std::shared_ptr<Social::Page> Social::reload(Card who) {
-        const bool self = library_.own(who) || who.owned;
-        std::shared_ptr<Page> existing;
-        if (self) {
-            auto &slot = own_pages_[static_cast<size_t>(who.source)];
-            if (slot && slot->who.id == who.id) {
-                existing = slot;
-            }
-        } else {
-            auto it = std::ranges::find_if(other_pages_, [&](const std::shared_ptr<Page> &page) {
-                return page->who.source == who.source && page->who.id == who.id;
-            });
-            if (it != other_pages_.end()) {
-                existing = *it;
-            }
-        }
+        const bool self = is_own(who);
+        auto existing = find_page(who, false);
         auto page = create(std::move(who), existing.get(), true);
         if (self) {
             if (page->section == Section::posts && page->posts_tab == 1) {
@@ -167,7 +151,7 @@ namespace lyren {
             load_people(page, page->people_tab != 0);
         } else if (section == Section::chart) {
             load_chart(page, page->chart_tab);
-        } else if (section == Section::collection && (library_.own(page->who) || page->who.owned)) {
+        } else if (section == Section::collection && is_own(page->who)) {
             const auto &shelf = library_.shelf(page->who.source);
             const auto &res = shelf.collection[static_cast<size_t>(page->collection_tab)];
             if (!res.loaded && !res.loading && env_.signed_in(page->who.source)) {
@@ -184,7 +168,7 @@ namespace lyren {
         const auto &shelf = library_.shelf(who.source);
         auto &provider = env_.provider(who);
         const auto &caps = provider.capabilities;
-        const bool self = library_.own(who) || who.owned;
+        const bool self = is_own(who);
         const uint64_t account_gen = shelf.account_gen;
         page->loading = true;
         page->error.clear();
@@ -223,7 +207,7 @@ namespace lyren {
         }
         page->loading = false;
         if (r) {
-            env_.images.prefetch(r->avatar, 256);
+            env_.prefetch(r->avatar, 256);
             page->info = std::move(*r);
         } else {
             page->error = r.error();
@@ -251,18 +235,10 @@ namespace lyren {
             list.error = r.error();
             co_return env_.redraw();
         }
-        if (list.items.empty()) {
-            list.since = env_.now();
-        }
         for (const auto &person : r->people) {
-            env_.images.prefetch(person.avatar, 64);
+            env_.prefetch(person.avatar, 64);
         }
-        list.items.append_range(std::views::as_rvalue(r->people));
-        list.total = r->total >= 0 ? r->total : list.total;
-        list.more = r->more;
-        list.cursor = std::move(r->cursor);
-        list.loaded = true;
-        ++list.page;
+        list.append(std::move(r->people), std::move(r->cursor), r->more, env_.now(), r->total);
         env_.redraw();
     }
 
@@ -283,13 +259,13 @@ namespace lyren {
         chart.loaded = true;
         chart.since = env_.now();
         if (r) {
-            env_.images.prefetch(r->tracks);
+            env_.prefetch(r->tracks);
             chart.ranking = std::move(*r);
         } else {
             chart.error = r.error();
         }
         // An empty week leaves the chart on the songs of all time.
-        if (tab == 0 && chart.error.empty() && chart.ranking.tracks.empty()) {
+        if (tab == 0 && chart.error.empty() && !chart.ranking.hidden && chart.ranking.tracks.empty()) {
             page->chart_tab = 1;
             load_chart(page, 1);
         }
@@ -321,7 +297,7 @@ namespace lyren {
         for (auto &card : cards) {
             card.owned = false;
         }
-        env_.images.prefetch(cards);
+        env_.prefetch(cards);
         listing.cards = std::move(cards);
         env_.redraw();
     }
@@ -351,20 +327,13 @@ namespace lyren {
             list->error = r.error();
             co_return env_.redraw();
         }
-        if (list->items.empty()) {
-            list->since = env_.now();
-        }
         for (const auto &post : r->posts) {
-            env_.images.prefetch(post.author.avatar, 64);
+            env_.prefetch(post.author.avatar, 64);
             if (post.track) {
-                env_.images.prefetch(post.track->cover, 64);
+                env_.prefetch(post.track->cover, 64);
             }
         }
-        list->items.append_range(std::views::as_rvalue(r->posts));
-        list->more = r->more;
-        list->cursor = std::move(r->cursor);
-        list->loaded = true;
-        ++list->page;
+        list->append(std::move(r->posts), std::move(r->cursor), r->more, env_.now());
         env_.redraw();
     }
 

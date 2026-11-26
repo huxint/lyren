@@ -13,21 +13,6 @@
 namespace lyren::bodian {
 
     namespace {
-        void append_form(std::string &out, std::string_view value) {
-            constexpr char hex[] = "0123456789ABCDEF";
-            for (unsigned char c : value) {
-                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '*' || c == '-' || c == '.' || c == '_') {
-                    out += static_cast<char>(c);
-                } else if (c == ' ') {
-                    out += '+';
-                } else {
-                    out += '%';
-                    out += hex[c >> 4];
-                    out += hex[c & 15];
-                }
-            }
-        }
-
         struct Envelope {
             int code = 0;
             std::optional<std::string> msg;
@@ -51,31 +36,6 @@ namespace lyren::bodian {
             return out;
         }
     } // namespace
-
-    std::string form_encode(std::string_view value) {
-        std::string out;
-        out.reserve(value.size());
-        append_form(out, value);
-        return out;
-    }
-
-    std::string query_string(const Query &query) {
-        std::string out;
-        size_t size = 0;
-        for (const auto &[key, value] : query) {
-            size += key.size() + value.size() + 2;
-        }
-        out.reserve(size);
-        for (const auto &[key, value] : query) {
-            if (!out.empty()) {
-                out += '&';
-            }
-            append_form(out, key);
-            out += '=';
-            append_form(out, value);
-        }
-        return out;
-    }
 
     std::string signature(std::string_view path, std::string_view query, std::string_view body) {
         std::array<size_t, 128> counts{};
@@ -101,12 +61,6 @@ namespace lyren::bodian {
         input += digest;
         input += path;
         return crypto::md5_hex(input);
-    }
-
-    const std::string &Client::get(std::string_view key) const {
-        static const std::string empty;
-        auto it = session.find(key);
-        return it == session.end() ? empty : it->second;
     }
 
     bool Client::logged_in() const {
@@ -140,7 +94,7 @@ namespace lyren::bodian {
             call.query.emplace_back("timestamp", std::to_string(timestamp));
             call.query.emplace_back("sign", "");
         }
-        auto query = query_string(call.query);
+        auto query = encoding::query_string(call.query, encoding::UrlStyle::form);
         if (call.sign) {
             query += signature(call.path, query, call.body ? std::string_view(*call.body) : std::string_view{});
         }
@@ -177,7 +131,7 @@ namespace lyren::bodian {
 
     Task<Reply> Client::lyric(std::string id, bool words) {
         std::string payload = std::format("type=lyric&req=2&lrcx={}&rid={}&songname=&artist=&corp=kuwo&fromchannel=bodian", words ? 1 : 0, id);
-        net::Request req{.url = "https://mlyric.kuwo.cn/mobi.s?f=bodian&q=" + form_encode(encoding::base64(payload))};
+        net::Request req{.url = "https://mlyric.kuwo.cn/mobi.s?f=bodian&q=" + encoding::url_encode(encoding::base64(payload), encoding::UrlStyle::form)};
         co_return response(co_await net::fetch_retry(loop_, http_, std::move(req)));
     }
 

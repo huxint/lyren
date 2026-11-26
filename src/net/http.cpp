@@ -3,7 +3,6 @@
 #include <curl/curl.h>
 
 #include <cctype>
-#include <cstdio>
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -268,7 +267,9 @@ namespace lyren::net {
         auto *t = static_cast<Http::Transfer *>(ud);
         if (t->done) {
             if (n > t->max_bytes || t->resp.body.size() > t->max_bytes - n) {
-                std::snprintf(t->error.data(), t->error.size(), "Maximum file size exceeded");
+                constexpr std::string_view msg = "Maximum file size exceeded";
+                std::ranges::copy(msg, t->error.data());
+                t->error[msg.size()] = '\0';
                 return 0;
             }
             t->resp.body.append(p, n);
@@ -352,7 +353,7 @@ namespace lyren::net {
         return add(std::move(t), get.delay);
     }
 
-    Http::Id Http::request(Request req, std::move_only_function<void(Response)> done) {
+    Http::Id Http::request(const Request &req, std::move_only_function<void(Response)> done) {
         auto t = std::make_unique<Transfer>();
         t->done = std::move(done);
         setup(*t, req.url, req.headers);
@@ -369,7 +370,7 @@ namespace lyren::net {
         t->max_bytes = req.max_bytes;
         curl_easy_setopt(t->easy, CURLOPT_MAXFILESIZE_LARGE, static_cast<curl_off_t>(req.max_bytes));
         if (req.body) {
-            t->post = std::move(*req.body);
+            t->post = *req.body;
             curl_easy_setopt(t->easy, CURLOPT_POSTFIELDSIZE, static_cast<long>(t->post.size()));
             curl_easy_setopt(t->easy, CURLOPT_POSTFIELDS, t->post.c_str());
         }

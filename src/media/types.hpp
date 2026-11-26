@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -64,7 +65,7 @@ namespace lyren {
     }
 
     inline std::string key(Source source, std::string_view id) {
-        return std::string(platform(source).id) + ":" + std::string(id);
+        return std::format("{}:{}", platform(source).id, id);
     }
     inline std::string key(const Track &t) {
         return key(t.source, t.id);
@@ -112,7 +113,7 @@ namespace lyren {
         return a.source == b.source && a.kind == b.kind && a.id == b.id;
     }
     inline std::string key(const Card &c) {
-        return key(c.source, c.id) + ":" + std::to_string(static_cast<int>(c.kind));
+        return std::format("{}:{}:{}", platform(c.source).id, c.id, static_cast<int>(c.kind));
     }
 
     enum class SearchKind : uint8_t {
@@ -159,13 +160,13 @@ namespace lyren {
     struct ArtistInfo {
         std::string name, alias, avatar;
         int songs = 0, albums = 0;
-        bool followed = false;
+        std::optional<bool> followed;
     };
 
     struct AlbumInfo {
         std::string artist, artist_id, date, company, about;
         std::string thread; // what its comments are filed under (QQ Music: the numeric id)
-        bool collected = false;
+        std::optional<bool> collected;
         std::vector<Track> tracks;
     };
 
@@ -280,6 +281,7 @@ namespace lyren {
     struct Ranking {
         std::vector<Track> tracks;
         std::vector<int> plays, scores; // scores 0..100, the top song 100
+        bool hidden = false;            // listener keeps their chart private
     };
 
     enum class QrState : uint8_t {

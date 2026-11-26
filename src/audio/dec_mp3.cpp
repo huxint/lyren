@@ -12,7 +12,7 @@ namespace lyren::audio {
         class Mp3 final : public Decoder {
         public:
             explicit Mp3(Spool &s)
-            : s_(s) {}
+            : cursor_{s} {}
             ~Mp3() override {
                 mpg123_close(h_);
                 mpg123_delete(h_);
@@ -40,7 +40,7 @@ namespace lyren::audio {
                 if (mpg123_open_handle64(h_, this) != MPG123_OK) {
                     return false;
                 }
-                mpg123_set_filesize64(h_, static_cast<int64_t>(s_.size()));
+                mpg123_set_filesize64(h_, static_cast<int64_t>(cursor_.size()));
                 if (mpg123_getformat(h_, &rate, &ch, &enc) != MPG123_OK) {
                     return false;
                 }
@@ -77,25 +77,15 @@ namespace lyren::audio {
 
         private:
             static int read_cb(void *ud, void *buf, size_t n, size_t *got) {
-                auto *d = static_cast<Mp3 *>(ud);
-                *got = d->s_.read(d->pos_, buf, n);
-                d->pos_ += *got;
+                *got = static_cast<Mp3 *>(ud)->cursor_.read(buf, n);
                 return 0;
             }
             static int64_t seek_cb(void *ud, int64_t off, int whence) {
-                auto *d = static_cast<Mp3 *>(ud);
-                const auto size = static_cast<int64_t>(d->s_.size());
-                const int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(d->pos_) : whence == SEEK_END ? size : -1;
-                if (base < 0 || off < -base || off > size - base) {
-                    return -1;
-                }
-                d->pos_ = static_cast<uint64_t>(base + off);
-                return static_cast<int64_t>(d->pos_);
+                return static_cast<Mp3 *>(ud)->cursor_.seek(off, whence);
             }
 
-            Spool &s_;
+            SpoolCursor cursor_;
             mpg123_handle *h_ = mpg123_new(nullptr, nullptr);
-            uint64_t pos_ = 0;
         };
 
     } // namespace

@@ -86,7 +86,7 @@ namespace lyren::net {
         // Any thread.
         Id stream(Get get, Stream cb);
         // done runs on the network thread.
-        Id request(Request req, std::move_only_function<void(Response)> done);
+        Id request(const Request &req, std::move_only_function<void(Response)> done);
         void cancel(Id id);
 
         struct Transfer;

@@ -56,7 +56,7 @@ TEST_CASE("Bodian signs form-encoded query and the exact GET body") {
     CHECK(request.url ==
           "https://bd-api.kuwo.cn/api/play/music/v2/"
           "audioUrl?devId=device&musicId=9007199254740993&br=2000kflac&freeSign=a+%7E%26%2B*&uid=42&token=session&timestamp=1700000000123&sign=860e6ad34785dcd4ab90b9c740499c67");
-    CHECK(bodian::form_encode("晴天 ~&+*") == "%E6%99%B4%E5%A4%A9+%7E%26%2B*");
+    CHECK(encoding::url_encode("晴天 ~&+*", encoding::UrlStyle::form) == "%E6%99%B4%E5%A4%A9+%7E%26%2B*");
 }
 
 TEST_CASE("Bodian playlist batches retain numeric IDs and never replay a lost write") {

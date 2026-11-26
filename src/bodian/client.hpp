@@ -13,8 +13,6 @@ namespace lyren::bodian {
 
     using Query = std::vector<std::pair<std::string, std::string>>;
 
-    std::string form_encode(std::string_view value);
-    std::string query_string(const Query &query);
     std::string signature(std::string_view path, std::string_view query, std::string_view body);
 
     struct Call {
@@ -41,7 +39,9 @@ namespace lyren::bodian {
         StringMap<std::string> session;
         std::move_only_function<void()> on_session;
 
-        const std::string &get(std::string_view key) const;
+        const std::string &get(std::string_view key) const {
+            return lyren::get(session, key);
+        }
         bool logged_in() const;
         void ensure_device();
         void clear_login();

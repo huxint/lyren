@@ -90,7 +90,9 @@ namespace lyren::wl {
 
         void set_cursor(Cursor c);
         // Only real changes are committed: the compositor answers every commit with a done event.
-        void set_text_input(TextInputState s);
+        void set_text_input(const TextInputState &s);
+        // Silently drop any focus pointing at a surface being destroyed (without firing callbacks on it).
+        void detach(const SurfaceSink *s);
         // Latest input serial, for move/resize/menu requests.
         uint32_t serial() const {
             return serial_;

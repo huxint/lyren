@@ -141,10 +141,12 @@ namespace lyren {
         if (link.empty()) {
             return;
         }
-        ui.open_menu(x, y, {{"copy", std::string(lyren::tr("Copy link")), [&ui, link = std::move(link)] {
-                                 ui.copy = link;
-                                 ui.toast(std::string(lyren::tr("Link copied")), "copy");
-                             }}});
+        std::vector<ui::MenuItem> items;
+        items.push_back({"copy", std::string(lyren::tr("Copy link")), [&ui, link = std::move(link)] {
+                             ui.copy = link;
+                             ui.toast(std::string(lyren::tr("Link copied")), "copy");
+                         }});
+        ui.open_menu(x, y, std::move(items));
     }
 
     void Dialogs::show_picture(ui::Ui &ui, std::string url, float aspect) {
@@ -158,7 +160,7 @@ namespace lyren {
             [this, url = std::move(url)](ui::Ui &u, Rect r) {
                 auto &p = u.painter();
                 const auto &t = u.theme();
-                const auto &e = env_.images.picture(url, 1024);
+                const auto &e = images_.picture(url, 1024);
                 p.shadow({r.x, r.y + 12, r.w, r.h}, t.radius_l(), 48, t.shadow);
                 if (e.ready) {
                     p.image(r, e.tex, t.radius_l(), white, cover_uv(static_cast<float>(e.w) / static_cast<float>(std::max(e.h, 1u)), r.w / r.h));

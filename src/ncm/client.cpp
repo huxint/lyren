@@ -10,6 +10,7 @@
 #include <iterator>
 #include <random>
 
+#include "core/encoding.hpp"
 #include "core/log.hpp"
 #include "ncm/crypto.hpp"
 #include "net/fetch.hpp"
@@ -27,30 +28,14 @@ namespace lyren::ncm {
         return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     }
 
-    // encodeURIComponent
-    static std::string uri_encode(std::string_view s) {
-        std::string out;
-        for (unsigned char c : s) {
-            if (std::isalnum(c) || std::string_view("-_.!~*'()").contains(static_cast<char>(c))) {
-                out += static_cast<char>(c);
-            } else {
-                std::format_to(std::back_inserter(out), "%{:02X}", c);
-            }
-        }
-        return out;
-    }
-
     using Pairs = std::vector<std::pair<std::string, std::string>>;
 
+    static std::string uri_encode(std::string_view s) {
+        return encoding::url_encode(s, encoding::UrlStyle::uri_component);
+    }
+
     static std::string form_body(const Pairs &fields) {
-        std::string body;
-        for (const auto &[key, value] : fields) {
-            if (!body.empty()) {
-                body += '&';
-            }
-            body += uri_encode(key) + '=' + uri_encode(value);
-        }
-        return body;
+        return encoding::query_string(fields, encoding::UrlStyle::uri_component);
     }
 
     static std::string cookie_header(const Pairs &p) {
@@ -63,12 +48,6 @@ namespace lyren::ncm {
 
     bool Client::logged_in() const {
         return !get("MUSIC_U").empty();
-    }
-
-    const std::string &Client::get(std::string_view key) const {
-        static const std::string empty;
-        auto it = cookies.find(key);
-        return it == cookies.end() ? empty : it->second;
     }
 
     void Client::ensure_fingerprint() {
