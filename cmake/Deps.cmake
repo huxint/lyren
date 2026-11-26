@@ -34,9 +34,9 @@ FetchContent_Declare(
   SOURCE_SUBDIR none)
 FetchContent_Declare(
   nexus
-  URL https://github.com/huxint/nexus/archive/b97f78ee0ae4a7e0f74c2c338d80f8f0d74386a7.tar.gz
+  URL https://github.com/huxint/nexus/archive/97138ddbd93c087ffdd16ddb93d1d5805ffe504c.tar.gz
   URL_HASH
-    SHA256=5ae3b57955f919e981f6543a94b4a1a97b6a3706541731ab92103a5fe98ff4df
+    SHA256=6d7a6dbec8792f61932e54ee040887feb82145c81b59c3348742da66233dd2cb
   SOURCE_SUBDIR none)
 FetchContent_MakeAvailable(vulkan_headers wayland_protocols glaze nanosvg nexus)
 
