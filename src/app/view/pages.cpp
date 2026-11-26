@@ -100,6 +100,40 @@ namespace lyren {
         return x + shuffle_w + gap;
     }
 
+    float Pages::collection_button(ui::Ui &ui, float x, float y, float height, bool compact) {
+        const auto &route = browser_.route();
+        const Card &c = route.card;
+        const bool artist = route.page == Page::artist;
+        const auto reported = artist ? route.artist->info->followed : route.list->album.collected;
+        const auto kept = library_.kept(c.source, artist ? Library::Preference::artist : Library::Preference::album, c.id, reported);
+        const auto yes = lyren::tr(artist ? "Following" : "Saved"), no = lyren::tr(artist ? "Follow" : "Save");
+        const Rect r{x, y, compact ? height : std::max(ui.button_width(yes, true), ui.button_width(no, true)), height};
+        if (!kept) {
+            if (library_.shelf(c.source).collection[artist].loading) {
+                ui.spinner(ui::center(r, 16, 16), ui.theme().text_dim, 2);
+            } else {
+                const auto retry = lyren::tr("Retry");
+                if (ui.button(ui.id("collection-retry"), r, compact ? std::string_view{} : retry, ui::ButtonKind::secondary, "refresh-cw", compact ? retry : std::string_view{})) {
+                    spawn(library_.load_collection(c.source));
+                }
+            }
+            return r.w;
+        }
+        const bool on = *kept;
+        const auto label = on ? yes : no;
+        const auto icon = artist ? (on ? "user-check" : "user-plus") : (on ? "star-fill" : "star");
+        const auto kind = artist && !on ? ui::ButtonKind::tonal : ui::ButtonKind::secondary;
+        if (ui.button(ui.id(artist ? "follow" : "collect"), r, compact ? std::string_view{} : label, kind, icon, compact ? label : std::string_view{})) {
+            if (artist) {
+                const auto &info = *route.artist->info;
+                library_.set_followed({.kind = CardKind::artist, .source = c.source, .id = c.id, .title = info.name, .cover = info.avatar}, !on);
+            } else {
+                library_.set_collected({.kind = CardKind::album, .source = c.source, .id = c.id, .title = c.title, .subtitle = route.list->album.artist, .cover = c.cover}, !on);
+            }
+        }
+        return r.w;
+    }
+
     bool Pages::page_tabs(ui::Ui &ui, ui::Id id, Rect r, std::span<const std::string_view> labels, int &selected, std::span<const bool> enabled) {
         const int before = selected;
         std::inplace_vector<std::string_view, 8> visible;
@@ -918,14 +952,7 @@ namespace lyren {
         const std::vector<Track> &songs = a.songs.tracks;
         const float bx = play_buttons(ui, tx, head.bottom() - btn_h, songs, btn_h, compact);
         if (a.info && provider(c).capabilities.follow_artists) {
-            const bool fallback = a.info->followed.value_or(false);
-            const bool on = library_.kept(c.source, Library::Preference::artist, c.id, fallback);
-            const auto label = on ? lyren::tr("Following") : lyren::tr("Follow");
-            const float follow_w = compact ? btn_h : std::max(ui.button_width(lyren::tr("Following"), true), ui.button_width(lyren::tr("Follow"), true));
-            if (ui.button(ui.id("follow"), {bx, head.bottom() - btn_h, follow_w, btn_h}, compact ? std::string_view{} : label,
-                          on ? ui::ButtonKind::secondary : ui::ButtonKind::tonal, on ? "user-check" : "user-plus", compact ? label : std::string_view{})) {
-                library_.toggle_follow({.kind = CardKind::artist, .source = c.source, .id = c.id, .title = a.info->name, .cover = a.info->avatar}, fallback);
-            }
+            collection_button(ui, bx, head.bottom() - btn_h, btn_h, compact);
         }
 
         // Songs and albums load a page at a time as they scroll; each tab loads the first time it is picked.
@@ -1251,12 +1278,8 @@ namespace lyren {
             if (!browser_.route().list || !browser_.route().list->loaded) {
                 return;
             }
-            const bool fallback = browser_.route().list->album.collected.value_or(false);
-            const bool on = library_.kept(c.source, Library::Preference::album, c.id, fallback);
-            const float w = std::max(ui.button_width(lyren::tr("Saved"), true), ui.button_width(lyren::tr("Save"), true));
-            if (provider(c).capabilities.collect_albums && labelled("collect", on ? lyren::tr("Saved") : lyren::tr("Save"), on ? "star-fill" : "star", w)) {
-                library_.toggle_collect(
-                    {.kind = CardKind::album, .source = c.source, .id = c.id, .title = c.title, .subtitle = browser_.route().list->album.artist, .cover = c.cover}, fallback);
+            if (provider(c).capabilities.collect_albums) {
+                x += collection_button(ui, x, y, height, compact) + gap;
             }
             if (provider(c).capabilities.comments[1] && square("album-comments", "message-square", lyren::tr("Comments"))) {
                 shell_.open_comments(c.source, Subject::album, browser_.route().list->album.thread, c.title, c.cover);

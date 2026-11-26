@@ -100,6 +100,7 @@ namespace {
         }
         Task<Result<std::vector<Card>>> collected_albums() override {
             ++collected_albums_calls;
+            co_await lyren::sleep{loop_, 1ms};
             co_return saved_albums;
         }
         Task<Result<std::vector<Card>>> followed_artists() override {
@@ -375,11 +376,14 @@ TEST_CASE("Browser navigation, selection, playlist deletion, and async album col
     // Opening album triggers async collection load without blocking album() itself.
     browser.open(alb);
     CHECK(browser.route().page == Page::album);
-    rig.run_for(10ms);
     REQUIRE(browser.route().list != nullptr);
-    CHECK_FALSE(browser.route().list->album.collected.has_value());
+    const auto reported = browser.route().list->album.collected;
+    CHECK_FALSE(reported.has_value());
+    CHECK_FALSE(lib.kept(Source::netease, Library::Preference::album, "al1", reported).has_value());
+    rig.run_for(10ms);
     CHECK(rig.p0.collected_albums_calls == 1);
-    CHECK(lib.kept(Source::netease, Library::Preference::album, "al1", false));
+    CHECK(lib.kept(Source::netease, Library::Preference::album, "al1", reported) == true);
+    CHECK(lib.kept(Source::netease, Library::Preference::album, "other", std::nullopt) == false);
 
     // Back / forward navigation.
     CHECK(browser.back());

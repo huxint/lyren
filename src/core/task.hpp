@@ -179,7 +179,9 @@ namespace lyren {
             return h_;
         }
         T await_resume() {
-            return h_.promise().result();
+            // An ok() error suspends inside the task. Release its locals before the awaiter continues.
+            Task finished = std::move(*this);
+            return finished.h_.promise().result();
         }
 
     private:

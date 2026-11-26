@@ -1030,6 +1030,14 @@ namespace lyren::kugou {
         co_return std::pair<Card, std::vector<Card>>{Card{.source = Source::kugou, .commentable = false}, std::move(playlists)};
     }
 
+    Task<Result<std::vector<Card>>> Kugou::collected_playlists() {
+        auto playlists = co_await ok(co_await account_playlists());
+        std::erase_if(playlists, [](const Card &card) {
+            return card.owned;
+        });
+        co_return playlists;
+    }
+
     Task<Result<std::vector<Track>>> Kugou::daily_songs() {
         if (!logged_in()) {
             co_return std::unexpected("Sign in to KuGou Music and try again");

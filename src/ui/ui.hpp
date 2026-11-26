@@ -257,6 +257,7 @@ namespace lyren::ui {
         bool text_box(Id id, Rect r, std::string &text, std::string_view placeholder, std::string_view icon = {}, std::string_view shortcut = {});
         // Wrapped multiline editor. Enter never submits. Unframed editors use the parent's padding and focus ring.
         void text_area(Id id, Rect r, std::string &text, std::string_view placeholder, bool framed = true);
+        void invalidate_text_layout();
         // Returns true while the user changes the value (0..1).
         bool slider(Id id, Rect r, float &value, bool accent = true);
         bool tabs(Id id, Rect r, std::span<const std::string_view> labels, int &selected);

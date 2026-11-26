@@ -101,6 +101,23 @@ TEST_CASE("cancelling the earliest timer does not wake the loop at its old deadl
     CHECK(wakeups == 1);
 }
 
+TEST_CASE("a timer installed by the prepare-read hook wakes the same poll") {
+    Loop loop;
+    int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    bool late = false;
+    loop.after(2s, [&] {
+        late = true;
+    });
+    loop.set_poll_hook({.fd = fd, .before = [&] {
+                            loop.after(0ms, [&] {
+                                loop.quit();
+                            });
+                        }});
+    loop.run();
+    close(fd);
+    CHECK_FALSE(late);
+}
+
 TEST_CASE("quitting in the before-poll hook cancels the prepared read without waiting") {
     Loop loop;
     int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);

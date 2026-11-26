@@ -114,6 +114,18 @@ TEST_CASE("ok() unwraps results and early-returns errors while destroying corout
         CHECK(destroyed == 1);
     }
 
+    SUBCASE("a named task releases its locals before the caller handles the error") {
+        auto observe = [&]() -> Task<void> {
+            auto task = pipeline(true, false);
+            const auto result = co_await task;
+            CHECK_FALSE(result);
+            CHECK(destroyed == 1);
+            loop.quit();
+        };
+        spawn(observe());
+        loop.run();
+    }
+
     SUBCASE("short-circuit works inside both()") {
         Result<std::pair<Result<int>, Result<int>>> out = std::unexpected("pending");
         auto run_both = [&]() -> Task<Result<std::pair<Result<int>, Result<int>>>> {

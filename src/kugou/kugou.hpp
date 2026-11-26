@@ -49,6 +49,7 @@ namespace lyren::kugou {
         Task<Result<CommentPage>> comments(Subject subject, std::string id, bool hot, int page, std::string cursor) override;
         Task<Result<CommentPage>> comment_replies(Subject subject, std::string id, std::string root, int page, std::string cursor) override;
         Task<Result<std::pair<Card, std::vector<Card>>>> user_playlists(std::string uid) override;
+        Task<Result<std::vector<Card>>> collected_playlists() override;
         Task<Result<std::vector<Track>>> daily_songs();
         Task<Result<Track>> song_detail(std::string hash);
 

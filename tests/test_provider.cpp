@@ -102,16 +102,19 @@ TEST_CASE("saved slider positions and selections are normalized at the file boun
 }
 
 TEST_CASE("credentials round-trip every platform") {
-    auto c = creds::from_json(R"({"netease":{"MUSIC_U":"test-cookie"}})");
+    auto parsed = creds::from_json(R"({"netease":{"MUSIC_U":"test-cookie"}})");
+    REQUIRE(parsed);
+    auto &c = *parsed;
     CHECK(c["netease"].at("MUSIC_U") == "test-cookie");
     CHECK(c["qq"].empty());
     c["qq"] = {{"musicid", "123"}, {"musickey", "test-key"}, {"refresh_token", "test-refresh"}};
     c["extension"] = {{"token", "future-session"}};
     auto restored = creds::from_json(creds::to_json(c));
-    CHECK(restored == c);
-    restored["netease"].clear();
-    restored = creds::from_json(creds::to_json(restored));
-    CHECK(restored["qq"] == c["qq"]);
-    CHECK(restored["extension"] == c["extension"]);
-    CHECK(creds::from_json(R"({"netease":{"MUSIC_U":"test-cookie"},"qq":)").empty());
+    REQUIRE(restored == c);
+    (*restored)["netease"].clear();
+    restored = creds::from_json(creds::to_json(*restored));
+    REQUIRE(restored);
+    CHECK(restored->at("qq") == c.at("qq"));
+    CHECK(restored->at("extension") == c.at("extension"));
+    CHECK_FALSE(creds::from_json(R"({"netease":{"MUSIC_U":"test-cookie"},"qq":)"));
 }

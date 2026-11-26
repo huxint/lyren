@@ -147,16 +147,14 @@ namespace lyren {
         p.wave({sx, cy - thickness / 2, width, thickness}, filled, std::max(0.f, amplitude), 42, phase, t.accent, t.text.with_alpha(0.15f), pluck);
         // What has been fetched ahead of the song.
         if (const audio::Spool *spool = playback_.player().spool(); spool && file_duration > 0) {
-            const auto [have, size] = spool->progress();
-            if (size && have < size) {
-                for (const auto [begin, end] : spool->ranges()) {
-                    auto x = [&](uint64_t byte) {
-                        return r.x + r.w * clock.progress(file_duration * static_cast<double>(byte) / static_cast<double>(size));
-                    };
-                    const float left = std::max({x(begin), sx + filled, sx}), right = std::min(x(end), sx + width);
-                    if (right > left) {
-                        p.rect({left, cy - thickness / 2, right - left, thickness}, t.text.with_alpha(0.14f), thickness / 2);
-                    }
+            const uint64_t size = spool->progress(&buffered_).second;
+            for (const auto [begin, end] : buffered_) {
+                auto x = [&](uint64_t byte) {
+                    return r.x + r.w * clock.progress(file_duration * static_cast<double>(byte) / static_cast<double>(size));
+                };
+                const float left = std::max({x(begin), sx + filled, sx}), right = std::min(x(end), sx + width);
+                if (right > left) {
+                    p.rect({left, cy - thickness / 2, right - left, thickness}, t.text.with_alpha(0.14f), thickness / 2);
                 }
             }
         }

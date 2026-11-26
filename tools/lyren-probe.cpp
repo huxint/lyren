@@ -841,19 +841,16 @@ namespace {
             if (load_creds) {
                 auto saved = co_await creds::load(loop);
                 if (!saved) {
-                    if (source == Source::qq) {
+                    if (source == Source::qq || cmd == "login" || cmd == "renew") {
                         co_return fail(saved.error());
                     }
                     if (source == Source::netease) {
                         fail(saved.error());
                     }
                 } else {
-                    credentials = creds::from_json(*saved);
+                    credentials = std::move(*saved);
                     owned->session() = credentials[std::string(platform(source).id)];
                 }
-            }
-            if (ncm_ptr) {
-                ncm_ptr->client.ensure_fingerprint();
             }
             if (qishui_ptr && cmd == "check") {
                 if (auto r = co_await run_qishui_check(*qishui_ptr, rest); !r) {
@@ -861,8 +858,11 @@ namespace {
                 }
                 co_return;
             }
-            if (auto ready = co_await owned->initialize(); !ready) {
-                co_return fail(ready.error());
+            // QQ initialization renews the previous session. A new QR login is independent of it.
+            if (!(qq_ptr && (cmd == "login" || cmd == "qr"))) {
+                if (auto ready = co_await owned->initialize(); !ready) {
+                    co_return fail(ready.error());
+                }
             }
 
             if (ncm_ptr && cmd == "call") {
@@ -910,7 +910,9 @@ namespace {
             co_await run();
             loop.quit();
         };
-        spawn(main_task());
+        loop.defer([&] {
+            spawn(main_task());
+        });
         loop.run();
         return rc;
     }

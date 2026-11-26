@@ -50,6 +50,7 @@ namespace lyren {
                   std::string_view icon = {}, std::string_view action_icon = "play-fill");
         // "Play all" and "Shuffle" from x; returns where the next button goes.
         float play_buttons(ui::Ui &ui, float x, float y, const std::vector<Track> &tracks, float height = ui::control::large, bool compact = false);
+        float collection_button(ui::Ui &ui, float x, float y, float height, bool compact);
         // The buttons after "play all" and "shuffle" on album and playlist pages, from x.
         void list_actions(ui::Ui &ui, float x, float y, float height = ui::control::large, bool compact = false);
         void categories_modal(ui::Ui &ui, ui::Rect r);

@@ -138,14 +138,14 @@ namespace lyren {
         double liked_at(const Track &t) const {
             return pop_source_ == t.source && pop_id_ == t.id ? pop_time_ : -10;
         }
-        // What shows for something the service reported as value: the listener's own change, if there is one.
-        bool kept(Source source, Preference kind, std::string_view id, bool value) const;
+        // A local edit takes precedence over the collection and the state reported by the detail page.
+        std::optional<bool> kept(Source source, Preference kind, std::string_view id, std::optional<bool> reported) const;
         bool following(Source source, const Person &person) const {
-            return kept(source, Preference::user, person.id, person.followed);
+            return *kept(source, Preference::user, person.id, person.followed);
         }
         void toggle_like(Track track);
-        void toggle_follow(Card artist, bool followed);
-        void toggle_collect(Card album, bool collected);
+        void set_followed(Card artist, bool on);
+        void set_collected(Card album, bool on);
         void toggle_collect_playlist(Card playlist);
         void toggle_follow_user(Source source, const Person &person);
         // A read that began at revision came back with value: it stands unless a write has happened since. Returns

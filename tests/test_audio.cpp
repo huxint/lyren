@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -11,7 +12,9 @@
 #include "audio/output.hpp"
 #include "audio/player.hpp"
 #include "audio/spool.hpp"
+#include "core/crypto.hpp"
 #include "http_server.hpp"
+#include "sys/paths.hpp"
 
 using namespace lyren::audio;
 
@@ -22,6 +25,18 @@ TEST_CASE("audio output rejects more channels than the PipeWire format can store
     const auto result = output.start({22050, 65});
     REQUIRE_FALSE(result);
     CHECK(result.error() == "This audio file has more channels than PipeWire supports");
+}
+
+TEST_CASE("completed audio needs no range buffer for the progress bar") {
+    auto file = Spool::file(LYREN_TEST_DATA "/tone.mp3");
+    const auto size = file->size();
+    REQUIRE(size > 0);
+    std::vector<Ranges::Span> partial;
+    CHECK(file->progress(&partial) == std::pair{size, size});
+    CHECK(partial.capacity() == 0);
+    partial.emplace_back(0, 1);
+    file->progress(&partial);
+    CHECK(partial.empty());
 }
 
 TEST_CASE("byte ranges merge and report gaps") {
@@ -457,7 +472,7 @@ TEST_CASE("Player resets pending seek on load failure and Spool reuses persisten
 
         fetch_all("test:cache:song-1");
         CHECK(hits == 1);
-        // Second play of song-1 hits the on-disk cache with zero HTTP traffic.
+        // A replay also reuses the bytes while the worker is still publishing them.
         fetch_all("test:cache:song-1");
         CHECK(hits == 1);
 
@@ -467,6 +482,16 @@ TEST_CASE("Player resets pending seek on load failure and Spool reuses persisten
         CHECK(hits == 2);
         fetch_all("test:cache:song-2");
         CHECK(hits == 2);
+        const auto dir = lyren::paths::cache_dir() / "audio";
+        const auto first = dir / lyren::crypto::md5_hex("test:cache:song-1"), second = dir / lyren::crypto::md5_hex("test:cache:song-2");
+        const auto evicted = [&] {
+            return std::filesystem::exists(second) && !std::filesystem::exists(first);
+        };
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!evicted() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        REQUIRE(evicted());
         fetch_all("test:cache:song-1");
         CHECK(hits == 3);
         Spool::set_cache_limit(0);

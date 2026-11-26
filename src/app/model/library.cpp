@@ -131,7 +131,7 @@ namespace lyren {
         env_.notify(lyren::trf("Signed out of {}", lyren::tr(platform(source).name)), "log-out");
     }
 
-    bool Library::kept(Source source, Preference kind, std::string_view id, bool value) const {
+    std::optional<bool> Library::kept(Source source, Preference kind, std::string_view id, std::optional<bool> reported) const {
         const Shelf &lib = shelf(source);
         const auto &edits = lib.preferences[static_cast<size_t>(kind)];
         if (auto it = edits.find(id); it != edits.end()) {
@@ -146,8 +146,11 @@ namespace lyren {
                     return card.id == id;
                 });
             }
+            if (!env_.signed_in(source)) {
+                return false;
+            }
         }
-        return value;
+        return reported;
     }
 
     void Library::apply(Source source, Preference kind, const Edit &edit) {
@@ -311,21 +314,19 @@ namespace lyren {
         set(source, Preference::song, std::move(track), {}, on);
     }
 
-    void Library::toggle_follow(Card artist, bool followed) {
+    void Library::set_followed(Card artist, bool on) {
         if (!env_.provider(artist).logged_in()) {
             return env_.notify(std::string(lyren::tr("Sign in to this artist's platform to follow them")), "user-plus");
         }
-        const bool on = !kept(artist.source, Preference::artist, artist.id, followed);
         env_.notify(on ? lyren::trf("Following {}", artist.title) : std::string(lyren::tr("Unfollowed artist")), on ? "user-check" : "user");
         const Source source = artist.source;
         set(source, Preference::artist, {}, std::move(artist), on);
     }
 
-    void Library::toggle_collect(Card album, bool collected) {
+    void Library::set_collected(Card album, bool on) {
         if (!env_.provider(album).logged_in()) {
             return env_.notify(std::string(lyren::tr("Sign in to this album's platform to save it")), "star");
         }
-        const bool on = !kept(album.source, Preference::album, album.id, collected);
         env_.notify(std::string(lyren::tr(on ? "Album saved" : "Album removed")), on ? "star-fill" : "star");
         const Source source = album.source;
         set(source, Preference::album, {}, std::move(album), on);

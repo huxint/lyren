@@ -63,11 +63,22 @@ namespace lyren {
         void import_settings();
         void test_settings();
         void sign_out(Source source);
+        bool needs_store_recovery() const {
+            return store_ == Store::unreadable;
+        }
+        Task<void> recover_store();
         // Synchronously writes any unsaved session changes before shutdown.
         void flush();
 
     private:
-        Task<void> startup();
+        enum class Store {
+            loading,
+            ready,
+            unreadable,
+            recovering
+        };
+        Task<void> load_sessions(std::optional<Source> connected = {});
+        void restore_sessions(creds::Credentials saved, std::optional<Source> connected);
         Task<void> initialize(Source source);
         Task<void> scan();
         Task<void> import(Source source);
@@ -81,9 +92,9 @@ namespace lyren {
         Env &env_;
         Library &library_;
         Browser &browser_;
-        bool can_save_ = false; // the stored credentials were read, so writing them back loses nothing
-        bool dirty_ = false;    // session state changed since the last completed write
-        bool saving_ = false;   // a write is currently in flight
+        Store store_ = Store::loading;
+        bool dirty_ = false;  // session state changed since the last completed write
+        bool saving_ = false; // a write is currently in flight
         creds::Credentials credentials_;
         std::string saved_json_;
         Loop::TimerId save_timer_ = 0;

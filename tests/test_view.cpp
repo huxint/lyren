@@ -1191,6 +1191,27 @@ TEST_CASE("recommend sticky header morphs, latches, stays clickable above scroll
     CHECK_FALSE(card_icon);
 }
 
+TEST_CASE("an unknown album preference retries the collection before offering a write") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    const Card album{.kind = CardKind::album, .id = "saved-album", .title = "Saved album"};
+    int reads = 0;
+    scene.service.on_collected_albums = [&]() -> Task<Result<std::vector<Card>>> {
+        if (++reads == 1) {
+            co_return std::unexpected("Collection unavailable");
+        }
+        co_return std::vector{album};
+    };
+    scene.shell.browser.open(album);
+    scene.draw();
+    CHECK(scene.find("Save") == nullptr);
+    const auto *retry = scene.find("Retry");
+    REQUIRE(retry);
+    scene.click(*retry);
+    CHECK(reads == 2);
+    CHECK(scene.find("Saved") != nullptr);
+}
+
 TEST_CASE("route and shelf caches reuse data across page switches, SWR refreshes calmly, and isolate scrolls") {
     gfx::select_driver(GpuChoice::integrated);
     Scene scene;
@@ -1313,7 +1334,7 @@ TEST_CASE("route and shelf caches reuse data across page switches, SWR refreshes
     scene.shell.browser.open(Page::collection);
     scene.draw();
     CHECK(collection_fetches == 1);
-    CHECK(scene.shell.library.kept(Source::netease, Library::Preference::album, "alb-1", false));
+    CHECK(scene.shell.library.kept(Source::netease, Library::Preference::album, "alb-1", false) == true);
     scene.shell.browser.open(Page::recommend);
     scene.draw();
     scene.shell.browser.open(Page::collection);

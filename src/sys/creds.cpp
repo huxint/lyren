@@ -22,7 +22,6 @@
 #include <mutex>
 #include <thread>
 
-#include "core/log.hpp"
 #include "core/encoding.hpp"
 #include "sys/paths.hpp"
 
@@ -224,6 +223,10 @@ namespace lyren::creds {
 
         // Persistent background writer offloading fsync + rename from the UI loop thread; keeps only the latest blob.
         struct BlobWriter {
+            struct Blob {
+                std::string text;
+                SaveMode mode = SaveMode::replace;
+            };
             struct Completion {
                 int efd = -1;
                 Result<void> result{};
@@ -240,7 +243,7 @@ namespace lyren::creds {
             std::condition_variable done_cv;
             uint64_t next_seq = 0;
             uint64_t written_seq = 0;
-            std::optional<Params> pending;
+            std::optional<Blob> pending;
             uint64_t pending_seq = 0;
             std::vector<std::shared_ptr<Completion>> waiters;
             bool writing = false;
@@ -251,19 +254,43 @@ namespace lyren::creds {
                 return ++next_seq;
             }
 
-            static Result<void> write_file(const Params &r) {
-                auto path = paths::state_dir() / "credentials", tmp = path;
-                tmp += ".tmp";
-                int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-                std::string blob = r.blob.value_or("") + "\n";
-                bool ok = fd >= 0 && write_all(fd, blob) && fsync(fd) == 0;
-                if (fd >= 0) {
-                    close(fd);
+            static Result<void> write_file(const Blob &blob) {
+                if (blob.text.empty()) {
+                    return std::unexpected("systemd-creds: missing encrypted data");
                 }
-                if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0) {
-                    return std::unexpected(std::format("Could not save credentials: {}", std::strerror(errno)));
+                const auto path = paths::state_dir() / "credentials";
+                const bool backup = blob.mode == SaveMode::back_up_previous;
+                if (backup) {
+                    std::error_code ec;
+                    const auto status = std::filesystem::symlink_status(path, ec);
+                    if (ec && ec != std::errc::no_such_file_or_directory) {
+                        return std::unexpected(ec.message());
+                    }
+                    if (std::filesystem::exists(status) && !std::filesystem::is_regular_file(status)) {
+                        return std::unexpected("Credential path must be a regular file");
+                    }
                 }
-                return {};
+                std::string tmp = path.string() + (backup ? ".backup.XXXXXX" : ".tmp.XXXXXX");
+                const int fd = ::mkostemp(tmp.data(), O_CLOEXEC);
+                if (fd < 0) {
+                    return std::unexpected(std::strerror(errno));
+                }
+                int error = write_all(fd, blob.text) && write_all(fd, "\n") && ::fsync(fd) == 0 ? 0 : errno;
+                if (::close(fd) < 0 && !error) {
+                    error = errno;
+                }
+                if (!error) {
+                    // Exchanging names keeps the exact inode being replaced as the encrypted backup.
+                    if (::renameat2(AT_FDCWD, tmp.c_str(), AT_FDCWD, path.c_str(), backup ? RENAME_EXCHANGE : 0) == 0) {
+                        return {};
+                    }
+                    if (backup && errno == ENOENT && ::renameat2(AT_FDCWD, tmp.c_str(), AT_FDCWD, path.c_str(), RENAME_NOREPLACE) == 0) {
+                        return {};
+                    }
+                    error = errno;
+                }
+                ::unlink(tmp.c_str());
+                return std::unexpected(std::strerror(error));
             }
 
             static void signal(const std::shared_ptr<Completion> &c, const Result<void> &res) {
@@ -272,15 +299,19 @@ namespace lyren::creds {
                 static_cast<void>(::write(c->efd, &one, sizeof one));
             }
 
-            void submit(Params params, uint64_t seq, std::shared_ptr<Completion> done) {
+            void submit(Blob blob, uint64_t seq, std::shared_ptr<Completion> done) {
                 std::unique_lock lock(mu);
-                if (seq < written_seq || (pending && seq < pending_seq)) {
+                if (seq < written_seq) {
                     lock.unlock();
                     signal(done, {});
                     return;
                 }
-                pending = std::move(params);
-                pending_seq = seq;
+                const auto mode = pending && pending->mode == SaveMode::back_up_previous ? pending->mode : blob.mode;
+                if (!pending || seq > pending_seq) {
+                    pending = std::move(blob);
+                    pending_seq = seq;
+                }
+                pending->mode = mode;
                 waiters.push_back(std::move(done));
                 if (!worker.joinable()) {
                     worker = std::jthread([this](std::stop_token stop) {
@@ -290,7 +321,7 @@ namespace lyren::creds {
                 cv.notify_one();
             }
 
-            Result<void> write_sync(const Params &params, uint64_t seq) {
+            Result<void> write_sync(Blob blob, uint64_t seq) {
                 std::vector<std::shared_ptr<Completion>> superseded;
                 {
                     std::unique_lock lock(mu);
@@ -301,12 +332,15 @@ namespace lyren::creds {
                         return {};
                     }
                     if (pending && pending_seq <= seq) {
+                        if (pending->mode == SaveMode::back_up_previous) {
+                            blob.mode = pending->mode;
+                        }
                         pending.reset();
                         superseded = std::move(waiters);
                     }
                     writing = true;
                 }
-                auto res = write_file(params);
+                auto res = write_file(blob);
                 {
                     std::lock_guard lock(mu);
                     if (res) {
@@ -323,7 +357,7 @@ namespace lyren::creds {
 
             void run(std::stop_token stop) {
                 for (;;) {
-                    Params params;
+                    Blob blob;
                     uint64_t seq = 0;
                     bool stale = false;
                     std::vector<std::shared_ptr<Completion>> batch;
@@ -341,14 +375,14 @@ namespace lyren::creds {
                         if (!pending) {
                             continue;
                         }
-                        params = std::move(*pending);
+                        blob = std::move(*pending);
                         pending.reset();
                         seq = pending_seq;
                         stale = seq < written_seq;
                         batch = std::move(waiters);
                         writing = true;
                     }
-                    const Result<void> res = stale ? Result<void>{} : write_file(params);
+                    const Result<void> res = stale ? Result<void>{} : write_file(blob);
                     {
                         std::lock_guard lock(mu);
                         if (res) {
@@ -372,7 +406,7 @@ namespace lyren::creds {
         // Awaits BlobWriter completion over an eventfd; destroying the coroutine cancels wakeup cleanly.
         struct SaveBlob {
             Loop &loop;
-            Params params;
+            BlobWriter::Blob blob;
             uint64_t seq;
             std::shared_ptr<BlobWriter::Completion> shared;
 
@@ -389,7 +423,7 @@ namespace lyren::creds {
                 shared = std::make_shared<BlobWriter::Completion>();
                 shared->efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
                 if (shared->efd < 0) {
-                    shared->result = blob_writer().write_sync(params, seq);
+                    shared->result = blob_writer().write_sync(std::move(blob), seq);
                     shared->done = true;
                     loop.defer([h] {
                         h.resume();
@@ -405,7 +439,7 @@ namespace lyren::creds {
                         h.resume();
                     }
                 });
-                blob_writer().submit(std::move(params), seq, shared);
+                blob_writer().submit(std::move(blob), seq, shared);
             }
             Result<void> await_resume() noexcept {
                 return std::move(shared->result);
@@ -414,27 +448,34 @@ namespace lyren::creds {
 
     } // namespace
 
-    Task<Result<std::string>> load(Loop &loop) {
-        std::ifstream in(paths::state_dir() / "credentials");
+    Task<Result<Credentials>> load(Loop &loop) {
+        const auto path = paths::state_dir() / "credentials";
+        std::ifstream in(path);
         if (!in) {
-            co_return std::string{};
+            std::error_code ec;
+            if (!std::filesystem::exists(path, ec) && !ec) {
+                co_return Credentials{};
+            }
+            co_return std::unexpected(ec ? ec.message() : "Could not open credential file");
         }
-        std::string blob{std::istreambuf_iterator<char>(in), {}};
+        std::string blob;
+        if (!std::getline(in, blob, '\0') || !in.eof()) {
+            co_return std::unexpected("Invalid credential data");
+        }
         while (!blob.empty() && std::isspace(static_cast<unsigned char>(blob.back()))) {
             blob.pop_back();
         }
-        co_return (co_await call(loop, "Decrypt", std::format(R"({{"name":"credentials","blob":"{}","scope":"user"}})", blob))).transform([](const Params &r) {
-            return encoding::unbase64(r.data.value_or(""));
-        });
+        auto reply = co_await ok(co_await call(loop, "Decrypt", std::format(R"({{"name":"credentials","blob":"{}","scope":"user"}})", blob)));
+        co_return from_json(encoding::unbase64(reply.data.value_or("")));
     }
 
-    Task<Result<void>> save(Loop &loop, std::string plaintext) {
+    Task<Result<void>> save(Loop &loop, std::string plaintext, SaveMode mode) {
         const uint64_t seq = blob_writer().claim_seq();
         auto encrypted = co_await call(loop, "Encrypt", std::format(R"({{"name":"credentials","data":"{}","scope":"user"}})", encoding::base64(plaintext)));
         if (!encrypted) {
             co_return std::unexpected(encrypted.error());
         }
-        co_return co_await SaveBlob{loop, std::move(*encrypted), seq, nullptr};
+        co_return co_await SaveBlob{loop, {std::move(encrypted->blob).value_or(""), mode}, seq, nullptr};
     }
 
     Result<void> save_sync(std::string_view plaintext) {
@@ -443,7 +484,7 @@ namespace lyren::creds {
         if (!encrypted) {
             return std::unexpected(encrypted.error());
         }
-        return blob_writer().write_sync(*encrypted, seq);
+        return blob_writer().write_sync({std::move(encrypted->blob).value_or("")}, seq);
     }
 
     std::string to_json(const Credentials &c) {
@@ -452,11 +493,10 @@ namespace lyren::creds {
         return out;
     }
 
-    Credentials from_json(std::string_view json) {
+    Result<Credentials> from_json(std::string_view json) {
         Credentials c;
-        if (!json.empty() && glz::read<glz::opts{.error_on_unknown_keys = false}>(c, json)) {
-            log::warn("credentials: unreadable, starting over");
-            return {};
+        if (glz::read<glz::opts{.error_on_unknown_keys = false}>(c, json)) {
+            return std::unexpected("Invalid credential data");
         }
         return c;
     }

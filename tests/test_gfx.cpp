@@ -200,6 +200,36 @@ TEST_CASE("pointer chords keep press modifiers after keys are released before a 
     }
 }
 
+TEST_CASE("a font reload rewraps an editor with unchanged text and width") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    text::Fonts fonts("sans-serif");
+    text::Atlas atlas(g.renderer, fonts);
+    ui::Ui ui;
+    const ui::Theme theme{.text = {1, 1, 1, 1}};
+    ui::FrameInput input;
+    std::string content(16, 'W');
+    text::Shaper first(fonts);
+    const float width = first.shape(content).width * theme.fs(ui::type::body) + 1;
+    auto draw = [&](text::Shaper &shaper) {
+        ui::Painter painter(atlas, shaper, fonts);
+        painter.record(true);
+        painter.begin(1, 0, 0);
+        ui.begin(painter, theme, width, 200, 1, input);
+        ui.text_area(ui.id("editor"), {0, 0, width, 200}, content, {}, false);
+        ui.end();
+        return painter.runs().size();
+    };
+    REQUIRE(draw(first) == 1);
+    auto *font = fonts.face(fonts.face_for(U'W')).hb;
+    int x, y;
+    hb_font_get_scale(font, &x, &y);
+    hb_font_set_scale(font, x * 2, y);
+    text::Shaper replacement(fonts);
+    ui.invalidate_text_layout();
+    CHECK(draw(replacement) > 1);
+}
+
 TEST_CASE("scroll motion requests paced animation frames after consuming input") {
     gfx::select_driver(GpuChoice::integrated);
     Graphics g;

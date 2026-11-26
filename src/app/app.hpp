@@ -71,7 +71,6 @@ namespace lyren {
             return elapsed(Clock::now());
         }
         void request_redraw();
-        void schedule_shaper_gc();
         template <class Prepare>
         void present(Surface &surf, uint32_t bw, uint32_t bh, bool force, Prepare &&prepare);
         void render();
@@ -126,7 +125,6 @@ namespace lyren {
         uint32_t last_press_time_ = 0, last_press_button_ = 0;
         float last_press_x_ = 0, last_press_y_ = 0;
         Loop::TimerId idle_timer_ = 0;
-        bool shaper_gc_scheduled_ = false;
         std::vector<std::string> script_;
         Surface main_;
         Surface overlay_;

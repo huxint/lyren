@@ -50,6 +50,43 @@ TEST_CASE("shaping reuses borrowed text while keeping font features separate") {
     CHECK(&shaper.shape("") != &shaper.shape("", text::tabular_nums));
 }
 
+TEST_CASE("overlay frames preserve the window's last shaped text under cache pressure") {
+    text::Fonts fonts("sans-serif");
+    text::Shaper shaper(fonts);
+    using Surface = text::Shaper::Surface;
+    shaper.begin_frame(Surface::window);
+    const float width = shaper.shape("W").width;
+    REQUIRE(width > 0);
+
+    // Changed advances make a cache miss observable without relying on allocator addresses.
+    auto *font = fonts.face(fonts.face_for(U'W')).hb;
+    int x, y;
+    hb_font_get_scale(font, &x, &y);
+    hb_font_set_scale(font, x * 2, y);
+    const std::string lyrics(60'000, 'a');
+    for (int i = 0; i < 5; ++i) {
+        shaper.begin_frame(Surface::overlay);
+        shaper.shape(lyrics);
+    }
+    shaper.begin_frame(Surface::window);
+    CHECK(shaper.shape("W").width == width);
+    for (char next : {'b', 'c', 'd'}) {
+        shaper.begin_frame(Surface::overlay);
+        shaper.shape(std::string(30'000, next));
+    }
+    shaper.begin_frame(Surface::window);
+    CHECK(shaper.shape("W").width == doctest::Approx(2 * width));
+
+    shaper.begin_frame(Surface::overlay);
+    shaper.shape("W"); // Shared with the window.
+    const float overlay_only = shaper.shape("M").width;
+    hb_font_set_scale(font, x, y);
+    shaper.release_surface(Surface::overlay);
+    shaper.begin_frame(Surface::window);
+    CHECK(shaper.shape("W").width == doctest::Approx(2 * width));
+    CHECK(shaper.shape("M").width < overlay_only);
+}
+
 TEST_CASE("weights shape as their own runs and never lose a glyph") {
     text::Fonts fonts("sans-serif");
     text::Shaper shaper(fonts);

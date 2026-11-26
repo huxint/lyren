@@ -3,7 +3,6 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
-#include <inplace_vector>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -20,9 +19,8 @@ namespace lyren::audio {
     public:
         using Span = std::pair<uint64_t, uint64_t>;
         void add(uint64_t b, uint64_t e);
-        uint64_t available(uint64_t off) const;                      // contiguous bytes present from off
-        bool completes(uint64_t b, uint64_t e, uint64_t size) const; // true if adding [b, e) covers [0, size)
-        Span gap(uint64_t from, uint64_t size) const;                // first missing range in [from, size); empty if none
+        uint64_t available(uint64_t off) const;       // contiguous bytes present from off
+        Span gap(uint64_t from, uint64_t size) const; // first missing range in [from, size); empty if none
         uint64_t total() const;
         const std::vector<Span> &spans() const {
             return r_;
@@ -53,10 +51,10 @@ namespace lyren::audio {
         void close(); // any thread: stops the download and wakes readers for good
         void invalidate_cache();
         std::string error() const;
-        long status() const;                                  // HTTP status of a failed download, 0 for network errors
-        bool waiting() const;                                 // a reader is blocked on the network
-        std::pair<uint64_t, uint64_t> progress() const;       // bytes present, size
-        std::inplace_vector<Ranges::Span, 16> ranges() const; // byte ranges present
+        long status() const; // HTTP status of a failed download, 0 for network errors
+        bool waiting() const;
+        // Bytes present and known size. The optional snapshot contains ranges only during a partial download.
+        std::pair<uint64_t, uint64_t> progress(std::vector<Ranges::Span> *partial = nullptr) const;
 
     private:
         Spool() = default;
@@ -64,7 +62,7 @@ namespace lyren::audio {
         void on_head(uint64_t req, uint64_t offset, uint64_t total);
         void on_data(uint64_t req, uint64_t offset, std::span<const std::byte> d);
         void on_done(uint64_t req, long status, std::string error);
-        void promote_cache();
+        void finish_cached_download(std::unique_lock<std::mutex> lock);
 
         int fd_ = -1;
         net::Http *http_ = nullptr;
@@ -74,7 +72,7 @@ namespace lyren::audio {
         std::condition_variable cv_;
         Ranges have_;
         uint64_t size_ = unknown;
-        bool closed_ = false, waiting_ = false, no_ranges_ = false, cache_invalidated_ = false;
+        bool closed_ = false, waiting_ = false, no_ranges_ = false;
         std::string error_;
         net::Http::Id http_id_ = 0; // running request, numbered req_
         uint64_t req_ = 0;

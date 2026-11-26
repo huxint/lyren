@@ -1,5 +1,6 @@
 #include "text/shaper.hpp"
 
+#include <algorithm>
 #include <array>
 
 #include "core/utf8.hpp"
@@ -22,10 +23,12 @@ namespace lyren::text {
     const Shaped &Shaper::shape(std::string_view text, uint8_t features) {
         const CacheKey::View key{text, features};
         if (auto it = cache_.find(key); it != cache_.end()) {
-            it->second.used = frame_;
+            it->second.used[surface_] = generation_;
             return it->second.shaped;
         }
-        Shaped &out = cache_.emplace(CacheKey(key), Entry{.used = frame_}).first->second.shaped;
+        auto &entry = cache_.emplace(CacheKey(key), Entry{}).first->second;
+        entry.used[surface_] = generation_;
+        Shaped &out = entry.shaped;
 
         std::array<hb_feature_t, 1> feats;
         unsigned nfeats = 0;
@@ -75,20 +78,35 @@ namespace lyren::text {
         return out;
     }
 
-    void Shaper::end_frame() {
-        ++frame_;
-        constexpr size_t budget = 60'000;
-        if (glyphs_ < budget) {
+    void Shaper::begin_frame(Surface surface) {
+        surface_ = static_cast<size_t>(surface);
+        if (glyphs_ < next_sweep_) {
             return;
         }
-        // Evict everything not used in the last few frames.
+        // Age on cache growth. Redrawing the same lyrics never ages the resting window's text.
         std::erase_if(cache_, [this](auto &kv) {
-            if (kv.second.used + 2 >= frame_) {
+            if (std::ranges::contains(kv.second.used, generation_)) {
                 return false;
             }
             glyphs_ -= kv.second.shaped.glyphs.size();
             return true;
         });
+        ++generation_;
+        next_sweep_ = std::max(glyph_budget, glyphs_ + glyph_budget / 4);
+    }
+
+    void Shaper::release_surface(Surface surface) {
+        const auto index = static_cast<size_t>(surface);
+        for (auto it = cache_.begin(); it != cache_.end();) {
+            it->second.used[index] = 0;
+            if (it->second.used[1 - index]) {
+                ++it;
+            } else {
+                glyphs_ -= it->second.shaped.glyphs.size();
+                it = cache_.erase(it);
+            }
+        }
+        next_sweep_ = glyph_budget;
     }
 
 } // namespace lyren::text

@@ -4,6 +4,7 @@
 #include <qrencode.h>
 
 #include <format>
+#include <inplace_vector>
 
 #include "app/model/browser.hpp"
 #include "app/model/library.hpp"
@@ -39,7 +40,7 @@ namespace lyren {
                 save(true);
             }
         });
-        spawn(startup());
+        spawn(load_sessions());
     }
 
     Accounts::~Accounts() {
@@ -49,21 +50,65 @@ namespace lyren {
         flush();
     }
 
-    Task<void> Accounts::startup() {
+    Task<void> Accounts::load_sessions(std::optional<Source> connected) {
         auto saved = co_await creds::load(env_.loop);
+        if (store_ == Store::ready || store_ == Store::recovering) {
+            co_return;
+        }
         if (saved) {
-            credentials_ = creds::from_json(*saved);
+            co_return restore_sessions(std::move(*saved), connected);
+        }
+        store_ = Store::unreadable;
+        env_.notify(lyren::trf(connected ? "Could not save credentials: {}" : "Could not read saved credentials: {}", lyren::tr(saved.error())), "triangle-alert", true);
+        if (!connected) {
             for (const auto &entry : platforms) {
+                spawn(initialize(entry.source));
+            }
+        }
+    }
+
+    void Accounts::restore_sessions(creds::Credentials saved, std::optional<Source> connected) {
+        credentials_ = std::move(saved);
+        saved_json_ = creds::to_json(credentials_);
+        std::inplace_vector<Source, platforms.size()> initialize_sources;
+        for (const auto &entry : platforms) {
+            // On recovery, keep sign-ins made in this process and restore the other accounts before writing.
+            const bool live = entry.source == connected || env_.signed_in(entry.source) || signer_connected(entry.source);
+            if (!live) {
                 env_.provider(entry.source).session() = credentials_[std::string(entry.id)];
             }
-            saved_json_ = creds::to_json(credentials_);
-            can_save_ = true;
+            if (store_ == Store::loading || !live) {
+                initialize_sources.push_back(entry.source);
+            }
+        }
+        store_ = Store::ready;
+        for (Source source : initialize_sources) {
+            spawn(initialize(source));
+        }
+    }
+
+    Task<void> Accounts::recover_store() {
+        if (!needs_store_recovery()) {
+            co_return;
+        }
+        store_ = Store::recovering;
+        // If the decryption service is back, merge the other accounts before saving the live sessions.
+        auto saved = co_await creds::load(env_.loop);
+        if (saved) {
+            restore_sessions(std::move(*saved), {});
         } else {
-            env_.notify(lyren::trf("Could not read saved credentials: {}", saved.error()), "triangle-alert", true);
+            auto current = snapshot();
+            auto result = co_await creds::save(env_.loop, current, creds::SaveMode::back_up_previous);
+            if (!result) {
+                store_ = Store::unreadable;
+                co_return env_.notify(lyren::trf("Could not save credentials: {}", lyren::tr(result.error())), "triangle-alert", true);
+            }
+            saved_json_ = std::move(current);
+            store_ = Store::ready;
+            env_.notify(std::string(lyren::tr("Current sign-ins saved")), "circle-check");
         }
-        for (const auto &entry : platforms) {
-            spawn(initialize(entry.source));
-        }
+        save(true);
+        env_.redraw();
     }
 
     Task<void> Accounts::initialize(Source source) {
@@ -113,7 +158,7 @@ namespace lyren {
     }
 
     void Accounts::save(bool immediate) {
-        if (!can_save_) {
+        if (store_ != Store::ready) {
             return;
         }
         dirty_ = true;
@@ -138,7 +183,7 @@ namespace lyren {
     void Accounts::flush() {
         env_.loop.cancel(save_timer_);
         save_timer_ = 0;
-        if (!can_save_ || !dirty_) {
+        if (store_ != Store::ready || !dirty_) {
             return;
         }
         std::string json = snapshot();
@@ -284,7 +329,12 @@ namespace lyren {
     }
 
     Task<void> Accounts::arrived(Source source, uint64_t gen) {
-        can_save_ = true;
+        if (store_ == Store::loading || store_ == Store::unreadable) {
+            co_await load_sessions(source);
+            if (gen != gen_) {
+                co_return;
+            }
+        }
         library_.reset(source);
         save(true);
         co_await library_.load(source);
@@ -295,7 +345,7 @@ namespace lyren {
         const auto &account = library_.shelf(source).account;
         if (account) {
             env_.notify(lyren::trf("Signed in as {}", account->name), "circle-check");
-        } else if (env_.provider(source).capabilities.session_import) {
+        } else if (store_ == Store::ready && env_.provider(source).capabilities.session_import) {
             env_.notify(std::string(lyren::tr("Connection settings saved")), "circle-check");
         }
         if (source == browser_.active()) {

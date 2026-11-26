@@ -107,7 +107,7 @@ add_library(
     src/media/provider.cpp
     src/media/lyrics.cpp)
 target_include_directories(lyren_base PUBLIC src)
-target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA PRIVATE glaze)
+target_link_libraries(lyren_base PUBLIC PkgConfig::MEDIA PRIVATE glaze Threads::Threads)
 target_compile_options(
     lyren_base
     PUBLIC -Wall

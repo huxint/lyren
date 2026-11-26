@@ -120,6 +120,13 @@ namespace lyren {
             ui.label({face.right() + 14, row.y + 34, text_w, 18}, status, t.style(type::caption, account || signer_only ? t.accent : t.text_dim));
         }
         ui.end_scroll();
+        if (accounts_.needs_store_recovery()) {
+            if (ui.button(ui.id("recover-sign-ins"), {r.x, r.bottom() - control::small, r.w, control::small}, lyren::tr("Back up old file and save current sign-ins"),
+                          ui::ButtonKind::secondary, "rotate-ccw")) {
+                spawn(accounts_.recover_store());
+            }
+            return;
+        }
         p.icon("lock", {r.x, r.bottom() - 16, 13, 13}, t.faint());
         ui.label({r.x + 20, r.bottom() - 19, r.w - 20, 18}, lyren::tr("Sign-ins are encrypted on this device"), t.style(type::caption, t.faint()));
     }

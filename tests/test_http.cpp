@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <charconv>
 #include <atomic>
 #include <format>
@@ -333,6 +334,31 @@ TEST_CASE("partial audio responses fill subsequent gaps without overwriting earl
     CHECK(complete);
     CHECK(bytes == body);
     CHECK(spool->progress() == std::pair<uint64_t, uint64_t>{6145, 6145});
+}
+
+TEST_CASE("the buffer snapshot includes disjoint ranges after repeated seeks") {
+    constexpr uint64_t stride = 1u << 20, size = 20 * stride;
+    Server server([&](std::string_view request) {
+        const auto at = request.find("Range: bytes=") + 13;
+        uint64_t from = 0;
+        std::from_chars(request.data() + at, request.data() + request.find('-', at), from);
+        return std::format("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx", from, from, size);
+    });
+    net::Http http;
+    auto spool = audio::Spool::url(http, server.url());
+    for (uint64_t i = 0; i < 18; ++i) {
+        char byte{};
+        REQUIRE(spool->read(i * stride, &byte, 1) == 1);
+    }
+    std::vector<audio::Ranges::Span> ranges;
+    CHECK(spool->progress(&ranges).second == size);
+    spool->close();
+    CHECK(ranges.size() >= 18);
+    for (uint64_t i = 0; i < 18; ++i) {
+        CHECK(std::ranges::any_of(ranges, [&](const auto &r) {
+            return r.first <= i * stride && i * stride < r.second;
+        }));
+    }
 }
 
 TEST_CASE("HTTP requests enforce max_bytes body limits and CookieJar merges large jars accurately") {

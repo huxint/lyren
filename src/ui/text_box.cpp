@@ -38,6 +38,12 @@ namespace lyren::ui {
         return size;
     }
 
+    void Ui::invalidate_text_layout() {
+        for (auto &[id, box] : edits_) {
+            box.cached_size = -1;
+        }
+    }
+
     // Unlike display text, an editor keeps every space and the empty line after a trailing newline.
     const std::vector<Ui::EditLine> &Ui::edit_lines(EditBox &box, std::string_view text, float size, float width) {
         if (box.cached_size == size && box.cached_width == width && box.cached_text == text) {

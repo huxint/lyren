@@ -1,6 +1,9 @@
 #pragma once
+#include <vector>
+
 #include "app/view/part.hpp"
 #include "audio/meter.hpp"
+#include "audio/spool.hpp"
 
 namespace lyren {
 
@@ -37,6 +40,7 @@ namespace lyren {
         float press_x_ = 0;
         float drag_v_ = 0; // normalized song position, [0, 1]
         audio::Follower meter_;
+        std::vector<audio::Ranges::Span> buffered_;
         double meter_time_ = 0, pluck_time_ = -10;
         float pluck_at_ = 0;
     };

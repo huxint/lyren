@@ -152,7 +152,6 @@ namespace lyren {
             if (!running_) {
                 break;
             }
-            arm_timer();
             if (hook_.before) {
                 hook_.before();
             }
@@ -162,6 +161,7 @@ namespace lyren {
                 }
                 break;
             }
+            arm_timer(); // The Wayland prepare-read hook may have dispatched a callback that changed the timers.
             int n = epoll_wait(epoll_, events.data(), static_cast<int>(events.size()), deferred_.empty() ? -1 : 0);
             if (hook_.after) {
                 bool readable = false;

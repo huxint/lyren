@@ -226,8 +226,9 @@ namespace lyren {
     }
 
     void App::load_text(const std::string &family) {
-        text_.reset();
         text_.emplace(renderer_, family);
+        main_.ui.invalidate_text_layout();
+        overlay_.ui.invalidate_text_layout();
     }
 
     void App::apply_config(bool initial) {
@@ -285,22 +286,8 @@ namespace lyren {
         overlay_.frames.request();
     }
 
-    void App::schedule_shaper_gc() {
-        if (shaper_gc_scheduled_) {
-            return;
-        }
-        shaper_gc_scheduled_ = true;
-        loop_.defer([this] {
-            shaper_gc_scheduled_ = false;
-            if (text_) {
-                text_->shaper.end_frame();
-            }
-        });
-    }
-
     template <class Prepare>
     void App::present(Surface &surf, uint32_t bw, uint32_t bh, bool force, Prepare &&prepare) {
-        schedule_shaper_gc();
         // Pointer motion over static areas rebuilds an identical frame; skip presenting it.
         auto prims = text_->painter.prims();
         uint64_t hash = frame_key(prims, bw, bh, renderer_.texture_version());
@@ -340,6 +327,7 @@ namespace lyren {
         const uint32_t bw = window_->buffer_width(), bh = window_->buffer_height();
         renderer_.resize(*main_.target, bw, bh);
         main_.input.mods = display_.input->mods();
+        text_->shaper.begin_frame(text::Shaper::Surface::window);
         // A full atlas is cleared mid-frame; the second pass redraws with the events already handled.
         for (int pass = 0; pass < 2; ++pass) {
             text_->atlas.begin_frame();
@@ -540,6 +528,7 @@ namespace lyren {
         renderer_.destroy_target(overlay_.target);
         overlay_.target = nullptr;
         lyrics_.reset();
+        text_->shaper.release_surface(text::Shaper::Surface::overlay);
         overlay_.input = {};
     }
 
@@ -553,6 +542,7 @@ namespace lyren {
         const uint32_t bw = lyrics_->buffer_width(), bh = lyrics_->buffer_height();
         renderer_.resize(*overlay_.target, bw, bh);
         overlay_.input.mods = display_.input->mods();
+        text_->shaper.begin_frame(text::Shaper::Surface::overlay);
         ui::Rect input;
         for (int pass = 0; pass < 2; ++pass) {
             text_->atlas.begin_frame();

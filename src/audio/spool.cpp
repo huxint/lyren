@@ -12,9 +12,11 @@
 #include <filesystem>
 #include <format>
 #include <numeric>
+#include <thread>
 
 #include "core/crypto.hpp"
 #include "core/log.hpp"
+#include "core/string_map.hpp"
 #include "sys/paths.hpp"
 
 namespace lyren::audio {
@@ -22,6 +24,8 @@ namespace lyren::audio {
     namespace {
         std::atomic<uint64_t> max_cache_bytes{512ull << 20};
         std::mutex cache_prune_mutex;
+        std::mutex cache_files_mutex;
+        StringMap<int> pending_files; // completed downloads can be reopened while the worker syncs them
 
         std::filesystem::path audio_cache_dir() {
             auto dir = paths::cache_dir() / "audio";
@@ -101,11 +105,114 @@ namespace lyren::audio {
                 }
             }
         }
+
+        int open_cached(const std::string &path) {
+            {
+                std::lock_guard lock(cache_files_mutex);
+                if (auto it = pending_files.find(path); it != pending_files.end()) {
+                    return ::fcntl(it->second, F_DUPFD_CLOEXEC, 0);
+                }
+            }
+            return ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        }
+
+        struct CacheWrite {
+            std::string tmp, dst;
+            uint64_t size;
+            int fd;
+
+            CacheWrite(const std::string &path, uint64_t bytes, int source)
+            : dst(path),
+              size(bytes),
+              fd(::fcntl(source, F_DUPFD_CLOEXEC, 0)) {}
+            CacheWrite(const CacheWrite &) = delete;
+            CacheWrite &operator=(const CacheWrite &) = delete;
+            ~CacheWrite() {
+                if (fd < 0) {
+                    return;
+                }
+                if (!tmp.empty()) {
+                    {
+                        std::lock_guard lock(cache_files_mutex);
+                        if (auto it = pending_files.find(dst); it != pending_files.end() && it->second == fd) {
+                            pending_files.erase(it);
+                        }
+                    }
+                    ::unlink(tmp.c_str());
+                }
+                ::close(fd);
+            }
+
+            void persist() {
+                if (::fdatasync(fd) != 0) {
+                    return;
+                }
+                uint64_t limit;
+                {
+                    std::lock_guard lock(cache_files_mutex);
+                    auto it = pending_files.find(dst);
+                    limit = Spool::cache_limit();
+                    if (it == pending_files.end() || it->second != fd || size > limit || std::rename(tmp.c_str(), dst.c_str()) != 0) {
+                        return;
+                    }
+                    pending_files.erase(it);
+                    tmp.clear();
+                }
+                prune_audio_cache(std::filesystem::path(dst).parent_path(), limit, dst);
+            }
+        };
+
+        class CacheWriter {
+        public:
+            void submit(std::unique_ptr<CacheWrite> write) {
+                {
+                    std::lock_guard lock(mutex_);
+                    queue_.push_back(std::move(write));
+                }
+                ready_.notify_one();
+            }
+
+        private:
+            void run(std::stop_token stop) {
+                std::vector<std::unique_ptr<CacheWrite>> batch;
+                for (;;) {
+                    {
+                        std::unique_lock lock(mutex_);
+                        if (!ready_.wait(lock, stop, [this] {
+                                return !queue_.empty();
+                            })) {
+                            return;
+                        }
+                        batch.swap(queue_);
+                    }
+                    for (auto &write : batch) {
+                        try {
+                            write->persist();
+                        } catch (const std::exception &e) {
+                            log::warn("audio cache: {}", e.what());
+                        }
+                        write.reset();
+                    }
+                    batch.clear();
+                }
+            }
+
+            std::mutex mutex_;
+            std::condition_variable_any ready_;
+            std::vector<std::unique_ptr<CacheWrite>> queue_;
+            std::jthread worker_{[this](std::stop_token stop) {
+                run(stop);
+            }};
+        };
     } // namespace
 
     void Spool::set_cache_limit(uint64_t bytes) {
         max_cache_bytes.store(bytes, std::memory_order_relaxed);
         if (bytes == 0) {
+            {
+                std::lock_guard lock(cache_files_mutex);
+                pending_files.clear();
+            }
             prune_audio_cache(audio_cache_dir(), 0);
         }
     }
@@ -137,18 +244,6 @@ namespace lyren::audio {
         }
         --it;
         return off < it->second ? it->second - off : 0;
-    }
-
-    bool Ranges::completes(uint64_t b, uint64_t e, uint64_t size) const {
-        if (size == 0) {
-            return false;
-        }
-        uint64_t cov = available(0);
-        if (b <= cov) {
-            cov = std::max(cov, e);
-            cov += available(cov);
-        }
-        return cov >= size;
     }
 
     Ranges::Span Ranges::gap(uint64_t from, uint64_t size) const {
@@ -193,22 +288,20 @@ namespace lyren::audio {
         const bool persist = !cache_key.empty() && limit > 0;
         const auto dir = persist ? audio_cache_dir() : paths::cache_dir();
         if (persist) {
-            const auto cached = dir / crypto::md5_hex(cache_key);
-            int cfd = ::open(cached.c_str(), O_RDONLY | O_CLOEXEC);
+            s->cache_path_ = (dir / crypto::md5_hex(cache_key)).string();
+            int cfd = open_cached(s->cache_path_);
             struct stat st{};
             if (cfd >= 0 && fstat(cfd, &st) == 0 && st.st_size > 0) {
                 ::futimens(cfd, nullptr);
                 s->fd_ = cfd;
                 s->size_ = static_cast<uint64_t>(st.st_size);
                 s->have_.add(0, s->size_);
-                s->cache_path_ = cached.string();
                 log::debug("audio cache hit: {} ({} bytes)", cache_key, s->size_);
                 return s;
             }
             if (cfd >= 0) {
                 ::close(cfd);
             }
-            s->cache_path_ = cached.string();
         }
         s->http_ = &http;
         s->url_ = std::move(url);
@@ -295,132 +388,100 @@ namespace lyren::audio {
             }
             done += static_cast<size_t>(n);
         }
-        bool promote_now = false;
-        {
-            std::lock_guard lk(m_);
-            promote_now = req == req_ && !closed_ && error_.empty() && size_ != unknown && size_ > 0 && !tmp_path_.empty() && have_.completes(offset, offset + d.size(), size_);
-            if (!promote_now) {
-                have_.add(offset, offset + d.size());
-                if (req == req_) {
-                    pos_ = offset + d.size();
-                }
-                if (waiting_) {
-                    cv_.notify_all();
-                }
-                return;
-            }
-        }
-        // Promote before exposing the final bytes so UI queries never block on fdatasync while
-        // callers finishing the stream see the promoted cache file immediately.
-        promote_cache();
-        std::lock_guard lk(m_);
+        std::unique_lock lk(m_);
         have_.add(offset, offset + d.size());
         if (req == req_) {
             pos_ = offset + d.size();
+            if (!closed_ && error_.empty() && !tmp_path_.empty() && have_.available(0) == size_) {
+                return finish_cached_download(std::move(lk));
+            }
         }
         if (waiting_) {
             cv_.notify_all();
         }
     }
 
-    void Spool::promote_cache() {
-        std::string tmp, dst;
-        uint64_t limit = 0;
-        {
-            std::lock_guard lk(m_);
-            if (cache_invalidated_ || tmp_path_.empty() || cache_path_.empty()) {
-                return;
-            }
-            limit = cache_limit();
-            if (size_ == 0 || size_ == unknown || size_ > limit) {
-                return;
-            }
-            tmp = std::exchange(tmp_path_, {});
-            dst = cache_path_;
-        }
-        // fd_ is immutable after construction and the caller holds a shared_ptr<Spool>.
-        if (::fdatasync(fd_) != 0) {
-            ::unlink(tmp.c_str());
+    void Spool::finish_cached_download(std::unique_lock<std::mutex> lock) {
+        cv_.notify_all();
+        if (cache_path_.empty() || size_ > cache_limit()) {
             return;
         }
-        bool promoted = false;
-        {
-            std::lock_guard lk(cache_prune_mutex);
-            bool valid = true;
+        try {
+            auto write = std::make_unique<CacheWrite>(cache_path_, size_, fd_);
+            if (write->fd < 0) {
+                return;
+            }
             {
-                std::lock_guard slk(m_);
-                valid = !cache_invalidated_ && !cache_path_.empty();
+                // A reader that sees the last byte can immediately reopen the finished download.
+                std::lock_guard files(cache_files_mutex);
+                if (size_ > cache_limit()) {
+                    return;
+                }
+                pending_files.insert_or_assign(cache_path_, write->fd);
+                write->tmp.swap(tmp_path_);
             }
-            if (valid && std::rename(tmp.c_str(), dst.c_str()) == 0) {
-                promoted = true;
-            } else {
-                ::unlink(tmp.c_str());
-            }
-        }
-        if (promoted) {
-            std::filesystem::path p(dst);
-            prune_audio_cache(p.parent_path(), limit, p);
+            lock.unlock();
+            static CacheWriter writer;
+            writer.submit(std::move(write));
+        } catch (const std::exception &e) {
+            log::warn("audio cache: {}", e.what());
         }
     }
 
     void Spool::invalidate_cache() {
         std::string path;
-        std::lock_guard lk(cache_prune_mutex);
         {
             std::lock_guard slk(m_);
-            cache_invalidated_ = true;
-            path = std::move(cache_path_);
+            path = std::exchange(cache_path_, {});
         }
         if (!path.empty()) {
+            std::lock_guard lock(cache_files_mutex);
+            pending_files.erase(path);
             ::unlink(path.c_str());
         }
     }
 
     void Spool::on_done(uint64_t req, long status, std::string error) {
-        bool completed = false;
-        {
-            std::lock_guard lk(m_);
-            if (req != req_ || closed_) {
+        std::unique_lock lk(m_);
+        if (req != req_ || closed_) {
+            return;
+        }
+        http_id_ = 0;
+        if (error.empty() && pos_ == start_) {
+            error = "empty response";
+        }
+        if (!error.empty()) {
+            if (pos_ > start_) {
+                retries_ = 0;
+            }
+            log::warn("download at {}: {}", pos_, error);
+            // Network trouble is worth retrying, after 0.5, 1 and 2 s; an answer like 403 (an expired link) is not.
+            if (status >= 400 || ++retries_ > 3) {
+                status_ = status;
+                error_ = std::move(error);
+                cv_.notify_all();
                 return;
             }
-            http_id_ = 0;
-            if (error.empty() && pos_ == start_) {
-                error = "empty response";
-            }
-            if (!error.empty()) {
-                if (pos_ > start_) {
-                    retries_ = 0;
-                }
-                log::warn("download at {}: {}", pos_, error);
-                // Network trouble is worth retrying, after 0.5, 1 and 2 s; an answer like 403 (an expired link) is not.
-                if (status >= 400 || ++retries_ > 3) {
-                    status_ = status;
-                    error_ = std::move(error);
-                    cv_.notify_all();
-                    return;
-                }
-                fetch(pos_, std::chrono::milliseconds(250 << retries_));
-                return;
-            }
-            retries_ = 0;
-            if (size_ == unknown) {
-                size_ = pos_; // no length was given, so the body ran to the end
-            }
-            auto g = have_.gap(read_pos_, size_);
-            if (g.first >= g.second) {
-                g = have_.gap(0, size_);
-            }
-            if (g.first < g.second) {
-                fetch(g.first);
-            } else {
-                log::debug("download complete: {} bytes", size_);
-                completed = error_.empty() && size_ > 0 && have_.total() == size_;
-            }
-            cv_.notify_all();
+            fetch(pos_, std::chrono::milliseconds(250 << retries_));
+            return;
         }
-        if (completed) {
-            promote_cache();
+        retries_ = 0;
+        if (size_ == unknown) {
+            size_ = pos_; // no length was given, so the body ran to the end
         }
+        auto g = have_.gap(read_pos_, size_);
+        if (g.first >= g.second) {
+            g = have_.gap(0, size_);
+        }
+        if (g.first < g.second) {
+            fetch(g.first);
+        } else {
+            log::debug("download complete: {} bytes", size_);
+            if (!tmp_path_.empty() && error_.empty() && size_ > 0 && have_.available(0) == size_) {
+                return finish_cached_download(std::move(lk));
+            }
+        }
+        cv_.notify_all();
     }
 
     size_t Spool::read(uint64_t off, void *buf, size_t n) {
@@ -497,19 +558,17 @@ namespace lyren::audio {
         return waiting_;
     }
 
-    std::inplace_vector<Ranges::Span, 16> Spool::ranges() const {
+    std::pair<uint64_t, uint64_t> Spool::progress(std::vector<Ranges::Span> *partial) const {
         std::lock_guard lk(m_);
-        std::inplace_vector<Ranges::Span, 16> out;
-        const auto &spans = have_.spans();
-        for (size_t i = 0; i < spans.size() && i < out.capacity(); ++i) {
-            out.push_back(spans[i]);
+        const auto bytes = have_.total(), size = size_ == unknown ? 0 : size_;
+        if (partial) {
+            if (bytes && bytes < size) {
+                *partial = have_.spans();
+            } else {
+                partial->clear();
+            }
         }
-        return out;
-    }
-
-    std::pair<uint64_t, uint64_t> Spool::progress() const {
-        std::lock_guard lk(m_);
-        return {have_.total(), size_ == unknown ? 0 : size_};
+        return {bytes, size};
     }
 
 } // namespace lyren::audio

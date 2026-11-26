@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -33,23 +34,30 @@ namespace lyren::text {
     // Shapes in font units so one result serves every size. Results are cached by text.
     class Shaper {
     public:
+        enum class Surface : uint8_t {
+            window,
+            overlay
+        };
+
         explicit Shaper(Fonts &fonts);
         ~Shaper();
 
         const Shaped &shape(std::string_view text, uint8_t features = 0);
-        // Drops cached results not used for a while once the cache is large.
-        void end_frame();
+        void begin_frame(Surface surface);
+        void release_surface(Surface surface);
 
     private:
         struct Entry {
             Shaped shaped;
-            uint64_t used;
+            std::array<uint32_t, 2> used{};
         };
         Fonts &fonts_;
         hb_buffer_t *buf_;
         CacheMap<Entry> cache_;
-        size_t glyphs_ = 0;
-        uint64_t frame_ = 0;
+        static constexpr size_t glyph_budget = 60'000;
+        size_t glyphs_ = 0, next_sweep_ = glyph_budget;
+        uint32_t generation_ = 1;
+        size_t surface_ = 0;
     };
 
 } // namespace lyren::text
