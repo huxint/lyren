@@ -193,7 +193,7 @@ namespace lyren {
         const Rect emblem = mix(emblem_full, emblem_dock, dock);
         const float emblem_r = std::lerp(t.radius, emblem.h / 2, dock);
         const ui::Color emblem_rest = t.dark ? t.fill(1.25f) : t.surface;
-        const ui::Color emblem_hot = t.accent.with_alpha(t.dark ? 0.20f : 0.14f);
+        const ui::Color emblem_hot = t.dark ? t.accent.with_alpha(0.20f) : t.surface.mix(t.accent, 0.14f);
         const ui::Color emblem_edge = t.dark ? ui::Color{} : t.border.with_alpha(0.85f).mix(t.accent.with_alpha(0.35f), hot);
         p.rect(emblem, emblem_rest.mix(emblem_hot, hot), emblem_r, emblem_edge, t.dark ? 0.f : 1.f);
 
@@ -239,15 +239,18 @@ namespace lyren {
         const bool play = action_icon == "play-fill";
         const float tx_full = card.x + 68;
         const float tw_full = std::max(0.f, card.w - 68 - (play ? 48.f : 36.f));
+        const float title_h = std::max(22.f, std::ceil(t.fs(type::lead) * 1.45f));
+        const float sub_h = std::max(18.f, std::ceil(t.fs(type::caption) * 1.45f));
+        const float title_y = card.y + std::floor((card.h - title_h - 2.f - sub_h) / 2);
         if (const float sub_a = 1 - smooth01(dock / 0.30f); sub_a > 0.01f) {
-            const float sub_y = std::min(card.y + 43 - 12 * dock, card.bottom() - 20);
+            const float sub_y = std::min(title_y + title_h + 2.f - 12 * dock, card.bottom() - sub_h - 2.f);
             if (sub_y >= card.y) {
                 Fade f(p, sub_a);
-                ui.label({tx_full, sub_y, tw_full, 18}, subtitle, t.style(type::caption, t.text_dim));
+                ui.label({tx_full, sub_y, tw_full, sub_h}, subtitle, t.style(type::caption, t.text_dim));
             }
         }
 
-        const Rect title_full{tx_full, card.y + 19, tw_full, 22};
+        const Rect title_full{tx_full, title_y, tw_full, title_h};
         if (slot.icon_only) {
             if (const float title_a = 1 - smooth01(dock / 0.45f); title_a > 0.01f) {
                 Fade f(p, title_a);
@@ -395,7 +398,7 @@ namespace lyren {
             std::string_view id, big, badge, title, subtitle, icon, action;
         };
         std::inplace_vector<Hero, 4> heroes;
-        const std::string day(browser_.today().substr(3));
+        const std::string_view day = browser_.today().substr(3);
         const int month = (browser_.today()[0] - '0') * 10 + browser_.today()[1] - '0' - 1;
         const std::string_view month_lbl = month_short(month);
         const std::string date = date_label();
@@ -416,7 +419,10 @@ namespace lyren {
         const CardGrid daily(ui, ui.id("daily-cards"), body.w);
         const CardGrid g(ui, ui.id("rec-cards"), body.w);
         constexpr float top_pad = 28, title_h = 76;
-        constexpr float hero_h = 80, hero_gap = 14, after_heroes = 18;
+        const float hero_title_h = std::max(22.f, std::ceil(t.fs(type::lead) * 1.45f));
+        const float hero_sub_h = std::max(18.f, std::ceil(t.fs(type::caption) * 1.45f));
+        const float hero_h = std::max(80.f, 19.f + hero_title_h + 2.f + hero_sub_h + 19.f);
+        constexpr float hero_gap = 14, after_heroes = 18;
         constexpr float dock_h = 56, pill_h = 36, pill_gap = 10, pill_pad_y = (dock_h - pill_h) / 2;
         const int hero_cols = std::min(hero_count, std::max(1, static_cast<int>((body.w + hero_gap) / 260)));
         const int hero_rows = hero_count ? (hero_count + hero_cols - 1) / hero_cols : 0;
@@ -448,8 +454,8 @@ namespace lyren {
                 const auto idx = static_cast<size_t>(i);
                 titles[idx] = lyren::tr(heroes[idx].title);
                 title_ws[idx] = std::ceil(p.measure(titles[idx], dock_title_style)) + 1;
-                sum_full += title_ws[idx] + 78.f;
-                sum_compact += title_ws[idx] + 52.f;
+                sum_full += title_ws[idx] + 81.f;
+                sum_compact += title_ws[idx] + 55.f;
             }
             const float gaps_w = hero_count > 1 ? pill_gap * static_cast<float>(hero_count - 1) : 0.f;
             dock_action = sum_full + gaps_w <= body.w;
@@ -459,7 +465,7 @@ namespace lyren {
             float dx = body.x;
             for (int i = 0; i < hero_count; ++i) {
                 const auto idx = static_cast<size_t>(i);
-                const float w = dock_action ? title_ws[idx] + 78.f : dock_natural ? title_ws[idx] + 52.f : each_w;
+                const float w = dock_action ? title_ws[idx] + 81.f : dock_natural ? title_ws[idx] + 55.f : each_w;
                 dock_rects[idx] = {dx, r.y + pill_pad_y, w, pill_h};
                 dx += w + pill_gap;
             }
@@ -484,8 +490,8 @@ namespace lyren {
 
         if (hero_count) {
             constexpr float latch_off = top_pad + title_h - pill_pad_y;
-            constexpr float collapse0 = hero_h - pill_h;
-            constexpr float row_step = hero_h + hero_gap;
+            const float collapse0 = hero_h - pill_h;
+            const float row_step = hero_h + hero_gap;
             constexpr float row_wait_y = pill_pad_y + pill_h + hero_gap;
             if (const float title_a = 1 - smooth01((off - 12.f) / 56.f); title_a > 0.01f) {
                 Fade f(p, title_a);

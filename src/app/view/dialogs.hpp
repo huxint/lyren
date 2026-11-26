@@ -22,13 +22,12 @@ namespace lyren {
         void show_picture(ui::Ui &ui, std::string url, float aspect);
 
     private:
-        void editor(ui::Ui &ui, ui::Rect r, Card card);
-        void picker(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks);
+        void editor(ui::Ui &ui, ui::Rect r, const Card &card, std::vector<Track> &tracks);
+        void picker(ui::Ui &ui, ui::Rect r, Source source, std::string_view sub, std::vector<Track> &tracks);
 
         std::string edit_name_;
         bool edit_hidden_ = false, edit_focus_ = false;
         Source edit_source_ = Source::netease;
-        std::vector<Track> edit_tracks_;
     };
 
 } // namespace lyren

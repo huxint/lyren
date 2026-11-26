@@ -83,7 +83,7 @@ namespace lyren {
       floating_{.x = saved.lyrics_x, .bottom = saved.lyrics_bottom, .snap = saved.lyrics_snap, .locked = saved.lyrics_locked},
       island_{.x = saved.island_x, .y = saved.island_y, .snap = saved.island_snap} {}
 
-    void DesktopLyrics::save(SavedState &to) const {
+    void DesktopLyrics::save(SavedStateView &to) const {
         to.lyrics_x = floating_.x, to.lyrics_bottom = floating_.bottom;
         to.island_x = island_.x, to.island_y = island_.y;
         to.lyrics_snap = floating_.snap, to.island_snap = island_.snap;

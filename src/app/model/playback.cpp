@@ -124,7 +124,7 @@ namespace lyren {
         publish();
     }
 
-    void Playback::save(SavedState &to) {
+    void Playback::save(SavedStateView &to) {
         to.volume = volume_;
         to.muted = muted_;
         to.mode = mode_;

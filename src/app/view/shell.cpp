@@ -94,7 +94,7 @@ namespace lyren {
         if (window) {
             window_ = window;
         }
-        SavedState state{.source = browser.active()};
+        SavedStateView state{.source = browser.active()};
         if (window_) {
             state.width = window_->first, state.height = window_->second;
         }

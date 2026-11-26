@@ -17,15 +17,14 @@ namespace lyren {
         edit_name_ = card.title;
         edit_hidden_ = false;
         edit_focus_ = true;
-        edit_tracks_ = std::move(tracks);
-        edit_source_ = card.id.empty() ? edit_tracks_.empty() ? browser_.active() : edit_tracks_.front().source : card.source;
+        edit_source_ = card.id.empty() ? tracks.empty() ? browser_.active() : tracks.front().source : card.source;
         const bool with_privacy = card.id.empty() && provider(edit_source_).capabilities.private_playlists;
-        ui.open_modal(400, with_privacy ? 290 : 226, [this, card](ui::Ui &u, Rect r) {
-            editor(u, r, card);
+        ui.open_modal(400, with_privacy ? 290 : 226, [this, card = std::move(card), tracks = std::move(tracks)](ui::Ui &u, Rect r) mutable {
+            editor(u, r, card, tracks);
         });
     }
 
-    void Dialogs::editor(ui::Ui &ui, Rect r, Card card) {
+    void Dialogs::editor(ui::Ui &ui, Rect r, const Card &card, std::vector<Track> &tracks) {
         const auto &t = ui.theme();
         const bool create = card.id.empty();
         dialog_title(ui, r, create ? lyren::tr("New playlist") : lyren::tr("Rename playlist"), lyren::tr(platform(edit_source_).name));
@@ -45,14 +44,14 @@ namespace lyren {
         name.erase(name.find_last_not_of(' ') + 1);
         const bool busy = library_.writing(edit_source_, card.id);
         submit |= dialog_actions(ui, r, create ? lyren::tr("Create") : lyren::tr("Save changes"), !busy && !name.empty());
-        if (!submit || name.empty() || busy) {
+        if (!submit || name.empty() || busy || !ui.modal_open()) {
             return;
         }
         ui.close_modal();
         if (create) {
-            spawn(library_.create_playlist(edit_source_, std::move(name), edit_hidden_, edit_tracks_));
+            spawn(library_.create_playlist(edit_source_, std::move(name), edit_hidden_, std::move(tracks)));
         } else if (name != card.title) {
-            spawn(library_.rename_playlist(std::move(card), std::move(name)));
+            spawn(library_.rename_playlist(card, std::move(name)));
         }
     }
 
@@ -71,29 +70,33 @@ namespace lyren {
         if (!env_.signed_in(source)) {
             return ui.toast(lyren::trf("Sign in to {} to add songs to a playlist", lyren::tr(platform(source).name)), "folder-plus");
         }
-        ui.open_modal(420, 480, [this, tracks = std::move(tracks)](ui::Ui &u, Rect r) {
-            picker(u, r, tracks);
+        std::string sub = tracks.size() == 1 ? tracks.front().title + " · " + tracks.front().artist : lyren::trf("{} songs · {}", tracks.size(), lyren::tr(platform(source).name));
+        ui.open_modal(420, 480, [this, source, sub = std::move(sub), tracks = std::move(tracks)](ui::Ui &u, Rect r) mutable {
+            picker(u, r, source, sub, tracks);
         });
     }
 
-    void Dialogs::picker(ui::Ui &ui, Rect r, const std::vector<Track> &tracks) {
+    void Dialogs::picker(ui::Ui &ui, Rect r, Source source, std::string_view sub, std::vector<Track> &tracks) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        const Source source = tracks.front().source;
-        dialog_title(ui, r, lyren::tr("Add to playlist"),
-                     tracks.size() == 1 ? tracks.front().title + " · " + tracks.front().artist : lyren::trf("{} songs · {}", tracks.size(), lyren::tr(platform(source).name)));
+        dialog_title(ui, r, lyren::tr("Add to playlist"), sub);
+        const auto &playlists = library_.shelf(source).playlists;
         std::vector<const Card *> own;
-        for (const Card &playlist : library_.shelf(source).playlists) {
+        own.reserve(playlists.size());
+        for (const Card &playlist : playlists) {
             if (playlist.owned) {
                 own.push_back(&playlist);
             }
         }
         constexpr float row_h = 56, top = 68;
-        const float list_h = static_cast<float>(own.size() + 1) * row_h;
+        const size_t total = own.size() + 1;
+        const float list_h = static_cast<float>(total) * row_h;
         ui.resize_modal(420, std::min(ui.height - 120, top + list_h + 48));
         const Rect view{r.x - 8, r.y + top, r.w + 24, r.h - top};
         const float off = ui.begin_scroll(ui.id("picker"), view, list_h);
-        auto entry = [&](size_t i, std::string_view title, std::string_view sub, const std::string *art, bool busy) {
+        const size_t first = static_cast<size_t>(std::max(0.f, std::floor(off / row_h)));
+        const size_t last = std::min(total, static_cast<size_t>(std::ceil((off + view.h) / row_h)) + 1);
+        auto entry = [&](size_t i, std::string_view title, std::string_view detail, const std::string *art, bool busy) {
             const Rect row{view.x, view.y + static_cast<float>(i) * row_h - off, r.w + 16, row_h};
             const ui::Id id = ui.id(static_cast<uint64_t>(i));
             ui::Enabled idle(ui, !busy, 0.45f);
@@ -112,27 +115,31 @@ namespace lyren {
                 p.rect(art_box, t.fill(1.4f), t.radius_s());
                 p.icon("plus", ui::center(art_box, 18, 18), t.text_dim);
             }
-            p.text(art_box.right() + 14, row.y + (sub.empty() ? 34 : 25), title, t.style(type::body, t.text), row.w - 80);
-            if (!sub.empty()) {
-                p.text(art_box.right() + 14, row.y + 43, sub, t.style(type::caption, t.text_dim), row.w - 80);
+            p.text(art_box.right() + 14, row.y + (detail.empty() ? 34 : 25), title, t.style(type::body, t.text), row.w - 80);
+            if (!detail.empty()) {
+                p.text(art_box.right() + 14, row.y + 43, detail, t.style(type::caption, t.text_dim), row.w - 80);
             }
             return it.clicked;
         };
         std::optional<Card> picked;
         ui.push_id(ui.id("picker-rows"));
-        const bool create = entry(0, lyren::tr("New playlist"), "", nullptr, library_.writing(source, ""));
-        for (size_t i = 0; i < own.size(); ++i) {
-            if (entry(i + 1, own[i]->title, card_subtitle(*own[i]), &own[i]->cover, library_.writing(source, own[i]->id))) {
+        const bool create = first == 0 && last > 0 && entry(0, lyren::tr("New playlist"), "", nullptr, library_.writing(source, ""));
+        for (size_t row = std::max<size_t>(first, 1); row < last; ++row) {
+            const size_t i = row - 1;
+            if (entry(row, own[i]->title, card_subtitle(*own[i]), &own[i]->cover, library_.writing(source, own[i]->id))) {
                 picked = *own[i];
             }
         }
         ui.pop_id();
         ui.end_scroll();
+        if (!ui.modal_open()) {
+            return;
+        }
         if (create) {
-            edit_playlist(ui, {}, tracks);
+            edit_playlist(ui, {}, std::move(tracks));
         } else if (picked) {
             ui.close_modal();
-            browser_.add_to_playlist(tracks, std::move(*picked));
+            browser_.add_to_playlist(std::move(tracks), std::move(*picked));
         }
     }
 

@@ -50,6 +50,64 @@ TEST_CASE("saved platform survives a round trip") {
     }
 }
 
+TEST_CASE("saved state view serializes queue and recent spans identically to owned state") {
+    SavedState owned{
+        .width = 1280,
+        .height = 800,
+        .source = Source::qq,
+        .volume = 0.42f,
+        .muted = true,
+        .mode = PlayMode::shuffle,
+        .queue = {Track{.id = "q1", .title = "One", .source = Source::netease}, Track{.id = "q2", .title = "Two", .source = Source::qq}},
+        .current = 1,
+        .position = 37.5,
+        .recent = {Track{.id = "r1", .title = "Recent", .source = Source::kugou}},
+        .lyrics_x = -24,
+        .lyrics_bottom = 64,
+        .island_x = 12,
+        .island_y = 18,
+        .lyrics_locked = true,
+        .lyrics_enabled = true,
+        .lyrics_island = true,
+        .lyrics_translation = false,
+    };
+    const SavedStateView view{
+        .width = owned.width,
+        .height = owned.height,
+        .source = owned.source,
+        .volume = owned.volume,
+        .muted = owned.muted,
+        .mode = owned.mode,
+        .queue = owned.queue,
+        .current = owned.current,
+        .position = owned.position,
+        .recent = owned.recent,
+        .lyrics_x = owned.lyrics_x,
+        .lyrics_bottom = owned.lyrics_bottom,
+        .island_x = owned.island_x,
+        .island_y = owned.island_y,
+        .lyrics_locked = owned.lyrics_locked,
+        .lyrics_enabled = owned.lyrics_enabled,
+        .lyrics_island = owned.lyrics_island,
+        .lyrics_translation = owned.lyrics_translation,
+    };
+    std::string owned_json;
+    REQUIRE_FALSE(glz::write_json(owned, owned_json));
+    const std::string view_json = format_state(view);
+    CHECK(view_json == owned_json);
+    const auto restored = parse_state(view_json);
+    REQUIRE(restored);
+    CHECK(restored->source == Source::qq);
+    CHECK(restored->mode == PlayMode::shuffle);
+    CHECK(restored->current == 1);
+    CHECK(restored->position == doctest::Approx(37.5));
+    REQUIRE(restored->queue.size() == 2);
+    CHECK(restored->queue[0].id == "q1");
+    CHECK(restored->queue[1].source == Source::qq);
+    REQUIRE(restored->recent.size() == 1);
+    CHECK(restored->recent[0].source == Source::kugou);
+}
+
 TEST_CASE("saved state rejects unregistered platforms and modes") {
     for (std::string_view text : {R"({"source":5})", R"({"queue":[{"source":5,"id":"1"}]})", R"({"recent":[{"source":5,"id":"1"}]})"}) {
         CAPTURE(text);

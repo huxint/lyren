@@ -2,11 +2,10 @@
 #include <string>
 #include <vector>
 
+#include "app/state.hpp"
 #include "app/view/part.hpp"
 
 namespace lyren {
-
-    struct SavedState;
 
     // The now-playing stage: the cover-lit backdrop that comes up over the window, the lyrics, and the cover and title
     // that travel between the player and the stage.
@@ -26,7 +25,7 @@ namespace lyren {
             return translation_;
         }
         void toggle_translation();
-        void save(SavedState &to) const;
+        void save(SavedStateView &to) const;
 
         // page: the space the stage has for its cover and lyrics. Returns how far its wide layout is in, 0..1: a large
         // cover beside the lyrics, rather than a small one above them.

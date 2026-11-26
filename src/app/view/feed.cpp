@@ -407,19 +407,25 @@ namespace lyren {
         return h;
     }
 
-    void PostFeed::sync_years(const Social::Posts &posts, bool reset) {
-        const bool same_list =
-            index_.list == &posts && !reset && posts.items.size() >= index_.count && (index_.count == 0 || (!posts.items.empty() && posts.items.front().id == index_.first_id));
-        if (!same_list) {
+    void PostFeed::sync_years(const Social::Posts &posts) {
+        if (index_.list == &posts && index_.version == posts.version && index_.count == posts.items.size() &&
+            (index_.count == 0 || (!posts.items.empty() && posts.items.front().id == index_.first_id))) {
+            return;
+        }
+        const bool append_only = index_.list == &posts && posts.items.size() >= index_.count && posts.version == index_.version + 1 &&
+                                 (index_.count == 0 || (!posts.items.empty() && posts.items.front().id == index_.first_id));
+        if (!append_only) {
             index_.list = &posts;
             index_.count = 0;
             index_.first_id = posts.items.empty() ? std::string() : posts.items.front().id;
             index_.groups.clear();
         }
+        index_.version = posts.version;
         while (index_.count < posts.items.size()) {
             const size_t i = index_.count++;
             const int year = post_year(posts.items[i].time);
-            if (!index_.groups.empty() && index_.groups.back().year == year) {
+            // Undated posts following a dated chapter stay with it instead of splitting the year in two.
+            if (!index_.groups.empty() && (index_.groups.back().year == year || (year == 0 && index_.groups.back().year > 0))) {
                 index_.groups.back().to = i + 1;
             } else {
                 index_.groups.push_back({year, i, i + 1});
@@ -432,15 +438,13 @@ namespace lyren {
         const auto &t = ui.theme();
         TimelineLayout lay;
         const TextStyle rail_year_style = t.style(22.f, t.text, text::semibold | text::tabular_nums);
-        const float rail_year_text_w = std::ceil(p.measure("8888", rail_year_style)) + 2.f;
-        const float rail_year_w = rail_year_text_w + 20.f;
+        const float rail_year_w = std::ceil(p.measure("8888", rail_year_style)) + 22.f;
         lay.day_style = t.style(17.f, t.text.with_alpha(0.84f), text::semibold | text::tabular_nums);
         lay.month_style = t.style(type::micro, t.faint(), text::medium);
         lay.day_box_w = std::max(36.f, std::ceil(std::max({p.measure("88", lay.day_style), p.measure("12月", lay.month_style), p.measure("Dec", lay.month_style)})) + 4.f);
         lay.day_col_w = lay.day_box_w + 14.f;
         lay.rail = w - (rail_year_w + lay.day_col_w) >= 310.f;
         lay.year_style = lay.rail ? rail_year_style : t.style(18.f, t.text, text::semibold | text::tabular_nums);
-        lay.year_text_w = lay.rail ? rail_year_text_w : std::ceil(p.measure("8888", lay.year_style)) + 2.f;
         lay.year_rail_w = lay.rail ? rail_year_w : 0.f;
         lay.content_x = lay.year_rail_w + lay.day_col_w;
         const float ref_size = lay.rail ? lay.year_style.size : lay.day_style.size;
@@ -483,7 +487,6 @@ namespace lyren {
         if (divider) {
             p.rect({cx, y + h - 1, inner, 1}, t.line(byline ? 1.f : 0.65f));
         }
-        const std::tm when = local(post.time);
         const auto quiet = t.style(type::caption, t.faint(), text::tabular_nums);
         if (byline) {
             // Who posted, which opens their page.
@@ -503,6 +506,7 @@ namespace lyren {
         } else if (post.time > 0 && timeline) {
             // On one listener's timeline the year lives in the sticky rail; each entry carries only day, month and time
             // locked to the same typographic baseline.
+            const std::tm when = local(post.time);
             const float day_x = x + timeline->year_rail_w;
             const float base = head_y + timeline->baseline;
             const SmallText<8> day = two_digits(when.tm_mday);
@@ -639,16 +643,16 @@ namespace lyren {
             heights.reset(w, size);
         }
         if (tl) {
-            sync_years(posts, heights.size_count() == 0);
+            sync_years(posts);
         }
         auto lead_for = [&](size_t i, const YearGroup &g) -> float {
-            if (!tl || i != g.from) {
+            if (!tl || i != g.from || g.year <= 0) {
                 return 0.f;
             }
             if (tl->rail) {
                 return i > 0 ? tl->year_gap : 0.f;
             }
-            return g.year > 0 ? tl->header_h : 0.f;
+            return tl->header_h;
         };
         if (heights.size_count() < posts.items.size()) {
             size_t gi = tl ? static_cast<size_t>(std::ranges::upper_bound(index_.groups, heights.size_count(), {}, &YearGroup::to) - index_.groups.begin()) : 0;
@@ -667,11 +671,10 @@ namespace lyren {
         // Only the posts in sight are drawn; the first to arrive come in one after another.
         const Rect clip = ui.clip();
         const size_t first = heights.first_at(clip.y - r.y);
-        // On narrow viewports sticky year headers span the column above scrolling posts; register their hit shield first
-        // and raise their primitives over the posts afterwards.
-        const size_t bars_from = p.mark();
+        // On narrow viewports sticky year headers span the column at the top; clip scrolling posts strictly below any
+        // pinned header so occluded controls neither bleed through nor leak hover/cursor/tooltips.
+        float narrow_clip_y = clip.y;
         if (tl && !tl->rail) {
-            const float in = ui.cascade(posts.since, 0);
             for (auto g = std::ranges::upper_bound(index_.groups, first, {}, &YearGroup::to); g != index_.groups.end(); ++g) {
                 const float raw_top = r.y + heights.top(g->from);
                 if (raw_top >= clip.bottom()) {
@@ -688,12 +691,14 @@ namespace lyren {
                 const float sticky_y = std::clamp(clip.y, raw_top, max_y);
                 const float pinned_k = smooth01((clip.y - raw_top) / 10.f);
                 const float push = max_y < clip.y ? std::clamp((clip.y - sticky_y) / tl->header_h, 0.f, 1.f) : 0.f;
+                const int slot = g->from > first ? static_cast<int>(g->from - first) : 0;
+                const float in = ui.cascade(posts.since, slot);
                 const Rect bar{r.x, sticky_y + (1 - in) * 10, w, tl->header_h};
-                if (pinned_k > 0.01f && push < 0.98f) {
-                    ui.interact(ui::sub_id(ui.id("year-bar"), static_cast<uint64_t>(g->from)), bar);
+                if (raw_top < clip.y) {
+                    narrow_clip_y = std::max(narrow_clip_y, bar.bottom());
                 }
                 Fade fade(p, in);
-                p.rect(bar, t.surface.with_alpha((0.92f + 0.08f * pinned_k) * (1.f - 0.6f * push)));
+                p.rect(bar, t.surface);
                 p.rect({bar.x, bar.bottom() - 1, bar.w, 1}, t.line((0.65f + 0.25f * pinned_k) * (1.f - push)));
                 const float text_a = 1.f - smooth01(push / 0.85f);
                 if (text_a > 0.02f) {
@@ -702,10 +707,14 @@ namespace lyren {
                 }
             }
         }
-        const size_t bars_to = p.mark();
+        const bool clipped_posts = narrow_clip_y > clip.y;
+        if (clipped_posts) {
+            ui.push_clip({clip.x, narrow_clip_y, clip.w, std::max(0.f, clip.bottom() - narrow_clip_y)});
+        }
+        const size_t post_first = clipped_posts ? heights.first_at(narrow_clip_y - r.y) : first;
         int shown = 0;
-        size_t gi = tl ? static_cast<size_t>(std::ranges::upper_bound(index_.groups, first, {}, &YearGroup::to) - index_.groups.begin()) : 0;
-        for (size_t i = first; i < posts.items.size(); ++i) {
+        size_t gi = tl ? static_cast<size_t>(std::ranges::upper_bound(index_.groups, post_first, {}, &YearGroup::to) - index_.groups.begin()) : 0;
+        for (size_t i = post_first; i < posts.items.size(); ++i) {
             const float row_y = r.y + heights.top(i);
             if (row_y >= clip.bottom()) {
                 break;
@@ -718,8 +727,9 @@ namespace lyren {
                 }
                 const YearGroup &g = index_.groups[gi];
                 lead = lead_for(i, g);
-                // Omit the inner hairline right before a year boundary where the chapter divider takes over.
-                divider = i + 1 < g.to || gi + 1 == index_.groups.size();
+                // Omit the inner hairline right before a visible year chapter where its boundary divider/header takes over.
+                const bool next_chapter = gi + 1 < index_.groups.size() && index_.groups[gi + 1].year > 0;
+                divider = i + 1 < g.to || !next_chapter;
             }
             const float in = ui.cascade(posts.since, shown++);
             Fade fade(p, in);
@@ -730,10 +740,12 @@ namespace lyren {
             }
             post(ui, source, posts.items[i], r.x, row_y + dy, w, true, byline, tl, lead, divider);
         }
+        if (clipped_posts) {
+            ui.pop_clip();
+        }
         if (tl && tl->rail) {
             // Sticky editorial year rail on the left: each year stays sharp and steady at the viewport top until the
             // next year arrives, then smoothly eases upward and dissolves without scale shimmer or bounce jitter.
-            const float in = ui.cascade(posts.since, 0);
             const float contact_dist = tl->year_h + 6.f;
             const float pin_y = clip.y + look::pad;
             constexpr float cushion = 12.f;
@@ -760,25 +772,22 @@ namespace lyren {
                 }
                 // C1-smooth minimum between pin_y and max_y so the outgoing year accelerates gently from rest into
                 // 1:1 scroll motion instead of snapping at the contact point.
-                float sticky_y = std::max(natural_y, std::min(pin_y, max_y));
-                if (natural_y < pin_y && max_y > natural_y) {
-                    const float h = std::max(cushion - std::abs(max_y - pin_y), 0.f) / cushion;
-                    sticky_y = std::max(natural_y, std::min(pin_y, max_y) - h * h * cushion * 0.25f);
-                }
+                const float h = std::max(cushion - std::abs(max_y - pin_y), 0.f) / cushion;
+                const float sticky_y = std::max(natural_y, std::min(pin_y, max_y) - h * h * cushion * 0.25f);
 
                 const float push = std::clamp((pin_y - sticky_y) / contact_dist, 0.f, 1.f);
                 const float out_a = 1.f - smooth01(push);
                 if (out_a <= 0.02f) {
                     continue;
                 }
+                const int slot = g->from > post_first ? static_cast<int>(g->from - post_first) : 0;
+                const float in = ui.cascade(posts.since, slot);
                 const float approach = g->from > 0 ? smooth01(1.f - (natural_y - pin_y) / 64.f) : 1.f;
                 TextStyle ys = tl->year_style;
                 ys.color = t.text.with_alpha(std::lerp(0.76f, 0.96f, approach) * out_a);
                 Fade fade(p, in);
                 p.text(r.x, sticky_y + (1 - in) * 10 + tl->baseline, int_text(g->year), ys);
             }
-        } else if (bars_to > bars_from) {
-            p.raise(bars_from, bars_to);
         }
         const float y = r.y + heights.total();
         const Rect foot{r.x, y, w, 64};

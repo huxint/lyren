@@ -1157,15 +1157,21 @@ TEST_CASE("recommend sticky header morphs, latches, stays clickable above scroll
     scene.click(*narrow_fm, 760, 760);
     CHECK(scene.shell.browser.route().page == Page::fm);
 
-    // Large font_size (32) and large radius (24): compact day numeral inside the docked pill does not truncate.
+    // Large font_size (32) and large radius (24): rest-state hero title/subtitle do not overlap, and compact day
+    // numeral inside the docked pill does not truncate.
     Scene large({.font_size = 32.f, .radius = 24.f});
     auto &large_shelf = large.shell.library.shelf(Source::netease);
     for (int i = 6; i < 36; ++i) {
         large_shelf.recommended.cards.push_back(
             {.id = std::format("rec-{}", i), .title = std::format("Late Night Tape {}", i + 1), .count = 18 + i, .count_kind = Card::Count::songs});
     }
-    large.draw(1440, 760);
-    large.ui.scroll_to(large.ui.id("recommend"), 380.f, false);
+    const auto large_rest = large.draw(1440, 760);
+    const auto *large_title = find_in_page(large_rest, "Daily mix");
+    const auto *large_sub = find_in_page(large_rest, "Fresh picks, every day");
+    REQUIRE(large_title != nullptr);
+    REQUIRE(large_sub != nullptr);
+    CHECK_FALSE(overlaps(large_title->box, large_sub->box));
+    large.ui.scroll_to(large.ui.id("recommend"), 420.f, false);
     const auto large_docked = large.draw(1440, 760);
     const std::string today_day(large.shell.browser.today().substr(3));
     const auto *day_run = find_in_page(large_docked, today_day);
@@ -1571,16 +1577,87 @@ TEST_CASE("profile timeline groups posts by sticky left year rail and yields cle
     CHECK(saw_2025_pinned);
     CHECK_FALSE(scene.ui.animating());
 
-    // Narrow viewport switches gracefully to inline sticky year headers without colliding with the day column.
+    // Narrow viewport switches gracefully to inline sticky year headers: occluded post content is clipped below the
+    // pinned header (no run overlap, no hover/cursor leak), and 2026 -> 2025 pushes cleanly without overlap.
     scene.ui.scroll_to(scroll, 260.f);
     scene.draw(440, 620);
     const auto narrow = scene.draw(440, 620);
     const auto *narrow_y26 = scene.find("2026");
     REQUIRE(narrow_y26 != nullptr);
     CHECK(drew(narrow, "2026"));
+    for (const auto &run : narrow) {
+        if (!run.icon && (run.text == "18" || run.text == "09" || run.text == "May" || run.text == "Mar")) {
+            CHECK_FALSE(overlaps(narrow_y26->box, run.box));
+        }
+    }
+    // Pointing over the right edge of the pinned narrow year header must not leak pointer cursor from hidden "More" buttons.
+    scene.point(395.f, narrow_y26->box.y + narrow_y26->box.h / 2);
+    scene.draw(440, 620);
+    CHECK(scene.ui.cursor == wl::Cursor::arrow);
+    bool narrow_saw_both = false;
+    for (float off = 320.f; off <= 960.f; off += 12.f) {
+        scene.ui.scroll_to(scroll, off);
+        scene.draw(440, 620);
+        const auto *ny26 = scene.find("2026");
+        const auto *ny25 = scene.find("2025");
+        if (ny26 && ny25) {
+            narrow_saw_both = true;
+            CHECK_FALSE(overlaps(ny26->box, ny25->box));
+            CHECK(ny26->box.bottom() < ny25->box.y);
+        }
+    }
+    CHECK(narrow_saw_both);
+
+    // Undated posts (time == 0) inside a dated chapter stay with that chapter without splitting it, and pagination +
+    // deletion keep the year index accurate.
+    {
+        Scene edge;
+        int page_calls = 0;
+        edge.service.on_posts = [&](std::string, std::string) -> Task<Result<PostPage>> {
+            ++page_calls;
+            std::vector<Post> batch;
+            if (page_calls == 1) {
+                Post a = test::Service::post("e1", test::Service::me(), "Dated first.", true);
+                a.time = make_ms(2026, 4, 10, 12, 0);
+                Post b = test::Service::post("e2", test::Service::me(), "Undated middle.", true);
+                b.time = 0;
+                Post c = test::Service::post("e3", test::Service::me(), "Dated third.", true);
+                c.time = make_ms(2026, 2, 5, 9, 0);
+                batch = {std::move(a), std::move(b), std::move(c)};
+                co_return PostPage{.posts = std::move(batch), .more = true, .cursor = "p2"};
+            }
+            Post d = test::Service::post("e4", test::Service::me(), "Older year page.", true);
+            d.time = make_ms(2024, 9, 1, 18, 0);
+            batch = {std::move(d)};
+            co_return PostPage{.posts = std::move(batch), .more = false};
+        };
+        edge.shell.browser.open_own_profile();
+        edge.draw(1180, 1200);
+        const auto *posts_tab = edge.find("Posts");
+        REQUIRE(posts_tab != nullptr);
+        edge.click(*posts_tab, 1180, 1200);
+        const auto p1 = edge.draw(1180, 1200);
+        // Single "2026" chapter (not split around the undated post) and page 2's "2024" appended cleanly.
+        CHECK(count_text(p1, "2026") == 1);
+        CHECK(drew(p1, "Undated middle."));
+        const auto page = edge.shell.browser.route().profile;
+        REQUIRE(page != nullptr);
+        CHECK(page->posts->items.size() == 4);
+        CHECK(drew(p1, "2024"));
+        // Deleting the last remaining 2024 post updates the year index cleanly.
+        edge.shell.social.remove(Source::netease, page->posts->items.back());
+        const auto after_del = edge.draw(1180, 1200);
+        CHECK_FALSE(drew(after_del, "2024"));
+        CHECK(count_text(after_del, "2026") == 1);
+    }
 
     // Chinese locale formats month labels concisely as "5月" / "11月".
-    const Language prev_lang = language();
+    struct RestoreLang {
+        Language prev;
+        ~RestoreLang() {
+            set_language(prev);
+        }
+    } restore_lang{language()};
     Scene zh_scene({.language = Language::zh});
     zh_scene.service.on_posts = [&](std::string, std::string) -> Task<Result<PostPage>> {
         co_return PostPage{.posts = build_posts(test::Service::person(0))};
@@ -1590,7 +1667,6 @@ TEST_CASE("profile timeline groups posts by sticky left year rail and yields cle
     const auto zh_runs = zh_scene.draw(1180, 620);
     CHECK(drew(zh_runs, "2026"));
     CHECK(drew(zh_runs, "5月"));
-    set_language(prev_lang);
 }
 
 TEST_CASE("home hero strip uses unified monochrome surfaces without per-card rainbow gradients") {
@@ -1598,7 +1674,8 @@ TEST_CASE("home hero strip uses unified monochrome surfaces without per-card rai
     for (const bool dark : {true, false}) {
         Scene scene({.dark = dark});
         const auto runs = scene.draw(1180, 760);
-        CHECK(drew(runs, "Daily mix"));
+        const auto *daily = scene.find("Daily mix");
+        REQUIRE(daily != nullptr);
         CHECK(drew(runs, "Personal FM"));
         CHECK(drew(runs, "Radar"));
         const auto *radar_sub = scene.find("Favorites and new discoveries");
@@ -1607,11 +1684,12 @@ TEST_CASE("home hero strip uses unified monochrome surfaces without per-card rai
         // Redundant month/day pill is gone; the calendar emblem shows the short month beside the day numeral.
         CHECK_FALSE(drew(runs, scene.shell.pages.date_label()));
         // Only the top page wash emits a vertical gradient in the hero band; individual hero cards stay calm flat surfaces.
+        const float band_top = daily->box.y - 32.f, band_bottom = daily->box.bottom() + 48.f;
         int hero_gradients = 0;
         int light_hero_edges = 0;
         for (const gfx::Prim &prim : scene.painter.prims()) {
             const auto kind = static_cast<gfx::Kind>(prim.info[0]);
-            if (kind == gfx::Kind::rect && prim.rect[0] >= 220.f && prim.rect[1] >= 120.f && prim.rect[1] < 260.f) {
+            if (kind == gfx::Kind::rect && prim.rect[0] >= 220.f && prim.rect[1] >= band_top && prim.rect[1] < band_bottom) {
                 if (prim.info[2] & gfx::flag_gradient) {
                     ++hero_gradients;
                 }
@@ -1625,4 +1703,67 @@ TEST_CASE("home hero strip uses unified monochrome surfaces without per-card rai
             CHECK(light_hero_edges == 3);
         }
     }
+}
+
+TEST_CASE("playlist picker culls off-screen rows and stays valid through modal fade-out") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene({.motion = 1.0});
+    auto &playlists = scene.shell.library.shelf(Source::netease).playlists;
+    playlists.clear();
+    for (int i = 0; i < 80; ++i) {
+        playlists.push_back({.kind = CardKind::playlist, .source = Source::netease, .id = std::format("own-{}", i), .title = std::format("Owned {}", i), .owned = true});
+    }
+    auto drew_in_modal = [](std::span<const ui::Painter::Run> runs, std::string_view text) {
+        return std::ranges::any_of(runs, [&](const ui::Painter::Run &run) {
+            return !run.icon && run.text == text && run.box.x > 300.f;
+        });
+    };
+    auto settle_modal = [&] {
+        std::span<const ui::Painter::Run> out;
+        for (int i = 0; i < 12; ++i) {
+            out = scene.draw_dt(1180, 760, 0.05);
+        }
+        return out;
+    };
+
+    scene.shell.dialogs.pick_playlist(scene.ui, {test::Service::song(0)});
+    const auto top = settle_modal();
+    CHECK(drew_in_modal(top, "Add to playlist"));
+    CHECK(drew_in_modal(top, "Night Train · Mira Chen"));
+    CHECK(drew_in_modal(top, "New playlist"));
+    CHECK(drew_in_modal(top, "Owned 0"));
+    CHECK_FALSE(drew_in_modal(top, "Owned 50"));
+    CHECK_FALSE(drew_in_modal(top, "Owned 79"));
+
+    // Scrolling reveals lower rows and culls upper ones inside the picker.
+    scene.ui.scroll_to(scene.ui.id("picker"), 60.f * 56.f);
+    const auto scrolled = scene.draw_dt(1180, 760, 0.05);
+    CHECK_FALSE(drew_in_modal(scrolled, "Owned 0"));
+    const auto *row60 = scene.find("Owned 60");
+    REQUIRE(row60 != nullptr);
+    CHECK(row60->box.x > 300.f);
+
+    // Picking a playlist moves tracks out and starts a 160ms fade-out; drawing mid-fade must stay valid and keep its subtitle.
+    const float rx = row60->box.x + row60->box.w / 2, ry = row60->box.y + row60->box.h / 2;
+    scene.button(rx, ry, true);
+    scene.button(rx, ry, false);
+    CHECK_FALSE(scene.ui.modal_open());
+    const auto fading = scene.draw_dt(1180, 760, 0.05);
+    CHECK(drew_in_modal(fading, "Add to playlist"));
+    CHECK(drew_in_modal(fading, "Night Train · Mira Chen"));
+    const auto closed = scene.draw_dt(1180, 760, 0.3);
+    CHECK_FALSE(drew_in_modal(closed, "Add to playlist"));
+
+    // Transitioning from picker to "New playlist" and cancelling closes cleanly without leaking pending tracks.
+    scene.shell.dialogs.pick_playlist(scene.ui, {test::Service::song(0)});
+    scene.ui.scroll_to(scene.ui.id("picker"), 0.f);
+    settle_modal();
+    const auto *create_row = scene.find("New playlist");
+    REQUIRE(create_row != nullptr);
+    const auto editor = scene.click(*create_row);
+    CHECK(drew_in_modal(editor, "Create"));
+    scene.ui.close_modal();
+    scene.draw_dt(1180, 760, 0.05);
+    const auto after_cancel = scene.draw_dt(1180, 760, 0.3);
+    CHECK_FALSE(drew_in_modal(after_cancel, "Create"));
 }

@@ -5,11 +5,10 @@
 #include <vector>
 
 #include "app/desktop_snap.hpp"
+#include "app/state.hpp"
 #include "app/view/part.hpp"
 
 namespace lyren {
-
-    struct SavedState;
 
     // Lyrics on the desktop, outside the window: floating lines, or an island hanging from the top of the screen. The
     // overlay reserves no workspace and never takes keyboard focus.
@@ -25,7 +24,7 @@ namespace lyren {
         }
         void set_enabled(bool enabled);
         void set_island(bool island);
-        void save(SavedState &to) const;
+        void save(SavedStateView &to) const;
         // The overlay's content on a surface w by h; returns where it takes input.
         ui::Rect draw(ui::Ui &ui, float w, float h);
         // The island hanging from top at center; floating lyrics across a surface. Both return where they take input.

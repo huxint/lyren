@@ -409,6 +409,7 @@ namespace lyren {
                         return p.id == post.id;
                     })) {
                     list->heights.ends.clear();
+                    ++list->version;
                 }
             };
             self->each_page([&](const std::shared_ptr<Page> &page) {

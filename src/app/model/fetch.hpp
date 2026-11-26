@@ -91,6 +91,7 @@ namespace lyren {
         int page = 0;   // pages arrived
         int total = -1; // as the service counts them; negative while it has not said
         bool more = true;
+        uint64_t version = 0; // bumped whenever items are appended or removed
         Heights heights;
 
         // The next page may be asked for; a failed one waits for its retry (or retries page 0 if retry_first is set).
@@ -109,6 +110,7 @@ namespace lyren {
             cursor = std::move(next_cursor);
             loaded = true;
             ++page;
+            ++version;
         }
     };
 

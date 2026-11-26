@@ -60,7 +60,7 @@ namespace lyren {
     : Part(shell),
       translation_(saved.lyrics_translation) {}
 
-    void Stage::save(SavedState &to) const {
+    void Stage::save(SavedStateView &to) const {
         to.lyrics_translation = translation_;
     }
 

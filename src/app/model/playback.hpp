@@ -12,11 +12,10 @@
 #include "audio/player.hpp"
 #include "media/lyrics.hpp"
 #include "media/timeline.hpp"
+#include "app/state.hpp"
 #include "sys/mpris.hpp"
 
 namespace lyren {
-
-    struct SavedState;
 
     // The queue and what plays from it: the transport, the current song's stream and lyrics, the listening history, and
     // what the desktop's media controls and the listener's account hear about it.
@@ -37,7 +36,7 @@ namespace lyren {
 
         // Answers the desktop's media controls from now on. raise brings the window forward.
         void connect(Bus &bus, std::move_only_function<void(std::string_view token)> raise);
-        void save(SavedState &to);
+        void save(SavedStateView &to);
         void config_changed();
         // An account left: its radio and the listen being counted for it end.
         void forget(Source source);

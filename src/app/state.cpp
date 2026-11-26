@@ -62,9 +62,14 @@ namespace lyren {
         return std::move(*state);
     }
 
-    void save_state(const SavedState &s) {
+    std::string format_state(const SavedStateView &s) {
         std::string text;
         static_cast<void>(glz::write_json(s, text));
+        return text;
+    }
+
+    void save_state(const SavedStateView &s) {
+        const std::string text = format_state(s);
         auto path = paths::state_dir() / "state.json", tmp = path;
         tmp += ".tmp";
         {

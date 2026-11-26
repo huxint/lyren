@@ -895,3 +895,51 @@ TEST_CASE("HiDPI cover cache expands VRAM budget and prefetches scale-matched ti
     CHECK(images.get("hidpi-0", 512).ready);
     CHECK(images.get("hidpi-39", 512).ready);
 }
+
+TEST_CASE("cover prefetch reuses a ready larger tier without starting another download") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    net::Http http;
+    Images images(
+        g.loop, http, g.renderer, [] {},
+        [] {
+            return 0.;
+        });
+    std::atomic<int> hits = 0;
+    test::Server server([&](std::string_view request) {
+        if (request.starts_with("GET /cover")) {
+            ++hits;
+            return test::ok(cover_body());
+        }
+        return test::ok("pong");
+    });
+    const std::string url = server.url().substr(7) + "/cover";
+    const gfx::Image image{512, 512, std::vector<uint8_t>(512 * 512 * 4, 255)};
+    images.put(url, 512, image);
+    images.prefetch(url, 128);
+    images.prefetch(url, 256);
+    images.prefetch(url, 512);
+    auto wait_ping = [&] {
+        bool ping = false;
+        auto timeout = g.loop.after(2s, [&] {
+            g.loop.quit();
+        });
+        g.loop.after(40ms, [&] {
+            http.request({.url = server.url() + "/ping"}, [&](net::Response response) {
+                g.loop.post([&, response = std::move(response)] {
+                    ping = response.body == "pong";
+                    g.loop.quit();
+                });
+            });
+        });
+        g.loop.run();
+        g.loop.cancel(timeout);
+        REQUIRE(ping);
+    };
+    wait_ping();
+    CHECK(hits.load() == 0);
+    // Blurred backdrops are a separate variant and still prefetch normally.
+    images.prefetch(url, 128, true);
+    wait_ping();
+    CHECK(hits.load() == 1);
+}

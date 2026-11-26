@@ -36,20 +36,21 @@ namespace lyren {
         };
         struct TimelineIndex {
             const Social::Posts *list = nullptr;
+            uint64_t version = 0;
             size_t count = 0;
             std::string first_id;
             std::vector<YearGroup> groups;
         };
         struct TimelineLayout {
             bool rail = false; // wide: bold sticky left year rail; narrow: sticky inline year header
-            float year_text_w = 0, year_rail_w = 0;
+            float year_rail_w = 0;
             float day_box_w = 0, day_col_w = 0, content_x = 0;
             float year_gap = 0, header_h = 0;
             float head_h = 0, baseline = 0, month_offset = 0, year_h = 0;
             ui::TextStyle year_style, day_style, month_style;
         };
 
-        void sync_years(const Social::Posts &posts, bool reset);
+        void sync_years(const Social::Posts &posts);
         static TimelineLayout timeline_layout(ui::Ui &ui, float w);
         // A post at y, or only its height when it is not drawn.
         float post(ui::Ui &ui, Source source, const Post &post, float x, float y, float w, bool draw, bool byline, const TimelineLayout *timeline = nullptr, float lead_h = 0,

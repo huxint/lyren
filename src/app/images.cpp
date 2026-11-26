@@ -162,9 +162,19 @@ namespace lyren {
     }
 
     void Images::prefetch(std::string_view url, uint32_t px, bool blurred) {
+        if (url.empty()) {
+            return;
+        }
         const CacheKey::View key{url, blurred ? 0 : px};
+        if (auto it = entries_.find(key); it != entries_.end() && it->second.ready) {
+            it->second.used = frame_;
+            return;
+        }
+        if (!blurred && other_tier(url, px, 0, true)) {
+            return;
+        }
         const uint32_t side = blurred ? blur_px : px;
-        if (!url.empty() && bytes_ + static_cast<size_t>(side) * side * 4 <= budget() && (entries_.size() < max_entries || entries_.contains(key))) {
+        if (bytes_ + static_cast<size_t>(side) * side * 4 <= budget() && (entries_.size() < max_entries || entries_.contains(key))) {
             request(key, Priority::background);
         }
     }
