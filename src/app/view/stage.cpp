@@ -403,9 +403,8 @@ namespace lyren {
         }
         const auto &blocks = layout_;
         const float total = blocks.back().y + blocks.back().h;
-        // The line a little ahead, so its highlight lands with the voice rather than after it.
-        const double now = playback_.song_time(), lead = 0.2;
-        const int current = lyric_at(lines, now + lead);
+        const double now = playback_.song_time();
+        const int current = lyric_at(lines, now + lyric_lead);
         // A long pause before a line, at the start or after a word-timed line (the others do not say where they end):
         // three dots take the stage and fill up until the line comes.
         int pause = -1;
@@ -413,7 +412,7 @@ namespace lyren {
         if (const auto next = static_cast<size_t>(current + 1); next < lines.size()) {
             const LyricLine *before = current >= 0 ? &lines[static_cast<size_t>(current)] : nullptr;
             const double from = !before ? 0 : before->words.empty() ? -1 : before->words.back().time() + before->words.back().duration() + 0.3;
-            const double to = lines[next].time - lead;
+            const double to = lines[next].time - lyric_lead;
             if (from >= 0 && to - from >= 5 && now >= from) {
                 pause = static_cast<int>(next), pause_from = from, pause_to = to;
             }
@@ -594,7 +593,7 @@ namespace lyren {
         if (pause >= 0 || (current >= 0 && !lines[static_cast<size_t>(current)].words.empty())) {
             ui.keep_animating();
         } else if (const auto next = static_cast<size_t>(current + 1); next < lines.size()) {
-            ui.wake(ui.now + (lines[next].time - lead - now));
+            ui.wake(ui.now + (lines[next].time - lyric_lead - now));
         }
     }
 

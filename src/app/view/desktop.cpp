@@ -15,7 +15,6 @@ namespace lyren {
 
     namespace {
         constexpr float toolbar_height = 40, tau = 2 * std::numbers::pi_v<float>;
-        constexpr double lead = 0.2; // a line lights up a little early, with the voice rather than after it
 
         Rect desktop_bounds(Rect panel, float width, float height, DesktopSnap &snap, bool dragging) {
             panel.x = desktop_axis(panel.x, panel.w, width, snap.x, dragging);
@@ -121,7 +120,7 @@ namespace lyren {
         if (timed) {
             ui.keep_animating();
         } else if (const auto next = static_cast<size_t>(line + 1); next < playback_.lyrics().size()) {
-            ui.wake(ui.now + playback_.lyrics()[next].time - lead - playback_.song_time());
+            ui.wake(ui.now + playback_.lyrics()[next].time - lyric_lead - playback_.song_time());
         }
     }
 
@@ -149,7 +148,7 @@ namespace lyren {
         const Track *track = playback_.current();
         const auto clock = playback_.timeline();
         const double elapsed = playback_.position(), now = clock.to_song(elapsed);
-        const int at = lyric_at(playback_.lyrics(), now + lead);
+        const int at = lyric_at(playback_.lyrics(), now + lyric_lead);
         const LyricLine *line = at >= 0 ? &playback_.lyrics()[static_cast<size_t>(at)] : nullptr;
         const std::string_view text = line ? std::string_view(line->text) : track ? std::string_view(track->title) : lyren::tr("Nothing playing");
         const bool timed = line && !line->words.empty();
@@ -303,7 +302,7 @@ namespace lyren {
                     target = std::clamp(lyric_sung_x(p, *line, value, line_size, 8, now) - avail * 0.6f, 0.f, overflow);
                 } else if (current && line) {
                     const double from = line->time, to = static_cast<size_t>(at + 1) < playback_.lyrics().size() ? playback_.lyrics()[static_cast<size_t>(at + 1)].time : from + 5;
-                    target = overflow * smooth01((static_cast<float>((now + lead - from) / std::max(to - from, 0.5)) - 0.15f) / 0.6f);
+                    target = overflow * smooth01((static_cast<float>((now + lyric_lead - from) / std::max(to - from, 0.5)) - 0.15f) / 0.6f);
                 }
                 return ui.spring(ui::sub_id(ui.id("island-slide"), std::bit_cast<uint64_t>(since)), target, 700);
             };

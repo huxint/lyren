@@ -140,6 +140,10 @@ namespace lyren {
         }
     };
 
+    // The original stage view (95b21a6) starts the highlight fade 200 ms before the lyric cue so it is visible when the vocal begins.
+    // The desktop island and comment quotes follow the same highlighted line.
+    inline constexpr double lyric_lead = 0.2;
+
     // Where the wipe of a word-timed line stands at time within text, one of its wrapped lines: px from the start
     // of text, a soft edge's width before it while it is unsung and past its end once sung.
     inline float lyric_sung_x(ui::Painter &p, const LyricLine &line, std::string_view text, float size, float soft, double time, uint8_t features = 0) {
