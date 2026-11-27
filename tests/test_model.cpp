@@ -13,9 +13,11 @@
 #include "app/model/browser.hpp"
 #include "app/model/fetch.hpp"
 #include "app/model/library.hpp"
+#include "app/model/pins.hpp"
 #include "app/model/playback.hpp"
 #include "app/model/social.hpp"
 #include "app/state.hpp"
+#include "app/store.hpp"
 
 using namespace lyren;
 
@@ -852,4 +854,229 @@ TEST_CASE("a heartbeat response arriving after the listener chooses a song prese
     mix.release();
     REQUIRE(playback.queue().size() == 1);
     CHECK(playback.queue().front().id == "chosen");
+}
+
+TEST_CASE("Store persists KV, search history, cross-platform listening stats, and reference-counted offline pins") {
+    Store store(":memory:");
+    REQUIRE(store.open());
+
+    // KV CRUD.
+    CHECK_FALSE(store.get_kv("theme").has_value());
+    store.set_kv("theme", "dark");
+    CHECK(store.get_kv("theme") == "dark");
+    store.set_kv("theme", "light");
+    CHECK(store.get_kv("theme") == "light");
+    store.remove_kv("theme");
+    CHECK_FALSE(store.get_kv("theme").has_value());
+
+    // Search history dedup, ordering, prefix filter, remove, and clear.
+    store.record_search("Night Train", 100);
+    store.record_search("Radiohead", 200);
+    store.record_search("Night Train", 300);
+    const auto all_hist = store.search_history();
+    REQUIRE(all_hist.size() == 2);
+    CHECK(all_hist[0].query == "Night Train");
+    CHECK(all_hist[0].count == 2);
+    CHECK(all_hist[1].query == "Radiohead");
+    const auto pref = store.search_history("nig");
+    REQUIRE(pref.size() == 1);
+    CHECK(pref[0].query == "Night Train");
+    store.remove_search("Night Train");
+    REQUIRE(store.search_history().size() == 1);
+    store.clear_search_history();
+    CHECK(store.search_history().empty());
+
+    // Cross-platform listening stats across week / month / all ranges with collab artist splitting.
+    const int64_t now = 1'700'000'000;
+    Track t_ncm{.id = "n1", .title = "Night Train", .artist = "Mira Chen / YOASOBI", .artist_id = "art-mira", .duration = 200, .source = Source::netease};
+    Track t_qq{.id = "q1", .title = "Slow Radio", .artist = "YOASOBI", .artist_id = "art-yoa", .duration = 180, .source = Source::qq};
+    Track t_sub{.id = "s1", .title = "Home Tape", .artist = "Low Tide", .duration = 240, .source = Source::subsonic, .instance = "home"};
+    store.record_listen(t_ncm, 180, true, now - 3600);       // within 7d
+    store.record_listen(t_qq, 120, true, now - 10 * 86400);  // within 30d, outside 7d
+    store.record_listen(t_sub, 200, true, now - 60 * 86400); // all time only
+    store.record_listen(t_ncm, 90, false, now - 1800);       // within 7d (second listen to t_ncm)
+
+    const auto week = store.listening_stats(Store::StatsRange::week, now);
+    CHECK(week.total_plays == 2);
+    CHECK(week.total_seconds == 270);
+    CHECK(week.unique_tracks == 1);
+    CHECK(week.unique_artists == 2); // Mira Chen + YOASOBI
+    REQUIRE(week.by_source.size() == 1);
+    CHECK(week.by_source[0].source_id == "netease");
+
+    const auto month = store.listening_stats(Store::StatsRange::month, now);
+    CHECK(month.total_plays == 3);
+    CHECK(month.total_seconds == 390);
+    CHECK(month.by_source.size() == 2);
+    REQUIRE_FALSE(month.top_artists.empty());
+    CHECK(month.top_artists[0].name == "YOASOBI"); // 270 + 120 = 390s across both platforms
+
+    const auto all = store.listening_stats(Store::StatsRange::all, now);
+    CHECK(all.total_plays == 4);
+    CHECK(all.total_seconds == 590);
+    CHECK(all.unique_tracks == 3);
+    CHECK(all.by_source.size() == 3);
+
+    // Offline pins: unpinning a playlist preserves manually pinned tracks and tracks in other pinned playlists.
+    Card pl_a{.kind = CardKind::playlist, .source = Source::netease, .id = "pl-a", .title = "List A"};
+    Card pl_b{.kind = CardKind::playlist, .source = Source::netease, .id = "pl-b", .title = "List B"};
+    const std::array list_a{t_ncm, t_qq};
+    const std::array list_b{t_qq, t_sub};
+    store.set_list_pin(pl_a, list_a, true, now);
+    store.set_list_pin(pl_b, list_b, true, now + 1);
+    store.set_track_pin(t_ncm, true, now + 2);
+    CHECK(store.pinned_tracks().size() == 3);
+    CHECK(store.pinned_lists().size() == 2);
+
+    store.set_list_pin(pl_a, {}, false, now + 3);
+    CHECK(store.pinned_tracks().size() == 3); // t_ncm stays manual, t_qq stays via pl_b
+    store.set_list_pin(pl_b, {}, false, now + 4);
+    REQUIRE(store.pinned_tracks().size() == 1);
+    CHECK(store.pinned_tracks()[0].track.id == "n1");
+    store.update_pinned_cache(t_ncm, "ckey", "abc123");
+    CHECK(store.pinned_cache_hash(t_ncm) == "abc123");
+    store.set_track_pin(t_ncm, false, now + 5);
+    CHECK(store.pinned_tracks().empty());
+}
+
+TEST_CASE("ProviderRegistry isolates accountless local and multi-instance subsonic sources") {
+    Loop loop;
+    net::Http http;
+    Config config;
+    Store store(":memory:");
+    double clock = 100.0;
+
+    test::Service ncm;
+    test::Service local;
+    local.capabilities.accounts = false;
+    local.signed_in = false;
+    int local_account_calls = 0;
+    local.on_search = [](std::string q, SearchKind, int, int) -> Task<Result<Batch>> {
+        Track t{.id = "loc-1", .title = "Local " + q, .artist = "Disk", .duration = 180, .source = Source::local};
+        co_return Batch{.tracks = {std::move(t)}, .total = 1};
+    };
+
+    struct AccountlessService : test::Service {
+        int *account_calls = nullptr;
+        Task<Result<Account>> account() override {
+            if (account_calls) {
+                ++(*account_calls);
+            }
+            co_return std::unexpected("should not call account");
+        }
+    } local_srv;
+    local_srv.capabilities.accounts = false;
+    local_srv.signed_in = false;
+    local_srv.account_calls = &local_account_calls;
+
+    test::Service sub_home, sub_work;
+    sub_home.on_search = [](std::string q, SearchKind, int, int) -> Task<Result<Batch>> {
+        Track t{.id = "dup-1", .title = "Home " + q, .artist = "HomeNAS", .duration = 200, .source = Source::subsonic, .instance = "home"};
+        co_return Batch{.tracks = {std::move(t)}, .total = 1};
+    };
+    sub_work.on_search = [](std::string q, SearchKind, int, int) -> Task<Result<Batch>> {
+        Track t{.id = "dup-1", .title = "Work " + q, .artist = "OfficeNAS", .duration = 200, .source = Source::subsonic, .instance = "work"};
+        co_return Batch{.tracks = {std::move(t)}, .total = 1};
+    };
+
+    ProviderRegistry reg;
+    reg.add(Source::netease, ncm);
+    reg.add(Source::local, local_srv);
+    reg.add(Source::subsonic, sub_home, "home", "Home Subsonic", "Home");
+    reg.add(Source::subsonic, sub_work, "work", "Work Subsonic", "Work");
+
+    Env env{.loop = loop,
+            .http = http,
+            .providers = std::move(reg),
+            .config = config,
+            .redraw = [] {},
+            .now =
+                [&] {
+                    return clock;
+                },
+            .store = &store};
+    CHECK_FALSE(env.has_account(Source::local));
+    CHECK(env.signed_in(Source::local));
+    CHECK(env.providers.entries().size() == 4);
+
+    Library library(env);
+    Social social(env, library);
+    Browser browser(env, library, social, Source::local);
+
+    spawn(library.load(Source::local));
+    CHECK(local_account_calls == 0);
+
+    // Multi-instance Subsonic sources isolate search results and track identity even for the same track ID.
+    browser.switch_platform(Source::subsonic, "home");
+    CHECK(browser.active_id() == "subsonic:home");
+    browser.query = "jazz";
+    browser.search();
+    REQUIRE(browser.results(0).tracks.size() == 1);
+    const Track home_track = browser.results(0).tracks[0];
+    CHECK(home_track.title == "Home jazz");
+
+    browser.switch_platform(Source::subsonic, "work");
+    CHECK(browser.active_id() == "subsonic:work");
+    REQUIRE(browser.results(0).tracks.size() == 1);
+    const Track work_track = browser.results(0).tracks[0];
+    CHECK(work_track.title == "Work jazz");
+    CHECK_FALSE(same(home_track, work_track));
+    CHECK(key(home_track) != key(work_track));
+}
+
+TEST_CASE("Browser merges search history with debounced provider suggestions and cancels stale lookups") {
+    ModelRig rig;
+    Store store(":memory:");
+    rig.env.store = &store;
+    Library library(rig.env);
+    Social social(rig.env, library);
+    Browser browser(rig.env, library, social, Source::netease);
+
+    browser.query = "Night Train";
+    browser.search();
+    browser.query = "Nocturne";
+    browser.search();
+
+    // Empty input surfaces recent history newest-first.
+    browser.update_suggestions("");
+    REQUIRE(browser.suggestions().size() == 2);
+    CHECK(browser.suggestions()[0].text == "Nocturne");
+    CHECK(browser.suggestions()[0].from_history);
+    CHECK(browser.suggestions()[1].text == "Night Train");
+
+    // Prefix filters history immediately and merges deduplicated remote suggestions after debounce.
+    test::Gate first_suggest;
+    int suggest_calls = 0;
+    rig.service.on_search_suggest = [&](std::string q) -> Task<Result<std::vector<std::string>>> {
+        ++suggest_calls;
+        if (q == "ni") {
+            co_await first_suggest;
+            co_return std::vector<std::string>{"Stale Result"};
+        }
+        co_return std::vector<std::string>{"night train", "Nightfall"};
+    };
+
+    browser.update_suggestions("ni");
+    const auto quit_after = rig.loop.after(220ms, [&] {
+        rig.loop.quit();
+    });
+    rig.loop.run();
+    rig.loop.cancel(quit_after);
+    CHECK(suggest_calls == 1);
+
+    // User types further before first request resolves; stale response must be ignored.
+    browser.update_suggestions("nig");
+    const auto quit_after2 = rig.loop.after(220ms, [&] {
+        rig.loop.quit();
+    });
+    rig.loop.run();
+    rig.loop.cancel(quit_after2);
+    first_suggest.release();
+
+    CHECK(suggest_calls == 2);
+    REQUIRE(browser.suggestions().size() == 2); // "Night Train" (history, deduped against "night train") + "Nightfall" (remote)
+    CHECK(browser.suggestions()[0].text == "Night Train");
+    CHECK(browser.suggestions()[0].from_history);
+    CHECK(browser.suggestions()[1].text == "Nightfall");
+    CHECK_FALSE(browser.suggestions()[1].from_history);
 }

@@ -665,15 +665,18 @@ namespace lyren {
     void SettingsPage::services_tab(ui::Ui &ui, Rows &rows) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
-        // Services: quiet status line + clean rows for all 5 music platforms.
-        int connected_count = 0;
-        for (const auto &entry : platforms) {
-            if (env_.signed_in(entry.source)) {
-                ++connected_count;
+        const auto &entries = env_.providers.entries();
+        int connected_count = 0, account_sources = 0;
+        for (const auto &entry : entries) {
+            if (entry.provider->capabilities.accounts) {
+                ++account_sources;
+                if (env_.signed_in(entry.source, entry.instance)) {
+                    ++connected_count;
+                }
             }
         }
         {
-            const auto count_str = lyren::trf("{}/{} connected", connected_count, platforms.size());
+            const auto count_str = lyren::trf("{}/{} connected", connected_count, account_sources);
             const auto note_st = t.style(type::caption, t.text_dim);
             const float cw = std::ceil(p.measure(count_str, note_st)) + 1;
             ui.label({rows.x + 4, rows.y, cw, 20}, count_str, note_st);
@@ -684,14 +687,18 @@ namespace lyren {
             rows.y += 28;
         }
 
-        std::optional<Source> open_profile_of, switch_to, sign_in_of, sign_out_of;
-        for (size_t i = 0; i < platforms.size(); ++i) {
-            const auto &entry = platforms[i];
-            const auto &caps = provider(entry.source).capabilities;
-            const auto &account = library_.shelf(entry.source).account;
-            const bool in = env_.signed_in(entry.source), active = entry.source == browser_.active(), qr = caps.qr_login;
-            const bool signer_only = accounts_.signer_connected(entry.source);
-            const Rect rr = rows.row(68, i == 0, i + 1 == platforms.size());
+        std::optional<Source> open_profile_of, sign_in_of, sign_out_of;
+        std::optional<SourceKey> switch_to;
+        for (size_t i = 0; i < entries.size(); ++i) {
+            const auto &entry = entries[i];
+            const auto &caps = entry.provider->capabilities;
+            const auto &account = library_.shelf(entry.source, entry.instance).account;
+            const bool has_acct = caps.accounts;
+            const bool in = has_acct && env_.signed_in(entry.source, entry.instance);
+            const bool active = entry.source == browser_.active() && entry.instance == browser_.active_key().instance;
+            const bool qr = caps.qr_login;
+            const bool signer_only = has_acct && accounts_.signer_connected(entry.source);
+            const Rect rr = rows.row(68, i == 0, i + 1 == entries.size());
             const ui::Id rid = ui::sub_id(ui.id("svc-row"), i);
 
             const Rect face{rr.x + 20, rr.y + (rr.h - 40) / 2, 40, 40};
@@ -701,50 +708,52 @@ namespace lyren {
             if (account) {
                 cover(ui, face, account->avatar, 20, "user");
             } else {
-                p.rect(face, (in || signer_only) ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 20);
-                p.icon(in ? "user" : signer_only ? "link" : "music", ui::center(face, 18, 18), (in || signer_only) ? t.accent : t.text_dim);
+                p.rect(face, (!has_acct || in || signer_only) ? t.accent.with_alpha(0.14f) : t.fill(1.5f), 20);
+                p.icon(in ? "user" : signer_only ? "link" : "music", ui::center(face, 18, 18), (!has_acct || in || signer_only) ? t.accent : t.text_dim);
             }
 
             // Right-aligned actions.
             float right = rr.right() - 20;
-            if (in) {
-                const Rect out_r{right - control::medium, rr.y + (rr.h - control::medium) / 2, control::medium, control::medium};
-                if (ui.icon_button(ui::sub_id(rid, 3), out_r, "log-out", 16, false, lyren::tr("Sign out"))) {
-                    sign_out_of = entry.source;
-                }
-                right = out_r.x - 8;
-                if (caps.session_import) {
-                    const Rect edit_r{right - control::medium, rr.y + (rr.h - control::medium) / 2, control::medium, control::medium};
-                    if (ui.icon_button(ui::sub_id(rid, 4), edit_r, "pencil", 15, false, lyren::tr("Edit connection"))) {
-                        sign_in_of = entry.source;
-                    }
-                    right = edit_r.x - 8;
-                }
-                if (account) {
-                    const auto prof_lbl = rr.w < 540 ? std::string_view{} : lyren::tr("My profile");
-                    const float pw = prof_lbl.empty() ? control::medium + 4 : ui.button_width(prof_lbl, true);
-                    const Rect prof_r{right - pw, rr.y + (rr.h - control::medium) / 2, pw, control::medium};
-                    if (ui.button(ui::sub_id(rid, 2), prof_r, prof_lbl, active ? ui::ButtonKind::tonal : ui::ButtonKind::secondary, "user",
-                                  prof_lbl.empty() ? lyren::tr("My profile") : std::string_view{})) {
-                        open_profile_of = entry.source;
-                    }
-                    right = prof_r.x - 10;
-                }
-            } else {
-                if (signer_only) {
-                    const Rect disc_r{right - control::medium, rr.y + (rr.h - control::medium) / 2, control::medium, control::medium};
-                    if (ui.icon_button(ui::sub_id(rid, 5), disc_r, "log-out", 16, false, lyren::tr("Disconnect signing service"))) {
+            if (has_acct) {
+                if (in) {
+                    const Rect out_r{right - control::medium, rr.y + (rr.h - control::medium) / 2, control::medium, control::medium};
+                    if (ui.icon_button(ui::sub_id(rid, 3), out_r, "log-out", 16, false, lyren::tr("Sign out"))) {
                         sign_out_of = entry.source;
                     }
-                    right = disc_r.x - 8;
+                    right = out_r.x - 8;
+                    if (caps.session_import) {
+                        const Rect edit_r{right - control::medium, rr.y + (rr.h - control::medium) / 2, control::medium, control::medium};
+                        if (ui.icon_button(ui::sub_id(rid, 4), edit_r, "pencil", 15, false, lyren::tr("Edit connection"))) {
+                            sign_in_of = entry.source;
+                        }
+                        right = edit_r.x - 8;
+                    }
+                    if (account) {
+                        const auto prof_lbl = rr.w < 540 ? std::string_view{} : lyren::tr("My profile");
+                        const float pw = prof_lbl.empty() ? control::medium + 4 : ui.button_width(prof_lbl, true);
+                        const Rect prof_r{right - pw, rr.y + (rr.h - control::medium) / 2, pw, control::medium};
+                        if (ui.button(ui::sub_id(rid, 2), prof_r, prof_lbl, active ? ui::ButtonKind::tonal : ui::ButtonKind::secondary, "user",
+                                      prof_lbl.empty() ? lyren::tr("My profile") : std::string_view{})) {
+                            open_profile_of = entry.source;
+                        }
+                        right = prof_r.x - 10;
+                    }
+                } else {
+                    if (signer_only) {
+                        const Rect disc_r{right - control::medium, rr.y + (rr.h - control::medium) / 2, control::medium, control::medium};
+                        if (ui.icon_button(ui::sub_id(rid, 5), disc_r, "log-out", 16, false, lyren::tr("Disconnect signing service"))) {
+                            sign_out_of = entry.source;
+                        }
+                        right = disc_r.x - 8;
+                    }
+                    const auto label = lyren::tr(qr ? "Scan to sign in" : "Connect account");
+                    const float bw = ui.button_width(label, true);
+                    const Rect btn{right - bw, rr.y + (rr.h - control::medium) / 2, bw, control::medium};
+                    if (ui.button(ui::sub_id(rid, 1), btn, label, ui::ButtonKind::tonal, qr ? "qr-code" : "link")) {
+                        sign_in_of = entry.source;
+                    }
+                    right = btn.x - 10;
                 }
-                const auto label = lyren::tr(qr ? "Scan to sign in" : "Connect account");
-                const float bw = ui.button_width(label, true);
-                const Rect btn{right - bw, rr.y + (rr.h - control::medium) / 2, bw, control::medium};
-                if (ui.button(ui::sub_id(rid, 1), btn, label, ui::ButtonKind::tonal, qr ? "qr-code" : "link")) {
-                    sign_in_of = entry.source;
-                }
-                right = btn.x - 10;
             }
 
             const float tx = face.right() + 14, text_w = std::max(0.f, right - tx);
@@ -761,12 +770,13 @@ namespace lyren {
                 ui.label(pill, badge_sv, badge_st, Align::center);
             }
 
-            const std::string_view status = account               ? std::string_view(account->name)
+            const std::string_view status = !has_acct             ? lyren::tr("Ready · No sign-in required")
+                                            : account             ? std::string_view(account->name)
                                             : in                  ? lyren::tr("Loading account")
                                             : signer_only         ? lyren::tr("Signing service connected · Not signed in")
                                             : caps.session_import ? lyren::tr("Not signed in · Anonymous playback ready")
                                                                   : lyren::tr("Not signed in");
-            ui.label({tx, rr.y + 37, text_w, 18}, status, t.style(type::caption, account || signer_only ? t.text_dim : t.faint()));
+            ui.label({tx, rr.y + 37, text_w, 18}, status, t.style(type::caption, (!has_acct || account || signer_only) ? t.text_dim : t.faint()));
 
             // Clicking the info area switches to that platform.
             if (const auto hit = ui.interact(rid, {rr.x + 12, rr.y + 6, std::max(0.f, right - rr.x - 16), rr.h - 12}); !active) {
@@ -774,14 +784,14 @@ namespace lyren {
                     ui.cursor = wl::Cursor::pointer;
                 }
                 if (hit.clicked) {
-                    switch_to = entry.source;
+                    switch_to = SourceKey{entry.source, entry.instance};
                 }
             }
         }
         if (open_profile_of) {
             browser_.open_own_profile(*open_profile_of);
         } else if (switch_to) {
-            browser_.switch_platform(*switch_to);
+            browser_.switch_platform(switch_to->source, std::move(switch_to->instance));
         } else if (sign_in_of) {
             shell_.account.open(ui);
             accounts_.begin(*sign_in_of);
@@ -839,15 +849,21 @@ namespace lyren {
 
         if (cache_checked_ < 0 || ui.now - cache_checked_ >= 5.0) {
             audio_cache_bytes_ = audio::Spool::cache_usage();
+            pinned_cache_bytes_ = audio::Spool::pinned_cache_usage();
             cache_checked_ = ui.now;
         }
-        const std::string cache_hint = lyren::trf("Audio {} · Images {}", std::string_view(format_bytes(audio_cache_bytes_)), std::string_view(format_bytes(images_.bytes())));
+        const std::string cache_hint =
+            pinned_cache_bytes_ > 0 ? lyren::trf("Audio {} (Pinned {}) · Images {}", std::string_view(format_bytes(audio_cache_bytes_)),
+                                                 std::string_view(format_bytes(pinned_cache_bytes_)), std::string_view(format_bytes(images_.bytes())))
+                                    : lyren::trf("Audio {} · Images {}", std::string_view(format_bytes(audio_cache_bytes_)), std::string_view(format_bytes(images_.bytes())));
         if (rows.button("clear-cache", lyren::tr("Cache"), cache_hint, lyren::tr("Clear"), "trash", true, false)) {
-            audio::Spool::clear_cache();
+            const uint64_t kept = audio::Spool::pinned_cache_usage();
+            audio::Spool::clear_cache(false);
             images_.clear();
             audio_cache_bytes_ = audio::Spool::cache_usage();
+            pinned_cache_bytes_ = audio::Spool::pinned_cache_usage();
             cache_checked_ = ui.now;
-            ui.toast(std::string(lyren::tr("Cache cleared")), "trash");
+            ui.toast(std::string(lyren::tr(kept > 0 ? "Cache cleared (pinned songs kept)" : "Cache cleared")), "trash");
             ui.redraw();
         }
         if (rows.button("shortcuts", lyren::tr("Keyboard shortcuts"), lyren::tr("Press ? anywhere to view shortcuts"), lyren::tr("Open"), "keyboard", false, false)) {

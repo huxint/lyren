@@ -23,13 +23,15 @@ namespace lyren {
           .prefetch_image =
               [&images = d.images](std::string_view url, uint32_t px, bool logical) {
                   images.prefetch(url, logical ? static_cast<uint32_t>(Images::tier(static_cast<float>(px) * images.scale())) : px);
-              }},
+              },
+          .store = d.store},
       images(d.images),
+      pins(env, d.silent),
       playback(env, d.player, d.silent, saved),
       library(env),
       social(env, library),
       comments(env, library),
-      browser(env, library, social, saved.source),
+      browser(env, library, social, saved.source, std::move(saved.source_instance)),
       accounts(env, library, browser),
       chrome(*this),
       pages(*this),
@@ -55,6 +57,7 @@ namespace lyren {
             changed();
         };
         playback.connect(library);
+        playback.connect(pins);
         browser.on_change = [this] {
             changed();
         };
@@ -73,7 +76,7 @@ namespace lyren {
         if (window) {
             window_ = window;
         }
-        SavedStateView state{.source = browser.active()};
+        SavedStateView state{.source = browser.active(), .source_instance = browser.active_key().instance};
         if (window_) {
             state.width = window_->first, state.height = window_->second;
         }
@@ -238,7 +241,7 @@ namespace lyren {
         // The page is an architectural sheet with a whisper wash of its own colour at the top.
         p.rect(area, t.surface, t.radius_l());
         const float enter = ui.progress(browser.entered, ui::pace::glide);
-        if (on != Page::search && on != Page::settings && on != Page::profile && on != Page::recommend) {
+        if (on != Page::search && on != Page::settings && on != Page::profile && on != Page::recommend && on != Page::stats) {
             const float hue = pages.hue(ui);
             const ui::Color tint = hue >= 0 ? ui::hsl(hue, 0.5f, 0.5f) : t.accent;
             p.gradient({area.x, area.y, area.w, 240}, tint.with_alpha((t.dark ? 0.10f : 0.055f) * enter), tint.with_alpha(0), t.radius_l());

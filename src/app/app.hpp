@@ -7,6 +7,7 @@
 
 #include "app/images.hpp"
 #include "app/state.hpp"
+#include "app/store.hpp"
 #include "app/view/shell.hpp"
 #include "audio/player.hpp"
 #include "ncm/netease.hpp"
@@ -114,6 +115,7 @@ namespace lyren {
         std::unique_ptr<wl::Window> window_;
         std::unique_ptr<wl::LayerSurface> lyrics_;
         ConfigWatcher watcher_;
+        Store store_;
         SavedState saved_ = load_state();
         int saved_w_ = saved_.width, saved_h_ = saved_.height;
         net::Http http_;

@@ -544,4 +544,71 @@ TEST_CASE("Player reports the position after a load failure and Spool reuses per
         CHECK(hits == 3);
         Spool::set_cache_limit(0);
     }
+
+    SUBCASE("pinned cache entries survive LRU eviction and default clear_cache and reopen offline") {
+        lyren::test::TempDir dir;
+        struct RestorePinCache {
+            uint64_t limit = Spool::cache_limit();
+            std::optional<std::string> previous;
+            ~RestorePinCache() {
+                Spool::set_pinned_hashes({});
+                Spool::clear_cache(true);
+                Spool::set_cache_limit(limit);
+                if (previous) {
+                    setenv("XDG_CACHE_HOME", previous->c_str(), 1);
+                } else {
+                    unsetenv("XDG_CACHE_HOME");
+                }
+            }
+        } restore;
+        if (const char *previous = std::getenv("XDG_CACHE_HOME")) {
+            restore.previous = previous;
+        }
+        REQUIRE(setenv("XDG_CACHE_HOME", dir.path.c_str(), 1) == 0);
+        std::ifstream input(LYREN_TEST_DATA "/tone.mp3", std::ios::binary);
+        const std::string audio_bytes{std::istreambuf_iterator<char>(input), {}};
+        REQUIRE(audio_bytes.size() > 1024);
+
+        lyren::test::Server server([&](std::string_view) {
+            return lyren::test::ok(audio_bytes);
+        });
+
+        const std::string pin_hash = Spool::cache_hash("pin:song-1");
+        Spool::set_pinned_hashes({pin_hash});
+        // Budget smaller than 2 files: unpinned song-2 must be evicted when song-3 arrives, while pinned song-1 stays.
+        Spool::set_cache_limit(static_cast<uint64_t>(audio_bytes.size()) + 512);
+        lyren::net::Http http;
+        auto fetch = [&](std::string k) {
+            auto s = Spool::url(http, server.url() + "/track.mp3", std::move(k));
+            std::string out(audio_bytes.size(), '\0');
+            REQUIRE(s->read_exact(0, out.data(), out.size()));
+            CHECK(out == audio_bytes);
+            return s;
+        };
+        fetch("pin:song-1");
+        fetch("unpin:song-2");
+        fetch("unpin:song-3");
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        const std::string unpin2_hash = Spool::cache_hash("unpin:song-2");
+        const std::string unpin3_hash = Spool::cache_hash("unpin:song-3");
+        while (!(Spool::is_hash_cached(pin_hash) && Spool::is_hash_cached(unpin3_hash) && !Spool::is_hash_cached(unpin2_hash)) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(Spool::is_hash_cached(pin_hash));
+        CHECK_FALSE(Spool::is_hash_cached(unpin2_hash));
+        CHECK(Spool::pinned_cache_usage() >= audio_bytes.size());
+
+        // Default clear_cache preserves pinned entries while removing unpinned files.
+        Spool::clear_cache(false);
+        CHECK(Spool::is_hash_cached(pin_hash));
+        CHECK_FALSE(Spool::is_hash_cached(unpin3_hash));
+
+        // Offline playback opens the pinned file directly by hash.
+        auto offline = Spool::cached_file(pin_hash);
+        REQUIRE(offline != nullptr);
+        std::string off_bytes(audio_bytes.size(), '\0');
+        REQUIRE(offline->read_exact(0, off_bytes.data(), off_bytes.size()));
+        CHECK(off_bytes == audio_bytes);
+    }
 }

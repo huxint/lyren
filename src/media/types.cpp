@@ -24,6 +24,32 @@ namespace lyren {
         }
     } // namespace
 
+    std::optional<Source> parse_source(std::string_view id) {
+        for (const auto &kind : source_kinds) {
+            if (kind.id == id) {
+                return kind.source;
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<SourceKey> parse_source_key(std::string_view id) {
+        const size_t colon = id.find(':');
+        const std::string_view head = colon == id.npos ? id : id.substr(0, colon);
+        const auto source = parse_source(head);
+        if (!source) {
+            return std::nullopt;
+        }
+        if (colon == id.npos) {
+            return SourceKey{*source, {}};
+        }
+        const std::string_view inst = id.substr(colon + 1);
+        if (inst.empty()) {
+            return std::nullopt;
+        }
+        return SourceKey{*source, std::string(inst)};
+    }
+
     std::string share_url(const Track &track) {
         switch (track.source) {
             case Source::netease:
@@ -35,12 +61,17 @@ namespace lyren {
             case Source::bodian:
                 return "https://h5app.kuwo.cn/m/bodian/playMusic.html?uid=-1&musicId=" + track.id + "&opusId=";
             case Source::kugou:
+            case Source::local:
+            case Source::subsonic:
                 return {};
         }
         std::unreachable();
     }
 
     std::string share_url(const Card &card) {
+        if (card.source == Source::local || card.source == Source::subsonic) {
+            return {};
+        }
         if (card.kind == CardKind::user) {
             return card.source == Source::netease ? "https://music.163.com/user/home?id=" + card.id : "";
         }

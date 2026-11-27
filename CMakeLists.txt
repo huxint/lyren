@@ -126,6 +126,7 @@ pkg_check_modules(UILIBS REQUIRED IMPORTED_TARGET libturbojpeg libwebp libwebpde
 find_package(GIF REQUIRED)
 pkg_check_modules(QRENCODE REQUIRED IMPORTED_TARGET libqrencode)
 pkg_check_modules(SDBUS REQUIRED IMPORTED_TARGET libsystemd)
+pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 add_library(
     lyren_ui STATIC
     ${CMAKE_BINARY_DIR}/generated/icon_data.cpp
@@ -158,14 +159,16 @@ add_library(
     src/sys/bus.cpp
     src/sys/mpris.cpp
     src/app/state.cpp
+    src/app/store.cpp
     src/app/model/playback.cpp
+    src/app/model/pins.cpp
     src/app/model/library.cpp
     src/app/model/catalog.cpp
     src/app/model/social.cpp
     src/app/model/comments.cpp
     src/app/model/browser.cpp
     src/app/model/accounts.cpp)
-target_link_libraries(lyren_model PUBLIC lyren_base PkgConfig::SDBUS glaze PRIVATE PkgConfig::QRENCODE)
+target_link_libraries(lyren_model PUBLIC lyren_base PkgConfig::SDBUS glaze PRIVATE PkgConfig::QRENCODE PkgConfig::SQLITE3)
 
 add_library(
     lyren_lib STATIC

@@ -49,6 +49,7 @@ namespace lyren {
         audio::Follower meter_{};
         double meter_time_ = 0;
         uint64_t audio_cache_bytes_ = 0;
+        uint64_t pinned_cache_bytes_ = 0;
         double cache_checked_ = -100;
     };
 

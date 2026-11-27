@@ -11,9 +11,11 @@
 #include "app/model/browser.hpp"
 #include "app/model/comments.hpp"
 #include "app/model/library.hpp"
+#include "app/model/pins.hpp"
 #include "app/model/playback.hpp"
 #include "app/model/social.hpp"
 #include "app/state.hpp"
+#include "app/store.hpp"
 #include "app/view/account_dialog.hpp"
 #include "app/view/chrome.hpp"
 #include "app/view/comments_view.hpp"
@@ -40,6 +42,7 @@ namespace lyren {
         audio::Player &player;
         Providers providers;
         Images &images;
+        Store *store = nullptr;
         const Config &config;
         // Applies one or more TOML setting changes atomically; config reflects them once this returns.
         std::move_only_function<void(std::span<const SettingChange>)> set_settings;
@@ -104,6 +107,7 @@ namespace lyren {
 
         Env env;
         Images &images;
+        Pins pins;
         Playback playback;
         Library library;
         Social social;

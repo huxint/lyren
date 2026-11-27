@@ -299,6 +299,16 @@ namespace lyren::ui {
         bool menu_open() const {
             return !menu_.empty();
         }
+        // Schedules a transient popup (such as a search suggestion dropdown) drawn above the page at Layer::popup.
+        void set_popover(Rect box, std::move_only_function<void(Ui &, Rect)> body) {
+            popover_rect_ = box;
+            popover_ = std::move(body);
+        }
+        // Keeps keyboard focus on id even when another widget inside an associated popover was pressed this frame.
+        void keep_focus(Id id) {
+            focus = id;
+            pressed_id_ = id;
+        }
         // bare: no panel, padding or close button around the body, for a picture shown large.
         void open_modal(float w, float h, std::move_only_function<void(Ui &, Rect)> body, bool bare = false);
         // A closing modal is still drawn while it fades out but no longer takes input.
@@ -404,6 +414,8 @@ namespace lyren::ui {
         std::vector<MenuItem> menu_;
         float menu_x_ = 0, menu_y_ = 0;
         double menu_time_ = 0;
+        Rect popover_rect_;
+        std::move_only_function<void(Ui &, Rect)> popover_;
         std::move_only_function<void(Ui &, Rect)> modal_;
         float modal_w_ = 0, modal_h_ = 0;
         double modal_time_ = 0, modal_closed_ = -1;

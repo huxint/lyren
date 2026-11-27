@@ -21,6 +21,7 @@ namespace lyren::test {
         std::move_only_function<Task<Result<Profile>>(std::string)> on_profile;
         std::move_only_function<Task<Result<PostPage>>(std::string, std::string)> on_posts;
         std::move_only_function<Task<Result<Batch>>(std::string, SearchKind, int, int)> on_search;
+        std::move_only_function<Task<Result<std::vector<std::string>>>(std::string)> on_search_suggest;
         std::move_only_function<Task<Result<std::vector<LyricLine>>>(Track)> on_lyrics;
         std::move_only_function<Task<Result<CommentPage>>(Subject, std::string, bool, int, std::string)> on_comments;
         std::move_only_function<Task<Result<void>>(std::string)> on_import_session;
@@ -136,6 +137,12 @@ namespace lyren::test {
                 co_return Batch{.tracks = {std::move(t)}, .total = 1};
             }
             co_return Batch{};
+        }
+        Task<Result<std::vector<std::string>>> search_suggest(std::string q) override {
+            if (on_search_suggest) {
+                co_return co_await on_search_suggest(std::move(q));
+            }
+            co_return std::vector<std::string>{};
         }
         Task<Result<std::vector<Track>>> tracks(Card card) override {
             if (on_tracks) {

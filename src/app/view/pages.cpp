@@ -6,10 +6,12 @@
 #include <array>
 #include <cmath>
 #include <format>
+#include <functional>
 #include <inplace_vector>
 
 #include "app/view/draw.hpp"
 #include "app/view/shell.hpp"
+#include "audio/spool.hpp"
 #include "core/i18n.hpp"
 
 namespace lyren {
@@ -318,6 +320,8 @@ namespace lyren {
                 return 0.97f;
             case Page::recent:
                 return 0.72f;
+            case Page::pinned:
+                return 0.52f;
             case Page::cloud:
                 return 0.58f;
             default:
@@ -354,6 +358,8 @@ namespace lyren {
                 return collection_page(ui, r);
             case Page::dislikes:
                 return dislikes_page(ui, r);
+            case Page::stats:
+                return stats_page(ui, r);
             case Page::search:
                 return search_page(ui, r);
             case Page::artist:
@@ -364,6 +370,9 @@ namespace lyren {
                 return;
             default:
                 break;
+        }
+        if (route.page == Page::pinned) {
+            return list_page(ui, r, pins_.tracks(), false, "", browser_.entered);
         }
         // What played on this device is at hand; cloud recent plays live on the platform shelf.
         if (route.page == Page::recent) {
@@ -923,6 +932,295 @@ namespace lyren {
         ui.end_scroll();
     }
 
+    void Pages::stats_page(ui::Ui &ui, Rect r) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const Rect body = page_frame(r);
+
+        if (env_.store) {
+            const uint64_t serial = env_.store->stats_serial();
+            if (stats_cached_range_ != stats_range_ || stats_serial_ != serial) {
+                const auto range = stats_range_ == 0 ? Store::StatsRange::week : stats_range_ == 1 ? Store::StatsRange::month : Store::StatsRange::all;
+                stats_cache_ = env_.store->listening_stats(range);
+                stats_tracks_.clear();
+                stats_tracks_.reserve(stats_cache_.top_tracks.size());
+                for (const auto &ts : stats_cache_.top_tracks) {
+                    stats_tracks_.push_back(ts.track);
+                }
+                stats_cached_range_ = stats_range_;
+                stats_serial_ = serial;
+            }
+        }
+        const auto &stats = stats_cache_;
+
+        auto format_listen_time = [](int64_t seconds) -> SmallText<24> {
+            if (seconds <= 0) {
+                return small_format<24>("0m");
+            }
+            if (seconds < 60) {
+                return small_format<24>("{}s", seconds);
+            }
+            const int64_t mins = seconds / 60;
+            if (mins < 60) {
+                return small_format<24>("{}m", mins);
+            }
+            const int64_t hours = mins / 60, rem = mins % 60;
+            return rem > 0 ? small_format<24>("{}h {}m", hours, rem) : small_format<24>("{}h", hours);
+        };
+
+        auto source_label = [&](std::string_view sid) -> std::string_view {
+            if (const auto sk = parse_source_key(sid)) {
+                if (const auto *entry = env_.providers.entry(sk->source, sk->instance)) {
+                    return lyren::tr(entry->name);
+                }
+                return lyren::tr(platform(sk->source).name);
+            }
+            return sid;
+        };
+
+        const std::array<std::string_view, 3> range_labels{lyren::tr("7 days"), lyren::tr("30 days"), lyren::tr("All time")};
+        float widest = 0;
+        for (auto l : range_labels) {
+            widest = std::max(widest, p.measure(l, t.style(type::label, {}, text::medium)));
+        }
+        const float seg_w = std::min(std::max(204.f, (std::ceil(widest) + 26) * 3), body.w);
+        const bool stacked_hdr = body.w < seg_w + 260;
+        const float hdr_h = stacked_hdr ? 114.f : 74.f;
+
+        const size_t n_sources = stats.by_source.size();
+        const size_t n_artists = std::min<size_t>(stats.top_artists.size(), 8);
+        const size_t n_tracks = std::min<size_t>(stats.top_tracks.size(), 15);
+        const int artist_cols = body.w >= 620 ? 2 : 1;
+        const size_t artist_rows = n_artists ? (n_artists + static_cast<size_t>(artist_cols) - 1) / static_cast<size_t>(artist_cols) : 0;
+
+        float content_h = 28.f + hdr_h;
+        if (stats.total_plays == 0) {
+            content_h += 280.f;
+        } else {
+            content_h += 86.f + 24.f; // 3 summary metric cards
+            if (n_sources > 0) {
+                content_h += 34.f + 20.f + static_cast<float>(n_sources) * 34.f + 26.f;
+            }
+            if (n_artists > 0) {
+                content_h += 34.f + static_cast<float>(artist_rows) * 52.f - 6.f + 26.f;
+            }
+            if (n_tracks > 0) {
+                content_h += 34.f + static_cast<float>(n_tracks) * 54.f + 28.f;
+            }
+        }
+
+        const float off = ui.begin_scroll(ui.id("stats-scroll"), r, content_h);
+        float y = r.y + 28 - off;
+        const Rect title_box{body.x, y, stacked_hdr ? body.w : std::max(140.f, body.w - seg_w - 16), 66};
+        page_title(ui, title_box, y, lyren::tr("Listening stats"), lyren::tr("Local listening across all platforms"));
+        const Rect seg_r = stacked_hdr ? Rect{body.x, y + 72, std::min(seg_w, body.w), control::medium} : Rect{body.right() - seg_w, y + 6, seg_w, control::medium};
+        if (ui.segmented(ui.id("stats-range"), seg_r, range_labels, stats_range_)) {
+            browser_.tab_since = ui.now;
+            ui.redraw();
+        }
+        y += hdr_h;
+
+        if (stats.total_plays == 0) {
+            empty(ui, {body.x, y, body.w, std::max(240.f, r.bottom() - y)}, "bar-chart", lyren::tr("No listening stats yet"),
+                  lyren::tr("Play songs on any platform to build your listening overview"));
+            ui.end_scroll();
+            return;
+        }
+
+        const double since = std::max(browser_.entered, browser_.tab_since);
+        const ui::Color card_bg = t.dark ? t.fill(0.90f) : t.bg.mix(t.surface, 0.35f);
+        const ui::Color card_edge = t.dark ? t.surface_edge(0.9f) : t.border.with_alpha(0.75f);
+
+        // Summary metric cards.
+        {
+            constexpr float gap = 12.f, card_h = 86.f;
+            const float cw = (body.w - gap * 2) / 3.f;
+            const auto time_text = format_listen_time(stats.total_seconds);
+            const auto plays_text = int_text(stats.total_plays);
+            const auto songs_text = int_text(stats.unique_tracks);
+            const std::string artists_sub = lyren::trf("{} artists", stats.unique_artists);
+            struct Metric {
+                std::string_view label, value, sub;
+            };
+            const std::array<Metric, 3> metrics{{
+                {lyren::tr("Listening time"), time_text, {}},
+                {lyren::tr("Plays"), plays_text, {}},
+                {lyren::tr("Songs played"), songs_text, artists_sub},
+            }};
+            for (size_t i = 0; i < metrics.size(); ++i) {
+                const float in = ui.cascade(since, static_cast<int>(i), pace::arrive);
+                Fade fade(p, in);
+                const Rect card{body.x + static_cast<float>(i) * (cw + gap), y + (1 - in) * 6, cw, card_h};
+                p.rect(card, card_bg, t.radius, card_edge, 1);
+                ui.label({card.x + 16, card.y + 13, card.w - 32, 18}, metrics[i].label, t.style(type::caption, t.text_dim));
+                if (metrics[i].sub.empty()) {
+                    ui.label({card.x + 16, card.y + 38, card.w - 32, 32}, metrics[i].value, t.style(type::display, t.text, text::semibold | text::tabular_nums));
+                } else {
+                    const auto val_st = t.style(type::display, t.text, text::semibold | text::tabular_nums);
+                    const float vw = std::min(std::ceil(p.measure(metrics[i].value, val_st)) + 1, card.w - 32);
+                    ui.label({card.x + 16, card.y + 38, vw, 32}, metrics[i].value, val_st);
+                    if (card.w - 32 - vw > 54) {
+                        ui.label({card.x + 16 + vw + 10, card.y + 46, card.w - 42 - vw, 20}, metrics[i].sub, t.style(type::caption, t.faint(), text::tabular_nums));
+                    }
+                }
+            }
+            y += card_h + 24.f;
+        }
+
+        // Platform distribution.
+        if (n_sources > 0) {
+            section_heading(ui, body.x, y, body.w, lyren::tr("By platform"));
+            y += 34.f;
+            const float box_h = 20.f + static_cast<float>(n_sources) * 34.f;
+            const Rect box{body.x, y, body.w, box_h};
+            p.rect(box, card_bg, t.radius, card_edge, 1);
+            const int64_t total_sec = std::max<int64_t>(1, stats.total_seconds);
+            float sy = box.y + 10.f;
+            for (const auto &src : stats.by_source) {
+                const Rect row{box.x + 16, sy, box.w - 32, 34.f};
+                const float ratio = std::clamp(static_cast<float>(src.seconds) / static_cast<float>(total_sec), 0.f, 1.f);
+                const int pct = static_cast<int>(std::lround(ratio * 100.f));
+                const auto dur = format_listen_time(src.seconds);
+                const auto detail = small_format<40>("{} · {}%", std::string_view(dur), pct);
+                const float name_w = std::min(150.f, row.w * 0.34f);
+                const float stat_w = 112.f;
+                ui.label({row.x, row.y, name_w, row.h}, source_label(src.source_id), t.style(type::label, t.text, text::medium));
+                const float bar_x = row.x + name_w + 12;
+                const float bar_w = std::max(0.f, row.right() - stat_w - 12 - bar_x);
+                if (bar_w >= 40) {
+                    const Rect track{bar_x, row.y + (row.h - 5) / 2, bar_w, 5};
+                    p.rect(track, t.fill(1.5f), 2.5f);
+                    if (const float fw = std::max(ratio > 0 ? 5.f : 0.f, bar_w * ratio); fw > 0) {
+                        p.rect({track.x, track.y, fw, track.h}, t.accent.with_alpha(0.75f), 2.5f);
+                    }
+                }
+                ui.label({row.right() - stat_w, row.y, stat_w, row.h}, detail, t.style(type::caption, t.text_dim, text::tabular_nums), Align::right);
+                sy += 34.f;
+            }
+            y += box_h + 26.f;
+        }
+
+        // Top artists.
+        std::optional<Card> open_artist;
+        if (n_artists > 0) {
+            section_heading(ui, body.x, y, body.w, lyren::tr("Top artists"), int_text(n_artists));
+            y += 34.f;
+            constexpr float col_gap = 12.f, row_h = 46.f, row_gap = 6.f;
+            const float col_w = (body.w - col_gap * static_cast<float>(artist_cols - 1)) / static_cast<float>(artist_cols);
+            const int64_t peak = std::max<int64_t>(1, stats.top_artists.front().seconds);
+            ui.push_id(ui.id("stats-artists"));
+            for (size_t i = 0; i < n_artists; ++i) {
+                const auto &art = stats.top_artists[i];
+                const size_t r_idx = i / static_cast<size_t>(artist_cols), c_idx = i % static_cast<size_t>(artist_cols);
+                const Rect row{body.x + static_cast<float>(c_idx) * (col_w + col_gap), y + static_cast<float>(r_idx) * (row_h + row_gap), col_w, row_h};
+                const ui::Id aid = ui.id(static_cast<uint64_t>(i));
+                const bool clickable = !art.artist_id.empty();
+                const auto it = clickable ? ui.interact(aid, row) : ui::Interaction{};
+                if (clickable && it.hovered) {
+                    ui.cursor = wl::Cursor::pointer;
+                }
+                const float hot = clickable ? ui.anim(aid, it.hovered ? 1.f : 0.f, pace::quick) : 0.f;
+                p.rect(row, card_bg.mix(t.fill(1.5f), hot * 0.55f), t.radius_s(), card_edge, 1);
+
+                ui.label({row.x + 12, row.y, 24, row.h}, int_text(i + 1), t.style(type::caption, i < 3 ? t.accent : t.faint(), text::semibold | text::tabular_nums), Align::center);
+                const auto dur = format_listen_time(art.seconds);
+                const std::string right_txt = std::format("{} · {}", lyren::trf("{} plays", art.plays), std::string_view(dur));
+                const float rw = std::min(132.f, std::ceil(p.measure(right_txt, t.style(type::caption, {}, text::tabular_nums))) + 6);
+                const float nx = row.x + 40;
+                const float nw = std::max(0.f, row.right() - 14 - rw - nx - 8);
+                ui.label({nx, row.y + 8, nw, 20}, art.name, t.style(type::body, t.text, text::medium));
+                ui.label({row.right() - 14 - rw, row.y + 8, rw, 20}, right_txt, t.style(type::caption, t.text_dim, text::tabular_nums), Align::right);
+                const float bw = std::max(0.f, row.right() - 14 - nx);
+                const float ratio = std::clamp(static_cast<float>(art.seconds) / static_cast<float>(peak), 0.f, 1.f);
+                p.rect({nx, row.bottom() - 11, bw, 3}, t.fill(1.4f), 1.5f);
+                if (const float fw = std::max(ratio > 0 ? 4.f : 0.f, bw * ratio); fw > 0) {
+                    p.rect({nx, row.bottom() - 11, fw, 3}, t.accent.with_alpha(0.62f), 1.5f);
+                }
+                if (clickable && it.clicked) {
+                    open_artist = Card{.kind = CardKind::artist, .source = art.source, .instance = art.instance, .id = art.artist_id, .title = art.name};
+                }
+            }
+            ui.pop_id();
+            y += static_cast<float>(artist_rows) * (row_h + row_gap) - row_gap + 26.f;
+        }
+
+        // Most played songs.
+        if (n_tracks > 0) {
+            section_heading(ui, body.x, y, body.w, lyren::tr("Most played"), int_text(n_tracks));
+            y += 34.f;
+            constexpr float row_h = 54.f;
+            const Rect clip = ui.clip();
+            ui.push_id(ui.id("stats-tracks"));
+            for (size_t i = 0; i < n_tracks; ++i) {
+                const Rect row{body.x - 4, y + static_cast<float>(i) * row_h, body.w + 8, row_h};
+                if (row.bottom() < clip.y || row.y > clip.bottom()) {
+                    continue;
+                }
+                const auto &item = stats.top_tracks[i];
+                const Track &track = item.track;
+                const ui::Id tid = ui.id(static_cast<uint64_t>(i));
+                const bool on = playback_.is_current(track);
+                const bool pointed = ui.hovering(row);
+                const float hot = ui.anim(tid, pointed ? 1.f : 0.f, pace::quick);
+                if (hot > 0 || on) {
+                    p.rect(row.inset(0, 2), on ? t.accent.with_alpha(0.065f + 0.045f * hot) : t.fill(hot), t.radius_s());
+                }
+                const Rect idx_r{row.x + 6, row.y, 34, row.h};
+                if (pointed) {
+                    if (ui.icon_button(ui::sub_id(tid, 1), ui::center(idx_r, 30, 30), on && playback_.playing() ? "pause-fill" : "play-fill", 14)) {
+                        if (on) {
+                            playback_.toggle();
+                        } else {
+                            playback_.play(stats_tracks_, static_cast<int>(i));
+                        }
+                    }
+                } else if (on) {
+                    ui.equalizer(ui::sub_id(tid, 2), ui::center(idx_r, 14, 14), t.accent, playback_.playing());
+                } else {
+                    ui.label(idx_r, int_text(i + 1), t.style(type::label, t.faint(), text::tabular_nums), Align::center);
+                }
+
+                const Rect art{idx_r.right() + 4, row.y + (row.h - 38) / 2, 38, 38};
+                cover(ui, art, track.cover, t.radius_s());
+
+                const auto dur = format_listen_time(item.seconds);
+                const std::string right_txt = std::format("{} · {}", lyren::trf("{} plays", item.plays), std::string_view(dur));
+                const float right_w = std::min(152.f, std::ceil(p.measure(right_txt, t.style(type::caption, {}, text::tabular_nums))) + 6);
+                ui.label({row.right() - 12 - right_w, row.y, right_w, row.h}, right_txt, t.style(type::caption, t.text_dim, text::tabular_nums), Align::right);
+
+                float right_edge = row.right() - 12 - right_w - 10;
+                if (n_sources > 1 && body.w >= 540) {
+                    const auto *entry = env_.providers.entry(track.source, track.instance);
+                    const std::string_view src_short = entry ? lyren::tr(entry->short_name) : lyren::tr(platform(track.source).short_name);
+                    const auto pill_st = t.style(type::micro, t.text_dim);
+                    const float pw = std::ceil(p.measure(src_short, pill_st)) + 14;
+                    const Rect pill{right_edge - pw, row.y + (row.h - 20) / 2, pw, 20};
+                    p.rect(pill, t.fill(1.0f), 10);
+                    ui.label(pill, src_short, pill_st, Align::center);
+                    right_edge = pill.x - 10;
+                }
+
+                const float tx = art.right() + 12;
+                const float tw = std::max(0.f, right_edge - tx);
+                ui.label({tx, row.y + 8, tw, 20}, track.title, t.style(type::body, on ? t.accent : t.text, on ? text::medium : 0));
+                ui.label({tx, row.y + 29, tw, 18}, track.artist, t.style(type::caption, t.text_dim));
+
+                const auto it = ui.interact(tid, row);
+                if (it.double_clicked) {
+                    playback_.play(stats_tracks_, static_cast<int>(i));
+                } else if (it.right_clicked) {
+                    shell_.tracks.menu(ui, it.px, it.py, stats_tracks_, static_cast<int>(i));
+                }
+            }
+            ui.pop_id();
+        }
+        ui.end_scroll();
+
+        if (open_artist) {
+            browser_.open(Page::artist, *open_artist);
+        }
+    }
+
     void Pages::artist_page(ui::Ui &ui, Rect r) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
@@ -1018,8 +1316,8 @@ namespace lyren {
 
     // Each search starts its lists from the top; a platform's tabs keep their own places.
     ui::Id Pages::search_scroll_id(ui::Ui &ui, int tab) const {
-        const uint64_t platform = browser_.search_serial() * platforms.size() + static_cast<uint64_t>(browser_.active());
-        return ui::sub_id(ui.id("search-results"), platform * 5 + static_cast<uint64_t>(tab));
+        const uint64_t source_hash = std::hash<std::string_view>{}(browser_.active_id());
+        return ui::sub_id(ui::sub_id(ui.id("search-results"), browser_.search_serial()), source_hash * 5 + static_cast<uint64_t>(tab));
     }
 
     void Pages::search_page(ui::Ui &ui, Rect r) {
@@ -1053,10 +1351,11 @@ namespace lyren {
         } else if (ui.button(ui.id("search-refresh"), action_r, lyren::tr("Retry"), ui::ButtonKind::secondary, "refresh-cw")) {
             reload();
         }
+        const auto *active_entry = env_.providers.entry(browser_.active(), browser_.active_key().instance);
+        const std::string_view source_short = active_entry ? lyren::tr(active_entry->short_name) : lyren::tr(platform(browser_.active()).short_name);
         const std::array kinds = {lyren::tr("songs"), lyren::tr("albums"), lyren::tr("artists"), lyren::tr("playlists"), lyren::tr("users")};
         page_title(ui, body, r.y + 28, '"' + browser_.searched() + '"',
-                   shown.loaded ? lyren::trf("{}{} {} found", shown.more() ? lyren::tr("About ") : "", shown.total, kinds[tab])
-                                : lyren::trf("Searching {}", lyren::tr(platform(browser_.active()).short_name)));
+                   shown.loaded ? lyren::trf("{}{} {} found", shown.more() ? lyren::tr("About ") : "", shown.total, kinds[tab]) : lyren::trf("Searching {}", source_short));
         // Tab content slides toward the tab that was picked.
         Rect content{body.x - 12, tab_bar.bottom() + 10, body.w + 24, r.bottom() - tab_bar.bottom() - 18};
         Fade fade(ui.painter(), tab_enter(ui, content));
@@ -1124,6 +1423,9 @@ namespace lyren {
             case Page::recent:
                 built_in_art(p, t, cov, special_hue(Page::recent), t.radius_l(), "history");
                 break;
+            case Page::pinned:
+                built_in_art(p, t, cov, special_hue(Page::pinned), t.radius_l(), "pin");
+                break;
             case Page::cloud:
                 built_in_art(p, t, cov, special_hue(Page::cloud), t.radius_l(), "cloud");
                 break;
@@ -1158,7 +1460,7 @@ namespace lyren {
             const std::string_view kind = page == Page::album ? lyren::tr("Albums") : page == Page::similar ? lyren::tr("Similar songs") : lyren::tr("Playlists");
             ui.label({tx, head.y + 2, tw, 16}, kind, t.style(type::micro, t.faint(), text::semibold));
         }
-        const bool built_in = page == Page::daily || page == Page::radar || page == Page::cloud || page == Page::liked || page == Page::recent;
+        const bool built_in = page == Page::daily || page == Page::radar || page == Page::cloud || page == Page::liked || page == Page::recent || page == Page::pinned;
         const float title_y = head.y + (has_eyebrow ? 20.f : 12.f);
         const float title_h = compact ? 30.f : 38.f;
         ui.label({tx, title_y, tw, title_h}, built_in ? lyren::tr(c.title) : std::string_view(c.title), t.style(compact ? type::title : type::display, t.text, text::semibold));
@@ -1209,6 +1511,19 @@ namespace lyren {
                                                                    : lyren::trf("{} songs · From all your devices", tracks.size());
             } else if (page == Page::liked && browser_.route().list) {
                 subtitle = lyren::trf("{} songs", tracks.size());
+            } else if (page == Page::pinned) {
+                const bool caching = pins_.caching();
+                if (pinned_cache_checked_ < 0 || ui.now - pinned_cache_checked_ >= 5.0 || pinned_cache_count_ != tracks.size() || pinned_was_caching_ != caching) {
+                    pinned_cache_bytes_ = audio::Spool::pinned_cache_usage();
+                    pinned_cache_checked_ = ui.now;
+                    pinned_cache_count_ = tracks.size();
+                    pinned_was_caching_ = caching;
+                }
+                subtitle = lyren::trf("{} songs · {}", tracks.size(), std::string_view(format_bytes(pinned_cache_bytes_)));
+                if (caching) {
+                    subtitle += " · ";
+                    subtitle += lyren::tr("Caching...");
+                }
             } else if (page == Page::cloud && browser_.route().list) {
                 subtitle = lyren::trf("Cloud uploads · {} songs", tracks.size());
             } else if (built_in) {
@@ -1235,6 +1550,9 @@ namespace lyren {
             return;
         }
         if (tracks.empty()) {
+            if (page == Page::pinned) {
+                return empty(ui, body, "pin", lyren::tr("No pinned songs yet"), lyren::tr("Pin songs or playlists to keep them available offline"));
+            }
             return empty(ui, body, "music", lyren::tr(page == Page::similar ? "No similar songs found" : "No songs here yet"));
         }
         if (!list_error.empty()) {
@@ -1276,6 +1594,12 @@ namespace lyren {
             }
             if (provider(c).capabilities.collect_albums) {
                 x += collection_button(ui, x, y, height, compact) + gap;
+            }
+            if (!browser_.route().list->tracks.empty()) {
+                const bool pinned = pins_.is_list_pinned(c);
+                if (square("album-pin", pinned ? "pin-off" : "pin", lyren::tr(pinned ? "Unpin offline" : "Pin offline"), pinned)) {
+                    pins_.toggle_pin_list(c, browser_.route().list->tracks);
+                }
             }
             if (provider(c).capabilities.comments[1]) {
                 comments("album-comments", Subject::album, browser_.route().list->album.thread);
@@ -1329,6 +1653,12 @@ namespace lyren {
             }
             if (provider(c).capabilities.comments[2] && c.commentable) {
                 comments("playlist-comments", Subject::playlist, c.thread.empty() ? c.id : c.thread);
+            }
+            if (browser_.route().list && !browser_.route().list->tracks.empty()) {
+                const bool pinned = pins_.is_list_pinned(c);
+                if (square("playlist-pin", pinned ? "pin-off" : "pin", lyren::tr(pinned ? "Unpin offline" : "Pin offline"), pinned)) {
+                    pins_.toggle_pin_list(c, browser_.route().list->tracks);
+                }
             }
             if ((!c.owned || !provider(c).capabilities.playlist_edit) && browser_.route().list && !browser_.route().list->loading &&
                 square("playlist-refresh", "refresh-cw", lyren::tr("Refresh"))) {

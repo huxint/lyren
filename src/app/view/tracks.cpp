@@ -524,7 +524,12 @@ namespace lyren {
                 p.text(ax, r.y + 25, track.alias, alias_style, rem - open_w);
             }
         }
-        p.text(tx, r.y + 43, track.artist, t.style(type::caption, t.text_dim), tw);
+        if (pins_.is_pinned(track)) {
+            p.icon("pin", {tx, r.y + 33, 11, 11}, pins_.is_cached(track) ? t.accent.with_alpha(0.85f) : t.faint());
+            p.text(tx + 15, r.y + 43, track.artist, t.style(type::caption, t.text_dim), std::max(0.f, tw - 15));
+        } else {
+            p.text(tx, r.y + 43, track.artist, t.style(type::caption, t.text_dim), tw);
+        }
         if (c.album.w > 0) {
             ui.label(c.album, track.album, t.style(type::label, t.text_dim));
         }
@@ -601,6 +606,16 @@ namespace lyren {
             add("list-plus", "Add to queue", [this, &ui, songs] {
                 playback_.enqueue(*songs);
                 ui.toast(std::string(lyren::tr("Added to queue")), "list-plus");
+            });
+            const bool all_pinned = std::ranges::all_of(*songs, [&](const Track &tr) {
+                return pins_.is_pinned(tr);
+            });
+            add(all_pinned ? "pin-off" : "pin", all_pinned ? "Unpin offline" : "Pin offline", [this, songs, all_pinned] {
+                if (all_pinned) {
+                    pins_.unpin_tracks(*songs);
+                } else {
+                    pins_.pin_tracks(*songs);
+                }
             });
             if (caps.playlist_edit) {
                 items.push_back({});
@@ -681,6 +696,12 @@ namespace lyren {
         if (caps.playlist_edit) {
             add("folder-plus", "Add to playlist", [this, &ui, track] {
                 shell_.dialogs.pick_playlist(ui, {track});
+            });
+        }
+        {
+            const bool pinned = pins_.is_pinned(track);
+            add(pinned ? "pin-off" : "pin", pinned ? "Unpin offline" : "Pin offline", [this, track] {
+                pins_.toggle_pin(track);
             });
         }
         add("copy", "Copy title and artist", [&ui, track] {

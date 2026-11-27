@@ -117,9 +117,9 @@ namespace lyren {
         Env &env_;
         Library &library_;
         std::vector<std::weak_ptr<Page>> pages_;
-        std::array<std::shared_ptr<Page>, platforms.size()> own_pages_{};
+        StringMap<std::shared_ptr<Page>> own_pages_;
         LruCache<std::shared_ptr<Page>, 8> other_pages_;
-        std::array<std::shared_ptr<Posts>, platforms.size()> feeds_;
+        StringMap<std::shared_ptr<Posts>> feeds_;
         Likes likes_;
         Removals removals_;
         Draft draft_;

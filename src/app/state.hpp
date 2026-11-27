@@ -16,7 +16,8 @@ namespace lyren {
     struct StateData {
         int width = 0, height = 0; // nonnegative logical pixels; zero means no saved size
         Source source = Source::netease;
-        float volume = 0.7f; // slider position in [0, 1]
+        std::string source_instance{}; // non-empty when the active source is a multi-instance provider
+        float volume = 0.7f;           // slider position in [0, 1]
         bool muted = false;
         PlayMode mode = PlayMode::list;
         Tracks queue{};

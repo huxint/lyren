@@ -26,6 +26,12 @@ namespace lyren::audio {
         std::mutex cache_prune_mutex;
         std::mutex cache_files_mutex;
         StringMap<int> pending_files; // completed downloads can be reopened while the worker syncs them
+        StringHashSet pinned_hashes;
+
+        bool is_pinned_hash(std::string_view hash) {
+            std::lock_guard lock(cache_files_mutex);
+            return pinned_hashes.contains(hash);
+        }
 
         std::filesystem::path audio_cache_dir() {
             auto dir = paths::cache_dir() / "audio";
@@ -54,8 +60,13 @@ namespace lyren::audio {
             return fd;
         }
 
-        void prune_audio_cache(const std::filesystem::path &dir, uint64_t limit, const std::filesystem::path &keep = {}) {
+        void prune_audio_cache(const std::filesystem::path &dir, uint64_t limit, const std::filesystem::path &keep = {}, bool include_pinned = false) {
             std::lock_guard lk(cache_prune_mutex);
+            StringHashSet pinned;
+            if (!include_pinned) {
+                std::lock_guard files(cache_files_mutex);
+                pinned = pinned_hashes;
+            }
             std::error_code ec;
             struct Entry {
                 std::filesystem::file_time_type mtime;
@@ -63,7 +74,7 @@ namespace lyren::audio {
                 std::filesystem::path path;
             };
             std::vector<Entry> files;
-            uint64_t total = 0;
+            uint64_t evictable_total = 0;
             const auto now = std::filesystem::file_time_type::clock::now();
             for (const auto &de : std::filesystem::directory_iterator(dir, ec)) {
                 if (!de.is_regular_file(ec)) {
@@ -77,31 +88,32 @@ namespace lyren::audio {
                     }
                     continue;
                 }
+                if (!include_pinned && pinned.contains(name)) {
+                    continue;
+                }
                 const uint64_t sz = de.file_size(ec);
                 if (ec) {
                     continue;
                 }
-                total += sz;
+                evictable_total += sz;
                 if (de.path() != keep) {
                     files.push_back({mtime, sz, de.path()});
                 }
             }
-            if (total <= limit) {
+            if (evictable_total <= limit) {
                 return;
             }
             std::ranges::sort(files, {}, &Entry::mtime);
-            const uint64_t target = std::max(keep.empty() ? uint64_t{0}
-                                                          : total - std::accumulate(files.begin(), files.end(), uint64_t{0},
-                                                                                    [](uint64_t a, const Entry &e) {
-                                                                                        return a + e.size;
-                                                                                    }),
-                                             limit * 7 / 8);
+            const uint64_t kept_size = evictable_total - std::accumulate(files.begin(), files.end(), uint64_t{0}, [](uint64_t a, const Entry &e) {
+                                           return a + e.size;
+                                       });
+            const uint64_t target = std::max(keep.empty() ? uint64_t{0} : kept_size, limit * 7 / 8);
             for (const auto &f : files) {
-                if (total <= target) {
+                if (evictable_total <= target) {
                     break;
                 }
                 if (std::filesystem::remove(f.path, ec)) {
-                    total -= std::min(total, f.size);
+                    evictable_total -= std::min(evictable_total, f.size);
                 }
             }
         }
@@ -120,45 +132,59 @@ namespace lyren::audio {
             std::string tmp, dst;
             uint64_t size;
             int fd;
+            bool pinned = false;
+            std::move_only_function<void(bool ok)> on_complete;
 
-            CacheWrite(const std::string &path, uint64_t bytes, int source)
+            CacheWrite(const std::string &path, uint64_t bytes, int source, bool is_pinned, std::move_only_function<void(bool ok)> done = {})
             : dst(path),
               size(bytes),
-              fd(::fcntl(source, F_DUPFD_CLOEXEC, 0)) {}
+              fd(::fcntl(source, F_DUPFD_CLOEXEC, 0)),
+              pinned(is_pinned),
+              on_complete(std::move(done)) {}
             CacheWrite(const CacheWrite &) = delete;
             CacheWrite &operator=(const CacheWrite &) = delete;
             ~CacheWrite() {
-                if (fd < 0) {
-                    return;
-                }
-                if (!tmp.empty()) {
-                    {
-                        std::lock_guard lock(cache_files_mutex);
-                        if (auto it = pending_files.find(dst); it != pending_files.end() && it->second == fd) {
-                            pending_files.erase(it);
+                if (fd >= 0) {
+                    if (!tmp.empty()) {
+                        {
+                            std::lock_guard lock(cache_files_mutex);
+                            if (auto it = pending_files.find(dst); it != pending_files.end() && it->second == fd) {
+                                pending_files.erase(it);
+                            }
                         }
+                        ::unlink(tmp.c_str());
                     }
-                    ::unlink(tmp.c_str());
+                    ::close(fd);
                 }
-                ::close(fd);
+                if (on_complete) {
+                    auto cb = std::move(on_complete);
+                    cb(false);
+                }
             }
 
             void persist() {
-                if (::fdatasync(fd) != 0) {
-                    return;
-                }
-                uint64_t limit;
-                {
-                    std::lock_guard lock(cache_files_mutex);
-                    auto it = pending_files.find(dst);
-                    limit = Spool::cache_limit();
-                    if (it == pending_files.end() || it->second != fd || size > limit || std::rename(tmp.c_str(), dst.c_str()) != 0) {
-                        return;
+                bool ok = false;
+                if (::fdatasync(fd) == 0) {
+                    uint64_t limit;
+                    {
+                        std::lock_guard lock(cache_files_mutex);
+                        auto it = pending_files.find(dst);
+                        limit = Spool::cache_limit();
+                        const bool keep_pinned = pinned || pinned_hashes.contains(std::filesystem::path(dst).filename().string());
+                        if (it != pending_files.end() && it->second == fd && (keep_pinned || size <= limit) && std::rename(tmp.c_str(), dst.c_str()) == 0) {
+                            pending_files.erase(it);
+                            tmp.clear();
+                            ok = true;
+                        }
                     }
-                    pending_files.erase(it);
-                    tmp.clear();
+                    if (ok) {
+                        prune_audio_cache(std::filesystem::path(dst).parent_path(), limit, dst);
+                    }
                 }
-                prune_audio_cache(std::filesystem::path(dst).parent_path(), limit, dst);
+                if (on_complete) {
+                    auto cb = std::move(on_complete);
+                    cb(ok);
+                }
             }
         };
 
@@ -221,6 +247,36 @@ namespace lyren::audio {
         return max_cache_bytes.load(std::memory_order_relaxed);
     }
 
+    std::string Spool::cache_hash(std::string_view cache_key) {
+        return cache_key.empty() ? std::string{} : crypto::md5_hex(cache_key);
+    }
+
+    void Spool::set_pinned_hashes(std::vector<std::string> hashes) {
+        std::lock_guard lock(cache_files_mutex);
+        pinned_hashes.clear();
+        pinned_hashes.reserve(hashes.size());
+        for (auto &h : hashes) {
+            if (!h.empty()) {
+                pinned_hashes.insert(std::move(h));
+            }
+        }
+    }
+
+    bool Spool::is_hash_cached(std::string_view hash) {
+        if (hash.empty()) {
+            return false;
+        }
+        const auto path = paths::cache_dir() / "audio" / hash;
+        {
+            std::lock_guard lock(cache_files_mutex);
+            if (pending_files.contains(path.string())) {
+                return true;
+            }
+        }
+        std::error_code ec;
+        return std::filesystem::is_regular_file(path, ec) && std::filesystem::file_size(path, ec) > 0 && !ec;
+    }
+
     uint64_t Spool::cache_usage() {
         std::error_code ec;
         const auto dir = paths::cache_dir() / "audio";
@@ -244,13 +300,44 @@ namespace lyren::audio {
         return total;
     }
 
-    uint64_t Spool::clear_cache() {
+    uint64_t Spool::pinned_cache_usage() {
+        StringHashSet pinned;
         {
             std::lock_guard lock(cache_files_mutex);
-            pending_files.clear();
+            pinned = pinned_hashes;
+        }
+        if (pinned.empty()) {
+            return 0;
+        }
+        std::error_code ec;
+        const auto dir = paths::cache_dir() / "audio";
+        if (!std::filesystem::exists(dir, ec)) {
+            return 0;
+        }
+        uint64_t total = 0;
+        for (const auto &h : pinned) {
+            const uint64_t sz = std::filesystem::file_size(dir / h, ec);
+            if (!ec) {
+                total += sz;
+            }
+            ec.clear();
+        }
+        return total;
+    }
+
+    uint64_t Spool::clear_cache(bool include_pinned) {
+        {
+            std::lock_guard lock(cache_files_mutex);
+            if (include_pinned) {
+                pending_files.clear();
+            } else {
+                std::erase_if(pending_files, [](const auto &kv) {
+                    return !pinned_hashes.contains(std::filesystem::path(kv.first).filename().string());
+                });
+            }
         }
         const uint64_t before = cache_usage();
-        prune_audio_cache(audio_cache_dir(), 0);
+        prune_audio_cache(audio_cache_dir(), 0, {}, include_pinned);
         const uint64_t after = cache_usage();
         return before > after ? before - after : 0;
     }
@@ -316,13 +403,40 @@ namespace lyren::audio {
         return s;
     }
 
-    std::shared_ptr<Spool> Spool::url(net::Http &http, std::string url, std::string cache_key) {
+    std::shared_ptr<Spool> Spool::cached_file(std::string_view hash) {
+        if (hash.empty()) {
+            return {};
+        }
+        const std::string path = (audio_cache_dir() / hash).string();
+        int cfd = open_cached(path);
+        struct stat st{};
+        if (cfd < 0 || fstat(cfd, &st) != 0 || st.st_size <= 0) {
+            if (cfd >= 0) {
+                ::close(cfd);
+            }
+            return {};
+        }
+        ::futimens(cfd, nullptr);
         std::shared_ptr<Spool> s(new Spool);
+        s->cache_path_ = path;
+        s->fd_ = cfd;
+        s->size_ = static_cast<uint64_t>(st.st_size);
+        s->have_.add(0, s->size_);
+        s->cache_hit_ = true;
+        return s;
+    }
+
+    std::shared_ptr<Spool> Spool::url(net::Http &http, std::string url, std::string cache_key, std::move_only_function<void(bool ok)> on_complete) {
+        std::shared_ptr<Spool> s(new Spool);
+        const std::string hash = cache_hash(cache_key);
+        const bool pinned = !hash.empty() && is_pinned_hash(hash);
         const uint64_t limit = cache_limit();
-        const bool persist = !cache_key.empty() && limit > 0;
+        const bool persist = !hash.empty() && (pinned || limit > 0);
         const auto dir = persist ? audio_cache_dir() : paths::cache_dir();
+        s->pinned_ = pinned;
+        s->on_complete_ = std::move(on_complete);
         if (persist) {
-            s->cache_path_ = (dir / crypto::md5_hex(cache_key)).string();
+            s->cache_path_ = (dir / hash).string();
             int cfd = open_cached(s->cache_path_);
             struct stat st{};
             if (cfd >= 0 && fstat(cfd, &st) == 0 && st.st_size > 0) {
@@ -332,6 +446,10 @@ namespace lyren::audio {
                 s->have_.add(0, s->size_);
                 s->cache_hit_ = true;
                 log::debug("audio cache hit: {} ({} bytes)", cache_key, s->size_);
+                if (s->on_complete_) {
+                    auto cb = std::move(s->on_complete_);
+                    cb(true);
+                }
                 return s;
             }
             if (cfd >= 0) {
@@ -344,6 +462,10 @@ namespace lyren::audio {
         if (s->fd_ < 0) {
             s->error_ = std::format("cache file: {}", std::strerror(errno));
             s->size_ = 0;
+            if (s->on_complete_) {
+                auto cb = std::move(s->on_complete_);
+                cb(false);
+            }
             return s;
         }
         std::lock_guard lk(s->m_);
@@ -441,28 +563,45 @@ namespace lyren::audio {
 
     void Spool::finish_cached_download(std::unique_lock<std::mutex> lock) {
         cv_.notify_all();
-        if (cache_path_.empty() || size_ > cache_limit()) {
-            return;
+        auto notify_done = [&](bool ok) {
+            if (on_complete_) {
+                auto cb = std::move(on_complete_);
+                if (lock.owns_lock()) {
+                    lock.unlock();
+                }
+                cb(ok);
+            }
+        };
+        const bool keep_pinned = pinned_ || (!cache_path_.empty() && is_pinned_hash(std::filesystem::path(cache_path_).filename().string()));
+        if (cache_path_.empty() || (!keep_pinned && size_ > cache_limit())) {
+            return notify_done(false);
         }
         try {
-            auto write = std::make_unique<CacheWrite>(cache_path_, size_, fd_);
+            auto write = std::make_unique<CacheWrite>(cache_path_, size_, fd_, keep_pinned, std::move(on_complete_));
             if (write->fd < 0) {
+                lock.unlock();
                 return;
             }
+            bool over_limit = false;
             {
                 // A reader that sees the last byte can immediately reopen the finished download.
                 std::lock_guard files(cache_files_mutex);
-                if (size_ > cache_limit()) {
-                    return;
+                if (!keep_pinned && size_ > cache_limit()) {
+                    over_limit = true;
+                } else {
+                    pending_files.insert_or_assign(cache_path_, write->fd);
+                    write->tmp.swap(tmp_path_);
                 }
-                pending_files.insert_or_assign(cache_path_, write->fd);
-                write->tmp.swap(tmp_path_);
             }
             lock.unlock();
+            if (over_limit) {
+                return;
+            }
             static CacheWriter writer;
             writer.submit(std::move(write));
         } catch (const std::exception &e) {
             log::warn("audio cache: {}", e.what());
+            notify_done(false);
         }
     }
 
@@ -500,7 +639,12 @@ namespace lyren::audio {
             if (status >= 400 || ++retries_ > 3) {
                 status_ = status;
                 error_ = std::move(error);
+                auto cb = std::move(on_complete_);
                 cv_.notify_all();
+                lk.unlock();
+                if (cb) {
+                    cb(false);
+                }
                 return;
             }
             fetch(pos_, std::chrono::milliseconds(250 << retries_));
@@ -520,6 +664,13 @@ namespace lyren::audio {
             log::debug("download complete: {} bytes", size_);
             if (!tmp_path_.empty() && error_.empty() && size_ > 0 && size_ != unknown && have_.available(0) == size_) {
                 return finish_cached_download(std::move(lk));
+            }
+            if (on_complete_) {
+                auto cb = std::move(on_complete_);
+                cv_.notify_all();
+                lk.unlock();
+                cb(false);
+                return;
             }
         }
         cv_.notify_all();

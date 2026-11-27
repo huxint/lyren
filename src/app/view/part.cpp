@@ -56,6 +56,7 @@ namespace lyren {
     : shell_(shell),
       env_(shell.env),
       images_(shell.images),
+      pins_(shell.pins),
       playback_(shell.playback),
       library_(shell.library),
       social_(shell.social),

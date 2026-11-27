@@ -12,13 +12,15 @@
 
 namespace lyren {
 
-    // Stable persisted identifiers, also the indices into platforms. Append new platforms.
+    // Stable persisted identifiers. Append new kinds to keep saved state compatible.
     enum class Source : uint8_t {
         netease,
         qq,
         qishui,
         kugou,
-        bodian
+        bodian,
+        local,
+        subsonic
     };
 
     // Stable state-file values: list = 0, one = 1, shuffle = 2.
@@ -33,6 +35,7 @@ namespace lyren {
         std::string_view id, name, short_name, scan_hint;
     };
 
+    // Built-in online streaming platforms.
     inline constexpr std::array platforms{
         Platform{Source::netease, "netease", "NetEase Music", "NetEase", "Scan with the NetEase Music app"},
         Platform{Source::qq, "qq", "QQ Music", "QQ Music", "Scan with QQ, then confirm QQ Music sign-in"},
@@ -41,9 +44,43 @@ namespace lyren {
         Platform{Source::bodian, "bodian", "Bodian Music", "Bodian", "Scan with the Bodian Music app"},
     };
 
-    inline const Platform &platform(Source source) {
-        return platforms[static_cast<size_t>(source)];
+    // Metadata for every Source kind, including accountless and multi-instance kinds.
+    inline constexpr std::array source_kinds{
+        platforms[0],
+        platforms[1],
+        platforms[2],
+        platforms[3],
+        platforms[4],
+        Platform{Source::local, "local", "Local library", "Local", ""},
+        Platform{Source::subsonic, "subsonic", "Subsonic", "Subsonic", "Connect your Subsonic server"},
+    };
+
+    inline bool valid_source(Source source) {
+        return static_cast<size_t>(source) < source_kinds.size();
     }
+
+    inline const Platform &platform(Source source) {
+        return source_kinds[valid_source(source) ? static_cast<size_t>(source) : 0];
+    }
+
+    // Canonical source identifier: "netease", "local", or "<kind>:<instance>" for multi-instance sources.
+    inline std::string source_id(Source source, std::string_view instance = {}) {
+        const std::string_view base = platform(source).id;
+        return instance.empty() ? std::string(base) : std::format("{}:{}", base, instance);
+    }
+
+    struct SourceKey {
+        Source source = Source::netease;
+        std::string instance; // empty for singleton sources; slug for multi-instance servers
+
+        std::string id() const {
+            return source_id(source, instance);
+        }
+        bool operator==(const SourceKey &) const = default;
+    };
+
+    std::optional<Source> parse_source(std::string_view id);
+    std::optional<SourceKey> parse_source_key(std::string_view id);
 
     struct Track {
         std::string id;           // QQ Music: the numeric song id
@@ -56,19 +93,20 @@ namespace lyren {
         uint32_t duration = 0;           // whole seconds; zero when the service supplies no duration
         int type = 0;                    // QQ Music's song type, also used when editing a playlist
         Source source = Source::netease;
-        bool cloud = false; // uploaded to the user's NetEase cloud drive
-        bool paid = false;  // the listing says more than a preview takes a membership or a purchase
+        std::string instance; // non-empty for multi-instance sources (e.g. Subsonic servers)
+        bool cloud = false;   // uploaded to the user's NetEase cloud drive
+        bool paid = false;    // the listing says more than a preview takes a membership or a purchase
     };
 
     inline bool same(const Track &a, const Track &b) {
-        return a.source == b.source && a.id == b.id;
+        return a.source == b.source && a.instance == b.instance && a.id == b.id;
     }
 
-    inline std::string key(Source source, std::string_view id) {
-        return std::format("{}:{}", platform(source).id, id);
+    inline std::string key(Source source, std::string_view id, std::string_view instance = {}) {
+        return std::format("{}:{}", source_id(source, instance), id);
     }
     inline std::string key(const Track &t) {
-        return key(t.source, t.id);
+        return key(t.source, t.id, t.instance);
     }
 
     // A cover, avatar or playlist picture at the service's size closest to px.
@@ -95,6 +133,7 @@ namespace lyren {
         };
         CardKind kind = CardKind::playlist;
         Source source = Source::netease;
+        std::string instance; // non-empty for multi-instance sources
         std::string id, title, subtitle, cover;
         std::string thread; // an owned QQ directory's public playlist id, for comments
         int count = 0;      // tracks behind it, if known
@@ -110,10 +149,10 @@ namespace lyren {
     std::string share_url(const Card &card);
 
     inline bool same(const Card &a, const Card &b) {
-        return a.source == b.source && a.kind == b.kind && a.id == b.id;
+        return a.source == b.source && a.instance == b.instance && a.kind == b.kind && a.id == b.id;
     }
     inline std::string key(const Card &c) {
-        return std::format("{}:{}:{}", platform(c.source).id, c.id, static_cast<int>(c.kind));
+        return std::format("{}:{}:{}", source_id(c.source, c.instance), c.id, static_cast<int>(c.kind));
     }
 
     enum class SearchKind : uint8_t {

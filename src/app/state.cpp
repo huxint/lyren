@@ -22,7 +22,7 @@ namespace lyren {
             return std::unexpected(glz::format_error(e, text));
         }
         auto registered = [](Source source) {
-            return std::to_underlying(source) < platforms.size();
+            return valid_source(source);
         };
         auto valid_track = [&](const Track &track) {
             return registered(track.source);

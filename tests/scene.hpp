@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "app/images.hpp"
+#include "app/store.hpp"
 #include "app/view/shell.hpp"
 #include "core/i18n.hpp"
 #include "sys/bus.hpp"
@@ -195,6 +196,7 @@ namespace lyren::test {
                     .player = player_,
                     .providers = {service, service, service, service, service},
                     .images = images_,
+                    .store = &store_,
                     .config = config_,
                     .set_settings = [](std::span<const SettingChange>) {},
                     .desktop_changed = [] {},
@@ -236,6 +238,7 @@ namespace lyren::test {
         net::Http http_;
         audio::Player player_{g.loop, http_};
         Images images_;
+        Store store_{":memory:"};
         Bus bus_{g.loop};
         Config config_;
         ui::Theme theme_, stage_;

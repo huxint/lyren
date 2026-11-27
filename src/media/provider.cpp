@@ -1,13 +1,29 @@
 #include "media/provider.hpp"
 
+#include <algorithm>
 #include <glaze/file/file_ops.hpp>
+#include <stdexcept>
 #include "core/encoding.hpp"
 
 namespace lyren {
 
+    StringMap<std::string> &Provider::session() {
+        return empty_session_;
+    }
+    void Provider::on_session_changed(std::move_only_function<void()>) {}
+    Task<Result<void>> Provider::initialize() {
+        co_return Result<void>{};
+    }
+    Task<Result<std::vector<std::string>>> Provider::search_suggest(std::string) {
+        co_return std::vector<std::string>{};
+    }
+    bool Provider::logged_in() const {
+        return !capabilities.accounts;
+    }
+
     Task<Result<std::vector<LyricLine>>> Provider::playback_lyrics(Track track, std::filesystem::path lyric_dir) {
         {
-            const auto path = lyric_dir / platform(track.source).id / (encoding::url_encode(track.id) + ".lrc");
+            const auto path = lyric_dir / source_id(track.source, track.instance) / (encoding::url_encode(track.id) + ".lrc");
             std::string text;
             if (glz::file_to_buffer(text, path.native()) == glz::error_code::none) {
                 auto lines = parse_timed_lrc(text);
@@ -170,6 +186,112 @@ namespace lyren {
     }
     Task<SessionCheck> Provider::check_session(std::string) {
         co_return SessionCheck{.signer = {SessionCheck::State::failed, "This feature is not available on this platform"}};
+    }
+    Task<Result<Account>> Provider::account() {
+        return unavailable<Account>();
+    }
+    Task<void> Provider::logout() {
+        co_return;
+    }
+
+    ProviderRegistry::ProviderRegistry(std::initializer_list<std::reference_wrapper<Provider>> builtins) {
+        entries_.reserve(builtins.size());
+        size_t i = 0;
+        for (Provider &p : builtins) {
+            if (i >= platforms.size()) {
+                break;
+            }
+            const auto &meta = platforms[i++];
+            entries_.push_back({
+                .source = meta.source,
+                .instance = {},
+                .id = std::string(meta.id),
+                .name = std::string(meta.name),
+                .short_name = std::string(meta.short_name),
+                .scan_hint = std::string(meta.scan_hint),
+                .provider = &p,
+            });
+        }
+    }
+
+    std::string ProviderRegistry::add(SourceEntry entry) {
+        if (entry.owned && !entry.provider) {
+            entry.provider = entry.owned.get();
+        }
+        entry.id = source_id(entry.source, entry.instance);
+        const auto &meta = platform(entry.source);
+        if (entry.name.empty()) {
+            entry.name = entry.instance.empty() ? std::string(meta.name) : entry.instance;
+        }
+        if (entry.short_name.empty()) {
+            entry.short_name = entry.instance.empty() ? std::string(meta.short_name) : entry.name;
+        }
+        if (entry.scan_hint.empty()) {
+            entry.scan_hint = std::string(meta.scan_hint);
+        }
+        std::string id = entry.id;
+        auto it = std::ranges::find_if(entries_, [&](const SourceEntry &e) {
+            return e.id == id;
+        });
+        if (it != entries_.end()) {
+            *it = std::move(entry);
+        } else {
+            entries_.push_back(std::move(entry));
+        }
+        return id;
+    }
+
+    bool ProviderRegistry::remove(std::string_view id) {
+        return std::erase_if(entries_, [&](const SourceEntry &e) {
+                   return e.id == id;
+               }) > 0;
+    }
+
+    const SourceEntry *ProviderRegistry::entry(std::string_view id) const {
+        auto it = std::ranges::find_if(entries_, [&](const SourceEntry &e) {
+            return e.id == id;
+        });
+        return it == entries_.end() ? nullptr : &*it;
+    }
+
+    const SourceEntry *ProviderRegistry::entry(Source source, std::string_view instance) const {
+        if (instance.empty()) {
+            auto it = std::ranges::find_if(entries_, [&](const SourceEntry &e) {
+                return e.source == source && e.instance.empty();
+            });
+            return it == entries_.end() ? nullptr : &*it;
+        }
+        return entry(source_id(source, instance));
+    }
+
+    Provider *ProviderRegistry::find(std::string_view id) const {
+        const auto *e = entry(id);
+        return e ? e->provider : nullptr;
+    }
+
+    Provider *ProviderRegistry::find(Source source, std::string_view instance) const {
+        const auto *e = entry(source, instance);
+        return e ? e->provider : nullptr;
+    }
+
+    Provider &ProviderRegistry::get(Source source, std::string_view instance) const {
+        if (Provider *p = find(source, instance)) {
+            return *p;
+        }
+        if (!entries_.empty() && entries_.front().provider) {
+            return *entries_.front().provider;
+        }
+        throw std::out_of_range("No provider registered for source");
+    }
+
+    Provider &ProviderRegistry::get(std::string_view id) const {
+        if (Provider *p = find(id)) {
+            return *p;
+        }
+        if (!entries_.empty() && entries_.front().provider) {
+            return *entries_.front().provider;
+        }
+        throw std::out_of_range("No provider registered for source");
     }
 
 } // namespace lyren

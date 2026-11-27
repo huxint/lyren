@@ -2,6 +2,9 @@
 #include <array>
 #include <filesystem>
 #include <functional>
+#include <initializer_list>
+#include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,6 +32,7 @@ namespace lyren {
         bool collect_playlists = false, collect_albums = false, follow_artists = false;
         std::array<bool, 4> comments{}; // song, album, playlist, post
         bool comment_sort = false, comment_replies = false, comment_likes = false, comment_post = false, comment_delete = false;
+        bool accounts = true; // false for accountless sources such as a local music library
         bool qr_login = false, session_import = false;
         // Listener pages: other people's (the signed-in account's own page needs none of these), follow lists,
         // following people, posts and writing them, the listening ranking, and other people's playlists.
@@ -91,12 +95,13 @@ namespace lyren {
         std::string_view radio_title = "Personal FM";
         std::array<std::vector<Category>, 2> release_categories; // songs, albums
         bool reload_after_edit = false;                          // server-assigned playlist metadata and order need a readback
-        virtual StringMap<std::string> &session() = 0;
-        virtual void on_session_changed(std::move_only_function<void()> changed) = 0;
-        virtual Task<Result<void>> initialize() = 0;
+        virtual StringMap<std::string> &session();
+        virtual void on_session_changed(std::move_only_function<void()> changed);
+        virtual Task<Result<void>> initialize();
         virtual void cancel_login() {}
 
         virtual Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) = 0;
+        virtual Task<Result<std::vector<std::string>>> search_suggest(std::string query);
         virtual Task<Result<Stream>> stream(Track track, Quality quality) = 0;
         virtual Task<Result<std::vector<LyricLine>>> lyrics(Track track) = 0;
         // A local timed LRC for this platform and track takes precedence over the service's lyrics.
@@ -160,17 +165,72 @@ namespace lyren {
         // all_time: since the account began, otherwise the last week.
         virtual Task<Result<Ranking>> ranking(std::string uid, bool all_time);
 
-        virtual bool logged_in() const = 0;
+        virtual bool logged_in() const;
         // A URL to encode or the login service's PNG.
         virtual Task<Result<QrCode>> qr_start();
         virtual Task<Result<QrStatus>> qr_poll();
         virtual Task<Result<void>> import_session(std::string json);
         virtual Task<SessionCheck> check_session(std::string json);
-        virtual Task<Result<Account>> account() = 0;
-        virtual Task<void> logout() = 0;
+        virtual Task<Result<Account>> account();
+        virtual Task<void> logout();
+
+    private:
+        StringMap<std::string> empty_session_;
     };
 
-    // Every registered platform must have an adapter; missing entries fail at compile time.
-    using Providers = std::array<std::reference_wrapper<Provider>, platforms.size()>;
+    // One registered music source instance (built-in online platform, accountless local library, or self-hosted server).
+    struct SourceEntry {
+        Source source = Source::netease;
+        std::string instance;   // empty for singleton sources; unique slug for multi-instance sources
+        std::string id;         // canonical source_id(source, instance)
+        std::string name;       // display name (or i18n key for built-in platforms)
+        std::string short_name; // compact selector label
+        std::string scan_hint;
+        Provider *provider = nullptr;
+        std::shared_ptr<Provider> owned; // set for dynamically added runtime instances
+    };
+
+    // Dynamic registry of active music sources. Supports the built-in 5 online platforms as well as accountless
+    // local libraries and multiple instances of the same Source kind (e.g. multiple OpenSubsonic servers).
+    class ProviderRegistry {
+    public:
+        ProviderRegistry() = default;
+        // Registers the five built-in online platforms in platforms[] order.
+        ProviderRegistry(std::initializer_list<std::reference_wrapper<Provider>> builtins);
+
+        // Adds or replaces a source instance; returns its canonical id.
+        std::string add(SourceEntry entry);
+        std::string add(Source source, Provider &provider, std::string instance = {}, std::string name = {}, std::string short_name = {}) {
+            return add(SourceEntry{.source = source, .instance = std::move(instance), .name = std::move(name), .short_name = std::move(short_name), .provider = &provider});
+        }
+        bool remove(std::string_view id);
+
+        std::span<const SourceEntry> entries() const {
+            return entries_;
+        }
+        bool empty() const {
+            return entries_.empty();
+        }
+        size_t size() const {
+            return entries_.size();
+        }
+        bool contains(Source source, std::string_view instance = {}) const {
+            return find(source, instance) != nullptr;
+        }
+        bool contains(std::string_view id) const {
+            return find(id) != nullptr;
+        }
+        const SourceEntry *entry(std::string_view id) const;
+        const SourceEntry *entry(Source source, std::string_view instance = {}) const;
+        Provider *find(std::string_view id) const;
+        Provider *find(Source source, std::string_view instance = {}) const;
+        Provider &get(Source source, std::string_view instance = {}) const;
+        Provider &get(std::string_view id) const;
+
+    private:
+        std::vector<SourceEntry> entries_;
+    };
+
+    using Providers = ProviderRegistry;
 
 } // namespace lyren

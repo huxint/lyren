@@ -1694,3 +1694,105 @@ TEST_CASE("stage lyric menu, audio info modal, comment mentions/copy, and settin
     scene.draw();
     CHECK_FALSE(scene.ui.animating());
 }
+
+TEST_CASE("search history popover, listening stats page, offline pinning UI, and accountless source render cleanly") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+
+    // 1. Search history & suggestions popover with keyboard navigation and item removal.
+    scene.shell.browser.query = "Night Train";
+    scene.shell.browser.search();
+    scene.shell.browser.query = "Slow Radio";
+    scene.shell.browser.search();
+    scene.shell.browser.query.clear();
+    scene.ui.focus = scene.ui.id("search");
+    const auto pop = scene.draw();
+    CHECK(drew(pop, "Recent searches"));
+    CHECK(drew(pop, "Slow Radio"));
+    CHECK(drew(pop, "Night Train"));
+
+    // Down arrow twice selects "Night Train"; Enter submits it and closes the popover.
+    scene.key(XKB_KEY_Down);
+    scene.key(XKB_KEY_Down);
+    const auto submitted = scene.key(XKB_KEY_Return);
+    CHECK(scene.shell.browser.route().page == Page::search);
+    CHECK(scene.shell.browser.searched() == "Night Train");
+    CHECK_FALSE(drew(submitted, "Recent searches"));
+
+    // Two-frame press+release click on Clear inside the popover keeps focus across press and clears history.
+    scene.shell.browser.query.clear();
+    scene.ui.focus = scene.ui.id("search");
+    scene.draw();
+    const auto *clear_hist = scene.find("Clear");
+    REQUIRE(clear_hist != nullptr);
+    const float cx = clear_hist->box.x + clear_hist->box.w / 2, cy = clear_hist->box.y + clear_hist->box.h / 2;
+    scene.button(cx, cy, true);
+    CHECK(scene.ui.focus == scene.ui.id("search"));
+    scene.button(cx, cy, false);
+    CHECK(scene.shell.browser.suggestions().empty());
+
+    // 2. Listening stats page renders summary, platform distribution, top artists, and top tracks in Dark and Light.
+    REQUIRE(scene.shell.env.store != nullptr);
+    Track t1 = test::Service::song(0);
+    t1.artist_id = "art-1";
+    Track t2 = test::Service::song(1);
+    t2.source = Source::qq;
+    scene.shell.env.store->record_listen(t1, 210, true);
+    scene.shell.env.store->record_listen(t2, 180, true);
+    scene.shell.browser.open(Page::stats);
+    const auto stats_runs = scene.draw();
+    CHECK(drew(stats_runs, "Listening stats"));
+    CHECK(drew(stats_runs, "Listening time"));
+    CHECK(drew(stats_runs, "By platform"));
+    CHECK(drew(stats_runs, "Top artists"));
+    CHECK(drew(stats_runs, "Most played"));
+    CHECK(drew(stats_runs, "Night Train"));
+    CHECK_FALSE(scene.ui.animating());
+
+    // Switch range to "All time".
+    const auto *all_time = scene.find("All time");
+    REQUIRE(all_time != nullptr);
+    scene.click(*all_time);
+    CHECK(drew(scene.draw(), "Listening stats"));
+
+    // 3. Offline pinning: pin an album from its header button and inspect Pinned offline page.
+    scene.shell.browser.open(Card{.kind = CardKind::album, .source = Source::netease, .id = "alb-1", .title = "Harbour Tapes"});
+    scene.draw();
+    const auto *pin_icon = scene.find("pin", true);
+    REQUIRE(pin_icon != nullptr);
+    // Find the header pin button (in page area x > 220, not sidebar pin icon).
+    const ui::Painter::Run *header_pin = nullptr;
+    for (const auto &run : scene.painter.runs()) {
+        if (run.icon && run.text == "pin" && run.box.x > 220.f) {
+            header_pin = &run;
+            break;
+        }
+    }
+    REQUIRE(header_pin != nullptr);
+    scene.click(*header_pin);
+    CHECK(scene.shell.pins.count() == 2);
+
+    scene.shell.browser.open(Page::pinned);
+    const auto pinned_runs = scene.draw();
+    CHECK(drew(pinned_runs, "Pinned offline"));
+    CHECK(drew(pinned_runs, "Night Train"));
+
+    // 4. Accountless Local source does not appear in AccountDialog, and renders cleanly in Settings -> Services.
+    test::Service local_srv;
+    local_srv.capabilities.accounts = false;
+    local_srv.signed_in = false;
+    scene.shell.env.providers.add(Source::local, local_srv);
+    scene.shell.account.open(scene.ui);
+    const auto acct_runs = scene.draw();
+    CHECK_FALSE(drew(acct_runs, "Local library"));
+    scene.ui.close_modal();
+    scene.draw();
+
+    scene.shell.browser.open(Page::settings);
+    scene.draw();
+    const auto *svc_tab = scene.find("Services");
+    REQUIRE(svc_tab != nullptr);
+    const auto svc_runs = scene.click(*svc_tab);
+    CHECK(drew(svc_runs, "Local library"));
+    CHECK(drew(svc_runs, "Ready · No sign-in required"));
+}

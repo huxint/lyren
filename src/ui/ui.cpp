@@ -65,6 +65,7 @@ namespace lyren::ui {
             tip_.since = std::numeric_limits<double>::infinity();
         }
         scroll_stack_.clear();
+        popover_ = nullptr;
 
         // A press outside an open menu closes it; a left press stops there, a right press may open the next menu.
         if (!menu_.empty()) {
@@ -90,6 +91,13 @@ namespace lyren::ui {
         draw_modal();
         if (modal_open() && take_escape(in_->keys)) {
             close_modal();
+        }
+        if (popover_) {
+            layer_ = Layer::popup;
+            layer_rects_.push_back({Layer::popup, popover_rect_});
+            auto body = std::move(popover_);
+            body(*this, popover_rect_);
+            layer_ = Layer::base;
         }
         draw_menu();
         draw_toasts();

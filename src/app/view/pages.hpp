@@ -4,6 +4,7 @@
 #include <string_view>
 #include <vector>
 
+#include "app/store.hpp"
 #include "app/view/part.hpp"
 
 namespace lyren {
@@ -34,6 +35,7 @@ namespace lyren {
         void releases_page(ui::Ui &ui, ui::Rect r);
         void collection_page(ui::Ui &ui, ui::Rect r);
         void dislikes_page(ui::Ui &ui, ui::Rect r);
+        void stats_page(ui::Ui &ui, ui::Rect r);
         void artist_page(ui::Ui &ui, ui::Rect r);
         void search_page(ui::Ui &ui, ui::Rect r);
         void list_page(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, bool loading, std::string_view error, double since);
@@ -55,6 +57,17 @@ namespace lyren {
         void categories_modal(ui::Ui &ui, ui::Rect r);
         static float special_hue(Page page);
         ui::Id search_scroll_id(ui::Ui &ui, int tab) const;
+
+        // Cached listening stats and pinned cache size so idle frames perform no disk or SQLite I/O.
+        int stats_range_ = 0;
+        int stats_cached_range_ = -1;
+        uint64_t stats_serial_ = 0;
+        Store::ListeningStats stats_cache_;
+        std::vector<Track> stats_tracks_;
+        uint64_t pinned_cache_bytes_ = 0;
+        double pinned_cache_checked_ = -100;
+        size_t pinned_cache_count_ = 0;
+        bool pinned_was_caching_ = false;
     };
 
 } // namespace lyren

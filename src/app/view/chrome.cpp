@@ -1,8 +1,13 @@
 #include "app/view/chrome.hpp"
 
+#include <linux/input-event-codes.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
+
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <inplace_vector>
+#include <optional>
 
 #include "app/view/draw.hpp"
 #include "app/view/shell.hpp"
@@ -42,11 +47,16 @@ namespace lyren {
 
         // A fixed-width platform capsule keeps the search field still when the name changes.
         const auto name_style = t.style(type::label, t.text, text::medium);
+        const auto &entries = env_.providers.entries();
         float platform_w = 0;
-        for (const auto &entry : platforms) {
+        bool any_accounts = false;
+        for (const auto &entry : entries) {
             platform_w = std::max(platform_w, p.measure(lyren::tr(entry.short_name), name_style));
+            any_accounts |= entry.provider->capabilities.accounts;
         }
-        platform_w = std::ceil(platform_w);
+        platform_w = std::min(136.f, std::ceil(platform_w));
+        const auto *active_entry = env_.providers.entry(browser_.active(), browser_.active_key().instance);
+        const std::string_view active_short = active_entry ? lyren::tr(active_entry->short_name) : lyren::tr(platform(browser_.active()).short_name);
         const Rect selector = ui::center(ui::cut_left(r, platform_w + 52), platform_w + 52, 30);
         const ui::Id platform_id = ui.id("platform");
         const auto picked = ui.interact(platform_id, selector);
@@ -57,19 +67,22 @@ namespace lyren {
         const Rect pill = selector.inset(down);
         p.rect(pill, t.fill(1 + 0.85f * hot), t.round(pill.h));
         p.rect({pill.x + 13, pill.y + pill.h / 2 - 3, 6, 6}, signed_in() ? t.accent : t.text.with_alpha(0.26f), 3);
-        ui.label({pill.x + 26, pill.y, platform_w + 1, pill.h}, lyren::tr(platform(browser_.active()).short_name), name_style);
+        ui.label({pill.x + 26, pill.y, platform_w + 1, pill.h}, active_short, name_style);
         p.icon("chevron-down", {pill.right() - 20, pill.y + (pill.h - 10) / 2, 10, 10}, t.text_dim.mix(t.text, hot));
         if (picked.clicked) {
             std::vector<ui::MenuItem> items;
-            for (const auto &entry : platforms) {
-                items.push_back({entry.source == browser_.active() ? "check" : "music", std::string(lyren::tr(entry.name)), [this, source = entry.source] {
-                                     browser_.switch_platform(source);
+            for (const auto &entry : entries) {
+                const bool current = entry.source == browser_.active() && entry.instance == browser_.active_key().instance;
+                items.push_back({current ? "check" : "music", std::string(lyren::tr(entry.name)), [this, source = entry.source, inst = entry.instance] {
+                                     browser_.switch_platform(source, inst);
                                  }});
             }
-            items.push_back({});
-            items.push_back({"user", std::string(lyren::tr("Accounts")), [this, &ui] {
-                                 shell_.account.open(ui);
-                             }});
+            if (any_accounts) {
+                items.push_back({});
+                items.push_back({"user", std::string(lyren::tr("Accounts")), [this, &ui] {
+                                     shell_.account.open(ui);
+                                 }});
+            }
             ui.open_menu(selector.x, selector.bottom() + 6, std::move(items));
         }
         ui::cut_left(r, 8);
@@ -83,37 +96,211 @@ namespace lyren {
                 browser_.open(Page::settings);
             }
         }
-        const Rect account = ui::cut_right(r, 38);
-        if (const auto &mine = shelf().account) {
-            // Signed in: the avatar opens the listener's own page; from there, or with a right click, the accounts.
-            const Rect face = ui::center(account, 26, 26);
-            const ui::Id id = ui.id("account");
-            const auto it = ui.interact(id, face.inset(-2));
-            if (it.hovered) {
-                ui.cursor = wl::Cursor::pointer;
-            }
-            const bool here = browser_.route().page == Page::profile && library_.own(browser_.route().card);
-            const float ring = ui.anim(id, here ? 1 : it.hovered ? 0.5f : 0, pace::quick);
-            if (ring > 0) {
-                p.rect(face.inset(-3), {0, 0, 0, 0}, 16, (here ? t.accent : t.text).with_alpha(ring * (here ? 0.9f : 0.5f)), 1.5f);
-            }
-            cover(ui, face, mine->avatar, 13, "user");
-            if (it.hovered && !it.held) {
-                ui.tooltip(id, face, here ? lyren::tr("Accounts") : lyren::tr("My profile"));
-            }
-            if (it.right_clicked || (it.clicked && here)) {
+        if (any_accounts) {
+            const Rect account = ui::cut_right(r, 38);
+            if (const auto &mine = shelf().account; mine && env_.has_account(browser_.active(), browser_.active_key().instance)) {
+                // Signed in: the avatar opens the listener's own page; from there, or with a right click, the accounts.
+                const Rect face = ui::center(account, 26, 26);
+                const ui::Id id = ui.id("account");
+                const auto it = ui.interact(id, face.inset(-2));
+                if (it.hovered) {
+                    ui.cursor = wl::Cursor::pointer;
+                }
+                const bool here = browser_.route().page == Page::profile && library_.own(browser_.route().card);
+                const float ring = ui.anim(id, here ? 1 : it.hovered ? 0.5f : 0, pace::quick);
+                if (ring > 0) {
+                    p.rect(face.inset(-3), {0, 0, 0, 0}, 16, (here ? t.accent : t.text).with_alpha(ring * (here ? 0.9f : 0.5f)), 1.5f);
+                }
+                cover(ui, face, mine->avatar, 13, "user");
+                if (it.hovered && !it.held) {
+                    ui.tooltip(id, face, here ? lyren::tr("Accounts") : lyren::tr("My profile"));
+                }
+                if (it.right_clicked || (it.clicked && here)) {
+                    shell_.account.open(ui);
+                } else if (it.clicked) {
+                    browser_.open_own_profile();
+                }
+            } else if (ui.icon_button(ui.id("account"), ui::center(account, 30, 30), "user", 17, false, lyren::tr("Accounts"))) {
                 shell_.account.open(ui);
-            } else if (it.clicked) {
-                browser_.open_own_profile();
             }
-        } else if (ui.icon_button(ui.id("account"), ui::center(account, 30, 30), "user", 17, false, lyren::tr("Accounts"))) {
-            shell_.account.open(ui);
         }
         const float w = std::min(400.f, r.w - 24);
         if (w > 120) {
             const float x = std::clamp(center_x - w / 2, r.x + 12, r.right() - 12 - w);
-            if (ui.text_box(ui.id("search"), {x, bar.y + (bar.h - control::medium) / 2, w, control::medium}, browser_.query, lyren::tr("Search music"), "search", "/")) {
+            const ui::Id search_id = ui.id("search");
+            const Rect search_box{x, bar.y + (bar.h - control::medium) / 2, w, control::medium};
+            const bool search_active = ui.focus == search_id && !ui.modal_open() && !ui.menu_open();
+            if (search_active) {
+                browser_.update_suggestions(browser_.query);
+                if (browser_.query != last_search_query_) {
+                    last_search_query_ = browser_.query;
+                    search_sel_ = -1;
+                }
+                const auto &suggestions = browser_.suggestions();
+                const int count = static_cast<int>(suggestions.size());
+                if (search_sel_ >= count) {
+                    search_sel_ = -1;
+                }
+                if (count > 0) {
+                    auto &keys = ui.input().keys;
+                    for (auto k = keys.begin(); k != keys.end();) {
+                        if (k->keysym == XKB_KEY_Down || k->keysym == XKB_KEY_KP_Down) {
+                            search_sel_ = search_sel_ + 1 >= count ? -1 : search_sel_ + 1;
+                            k = keys.erase(k);
+                            ui.redraw();
+                        } else if (k->keysym == XKB_KEY_Up || k->keysym == XKB_KEY_KP_Up) {
+                            search_sel_ = search_sel_ <= -1 ? count - 1 : search_sel_ - 1;
+                            k = keys.erase(k);
+                            ui.redraw();
+                        } else {
+                            ++k;
+                        }
+                    }
+                }
+            }
+            if (ui.text_box(search_id, search_box, browser_.query, lyren::tr("Search music"), "search", "/")) {
+                const auto &suggestions = browser_.suggestions();
+                if (search_sel_ >= 0 && search_sel_ < static_cast<int>(suggestions.size())) {
+                    browser_.query = suggestions[static_cast<size_t>(search_sel_)].text;
+                }
                 browser_.search();
+                ui.focus = 0;
+                search_sel_ = -1;
+            }
+            if (ui.focus == search_id && !ui.modal_open() && !ui.menu_open()) {
+                browser_.update_suggestions(browser_.query);
+                if (browser_.query != last_search_query_) {
+                    last_search_query_ = browser_.query;
+                    search_sel_ = -1;
+                }
+                const auto &suggestions = browser_.suggestions();
+                const int count = static_cast<int>(suggestions.size());
+                if (search_sel_ >= count) {
+                    search_sel_ = -1;
+                }
+                if (count > 0) {
+                    if (!search_was_open_) {
+                        search_pop_since_ = ui.now;
+                    }
+                    search_was_open_ = true;
+                    const bool history_header = trim(browser_.query).empty();
+                    constexpr float pad = 6.f, row_h = 34.f, head_h = 28.f;
+                    const float pop_h = pad * 2 + (history_header ? head_h : 0.f) + static_cast<float>(count) * row_h;
+                    const Rect pop_r{search_box.x, search_box.bottom() + 6, search_box.w, std::min(pop_h, std::max(row_h + pad * 2, ui.height - search_box.bottom() - 16))};
+                    ui.set_popover(pop_r, [this, search_id, history_header, since = search_pop_since_](ui::Ui &u, Rect box) {
+                        auto &pp = u.painter();
+                        const auto &th = u.theme();
+                        const float in = u.progress(since, pace::steady);
+                        Fade fade(pp, in);
+                        box.y -= (1 - in) * 4;
+                        pp.shadow({box.x, box.y + 6, box.w, box.h}, th.radius + 2, 24, th.shadow.with_alpha(th.shadow.a * 0.78f));
+                        pp.rect(box, th.elevated, th.radius + 2, th.surface_edge(1.3f), 1);
+
+                        u.push_clip(box);
+                        constexpr float kpad = 6.f, krow_h = 34.f, khead_h = 28.f;
+                        float y = box.y + kpad;
+                        bool clear_all = false;
+                        std::optional<std::string> remove_term, pick_term;
+
+                        if (history_header) {
+                            const Rect hdr{box.x + kpad, y, box.w - kpad * 2, khead_h};
+                            const auto clear_lbl = lyren::tr("Clear");
+                            const float cw = u.button_width(clear_lbl);
+                            const Rect clear_r{hdr.right() - cw, hdr.y + (hdr.h - 22) / 2, cw, 22};
+                            const ui::Id clear_id = u.id("search-clear-history");
+                            if (u.button(clear_id, clear_r, clear_lbl, ui::ButtonKind::ghost)) {
+                                clear_all = true;
+                            }
+                            if (u.is_active(clear_id)) {
+                                u.keep_focus(search_id);
+                            }
+                            u.label({hdr.x + 8, hdr.y, std::max(0.f, clear_r.x - hdr.x - 12), hdr.h}, lyren::tr("Recent searches"),
+                                    th.style(type::micro, th.faint(), text::semibold));
+                            y += khead_h;
+                        }
+
+                        const auto &items = browser_.suggestions();
+                        u.push_id(u.id("search-suggest"));
+                        for (size_t i = 0; i < items.size(); ++i) {
+                            const Rect row{box.x + kpad, y, box.w - kpad * 2, krow_h};
+                            if (row.bottom() > box.bottom() - kpad + 1) {
+                                break;
+                            }
+                            const auto &entry = items[i];
+                            const ui::Id rid = u.id(static_cast<uint64_t>(i));
+                            const bool kb_sel = static_cast<int>(i) == search_sel_;
+                            const bool hovering_row = u.hovering(row);
+                            const float hot = u.anim(rid, hovering_row ? 1.f : 0.f, pace::quick);
+                            if (kb_sel || hot > 0) {
+                                pp.rect(row, th.fill(kb_sel ? 1.35f : hot), th.radius_s());
+                            }
+                            float right_pad = 10.f;
+                            if (entry.from_history) {
+                                right_pad = 34.f;
+                                if (hovering_row || kb_sel) {
+                                    const Rect del_r{row.right() - 28, row.y + (row.h - 24) / 2, 24, 24};
+                                    const ui::Id del_id = ui::sub_id(rid, 0xde);
+                                    const auto dit = u.interact(del_id, del_r);
+                                    if (dit.hovered) {
+                                        u.cursor = wl::Cursor::pointer;
+                                    }
+                                    if (dit.pressed) {
+                                        u.keep_focus(search_id);
+                                    }
+                                    const float dhot = u.anim(del_id, dit.hovered ? 1.f : 0.f, pace::quick);
+                                    if (dhot > 0) {
+                                        pp.rect(del_r, th.fill(1.2f * dhot), th.radius_s());
+                                    }
+                                    pp.icon("x", ui::center(del_r, 12, 12), th.text_dim.mix(th.text, dhot));
+                                    if (dit.clicked) {
+                                        remove_term = entry.text;
+                                    }
+                                }
+                            }
+                            const auto it = u.interact(rid, row);
+                            if (it.hovered) {
+                                u.cursor = wl::Cursor::pointer;
+                            }
+                            if (it.pressed) {
+                                u.keep_focus(search_id);
+                            }
+                            if (it.clicked) {
+                                pick_term = entry.text;
+                            }
+                            pp.icon(entry.from_history ? "history" : "search", {row.x + 10, row.y + (row.h - 14) / 2, 14, 14},
+                                    kb_sel ? th.accent : th.text_dim.mix(th.text, hot * 0.5f));
+                            u.label({row.x + 32, row.y, std::max(0.f, row.w - 32 - right_pad), row.h}, entry.text,
+                                    th.style(type::label, kb_sel ? th.text : th.text.with_alpha(0.92f), kb_sel ? text::medium : 0));
+                            y += krow_h;
+                        }
+                        u.pop_id();
+                        u.pop_clip();
+
+                        // Keep focus alive if the user clicks empty chrome inside the popover (e.g. its header).
+                        if (const auto bg = u.interact(u.id("search-pop-bg"), box); bg.pressed) {
+                            u.keep_focus(search_id);
+                        }
+                        if (clear_all) {
+                            browser_.clear_search_history();
+                            search_sel_ = -1;
+                            u.keep_focus(search_id);
+                        } else if (remove_term) {
+                            browser_.remove_search_history(*remove_term);
+                            search_sel_ = -1;
+                            u.keep_focus(search_id);
+                        } else if (pick_term) {
+                            browser_.query = std::move(*pick_term);
+                            browser_.search();
+                            u.focus = 0;
+                            search_sel_ = -1;
+                        }
+                    });
+                } else {
+                    search_was_open_ = false;
+                }
+            } else {
+                search_was_open_ = false;
+                search_sel_ = -1;
             }
         }
     }
@@ -132,6 +319,8 @@ namespace lyren {
                                                  {Page::profile, "user", lyren::tr("My profile")},
                                                  {Page::liked, "heart", lyren::tr("Liked songs")},
                                                  {Page::recent, "history", lyren::tr("Recently played")},
+                                                 {Page::stats, "bar-chart", lyren::tr("Listening stats")},
+                                                 {Page::pinned, "pin", lyren::tr("Pinned offline")},
                                                  {Page::cloud, "cloud", lyren::tr("My cloud")},
                                                  {Page::collection, "star", lyren::tr("My collection")},
                                                  {Page::dislikes, "thumbs-down", lyren::tr("Disliked")}});
@@ -139,7 +328,7 @@ namespace lyren {
         std::inplace_vector<Nav, entries.size()> nav;
         size_t mine = 0;
         for (size_t k = 0; k < entries.size(); ++k) {
-            if (browser_.supports(entries[k].page, browser_.active())) {
+            if (browser_.supports(entries[k].page, browser_.active(), browser_.active_key().instance)) {
                 nav.push_back(entries[k]);
                 mine += k < discover;
             }
@@ -172,7 +361,7 @@ namespace lyren {
         }
 
         const float content = item_y(lists + playlists.size()) + 8 + (playlists.empty() ? 36 : 0);
-        const float off = ui.begin_scroll(ui::sub_id(ui.id("sidebar"), std::to_underlying(browser_.active())), r, content);
+        const float off = ui.begin_scroll(ui::sub_id(ui.id("sidebar"), std::hash<std::string_view>{}(browser_.active_id())), r, content);
         const Rect row0{r.x + 8, 0, r.w - 16, item_h};
 
         // One highlight glides to the selected entry.

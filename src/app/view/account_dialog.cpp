@@ -60,17 +60,23 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         dialog_title(ui, r, lyren::tr("Accounts"), lyren::tr("Sign in to each platform to see its music"));
+        std::vector<const SourceEntry *> entries;
+        for (const auto &entry : env_.providers.entries()) {
+            if (entry.provider->capabilities.accounts) {
+                entries.push_back(&entry);
+            }
+        }
         constexpr float row_h = 64, step = 72;
         const Rect view{r.x, r.y + 70, r.w, r.h - 100};
-        const float off = ui.begin_scroll(ui.id("accounts-list"), view, step * static_cast<float>(platforms.size()) - (step - row_h));
-        for (size_t i = 0; i < platforms.size(); ++i) {
-            const auto &entry = platforms[i];
+        const float off = ui.begin_scroll(ui.id("accounts-list"), view, entries.empty() ? 0.f : step * static_cast<float>(entries.size()) - (step - row_h));
+        for (size_t i = 0; i < entries.size(); ++i) {
+            const auto &entry = *entries[i];
             const Rect row{r.x, view.y + static_cast<float>(i) * step - off, r.w, row_h};
             p.rect(row, t.fill(0.95f), t.radius);
             const Rect face{row.x + 14, row.y + 12, 40, 40};
-            const auto &account = library_.shelf(entry.source).account;
-            const auto &caps = provider(entry.source).capabilities;
-            const bool in = env_.signed_in(entry.source), qr = caps.qr_login, signer_only = accounts_.signer_connected(entry.source);
+            const auto &account = library_.shelf(entry.source, entry.instance).account;
+            const auto &caps = entry.provider->capabilities;
+            const bool in = env_.signed_in(entry.source, entry.instance), qr = caps.qr_login, signer_only = accounts_.signer_connected(entry.source);
             if (account) {
                 cover(ui, face, account->avatar, 20, "user");
             } else {

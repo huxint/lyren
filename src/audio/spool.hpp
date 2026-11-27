@@ -39,10 +39,15 @@ namespace lyren::audio {
 
         static void set_cache_limit(uint64_t bytes);
         static uint64_t cache_limit();
-        static uint64_t cache_usage(); // bytes currently used in the persistent audio cache directory
-        static uint64_t clear_cache(); // removes cached tracks on disk; returns freed bytes
+        static std::string cache_hash(std::string_view cache_key);
+        static void set_pinned_hashes(std::vector<std::string> hashes);
+        static bool is_hash_cached(std::string_view hash);
+        static uint64_t cache_usage();        // total bytes in persistent audio cache (pinned + unpinned)
+        static uint64_t pinned_cache_usage(); // bytes used by pinned cached tracks
+        static uint64_t clear_cache(bool include_pinned = false);
         static std::shared_ptr<Spool> file(const std::string &path);
-        static std::shared_ptr<Spool> url(net::Http &http, std::string url, std::string cache_key = {});
+        static std::shared_ptr<Spool> cached_file(std::string_view hash);
+        static std::shared_ptr<Spool> url(net::Http &http, std::string url, std::string cache_key = {}, std::move_only_function<void(bool ok)> on_complete = {});
         ~Spool();
 
         // Blocks until bytes at off are present. Returns 0 at the end, after close() or on failure.
@@ -85,6 +90,8 @@ namespace lyren::audio {
         uint64_t read_pos_ = 0;
         int retries_ = 0;
         long status_ = 0;
+        bool pinned_ = false;
+        std::move_only_function<void(bool ok)> on_complete_;
     };
 
     // Sequential cursor over a Spool for C decoder read/seek/tell callbacks.

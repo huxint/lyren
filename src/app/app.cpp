@@ -11,8 +11,9 @@
 #include <fstream>
 #include <utility>
 
-#include "core/log.hpp"
 #include "core/i18n.hpp"
+#include "core/log.hpp"
+#include "sys/paths.hpp"
 #include "wl/clipboard.hpp"
 #include "wl/input.hpp"
 
@@ -72,6 +73,7 @@ namespace lyren {
                [this] {
                    reload_config();
                }),
+      store_(paths::state_dir() / "lyren.db"),
       player_(loop, http_),
       ncm_(loop, http_),
       qq_(loop, http_),
@@ -91,6 +93,7 @@ namespace lyren {
                        .player = player_,
                        .providers = {ncm_, qq_, qishui_, kugou_, bodian_},
                        .images = images_,
+                       .store = &store_,
                        .config = config_.config,
                        .set_settings =
                            [this](std::span<const SettingChange> changes) {

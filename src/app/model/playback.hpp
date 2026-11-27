@@ -20,6 +20,7 @@ namespace lyren {
     // The queue and what plays from it: the transport, the current song's stream and lyrics, the listening history, and
     // what the desktop's media controls and the listener's account hear about it.
     class Library;
+    class Pins;
 
     class Playback {
     public:
@@ -38,6 +39,7 @@ namespace lyren {
 
         // Answers the desktop's media controls from now on. raise brings the window forward.
         void connect(Library &library);
+        void connect(Pins &pins);
         void connect(Bus &bus, std::move_only_function<void(std::string_view token)> raise);
         void save(SavedStateView &to);
         void config_changed();
@@ -179,8 +181,12 @@ namespace lyren {
         const LyricLine *line_at(const Track &track, double song_seconds) const;
 
         // What played on this device, newest first.
-        const std::vector<Track> &history(Source source) const {
-            return history_[static_cast<size_t>(source)];
+        const std::vector<Track> &history(Source source, std::string_view instance = {}) const {
+            if (auto it = history_.find(source_id(source, instance)); it != history_.end()) {
+                return it->second;
+            }
+            static const std::vector<Track> empty_history;
+            return empty_history;
         }
 
     private:
@@ -240,7 +246,7 @@ namespace lyren {
         uint64_t rng_ = 0x2545f4914f6cdd1dull;
 
         uint64_t play_gen_ = 0, queue_gen_ = 0;
-        std::array<uint64_t, platforms.size()> source_gen_{};
+        StringMap<uint64_t> source_gen_;
         uint64_t player_event_ = 0;
         State last_state_ = State::idle;
         bool want_play_ = false, fetching_ = false;
@@ -263,6 +269,8 @@ namespace lyren {
         double highlight_from_ = 0, highlight_to_ = 0; // the stream's chorus window, s in song time
         std::optional<Track> listen_;                  // the track whose listen is reported to the account
         double listen_started_ = 0;                    // cumulative output time at the start of this listen
+        std::optional<Track> local_listen_;            // local cross-platform stats tracking (independent of sign-in)
+        double local_listen_started_ = 0;
 
         std::vector<LyricLine> lyrics_;
         std::string lyrics_id_;
@@ -271,7 +279,8 @@ namespace lyren {
         uint64_t lyrics_serial_ = 0;
 
         std::vector<Track> recent_; // newest first, at most 200 across all platforms
-        std::array<std::vector<Track>, platforms.size()> history_;
+        StringMap<std::vector<Track>> history_;
+        Pins *pins_ = nullptr;
         std::unique_ptr<Mpris> mpris_;
     };
 

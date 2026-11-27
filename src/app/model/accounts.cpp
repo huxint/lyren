@@ -18,10 +18,13 @@ namespace lyren {
     : env_(env),
       library_(library),
       browser_(browser) {
-        for (const auto &entry : platforms) {
-            env_.provider(entry.source).on_session_changed([this, source = entry.source] {
-                const auto &shelf = library_.shelf(source);
-                const bool ended = !env_.signed_in(source);
+        for (const auto &entry : env_.providers.entries()) {
+            if (!entry.provider || !entry.provider->capabilities.accounts) {
+                continue;
+            }
+            entry.provider->on_session_changed([this, source = entry.source, inst = entry.instance] {
+                const auto &shelf = library_.shelf(source, inst);
+                const bool ended = !env_.signed_in(source, inst);
                 // The service ended the session: what the account showed goes with it.
                 if (ended && (shelf.account || shelf.preference_gen != 0)) {
                     if (shelf.account) {
@@ -44,8 +47,10 @@ namespace lyren {
     }
 
     Accounts::~Accounts() {
-        for (const auto &entry : platforms) {
-            env_.provider(entry.source).on_session_changed(nullptr);
+        for (const auto &entry : env_.providers.entries()) {
+            if (entry.provider && entry.provider->capabilities.accounts) {
+                entry.provider->on_session_changed(nullptr);
+            }
         }
         flush();
     }
@@ -61,8 +66,10 @@ namespace lyren {
         store_ = Store::unreadable;
         env_.notify(lyren::trf(connected ? "Could not save credentials: {}" : "Could not read saved credentials: {}", lyren::tr(saved.error())), "triangle-alert", true);
         if (!connected) {
-            for (const auto &entry : platforms) {
-                spawn(initialize(entry.source));
+            for (const auto &entry : env_.providers.entries()) {
+                if (entry.provider) {
+                    spawn(initialize(entry.source));
+                }
             }
         }
     }
@@ -70,12 +77,20 @@ namespace lyren {
     void Accounts::restore_sessions(creds::Credentials saved, std::optional<Source> connected) {
         credentials_ = std::move(saved);
         saved_json_ = creds::to_json(credentials_);
-        std::inplace_vector<Source, platforms.size()> initialize_sources;
-        for (const auto &entry : platforms) {
+        std::vector<Source> initialize_sources;
+        initialize_sources.reserve(env_.providers.size());
+        for (const auto &entry : env_.providers.entries()) {
+            if (!entry.provider) {
+                continue;
+            }
+            if (!entry.provider->capabilities.accounts) {
+                initialize_sources.push_back(entry.source);
+                continue;
+            }
             // On recovery, keep sign-ins made in this process and restore the other accounts before writing.
-            const bool live = entry.source == connected || env_.signed_in(entry.source) || signer_connected(entry.source);
+            const bool live = entry.source == connected || env_.signed_in(entry.source, entry.instance) || signer_connected(entry.source);
             if (!live) {
-                env_.provider(entry.source).session() = credentials_[std::string(entry.id)];
+                entry.provider->session() = credentials_[entry.id];
             }
             if (store_ == Store::loading || !live) {
                 initialize_sources.push_back(entry.source);
@@ -126,8 +141,10 @@ namespace lyren {
     }
 
     std::string Accounts::snapshot() {
-        for (const auto &entry : platforms) {
-            credentials_[std::string(entry.id)] = env_.provider(entry.source).session();
+        for (const auto &entry : env_.providers.entries()) {
+            if (entry.provider && entry.provider->capabilities.accounts) {
+                credentials_[entry.id] = entry.provider->session();
+            }
         }
         return creds::to_json(credentials_);
     }

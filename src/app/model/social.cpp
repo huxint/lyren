@@ -18,8 +18,8 @@ namespace lyren {
                 if (draft_.source == event.source) {
                     draft_ = {};
                 }
-                feeds_[static_cast<size_t>(event.source)].reset();
-                own_pages_[static_cast<size_t>(event.source)].reset();
+                feeds_.erase(source_id(event.source));
+                own_pages_.erase(source_id(event.source));
                 other_pages_.erase_if([&](const std::shared_ptr<Page> &page) {
                     return page->who.source == event.source;
                 });
@@ -45,8 +45,8 @@ namespace lyren {
 
     std::shared_ptr<Social::Page> Social::find_page(const Card &who, bool touch) {
         if (is_own(who)) {
-            auto &slot = own_pages_[static_cast<size_t>(who.source)];
-            return slot && slot->who.id == who.id ? slot : std::shared_ptr<Page>{};
+            auto it = own_pages_.find(source_id(who.source, who.instance));
+            return it != own_pages_.end() && it->second && it->second->who.id == who.id ? it->second : std::shared_ptr<Page>{};
         }
         auto *found = other_pages_.find(
             [&](const std::shared_ptr<Page> &page) {
@@ -99,7 +99,7 @@ namespace lyren {
         each_page([](const auto &) {});
         pages_.push_back(page);
         if (self) {
-            own_pages_[static_cast<size_t>(page->who.source)] = page;
+            own_pages_[source_id(page->who.source, page->who.instance)] = page;
         } else {
             other_pages_.erase_if([&](const std::shared_ptr<Page> &cached) {
                 return cached->who.source == page->who.source && cached->who.id == page->who.id;
@@ -332,7 +332,9 @@ namespace lyren {
                     update(page->posts);
                 }
             });
-            update(feeds_[static_cast<size_t>(source)]);
+            if (auto it = feeds_.find(source_id(source)); it != feeds_.end()) {
+                update(it->second);
+            }
         }
     }
 
@@ -374,7 +376,7 @@ namespace lyren {
     }
 
     std::shared_ptr<Social::Posts> Social::feed(Source source) {
-        auto &feed = feeds_[static_cast<size_t>(source)];
+        auto &feed = feeds_[source_id(source)];
         if (!feed) {
             feed = std::make_shared<Posts>();
         }
@@ -384,7 +386,7 @@ namespace lyren {
     void Social::reload_posts(const std::shared_ptr<Page> &page, bool feed) {
         const Source source = page->who.source;
         // The requests under way keep the list they were made for.
-        auto &list = feed ? feeds_[static_cast<size_t>(source)] : page->posts;
+        auto &list = feed ? feeds_[source_id(source, page->who.instance)] : page->posts;
         list = std::make_shared<Posts>();
         load_posts(list, source, feed ? std::string() : page->who.id);
         env_.redraw();
@@ -457,7 +459,9 @@ namespace lyren {
                     --page->info->posts;
                 }
             });
-            drop(self->feeds_[static_cast<size_t>(source)]);
+            if (auto it = self->feeds_.find(source_id(source)); it != self->feeds_.end()) {
+                drop(it->second);
+            }
             self->env_.redraw();
         }(this, source, std::move(post), ticket));
     }
@@ -526,8 +530,8 @@ namespace lyren {
                 }
             }(this, page, library_.shelf(source).account_gen));
         });
-        if (auto &feed = feeds_[static_cast<size_t>(source)]) {
-            feed = std::make_shared<Posts>();
+        if (auto it = feeds_.find(source_id(source)); it != feeds_.end() && it->second) {
+            it->second = std::make_shared<Posts>();
         }
         env_.redraw();
     }

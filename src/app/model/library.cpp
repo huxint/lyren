@@ -34,42 +34,46 @@ namespace lyren {
 
     Task<void> Library::load(Source source) {
         Provider &p = env_.provider(source);
-        if (!p.logged_in()) {
+        if (!env_.signed_in(source)) {
             co_return;
         }
         Shelf &lib = shelf(source);
         uint64_t gen = ++lib.gen;
         lib.error.clear();
-        auto a = co_await p.account();
-        if (gen != lib.gen) {
-            co_return;
-        }
-        if (!a) {
-            lib.error = a.error();
-            env_.notify(a.error(), "user", true);
-            if (!p.logged_in()) {
-                // The session turned out to be dead; whoever keeps the credentials hears of it.
-                emit({.kind = Event::Kind::signed_out, .source = source});
+        std::string uid;
+        if (p.capabilities.accounts) {
+            auto a = co_await p.account();
+            if (gen != lib.gen) {
+                co_return;
             }
-            co_return;
+            if (!a) {
+                lib.error = a.error();
+                env_.notify(a.error(), "user", true);
+                if (!p.logged_in()) {
+                    // The session turned out to be dead; whoever keeps the credentials hears of it.
+                    emit({.kind = Event::Kind::signed_out, .source = source});
+                }
+                co_return;
+            }
+            const bool account_changed = !lib.account || lib.account->id != a->id;
+            if (account_changed && lib.account) {
+                reset(source);
+                gen = lib.gen;
+            }
+            lib.account = *a;
+            uid = a->id;
+            env_.prefetch(a->avatar, 64);
+            if (account_changed) {
+                emit({.kind = Event::Kind::account, .source = source});
+            }
+            env_.redraw();
         }
-        const bool account_changed = !lib.account || lib.account->id != a->id;
-        if (account_changed && lib.account) {
-            reset(source);
-            gen = lib.gen;
-        }
-        lib.account = *a;
-        env_.prefetch(a->avatar, 64);
-        if (account_changed) {
-            emit({.kind = Event::Kind::account, .source = source});
-        }
-        env_.redraw();
         if (p.features.daily.playlists) {
             spawn(load_daily_lists(source));
         }
         if (p.capabilities.library) {
             const uint64_t revision = lib.preference_gen, playlist_gen = ++lib.playlist_gen;
-            auto playlists = co_await p.user_playlists(a->id);
+            auto playlists = co_await p.user_playlists(uid);
             if (gen != lib.gen) {
                 co_return;
             }
@@ -84,7 +88,7 @@ namespace lyren {
         }
         if (p.capabilities.likes) {
             const uint64_t revision = lib.preference_gen;
-            auto ids = co_await p.liked_ids(a->id);
+            auto ids = co_await p.liked_ids(uid);
             if (gen != lib.gen) {
                 co_return;
             }

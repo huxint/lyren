@@ -109,12 +109,16 @@ TEST_CASE("saved state view serializes queue and recent spans identically to own
 }
 
 TEST_CASE("saved state rejects unregistered platforms and modes") {
-    for (std::string_view text : {R"({"source":5})", R"({"queue":[{"source":5,"id":"1"}]})", R"({"recent":[{"source":5,"id":"1"}]})"}) {
+    for (std::string_view text : {R"({"source":7})", R"({"queue":[{"source":7,"id":"1"}]})", R"({"recent":[{"source":7,"id":"1"}]})"}) {
         CAPTURE(text);
         const auto state = parse_state(text);
         REQUIRE_FALSE(state);
         CHECK(state.error() == "Unknown platform in saved state");
     }
+    const auto sub = parse_state(R"({"source":6,"source_instance":"home"})");
+    REQUIRE(sub);
+    CHECK(sub->source == Source::subsonic);
+    CHECK(sub->source_instance == "home");
     CHECK(parse_state(R"({"mode":3})").error() == "Unknown playback mode in saved state");
 }
 

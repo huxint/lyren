@@ -817,6 +817,8 @@ namespace {
                     owned = std::move(p);
                     break;
                 }
+                default:
+                    co_return fail("Unsupported source");
             }
 
             const std::string_view cmd = args[0];

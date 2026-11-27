@@ -149,6 +149,15 @@ namespace lyren::ncm {
         struct DislikeReply {
             std::optional<NSong> data;
         };
+        struct SuggestMatch {
+            Str keyword;
+        };
+        struct SuggestResult {
+            std::optional<std::vector<SuggestMatch>> allMatch;
+        };
+        struct SuggestReply {
+            std::optional<SuggestResult> result;
+        };
         struct NHeartbeat {
             std::optional<NSong> songInfo;
         };
@@ -637,6 +646,22 @@ namespace lyren::ncm {
     Task<Result<void>> Netease::initialize() {
         client.ensure_fingerprint();
         co_return Result<void>{};
+    }
+
+    Task<Result<std::vector<std::string>>> Netease::search_suggest(std::string query) {
+        co_return parse<SuggestReply>(co_await client.call("/api/search/suggest/keyword", std::format(R"("s":{})", glz::write_json(glz::escape_bytes_t{query}).value())))
+            .transform([](SuggestReply r) {
+                std::vector<std::string> out;
+                if (r.result && r.result->allMatch) {
+                    out.reserve(r.result->allMatch->size());
+                    for (const auto &m : *r.result->allMatch) {
+                        if (m.keyword && !m.keyword->empty()) {
+                            out.push_back(*m.keyword);
+                        }
+                    }
+                }
+                return out;
+            });
     }
 
     Task<Result<Batch>> Netease::search(std::string query, SearchKind kind, int offset, int limit) {

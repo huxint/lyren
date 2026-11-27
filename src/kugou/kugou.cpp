@@ -484,6 +484,24 @@ namespace lyren::kugou {
         co_return status;
     }
 
+    Task<Result<std::vector<std::string>>> Kugou::search_suggest(std::string query) {
+        auto body = co_await ok(co_await client.send(
+            request("https://searchtip.kugou.com/getSearchTip", {{"MusicTipCount", "8"}, {"MVTipCount", "0"}, {"albumcount", "0"}, {"keyword", std::move(query)}})));
+        auto root = parse_json(body);
+        if (!root) {
+            co_return std::vector<std::string>{};
+        }
+        std::vector<std::string> out;
+        for (const auto &group : json::array(json::field(*root, "data"))) {
+            for (const auto &rec : json::array(json::field(group, "RecordDatas"))) {
+                if (auto hint = json::text(json::field(rec, "HintInfo")); !hint.empty()) {
+                    out.push_back(std::move(hint));
+                }
+            }
+        }
+        co_return out;
+    }
+
     Task<Result<Batch>> Kugou::search(std::string query, SearchKind kind, int offset, int limit) {
         if (!capabilities.supports_search(kind)) {
             co_return std::unexpected("Unsupported search category");

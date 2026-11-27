@@ -9,6 +9,7 @@
 #include "app/model/browser.hpp"
 #include "app/model/comments.hpp"
 #include "app/model/library.hpp"
+#include "app/model/pins.hpp"
 #include "app/model/playback.hpp"
 #include "app/model/social.hpp"
 #include "ui/ui.hpp"
@@ -35,17 +36,17 @@ namespace lyren {
         explicit Part(Shell &shell);
 
         Provider &provider() const {
-            return env_.provider(browser_.active());
+            return env_.provider(browser_.active(), browser_.active_key().instance);
         }
         template <class T>
         Provider &provider(const T &of) const {
             return env_.provider(of);
         }
         Library::Shelf &shelf() const {
-            return library_.shelf(browser_.active());
+            return library_.shelf(browser_.active(), browser_.active_key().instance);
         }
         bool signed_in() const {
-            return env_.signed_in(browser_.active());
+            return env_.signed_in(browser_.active(), browser_.active_key().instance);
         }
         // The id of something the page on show scrolls: each visit to a page starts at its top, and going back finds
         // the page where it was left.
@@ -73,6 +74,7 @@ namespace lyren {
         Shell &shell_;
         Env &env_;
         Images &images_;
+        Pins &pins_;
         Playback &playback_;
         Library &library_;
         Social &social_;

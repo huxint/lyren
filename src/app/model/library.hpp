@@ -118,15 +118,29 @@ namespace lyren {
             listeners_.push_back(std::move(listener));
         }
 
-        Shelf &shelf(Source source) {
-            return shelves_[static_cast<size_t>(source)];
+        Shelf &shelf(Source source, std::string_view instance = {}) {
+            return shelf(source_id(source, instance));
         }
-        const Shelf &shelf(Source source) const {
-            return shelves_[static_cast<size_t>(source)];
+        const Shelf &shelf(Source source, std::string_view instance = {}) const {
+            return shelf(source_id(source, instance));
+        }
+        Shelf &shelf(std::string_view id) {
+            auto it = shelves_.find(id);
+            if (it == shelves_.end()) {
+                it = shelves_.emplace(std::string(id), std::make_unique<Shelf>()).first;
+            }
+            return *it->second;
+        }
+        const Shelf &shelf(std::string_view id) const {
+            if (auto it = shelves_.find(id); it != shelves_.end()) {
+                return *it->second;
+            }
+            static const Shelf empty_shelf;
+            return empty_shelf;
         }
         // The listener card is the signed-in account's own.
         bool own(const Card &listener) const {
-            const auto &account = shelf(listener.source).account;
+            const auto &account = shelf(listener.source, listener.instance).account;
             return account && account->id == listener.id;
         }
 
@@ -212,7 +226,7 @@ namespace lyren {
         Task<void> fetch_releases(Source source, int tab, uint64_t gen, std::string category, int offset);
 
         Env &env_;
-        std::array<Shelf, platforms.size()> shelves_;
+        mutable StringMap<std::unique_ptr<Shelf>> shelves_;
         std::vector<std::move_only_function<void(const Event &)>> listeners_;
         std::optional<Source> pop_source_; // the song liked last, and when
         std::string pop_id_;

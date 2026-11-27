@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include "app/store.hpp"
 #include "core/loop.hpp"
 #include "media/provider.hpp"
 #include "net/http.hpp"
@@ -31,10 +32,14 @@ namespace lyren {
         std::move_only_function<double()> now;  // the UI clock, s
         // Optional cover-art prefetch hook provided by the UI layer (empty in headless tests).
         std::move_only_function<void(std::string_view url, uint32_t px, bool logical)> prefetch_image;
+        Store *store = nullptr; // incremental SQLite persistence (optional in isolated unit tests)
         std::vector<Notice> notices;
 
-        Provider &provider(Source source) const {
-            return providers[static_cast<size_t>(source)].get();
+        Provider &provider(Source source, std::string_view instance = {}) const {
+            return providers.get(source, instance);
+        }
+        Provider &provider(std::string_view id) const {
+            return providers.get(id);
         }
         // The platform a track, a card or anything else with a source comes from.
         template <class T>
@@ -42,10 +47,20 @@ namespace lyren {
                 { t.source } -> std::convertible_to<Source>;
             }
         Provider &provider(const T &t) const {
-            return provider(t.source);
+            if constexpr (requires {
+                              { t.instance } -> std::convertible_to<std::string_view>;
+                          }) {
+                return provider(t.source, t.instance);
+            } else {
+                return provider(t.source);
+            }
         }
-        bool signed_in(Source source) const {
-            return provider(source).logged_in();
+        bool has_account(Source source, std::string_view instance = {}) const {
+            return provider(source, instance).capabilities.accounts;
+        }
+        bool signed_in(Source source, std::string_view instance = {}) const {
+            const auto &p = provider(source, instance);
+            return !p.capabilities.accounts || p.logged_in();
         }
         void prefetch(std::string_view url, uint32_t px) {
             if (prefetch_image) {

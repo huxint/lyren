@@ -25,6 +25,8 @@ namespace lyren {
         settings,
         liked,
         recent,
+        stats,
+        pinned,
         cloud,
         collection,
         dislikes,
@@ -61,7 +63,11 @@ namespace lyren {
             std::string query;
             int tab = 0;
             uint64_t serial = 0;
-            std::array<std::array<Listing, 5>, platforms.size()> results;
+            StringMap<std::array<Listing, 5>> results;
+        };
+        struct Suggestion {
+            std::string text;
+            bool from_history = false;
         };
         struct Route {
             Page page = Page::recommend;
@@ -84,7 +90,8 @@ namespace lyren {
             std::vector<Track> of(const std::vector<Track> &tracks) const;
         };
 
-        Browser(Env &env, Library &library, Social &social, Source active);
+        Browser(Env &env, Library &library, Social &social, Source active, std::string instance = {});
+        ~Browser();
         Browser(const Browser &) = delete;
         Browser &operator=(const Browser &) = delete;
 
@@ -94,10 +101,16 @@ namespace lyren {
             return route_;
         }
         Source active() const {
+            return active_.source;
+        }
+        const SourceKey &active_key() const {
             return active_;
         }
+        std::string active_id() const {
+            return active_.id();
+        }
         Library::Shelf &shelf() {
-            return library_.shelf(active_);
+            return library_.shelf(active_.source, active_.instance);
         }
         bool can_go_back() const {
             return !history_.empty();
@@ -118,7 +131,7 @@ namespace lyren {
         double entered = -10, tab_since = -10;
         int direction = 1, tab_direction = 1;
 
-        bool supports(Page page, Source source) const;
+        bool supports(Page page, Source source, std::string_view instance = {}) const;
         static bool needs_login(Page page);
         void open(Page page);
         void open(Page page, const Card &card);
@@ -129,7 +142,7 @@ namespace lyren {
         bool open_own_profile(Source source);
         bool back();
         bool forward();
-        void switch_platform(Source source);
+        void switch_platform(Source source, std::string instance = {});
         // Loads what the page on show still lacks.
         void ensure();
         // Fills a platform's browse pages ahead of their first visit.
@@ -147,10 +160,17 @@ namespace lyren {
             return route_.search ? route_.search->serial : 0;
         }
         Listing &results(int tab) {
-            return route_.search ? route_.search->results[static_cast<size_t>(active_)][static_cast<size_t>(tab)] : empty_listing_;
+            return route_.search ? route_.search->results[active_.id()][static_cast<size_t>(tab)] : empty_listing_;
         }
         void search();
         void search_on(Source source, std::string term, int tab = 0);
+        // Search history and debounced live suggestions for the top search box.
+        void update_suggestions(std::string_view input);
+        const std::vector<Suggestion> &suggestions() const {
+            return suggestions_;
+        }
+        void remove_search_history(std::string_view term);
+        void clear_search_history();
         // Resolves an @mention on source: opens the matching listener profile if found, otherwise opens search.
         void open_mention(Source source, std::string name);
         void load_results(int tab, bool retry = false);
@@ -210,6 +230,10 @@ namespace lyren {
                     return {.needs_login = true, .listed = true, .built_in_slot = 3, .title = "My cloud", .subtitle = "Songs uploaded to your cloud"};
                 case Page::recent:
                     return {.title = "Recently played"};
+                case Page::stats:
+                    return {.title = "Listening stats", .subtitle = "Local listening across all platforms"};
+                case Page::pinned:
+                    return {.title = "Pinned offline", .subtitle = "Kept in local audio cache"};
                 case Page::fm:
                 case Page::collection:
                 case Page::dislikes:
@@ -230,7 +254,9 @@ namespace lyren {
         void on_library(const Library::Event &event);
         template <class F>
         void each_route(F &&visit);
-        Task<void> fetch_results(std::shared_ptr<Search> session, uint64_t serial, int tab, Source source, int offset);
+        Task<void> fetch_results(std::shared_ptr<Search> session, uint64_t serial, int tab, SourceKey source, int offset);
+        Task<void> fetch_suggestions(uint64_t gen, SourceKey source, std::string query);
+        void rebuild_suggestions(std::string_view input);
         Task<void> resolve_mention(uint64_t gen, Source source, std::string name);
         Task<void> load_artist(std::shared_ptr<Artist> page, Card card);
         Task<void> fetch_artist(std::shared_ptr<Artist> page, Card card, int tab, int offset);
@@ -239,16 +265,22 @@ namespace lyren {
         Env &env_;
         Library &library_;
         Social &social_;
-        Source active_;
+        SourceKey active_;
         Route route_;
         std::vector<Route> history_, forward_;
-        std::array<std::array<std::shared_ptr<TrackList>, 4>, platforms.size()> built_in_lists_{};
+        StringMap<std::array<std::shared_ptr<TrackList>, 4>> built_in_lists_;
         LruCache<CachedList, 16> list_cache_;
         LruCache<CachedArtist, 12> artist_cache_;
         uint64_t serial_ = 0, navigations_ = 0;
         std::string today_;
         int daily_slot_ = -1;
         uint64_t search_gen_ = 0, mention_gen_ = 0;
+        std::string suggest_input_;
+        uint64_t suggest_gen_ = 0, suggest_history_serial_ = 0;
+        SourceKey suggest_source_;
+        Loop::TimerId suggest_timer_ = 0;
+        std::vector<std::string> remote_suggestions_;
+        std::vector<Suggestion> suggestions_;
         std::string empty_query_;
         int empty_tab_ = 0;
         Listing empty_listing_;
