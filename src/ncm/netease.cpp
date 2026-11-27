@@ -13,7 +13,6 @@
 #include <source_location>
 #include <tuple>
 
-#include "core/crypto.hpp"
 #include "core/log.hpp"
 
 namespace lyren::ncm {
@@ -107,35 +106,6 @@ namespace lyren::ncm {
         struct LyricReply {
             std::optional<NLyric> lrc, tlyric, yrc, ytlrc;
         };
-
-        struct LyricTiming {
-            uint32_t duration_s = 0;
-            std::string lrc_md5;
-            std::vector<uint32_t> starts_ms;
-        };
-
-        // Measured line starts belong to one recording and one revision of its LRC.
-        void retime_lrc(const Track &track, std::string_view lrc, std::span<LyricLine> lines) {
-            static const auto timings = [] {
-                static constexpr auto data = std::to_array<unsigned char>({
-#embed "lyrics/netease-timing.json" suffix(, 0)
-                });
-                StringMap<LyricTiming> result;
-                static_cast<void>(glz::read_json(result, std::string_view{reinterpret_cast<const char *>(data.data()), data.size() - 1}));
-                return result;
-            }();
-            const auto it = timings.find(track.id);
-            if (it == timings.end()) {
-                return;
-            }
-            const auto &timing = it->second;
-            if ((track.duration && track.duration != timing.duration_s) || lines.size() != timing.starts_ms.size() || crypto::md5_hex(lrc) != timing.lrc_md5) {
-                return;
-            }
-            for (auto &&[line, ms] : std::views::zip(lines, timing.starts_ms)) {
-                line.time = ms / 1000.0;
-            }
-        }
 
         struct NTrackId {
             uint64_t id = 0;
@@ -759,17 +729,13 @@ namespace lyren::ncm {
 
     Task<Result<std::vector<LyricLine>>> Netease::lyrics(Track t) {
         co_return parse<LyricReply>(co_await client.call("/api/song/lyric/v1", std::format(R"("id":{},"cp":false,"tv":0,"lv":0,"rv":0,"kv":0,"yv":0,"ytv":0,"yrv":0)", t.id)))
-            .transform([&t](const LyricReply &r) {
+            .transform([](const LyricReply &r) {
                 auto text = [](const std::optional<NLyric> &l) -> std::string_view {
                     return l && l->lyric ? std::string_view{*l->lyric} : std::string_view{};
                 };
                 const auto lrc = text(r.lrc), yrc = text(r.yrc), ytlrc = text(r.ytlrc);
                 // The word-timed translation follows the yrc line starts.
-                auto lines = parse_lyrics(lrc, yrc.empty() || ytlrc.empty() ? text(r.tlyric) : ytlrc, yrc);
-                if (yrc.empty()) {
-                    retime_lrc(t, lrc, lines);
-                }
-                return lines;
+                return parse_lyrics(lrc, yrc.empty() || ytlrc.empty() ? text(r.tlyric) : ytlrc, yrc);
             });
     }
 
