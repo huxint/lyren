@@ -77,6 +77,16 @@ git config core.hooksPath .githooks
 
 提交钩子使用 `clang-format` 和 Python 3，按 [.clang-format](.clang-format) 格式化暂存的 C/C++ 文件。
 
+Pull Request 自动代码审查配置位于 [.github/workflows/code-review.yml](.github/workflows/code-review.yml)，由 `@deepseek-ai/dsh` 在只读 headless 模式下结合 [.github/CODE_REVIEW.md](.github/CODE_REVIEW.md) 与 [AGENTS.md](AGENTS.md) 执行。工作流在 PR 打开、更新或重新开启时触发，并支持通过 `workflow_dispatch` 手动触发。仓库中需配置以下项：
+
+| 类型 | 名称 | 说明 |
+|---|---|---|
+| Secret | `REVIEW_API_KEY` | 模型接口密钥；未配置或来自 fork 的 PR 会自动跳过 |
+| Variable | `REVIEW_MODEL` | 审查使用的模型名 |
+| Variable | `REVIEW_API_BASE_URL` | 可选，接口基础地址 |
+| Variable | `REVIEW_API_FORMAT` | 可选，接口协议：`gemini`（默认）、`openai` 或 `llm-pi-ai` 支持的协议名 |
+| Variable | `DSH_VERSION` | 可选，覆盖 `@deepseek-ai/dsh` 版本 |
+
 ## 项目结构
 
 | 目录 | 职责 |

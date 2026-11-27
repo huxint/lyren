@@ -1,0 +1,50 @@
+- id: llm-pi-ai
+  config:
+    providers:
+      review:
+        displayName: Review
+        api: !!js >-
+          ({ gemini: 'google-generative-ai', openai: 'openai-completions' }[
+            (process.env.REVIEW_API_FORMAT || 'gemini').trim().toLowerCase()
+          ] || process.env.REVIEW_API_FORMAT.trim())
+        baseURL: !!js >-
+          (() => {
+            const fmt = (process.env.REVIEW_API_FORMAT || 'gemini').trim().toLowerCase();
+            const raw = (process.env.REVIEW_API_BASE_URL || '').trim().replace(/\/+$/, '');
+            const isGemini = fmt === 'gemini' || fmt === 'google-generative-ai';
+            if (!raw) {
+              return isGemini
+                ? 'https://generativelanguage.googleapis.com/v1beta'
+                : 'https://api.openai.com/v1';
+            }
+            if (isGemini && !/\/v1(beta)?$/.test(raw)) {
+              return raw + '/v1beta';
+            }
+            return raw;
+          })()
+        apiKeyEnv: REVIEW_API_KEY
+        models:
+          - id: !!js (process.env.REVIEW_MODEL || '').trim()
+            name: !!js (process.env.REVIEW_MODEL || '').trim()
+- id: agent-default-model
+  config:
+    provider: review
+    model: !!js (process.env.REVIEW_MODEL || '').trim()
+- id: session-title-llm
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-agent-team
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-workflow
+  disabled: true
