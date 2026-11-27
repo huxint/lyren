@@ -97,7 +97,8 @@ namespace lyren {
                 playlist_deleted, // a playlist deletion was confirmed by the service
                 tracks,           // a playlist's songs changed: fresh is what it holds now, requested what was asked
                 tracks_failed,    // a playlist's songs may have changed, and reading them back failed
-                radio_ready       // the next radio songs arrived while waiting at the end of a batch
+                radio_ready,      // the next radio songs arrived while waiting at the end of a batch
+                radio_exhausted   // the requested batch failed or contained no more songs
             };
             Kind kind;
             Source source;

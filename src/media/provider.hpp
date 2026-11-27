@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -98,6 +99,8 @@ namespace lyren {
         virtual Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) = 0;
         virtual Task<Result<Stream>> stream(Track track, Quality quality) = 0;
         virtual Task<Result<std::vector<LyricLine>>> lyrics(Track track) = 0;
+        // A local timed LRC for this platform and track takes precedence over the service's lyrics.
+        Task<Result<std::vector<LyricLine>>> playback_lyrics(Track track, std::filesystem::path lyric_dir);
         // The tracks of a playlist, an album, or an artist's top songs.
         virtual Task<Result<std::vector<Track>>> tracks(Card card) = 0;
 

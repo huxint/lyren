@@ -1007,6 +1007,7 @@ namespace lyren {
             }
             case Kind::account:
             case Kind::radio_ready:
+            case Kind::radio_exhausted:
                 break;
         }
         env_.redraw();

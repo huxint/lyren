@@ -349,7 +349,8 @@ namespace lyren::audio {
         double delay = static_cast<double>(std::max<int64_t>(t.delay, 0)) * t.rate.num * rate / t.rate.denom;
         double since =
             active_ && t.now ? std::clamp(static_cast<double>(static_cast<int64_t>(now - static_cast<uint64_t>(t.now))) * 1e-9 * rate, 0.0, static_cast<double>(t.size)) : 0;
-        return static_cast<uint64_t>(std::max(0.0, played - static_cast<double>(t.queued) - static_cast<double>(t.buffered) - delay + since));
+        const double audible = played - static_cast<double>(t.queued) - static_cast<double>(t.buffered) - delay + since;
+        return static_cast<uint64_t>(std::max(static_cast<double>(base_.load()), std::min(audible, played)));
     }
 
 } // namespace lyren::audio

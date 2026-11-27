@@ -56,7 +56,7 @@ namespace lyren::audio {
             gain_.store(linear, std::memory_order_relaxed);
         } // loudness, from the next cycle
         void set_name(std::string name); // media.name, what mixers show for the stream
-        uint64_t position();             // frames played out of the speaker
+        uint64_t position();             // frames played out of the speaker, also used by the decoder for seek recovery
         size_t queued() const;           // frames in the ring
         // Cumulative audio sent to PipeWire; seeks and silence inserted during underruns do not count.
         double played_seconds() const {

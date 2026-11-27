@@ -372,6 +372,35 @@ TEST_CASE("switching profile tabs while scrolled restores the section top") {
     CHECK(scene.ui.scroll_offset(scroll) <= 220.f);
 }
 
+TEST_CASE("playlist and album comment buttons switch subjects and close the active panel") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+    scene.service.on_album = [](std::string) -> Task<Result<AlbumInfo>> {
+        co_return AlbumInfo{.thread = "thread-id", .tracks = {test::Service::song(0)}};
+    };
+    auto click_comments = [&] {
+        const auto *button = scene.find("message-square", true);
+        REQUIRE(button);
+        scene.click(*button);
+    };
+    auto &shell = scene.shell;
+    shell.browser.open(Card{.id = "thread-id", .title = "Playlist"});
+    scene.draw();
+    click_comments();
+    CHECK(shell.comments_open(Source::netease, Subject::playlist, "thread-id"));
+    click_comments();
+    CHECK(shell.panel.kind() == SidePanel::Kind::none);
+    click_comments();
+
+    shell.browser.open(Card{.kind = CardKind::album, .id = "album", .title = "Album"});
+    scene.draw();
+    REQUIRE(shell.comments_open(Source::netease, Subject::playlist, "thread-id"));
+    click_comments();
+    CHECK(shell.comments_open(Source::netease, Subject::album, "thread-id"));
+    click_comments();
+    CHECK(shell.panel.kind() == SidePanel::Kind::none);
+}
+
 TEST_CASE("comments docked composer expands, cancels reply safely, posts, and isolates visits") {
     gfx::select_driver(GpuChoice::integrated);
     Scene scene;

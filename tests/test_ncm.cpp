@@ -25,6 +25,25 @@ TEST_CASE("weapi matches independent AES and RSA vectors") {
                            "f4cafbb0cf5a66731a3f1776c75ca35d0062dac70a3e33245afabcf47938487");
 }
 
+TEST_CASE("an updated NetEase lyric keeps its own cues even when the recording and line count match an older correction") {
+    using namespace lyren;
+    std::string lrc;
+    for (int i = 0; i < 42; ++i) {
+        lrc += std::format("[00:{:02}.00]Revised line\\n", i);
+    }
+    test::Server server([&](std::string_view) {
+        return test::ok(R"({"code":200,"lrc":{"lyric":")" + lrc + R"("}})");
+    });
+    Loop loop;
+    net::Http http;
+    Netease provider(loop, http, server.url());
+    auto lines = test::run(loop, provider.lyrics({.id = "3416735593", .duration = 225}));
+    REQUIRE(lines);
+    REQUIRE(lines->size() == 42);
+    CHECK(lines->front().time == 0);
+    CHECK(lines->back().time == 41);
+}
+
 TEST_CASE("NetEase new songs preserve legacy metadata and exact resource IDs") {
     auto songs = parse_new_songs({.body = R"({"code":200,"data":[{
         "id":9007199254740993,"name":"新歌","duration":215900,"fee":1,"transNames":["译名"],

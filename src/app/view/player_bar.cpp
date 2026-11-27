@@ -283,14 +283,9 @@ namespace lyren {
         ui::Enabled reachable(ui, shown >= 0.9f, 1);
         x += 8 * (1 - shown);
         if (provider(*track).capabilities.comments[0]) {
-            const auto &thread = comments_.thread();
-            const bool on = shell_.panel.kind() == SidePanel::Kind::comments && thread.follows && thread.is(track->source, Subject::song, track->id);
+            const bool on = shell_.comments_open(track->source, Subject::song, track->id, true);
             if (ui.icon_button(ui.id("comments"), {x - 32, cy - 16, 32, 32}, "message-square", 17, on, lyren::tr("Comments"))) {
-                if (on) {
-                    shell_.panel.show(SidePanel::Kind::none);
-                } else {
-                    shell_.open_comments(track->source, Subject::song, track->id, track->title + " · " + track->artist, track->cover, true);
-                }
+                shell_.toggle_comments(track->source, Subject::song, track->id, track->title + " · " + track->artist, track->cover, true);
             }
             x -= step;
         }

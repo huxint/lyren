@@ -146,6 +146,19 @@ namespace lyren {
         panel.show(SidePanel::Kind::comments);
     }
 
+    bool Shell::comments_open(Source source, Subject subject, std::string_view id, bool follows) const {
+        const auto &thread = comments.thread();
+        return panel.kind() == SidePanel::Kind::comments && thread.follows == follows && thread.is(source, subject, id);
+    }
+
+    void Shell::toggle_comments(Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows) {
+        if (comments_open(source, subject, id, follows)) {
+            panel.show(SidePanel::Kind::none);
+        } else {
+            open_comments(source, subject, std::move(id), std::move(title), std::move(cover), follows);
+        }
+    }
+
     void Shell::sync_stage_comments() {
         const auto &thread = comments.thread();
         if (const Track *track = playback.current(); track && stage.open() && env.provider(*track).capabilities.comments[0] &&

@@ -126,7 +126,7 @@ namespace lyren {
         if (!tr || !thread().is(tr->source, Subject::song, tr->id)) {
             return nullptr;
         }
-        return playback_.line_at(*tr, playback_.song_time() + 0.2);
+        return playback_.line_at(*tr, playback_.song_time());
     }
 
     float CommentsView::header(ui::Ui &ui, Rect r, bool compact) {

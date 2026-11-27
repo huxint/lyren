@@ -1,10 +1,10 @@
 #pragma once
 #include <array>
+#include <inplace_vector>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -169,8 +169,8 @@ namespace lyren {
 
         void set_current(int i, bool replacing_queue = false);
         void reset_shuffle(bool clear_failures = true);
-        void stop_skip_run();
-        void replace(const std::vector<Track> &list, int i);
+        void stop_skip_run(std::string_view reason = {});
+        void replace(const std::vector<Track> &list, int i, bool clear_failures = true);
         void start(double at = 0, bool play = true, int direction = 1);
         void step(int delta, bool automatic);
         // Stops the output and forgets the stream; the song stays current.
@@ -216,11 +216,12 @@ namespace lyren {
         State last_state_ = State::idle;
         bool want_play_ = false, fetching_ = false;
         bool retried_ = false, counted_ = false;
-        size_t failures_ = 0;
-        std::unordered_set<int> failed_;          // queue indices that already failed in this skip run
-        int skip_direction_ = 1;                  // keep searching in the requested direction until a track starts
-        double resume_at_ = 0, last_pos_ = 0;     // nonnegative seconds within the current file
-        std::optional<double> pending_song_seek_; // nonnegative song seconds, only while fetching the stream
+        static constexpr size_t max_failures = 5;
+        size_t failures_ = 0;                           // consecutive failures, including across radio batches
+        std::inplace_vector<int, max_failures> failed_; // failed indices in the current queue
+        int skip_direction_ = 1;                        // keep searching in the requested direction until a track starts
+        double resume_at_ = 0, last_pos_ = 0;           // nonnegative seconds within the current file
+        std::optional<double> pending_song_seek_;       // nonnegative song seconds, only while fetching the stream
         float volume_ = 0.7f;
         bool muted_ = false;
 

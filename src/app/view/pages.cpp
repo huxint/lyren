@@ -656,7 +656,7 @@ namespace lyren {
         }
         lib.radio_pos = std::min(lib.radio_pos, static_cast<int>(lib.radio.size()) - 1);
         const Track &track = lib.radio[static_cast<size_t>(lib.radio_pos)];
-        const bool on_air = playback_.is_current(track);
+        const bool on_air = playback_.radio(browser_.active()) && playback_.is_current(track);
         const bool active = on_air && playback_.playing();
         const float size = std::clamp(std::min(r.w * 0.36f, below.h - 236), 160.f, 320.f);
         const bool has_next = static_cast<size_t>(lib.radio_pos + 1) < lib.radio.size() && below.h >= size + 230;
@@ -666,21 +666,12 @@ namespace lyren {
         const Rect cov = ui::center({col.x, col.y, size, size}, size * resting, size * resting);
 
         cover(ui, cov, track.cover, t.radius_l());
-        {
-            const auto art_it = ui.interact(ui.id("fm-cover"), cov);
-            if (art_it.hovered) {
-                ui.cursor = wl::Cursor::pointer;
-            }
-            if (art_it.clicked) {
-                if (on_air) {
-                    playback_.toggle();
-                } else {
-                    lib.radio_pending = false;
-                    playback_.play_radio(browser_.active(), lib.radio, lib.radio_pos);
-                }
-            } else if (art_it.right_clicked) {
-                shell_.tracks.menu(ui, art_it.px, art_it.py, lib.radio, lib.radio_pos);
-            }
+        const auto art_it = ui.interact(ui.id("fm-cover"), cov);
+        if (art_it.hovered) {
+            ui.cursor = wl::Cursor::pointer;
+        }
+        if (art_it.right_clicked) {
+            shell_.tracks.menu(ui, art_it.px, art_it.py, lib.radio, lib.radio_pos);
         }
 
         const float text_w = std::min(r.w - 64, size + 220);
@@ -693,15 +684,12 @@ namespace lyren {
         const bool can_dislike = provider().capabilities.radio_dislike;
         const bool can_like = provider(track).capabilities.likes;
         // Centered transport row: optional dislike + like on the left of play, skip-forward on the right.
-        auto next = [&](bool play) {
+        auto next = [&] {
             const Source source = browser_.active();
-            const bool playing = play || playback_.radio(source);
-            if (library_.advance_radio(source)) {
-                if (playing) {
-                    playback_.play_radio(source, lib.radio, lib.radio_pos);
-                }
-            } else if (playing) {
-                playback_.stop();
+            if (playback_.radio(source)) {
+                playback_.skip(1);
+            } else {
+                library_.advance_radio(source);
             }
         };
         const Rect play_r{cx - 24, by, 48, 48};
@@ -712,28 +700,30 @@ namespace lyren {
             const float dx = can_like ? play_r.x - 104 : play_r.x - 52;
             if (ui.icon_button(ui.id("fm-trash"), {dx, by + 4, 40, 40}, "thumbs-down", 19, false, lyren::tr("Not interested"))) {
                 library_.dislike_radio(track);
-                next(false);
+                next();
                 return;
             }
         }
-        if (play_morph_button(ui, ui.id("fm-play"), play_r, active, 18, true)) {
+        const bool play_clicked = play_morph_button(ui, ui.id("fm-play"), play_r, active, 18, true);
+        const Rect next_r{play_r.right() + 12, by + 4, 40, 40};
+        if (lib.radio_pending && lib.radio_loading) {
+            ui.spinner(ui::center(next_r, 18, 18), t.text_dim, 2);
+        } else if (ui.icon_button(ui.id("fm-next"), next_r, "skip-forward", 19, false, lyren::tr("Next"))) {
+            next();
+            return;
+        }
+        if (has_next) {
+            const Track &upcoming = lib.radio[static_cast<size_t>(lib.radio_pos + 1)];
+            ui.label({tx, play_r.bottom() + 20, text_w, 18}, std::format("{} · {} — {}", lyren::tr("Up next"), upcoming.title, upcoming.artist), t.style(type::caption, t.faint()),
+                     Align::center);
+        }
+        if (play_clicked || art_it.clicked) {
             if (on_air) {
                 playback_.toggle();
             } else {
                 lib.radio_pending = false;
                 playback_.play_radio(browser_.active(), lib.radio, lib.radio_pos);
             }
-        }
-        const Rect next_r{play_r.right() + 12, by + 4, 40, 40};
-        if (lib.radio_pending && lib.radio_loading) {
-            ui.spinner(ui::center(next_r, 18, 18), t.text_dim, 2);
-        } else if (ui.icon_button(ui.id("fm-next"), next_r, "skip-forward", 19, false, lyren::tr("Next"))) {
-            next(on_air);
-        }
-        if (has_next) {
-            const Track &upcoming = lib.radio[static_cast<size_t>(lib.radio_pos + 1)];
-            ui.label({tx, play_r.bottom() + 20, text_w, 18}, std::format("{} · {} — {}", lyren::tr("Up next"), upcoming.title, upcoming.artist), t.style(type::caption, t.faint()),
-                     Align::center);
         }
     }
 
@@ -1264,10 +1254,15 @@ namespace lyren {
     void Pages::list_actions(ui::Ui &ui, float x, float y, float height, bool compact) {
         const Card &c = browser_.route().card;
         const float gap = compact ? 8.f : 10.f;
-        auto square = [&](std::string_view id, std::string_view icon, std::string_view tip) {
-            const bool clicked = ui.button(ui.id(id), {x, y, height, height}, "", ui::ButtonKind::secondary, icon, tip);
+        auto square = [&](std::string_view id, std::string_view icon, std::string_view tip, bool active = false) {
+            const bool clicked = ui.button(ui.id(id), {x, y, height, height}, "", active ? ui::ButtonKind::tonal : ui::ButtonKind::secondary, icon, tip);
             x += height + gap;
             return clicked;
+        };
+        auto comments = [&](std::string_view id, Subject subject, const std::string &thread) {
+            if (square(id, "message-square", lyren::tr("Comments"), shell_.comments_open(c.source, subject, thread))) {
+                shell_.toggle_comments(c.source, subject, thread, c.title, c.cover);
+            }
         };
         auto labelled = [&](std::string_view id, std::string_view label, std::string_view icon, float w, ui::ButtonKind kind = ui::ButtonKind::secondary) {
             const float bw = compact ? height : w;
@@ -1282,8 +1277,8 @@ namespace lyren {
             if (provider(c).capabilities.collect_albums) {
                 x += collection_button(ui, x, y, height, compact) + gap;
             }
-            if (provider(c).capabilities.comments[1] && square("album-comments", "message-square", lyren::tr("Comments"))) {
-                shell_.open_comments(c.source, Subject::album, browser_.route().list->album.thread, c.title, c.cover);
+            if (provider(c).capabilities.comments[1]) {
+                comments("album-comments", Subject::album, browser_.route().list->album.thread);
             }
         } else if (browser_.route().page == Page::radar) {
             if (browser_.route().list && !browser_.route().list->loading && square("radar-refresh", "refresh-cw", lyren::tr("Refresh"))) {
@@ -1332,8 +1327,8 @@ namespace lyren {
                     library_.toggle_collect_playlist(c);
                 }
             }
-            if (provider(c).capabilities.comments[2] && c.commentable && square("playlist-comments", "message-square", lyren::tr("Comments"))) {
-                shell_.open_comments(c.source, Subject::playlist, c.thread.empty() ? c.id : c.thread, c.title, c.cover);
+            if (provider(c).capabilities.comments[2] && c.commentable) {
+                comments("playlist-comments", Subject::playlist, c.thread.empty() ? c.id : c.thread);
             }
             if ((!c.owned || !provider(c).capabilities.playlist_edit) && browser_.route().list && !browser_.route().list->loading &&
                 square("playlist-refresh", "refresh-cw", lyren::tr("Refresh"))) {

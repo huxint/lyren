@@ -325,7 +325,7 @@ namespace {
                 co_return std::unexpected("Expected lyrics <id>");
             }
             Track track = resolve_track ? co_await ok(co_await resolve_track(args[0])) : Track{.id = args[0], .source = source};
-            auto r = co_await ok(co_await p.lyrics(std::move(track)));
+            auto r = co_await ok(co_await p.playback_lyrics(std::move(track), paths::config_dir() / "lyrics"));
             for (const auto &l : r) {
                 std::println("{:7.3f}  {}{}{}{}", l.time, l.text, l.translation.empty() ? "" : "  /  ", l.translation,
                              l.words.empty() ? "" : std::format("  ({} words)", l.words.size()));

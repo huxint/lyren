@@ -34,7 +34,8 @@ namespace lyren::audio {
         Player(const Player &) = delete;
         Player &operator=(const Player &) = delete;
 
-        std::move_only_function<void()> on_change; // state, duration, volume or error changed
+        std::move_only_function<void()> on_change;       // state, duration, volume or error changed
+        std::move_only_function<void(double)> on_seeked; // confirmed file position, in seconds
 
         void open(std::shared_ptr<Spool> spool, bool play = true, std::optional<crypto::Aes128Key> key = {});
         void open_url(std::string url, bool play = true, std::optional<crypto::Aes128Key> key = {}) {
@@ -116,7 +117,6 @@ namespace lyren::audio {
         uint64_t gen_ = 0, seek_seq_ = 0;
         State state_ = State::idle;
         bool want_play_ = false;
-        std::optional<double> pending_seek_;
         double duration_ = 0, last_pos_ = 0;
         float volume_ = 1;
         Format format_;

@@ -662,12 +662,23 @@ namespace lyren::kugou {
         if (candidates.empty()) {
             co_return std::vector<LyricLine>{};
         }
-        const auto &candidate = candidates.front();
-        const auto format = count(field(candidate, "krctype")) == 1 && count(field(candidate, "contenttype")) != 1 ? "krc" : "lrc";
-        Params download{{"ver", "1"}, {"client", "pc"}, {"id", text(candidate, "id")}, {"accesskey", text(candidate, "accesskey")}, {"fmt", format}, {"charset", "utf8"}};
-        if (download.at("id").empty() || download.at("accesskey").empty()) {
+        auto available = candidates | std::views::filter([](const Value &candidate) {
+                             return !text(candidate, "id").empty() && !text(candidate, "accesskey").empty();
+                         });
+        // For the same song and singer, prefer the recording closest in length. Keep service order when metadata cannot distinguish them.
+        auto rank = [&](const Value &candidate) {
+            const bool same_song = !track.title.empty() && !track.artist.empty() && json::text_view(field(candidate, "song")) == track.title &&
+                                   json::text_view(field(candidate, "singer")) == track.artist;
+            const int ms = count(field(candidate, "duration"));
+            const int64_t distance = same_song && ms && track.duration ? std::abs(static_cast<int64_t>(ms / 1000) - track.duration) : INT64_MAX;
+            return std::pair{!same_song, distance};
+        };
+        const auto candidate = std::ranges::min_element(available, {}, rank);
+        if (candidate == available.end()) {
             co_return std::unexpected("KuGou Music returned an invalid lyric candidate");
         }
+        const auto format = count(field(*candidate, "krctype")) == 1 && count(field(*candidate, "contenttype")) != 1 ? "krc" : "lrc";
+        Params download{{"ver", "1"}, {"client", "pc"}, {"id", text(*candidate, "id")}, {"accesskey", text(*candidate, "accesskey")}, {"fmt", format}, {"charset", "utf8"}};
         co_return parse_lyric_download(co_await ok(co_await client.send(request("http://lyrics.kugou.com/download", std::move(download), {}, {}, lyric_headers()))));
     }
 

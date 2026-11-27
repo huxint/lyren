@@ -56,6 +56,9 @@ namespace lyren {
         Thread &thread() {
             return thread_;
         }
+        const Thread &thread() const {
+            return thread_;
+        }
         // Points the thread at something and loads its first page. The same thing again only retries a failed start.
         void open(Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows);
         void load(int tab);

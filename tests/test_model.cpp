@@ -1,12 +1,15 @@
 #include <doctest/doctest.h>
 
+#include <fstream>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "app/env.hpp"
 #include "async.hpp"
 #include "service.hpp"
+#include "temp_dir.hpp"
 #include "app/model/browser.hpp"
 #include "app/model/fetch.hpp"
 #include "app/model/library.hpp"
@@ -204,6 +207,35 @@ TEST_CASE("Library optimistic likes roll back on failure and reconcile with serv
     CHECK_FALSE(lib.liked(t));
 }
 
+TEST_CASE("a local timed lyric is available offline only for its own platform and track") {
+    struct Service : test::Service {
+        int requests = 0;
+        Task<Result<std::vector<LyricLine>>> lyrics(Track) override {
+            ++requests;
+            co_return std::unexpected("Offline");
+        }
+    } service;
+    Loop loop;
+    test::TempDir dir;
+    std::filesystem::create_directory(dir.path / "netease");
+    const auto path = dir.path / "netease" / "42.lrc";
+    std::ofstream(path) << "\xEF\xBB\xBF[00:01.00]first\n[01:05.22]next";
+    Track track{.id = "42"};
+    const auto lines = test::run(loop, service.playback_lyrics(track, dir.path));
+    REQUIRE(lines);
+    REQUIRE(lines->size() == 2);
+    CHECK(lyric_at(*lines, 59.04) == 0);
+    CHECK(lyric_at(*lines, 65.22) == 1);
+    CHECK(service.requests == 0);
+
+    track.source = Source::qq;
+    CHECK_FALSE(test::run(loop, service.playback_lyrics(track, dir.path)));
+    std::ofstream(path) << "[ar:Singer]\nno time cues";
+    track.source = Source::netease;
+    CHECK_FALSE(test::run(loop, service.playback_lyrics(track, dir.path)));
+    CHECK(service.requests == 2);
+}
+
 TEST_CASE("Playback queue edits and skip-all-failed stop cleanly") {
     ModelRig rig;
     audio::Player player(rig.loop, rig.http);
@@ -230,6 +262,9 @@ TEST_CASE("Playback queue edits and skip-all-failed stop cleanly") {
     }
     CHECK(attempts == std::vector<std::string>{"a", "b", "c"});
     CHECK_FALSE(playback.playing());
+    REQUIRE_FALSE(rig.env.notices.empty());
+    CHECK(rig.env.notices.back().text.contains(trf("Playback stopped after {} unavailable songs", 3)));
+    CHECK(rig.env.notices.back().text.contains("geo-blocked"));
 
     // Queue manipulation: play_next, remove before/current, clear.
     playback.play_next(make_track("d"));
@@ -326,9 +361,9 @@ TEST_CASE("shuffle skips unplayable tracks without repeating failed picks") {
     SavedState saved;
     Playback playback(rig.env, player, true, saved);
     std::vector<Track> tracks;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 5; ++i) {
         Track t = test::Service::song(i);
-        t.id = i == 5 ? "playable" : std::format("bad-{}", i);
+        t.id = i == 3 ? "playable" : std::format("bad-{}", i);
         tracks.push_back(std::move(t));
     }
     std::vector<std::string> attempted;
@@ -351,6 +386,86 @@ TEST_CASE("shuffle skips unplayable tracks without repeating failed picks") {
     REQUIRE(pending.waiter);
     playback.stop();
     pending.release();
+}
+
+TEST_CASE("a large queue stops after five consecutive failures and a manual skip starts a fresh run") {
+    ModelRig rig;
+    audio::Player player(rig.loop, rig.http);
+    SavedState saved;
+    Playback playback(rig.env, player, true, saved);
+    std::vector<Track> tracks;
+    for (int i = 0; i < 40; ++i) {
+        tracks.push_back(test::Service::song(i));
+    }
+    int attempts = 0;
+    rig.service.on_stream = [&](Track, Quality) -> Task<Result<Stream>> {
+        ++attempts;
+        co_return std::unexpected("Unavailable");
+    };
+
+    playback.play(tracks, 10);
+    CHECK(attempts == 5);
+    CHECK(playback.index() == 14);
+    CHECK_FALSE(playback.playing());
+    playback.skip(-1);
+    CHECK(attempts == 10);
+    CHECK(playback.index() == 9);
+    CHECK_FALSE(playback.playing());
+}
+
+TEST_CASE("radio bounds consecutive skipped previews across asynchronous batches") {
+    ModelRig rig;
+    rig.config.playback.trial = TrialMode::skip;
+    audio::Player player(rig.loop, rig.http);
+    SavedState saved;
+    Playback playback(rig.env, player, true, saved);
+    Library library(rig.env);
+    playback.connect(library);
+    int fm_calls = 0, attempts = 0;
+    bool empty = false;
+    test::Gate next_batch;
+    rig.service.on_fm = [&]() -> Task<Result<std::vector<Track>>> {
+        if (++fm_calls == 1) {
+            co_return std::vector{test::Service::song(0), test::Service::song(1)};
+        }
+        co_await next_batch;
+        if (empty) {
+            co_return std::vector<Track>{};
+        }
+        co_return std::vector{test::Service::song(2), test::Service::song(3), test::Service::song(4)};
+    };
+    rig.service.on_stream = [&](Track, Quality) -> Task<Result<Stream>> {
+        ++attempts;
+        co_return Stream{.trial = true};
+    };
+
+    constexpr auto source = Source::netease;
+    spawn(library.load_radio(source));
+    const auto &shelf = library.shelf(source);
+    playback.play_radio(source, shelf.radio, 0);
+    REQUIRE(attempts == 2);
+    REQUIRE(shelf.radio_pending);
+    SUBCASE("the next batch has no more songs") {
+        empty = true;
+        next_batch.release();
+        CHECK(attempts == 2);
+        CHECK(fm_calls == 2);
+    }
+    SUBCASE("a late batch cannot restart playback after the fifth skipped preview") {
+        next_batch.release();
+        REQUIRE(attempts == 5);
+        REQUIRE_FALSE(playback.radio(source));
+        // Browsing past the final failed track completes the outstanding prefetch with a radio_ready event.
+        REQUIRE(shelf.radio_loading);
+        CHECK_FALSE(library.advance_radio(source));
+        next_batch.release();
+        CHECK(attempts == 5);
+        CHECK(fm_calls == 3);
+    }
+    REQUIRE(rig.env.notices.size() == 2);
+    CHECK(rig.env.notices.back().text.contains(trf("Playback stopped after {} unavailable songs", attempts)));
+    CHECK_FALSE(playback.radio(source));
+    CHECK_FALSE(playback.playing());
 }
 
 TEST_CASE("radio waits for the next batch instead of replaying its last track") {

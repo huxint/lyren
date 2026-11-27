@@ -326,21 +326,23 @@ namespace lyren {
         }
         lib.radio_loading = false;
         const bool pending = std::exchange(lib.radio_pending, false);
+        const size_t before = lib.radio.size();
         if (r) {
-            const size_t before = lib.radio.size();
             env_.prefetch(*r);
             lib.radio.append_range(std::views::as_rvalue(*r));
-            if (pending && lib.radio.size() > before) {
-                if (before > 0 && lib.radio_pos + 1 < static_cast<int>(lib.radio.size())) {
-                    ++lib.radio_pos;
-                }
-                lib.radio_since = env_.now();
-                emit({.kind = Event::Kind::radio_ready, .source = source});
-            }
         } else {
             lib.radio_error = r.error();
             if (pending) {
                 env_.notify(lyren::trf("Playback failed: {}", r.error()), "triangle-alert", true);
+            }
+        }
+        if (pending) {
+            if (lib.radio.size() > before) {
+                lib.radio_pos = static_cast<int>(before);
+                lib.radio_since = env_.now();
+                emit({.kind = Event::Kind::radio_ready, .source = source});
+            } else {
+                emit({.kind = Event::Kind::radio_exhausted, .source = source});
             }
         }
         env_.redraw();

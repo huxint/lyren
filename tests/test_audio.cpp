@@ -450,8 +450,8 @@ TEST_CASE("MP4 decoder bounds box recursion, surfaces corrupt AAC tails, and rej
     }
 }
 
-TEST_CASE("Player resets pending seek on load failure and Spool reuses persistent disk cache") {
-    SUBCASE("failed load clears pending seek position") {
+TEST_CASE("Player reports the position after a load failure and Spool reuses persistent disk cache") {
+    SUBCASE("seeking during a failed open leaves the position at zero") {
         lyren::Loop loop;
         lyren::net::Http http;
         Player player(loop, http);
@@ -465,6 +465,7 @@ TEST_CASE("Player resets pending seek on load failure and Spool reuses persisten
         });
         player.open_file("/nonexistent/lyren-missing-audio-file.flac", false);
         player.seek(12.5);
+        CHECK(player.position() == 0);
         if (player.state() != Player::State::failed) {
             loop.run();
         }

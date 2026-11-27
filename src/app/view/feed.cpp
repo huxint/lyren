@@ -549,9 +549,10 @@ namespace lyren {
         }
         if (caps.comments[3]) {
             const float aw = action_width(ui, label(post.comments, "Comment"));
-            if (action(ui, ui.id("comments"), {ax, action_y, aw, look::actions}, "message-square", post.comments, word("Comment"), t.text_dim)) {
+            const bool on = shell_.comments_open(source, Subject::post, post.thread);
+            if (action(ui, ui.id("comments"), {ax, action_y, aw, look::actions}, "message-square", post.comments, word("Comment"), on ? t.accent : t.text_dim)) {
                 const std::string &art = post.track ? post.track->cover : !post.pictures.empty() ? post.pictures.front().url : post.author.avatar;
-                shell_.open_comments(source, Subject::post, post.thread, lyren::trf("{}'s post", post.author.name), art);
+                shell_.toggle_comments(source, Subject::post, post.thread, lyren::trf("{}'s post", post.author.name), art);
             }
             ax += aw + 6;
         }

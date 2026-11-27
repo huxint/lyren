@@ -10,6 +10,7 @@
 #include "core/encoding.hpp"
 #include "core/i18n.hpp"
 #include "core/log.hpp"
+#include "sys/paths.hpp"
 
 namespace lyren {
 
@@ -45,6 +46,12 @@ namespace lyren {
         player_.on_change = [this] {
             on_player();
         };
+        player_.on_seeked = [this](double at) {
+            last_pos_ = at;
+            if (mpris_) {
+                mpris_->seeked(timeline().to_song(at));
+            }
+        };
         apply_volume();
         if (current()) {
             spawn(load_lyrics(*current()));
@@ -54,16 +61,20 @@ namespace lyren {
     Playback::~Playback() {
         env_.loop.cancel(prefetch_timer_);
         player_.on_change = nullptr;
+        player_.on_seeked = nullptr;
     }
 
     void Playback::connect(Library &library) {
         // A radio has no queue to walk: its platform says what comes next.
         on_radio_skip = [this, &library](Source source) {
+            const auto &shelf = library.shelf(source);
             if (library.advance_radio(source)) {
-                const auto &shelf = library.shelf(source);
-                play_radio(source, shelf.radio, shelf.radio_pos);
+                replace(shelf.radio, shelf.radio_pos, false);
+            } else if (shelf.radio_pending) {
+                halt();
+                touch();
             } else {
-                stop();
+                stop_skip_run();
             }
         };
         on_cloud_play = [&library](const Track &track, bool settled) {
@@ -74,9 +85,9 @@ namespace lyren {
                 forget(event.source);
             } else if (event.kind == Library::Event::Kind::radio_ready && radio(event.source)) {
                 const auto &shelf = library.shelf(event.source);
-                if (shelf.radio_pos >= 0 && shelf.radio_pos < static_cast<int>(shelf.radio.size())) {
-                    play_radio(event.source, shelf.radio, shelf.radio_pos);
-                }
+                replace(shelf.radio, shelf.radio_pos, false);
+            } else if (event.kind == Library::Event::Kind::radio_exhausted && radio(event.source)) {
+                stop_skip_run();
             }
         });
     }
@@ -256,19 +267,24 @@ namespace lyren {
         }
     }
 
-    void Playback::stop_skip_run() {
-        failures_ = 0;
-        failed_.clear();
-        want_play_ = false;
+    void Playback::stop_skip_run(std::string_view reason) {
+        if (failures_) {
+            auto message = failures_ == 1 ? std::string(lyren::tr("Playback stopped")) : lyren::trf("Playback stopped after {} unavailable songs", failures_);
+            if (!reason.empty()) {
+                message += " · ";
+                message += lyren::tr(reason);
+            }
+            env_.notify(std::move(message), "circle-alert", true);
+        }
         lyrics_loading_ = false;
-        publish();
+        stop();
     }
 
-    void Playback::replace(const std::vector<Track> &list, int i) {
+    void Playback::replace(const std::vector<Track> &list, int i, bool clear_failures) {
         ++queue_gen_;
         set_current(i, true);
         queue_ = list;
-        reset_shuffle();
+        reset_shuffle(clear_failures);
         start();
     }
 
@@ -440,6 +456,9 @@ namespace lyren {
 
     void Playback::stop() {
         ++queue_gen_;
+        radio_ = false;
+        failures_ = 0;
+        failed_.clear();
         if (!current()) {
             return;
         }
@@ -466,17 +485,16 @@ namespace lyren {
     }
 
     void Playback::seek_file(double at) {
-        last_pos_ = at;
         const auto state = player_.state();
         if (state == State::idle || state == State::failed) {
-            resume_at_ = at;
+            resume_at_ = last_pos_ = at;
+            if (mpris_) {
+                mpris_->seeked(timeline().to_song(at));
+            }
         } else {
             player_.seek(at);
         }
         schedule_prefetch();
-        if (mpris_) {
-            mpris_->seeked(timeline().to_song(at));
-        }
         touch();
         env_.redraw();
     }
@@ -546,7 +564,7 @@ namespace lyren {
         if (mode_ != Mode::shuffle) {
             return (current_ + 1) % n;
         }
-        if (shuffle_next_ >= 0 && shuffle_next_ < n && (n == 1 || shuffle_next_ != current_) && !failed_.contains(shuffle_next_)) {
+        if (shuffle_next_ >= 0 && shuffle_next_ < n && (n == 1 || shuffle_next_ != current_) && !std::ranges::contains(failed_, shuffle_next_)) {
             return shuffle_next_;
         }
         if (failed_.empty()) {
@@ -559,7 +577,7 @@ namespace lyren {
         std::vector<int> candidates;
         candidates.reserve(static_cast<size_t>(n));
         for (int k = 0; k < n; ++k) {
-            if (k != current_ && !failed_.contains(k)) {
+            if (k != current_ && !std::ranges::contains(failed_, k)) {
                 candidates.push_back(k);
             }
         }
@@ -593,7 +611,7 @@ namespace lyren {
         auto next_linear = [&] {
             for (int tries = 1; tries <= n; ++tries) {
                 const int cand = ((current_ + delta * tries) % n + n) % n;
-                if (!failed_.contains(cand)) {
+                if (!std::ranges::contains(failed_, cand)) {
                     return cand;
                 }
             }
@@ -605,7 +623,7 @@ namespace lyren {
             if (i < 0) {
                 return stop_skip_run();
             }
-            if (!failed_.contains(current_)) {
+            if (!std::ranges::contains(failed_, current_)) {
                 shuffle_history_.push_back(current_);
             }
             shuffle_next_ = -1;
@@ -613,7 +631,7 @@ namespace lyren {
             while (!shuffle_history_.empty()) {
                 const int prev = shuffle_history_.back();
                 shuffle_history_.pop_back();
-                if (prev >= 0 && prev < n && !failed_.contains(prev)) {
+                if (prev >= 0 && prev < n && !std::ranges::contains(failed_, prev)) {
                     i = prev;
                     break;
                 }
@@ -684,16 +702,15 @@ namespace lyren {
             }
             if (!r || (r->trial && skip_trials())) {
                 fetching_ = false;
-                failed_.insert(current_);
-                failures_ = failed_.size();
-                // A run of unplayable tracks is reported once, when one finally plays.
-                if (failures_ == 1) {
-                    env_.notify(r ? lyren::trf("Skipped {}: preview only", t.title) : std::format("{}: {}", t.title, lyren::tr(r.error())), "circle-alert", !r);
-                }
-                if (failed_.size() < queue_.size()) {
-                    step(skip_direction_, true);
+                failed_.push_back(current_);
+                ++failures_;
+                if (failures_ >= max_failures || (!radio_ && failed_.size() == queue_.size())) {
+                    stop_skip_run(r ? std::string_view{"Only a preview is available"} : std::string_view{r.error()});
                 } else {
-                    stop_skip_run();
+                    if (failures_ == 1) {
+                        env_.notify(r ? lyren::trf("Skipped {}: preview only", t.title) : std::format("{}: {}", t.title, lyren::tr(r.error())), "circle-alert", !r);
+                    }
+                    step(skip_direction_, true);
                 }
                 co_return env_.redraw();
             }
@@ -770,11 +787,11 @@ namespace lyren {
     }
 
     Task<void> Playback::load_lyrics(Track t) {
-        const std::string id = key(t);
-        lyrics_id_ = id;
+        const uint64_t request = ++lyrics_serial_;
+        lyrics_id_ = key(t);
         lyrics_loading_ = true;
-        auto r = co_await env_.provider(t).lyrics(t);
-        if (lyrics_id_ != id) {
+        auto r = co_await env_.provider(t).playback_lyrics(std::move(t), paths::config_dir() / "lyrics");
+        if (request != lyrics_serial_) {
             co_return;
         }
         lyrics_loading_ = false;
@@ -859,7 +876,7 @@ namespace lyren {
                     start(last_pos_, want_play_, skip_direction_);
                     retried_ = true;
                 } else {
-                    env_.notify(lyren::trf("Playback failed: {}", player_.error()), "circle-alert", true);
+                    env_.notify(lyren::trf("Playback failed: {}", lyren::tr(player_.error())), "circle-alert", true);
                     want_play_ = false;
                 }
             }

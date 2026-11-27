@@ -41,7 +41,6 @@ namespace lyren::audio {
                                    spool_->close();
                                }
                                state_ = State::failed;
-                               pending_seek_.reset();
                                error_ = err;
                                out_.set_active(false);
                                push({.kind = Cmd::stop, .gen = gen_});
@@ -86,7 +85,6 @@ namespace lyren::audio {
         ++seek_seq_;
         state_ = State::loading;
         want_play_ = play;
-        pending_seek_.reset();
         duration_ = last_pos_ = 0;
         codec_ = {};
         error_.clear();
@@ -121,7 +119,6 @@ namespace lyren::audio {
             return;
         }
         seconds = std::max(0.0, duration_ > 0 ? std::min(seconds, duration_) : seconds);
-        pending_seek_ = seconds;
         push({.kind = Cmd::seek, .gen = gen_, .seconds = seconds, .seq = ++seek_seq_});
         if (state_ == State::ended) {
             state_ = State::paused;
@@ -136,7 +133,6 @@ namespace lyren::audio {
         spool_.reset();
         ++gen_;
         state_ = State::idle;
-        pending_seek_.reset();
         duration_ = last_pos_ = 0;
         out_.set_active(false);
         push({.kind = Cmd::stop, .gen = gen_});
@@ -149,11 +145,11 @@ namespace lyren::audio {
     }
 
     double Player::position() {
-        if (pending_seek_) {
-            return *pending_seek_;
-        }
-        if (state_ == State::idle || state_ == State::loading || state_ == State::failed) {
+        if (state_ == State::idle || state_ == State::loading) {
             return 0;
+        }
+        if (state_ == State::failed) {
+            return last_pos_;
         }
         if (state_ == State::ended) {
             return duration_;
@@ -184,7 +180,6 @@ namespace lyren::audio {
                 }
                 log::warn("playback failed: {}", error);
                 state_ = State::failed;
-                pending_seek_.reset();
                 error_ = error;
                 out_.set_active(false);
                 changed();
@@ -250,19 +245,39 @@ namespace lyren::audio {
                     if (dec->length) {
                         frame = std::min(frame, dec->length);
                     }
-                    dec->error.clear();
-                    if (!dec->seek(frame)) {
-                        log::warn("seek to {} failed", frame);
+                    // There is no sample to seek to at EOF. Flush and drain that position directly.
+                    auto seek = [&](uint64_t target) {
+                        dec->error.clear();
+                        return (dec->length && target == dec->length) || dec->seek(target);
+                    };
+                    bool positioned = seek(frame);
+                    if (!positioned) {
+                        // A failed seek can move the decoder. Re-establish the audible position before feeding more samples.
+                        const uint64_t audible = out_.position();
+                        log::warn("seek to frame {} failed, resuming at {}", frame, audible);
+                        frame = audible;
+                        positioned = seek(frame);
                     }
-                    sequence = c.seq;
-                    out_.flush(frame);
-                    done = false;
-                    loop_.post([this, gen, seq = c.seq] {
-                        if (gen != gen_ || seq != seek_seq_) {
+                    done = !positioned || (dec->length && frame == dec->length);
+                    if (positioned) {
+                        sequence = c.seq;
+                        out_.flush(frame);
+                        if (done) {
+                            out_.finish(sequence);
+                        }
+                    }
+                    loop_.post([this, gen, seq = c.seq, positioned, at = static_cast<double>(frame) / dec->format.rate] {
+                        if (gen != gen_ || seq != seek_seq_ || state_ == State::failed) {
                             return;
                         }
-                        last_pos_ = *pending_seek_;
-                        pending_seek_.reset();
+                        last_pos_ = at;
+                        if (!positioned) {
+                            state_ = State::failed;
+                            error_ = "Could not resume audio after seeking";
+                            out_.set_active(false);
+                        } else if (on_seeked) {
+                            on_seeked(at);
+                        }
                         changed();
                     });
                 }

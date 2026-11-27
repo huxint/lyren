@@ -215,6 +215,26 @@ TEST_CASE("KuGou KRC decodes relative word timing and keeps translations with so
     CHECK(lrc->front().text == "测试歌词");
 }
 
+TEST_CASE("KuGou downloads lyrics for the matching singer and recording length") {
+    test::Server server([](std::string_view req) {
+        if (req.starts_with("GET /search?")) {
+            return test::ok(R"({"candidates":[
+                {"id":"cover","accesskey":"a","song":"Song","singer":"Other","duration":225000},
+                {"id":"long","accesskey":"b","song":"Song","singer":"Singer","duration":270000},
+                {"id":"match","accesskey":"c","song":"Song","singer":"Singer","duration":225442}]})");
+        }
+        CHECK(req.starts_with("GET /download?"));
+        CHECK(req.contains("id=match&"));
+        return test::ok(R"({"fmt":"lrc","content":"WzAwOjAwLjAwXea1i+ivleatjOivjQo="})");
+    });
+    Loop loop;
+    net::Http http;
+    kugou::Kugou provider(loop, http, server.url());
+    auto lyrics = test::run(loop, provider.lyrics({.id = "hash", .title = "Song", .artist = "Singer", .duration = 225}));
+    REQUIRE(lyrics);
+    CHECK(lyrics->size() == 1);
+}
+
 TEST_CASE("KuGou can validate a session without paging through the listener's library") {
     std::atomic<int> pages = 0;
     test::Server server([&](std::string_view req) {

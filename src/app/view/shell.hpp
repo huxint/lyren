@@ -82,6 +82,8 @@ namespace lyren {
         }
         // Opens the comments on something in the panel. follows: the current song's, which the stage keeps up with.
         void open_comments(Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows = false);
+        bool comments_open(Source source, Subject subject, std::string_view id, bool follows = false) const;
+        void toggle_comments(Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows = false);
         void set_setting(std::string_view section, std::string_view key, std::string_view value) {
             const SettingChange one{section, key, value};
             set_settings_({&one, 1});

@@ -103,6 +103,36 @@ TEST_CASE("QRC offsets keep lines words and translated LRC on the same timeline"
     }
 }
 
+TEST_CASE("YRC offsets also shift word cues and preserve the match to translated LRC") {
+    const auto lines = parse_lyrics("", "[offset:-250]\n[00:01.00]Translated", "[1000,500](1100,400,0)Word\n[offset:-250]");
+    REQUIRE(lines.size() == 1);
+    CHECK(lines[0].time == doctest::Approx(1.25));
+    CHECK(lines[0].translation == "Translated");
+    REQUIRE(lines[0].words.size() == 1);
+    CHECK(lines[0].words[0].start_ms == 1350);
+    CHECK(lines[0].words[0].duration_ms == 400);
+}
+
+TEST_CASE("KRC applies the offset after resolving relative word times") {
+    const auto lines = parse_krc("[offset:+1200]\n[1000,1000]<100,200,0>One<300,700,0> two");
+    REQUIRE(lines.size() == 1);
+    CHECK(lines[0].time == 0);
+    REQUIRE(lines[0].words.size() == 2);
+    CHECK(lines[0].words[0].start_ms == 0);
+    CHECK(lines[0].words[0].duration_ms == 100);
+    CHECK(lines[0].words[1].start_ms == 100);
+    CHECK(lines[0].words[1].duration_ms == 700);
+}
+
+TEST_CASE("mixed timed LRC applies a trailing offset once to both kinds of line") {
+    const auto lines = parse_timed_lrc("[2000,500]<2100,400>Word\n[00:01.00]Line\n[offset:+500]");
+    REQUIRE(lines.size() == 2);
+    CHECK(lines[0].time == doctest::Approx(0.5));
+    CHECK(lines[1].time == doctest::Approx(1.5));
+    REQUIRE(lines[1].words.size() == 1);
+    CHECK(lines[1].words[0].start_ms == 1600);
+}
+
 TEST_CASE("QQ plain and XML lyrics can use either word timing or LRC") {
     auto lrc = parse_qrc("[00:10.12]First line\n[00:20.50]Second line\n");
     REQUIRE(lrc.size() == 2);

@@ -1,6 +1,23 @@
 #include "media/provider.hpp"
 
+#include <glaze/file/file_ops.hpp>
+#include "core/encoding.hpp"
+
 namespace lyren {
+
+    Task<Result<std::vector<LyricLine>>> Provider::playback_lyrics(Track track, std::filesystem::path lyric_dir) {
+        {
+            const auto path = lyric_dir / platform(track.source).id / (encoding::url_encode(track.id) + ".lrc");
+            std::string text;
+            if (glz::file_to_buffer(text, path.native()) == glz::error_code::none) {
+                auto lines = parse_timed_lrc(text);
+                if (!lines.empty()) {
+                    co_return lines;
+                }
+            }
+        }
+        co_return co_await lyrics(std::move(track));
+    }
 
     template <class T>
     static Task<Result<T>> unavailable() {
