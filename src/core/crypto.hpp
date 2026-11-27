@@ -9,8 +9,9 @@ namespace lyren::crypto {
 
     using Aes128Key = std::array<unsigned char, 16>;
 
-    std::string md5_hex(std::string_view bytes);
+    std::string md5_hex(std::string_view bytes, bool upper = false);
     std::string random_hex(size_t digits, bool upper = false);
+    std::string random_uuid();
 
     // AES-128 (16-byte key) or AES-256 (32-byte key) with PKCS#7 padding.
     std::string aes_ecb_encrypt(std::string_view key, std::string_view plain);

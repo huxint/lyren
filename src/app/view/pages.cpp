@@ -87,15 +87,11 @@ namespace lyren {
         const float gap = compact ? 8.f : 10.f;
         ui::Enabled possible(ui, !tracks.empty());
         if (ui.button(ui.id("play-all"), {x, y, play_w, height}, play_label, ui::ButtonKind::primary, "play-fill")) {
-            if (playback_.mode() == PlayMode::shuffle) {
-                playback_.set_mode(PlayMode::list);
-            }
-            playback_.play(tracks, 0);
+            playback_.play_all(tracks, false);
         }
         x += play_w + gap;
         if (ui.button(ui.id("shuffle-all"), {x, y, shuffle_w, height}, shuffle_label, ui::ButtonKind::secondary, "shuffle", compact ? lyren::tr("Shuffle") : std::string_view{})) {
-            playback_.set_mode(PlayMode::shuffle);
-            playback_.play(tracks, static_cast<int>(playback_.random() % tracks.size()));
+            playback_.play_all(tracks, true);
         }
         return x + shuffle_w + gap;
     }
@@ -381,7 +377,7 @@ namespace lyren {
         // No list yet: the account is still loading, or the page waits for a login.
         if (!route.list) {
             static const std::vector<Track> none;
-            const std::string failed = route.page == Page::liked ? shelf().error : std::string();
+            const std::string_view failed = route.page == Page::liked ? shelf().error : std::string_view{};
             return list_page(ui, r, none, failed.empty(), failed, browser_.tab_since);
         }
         Browser::TrackList &list = *route.list;
@@ -409,7 +405,7 @@ namespace lyren {
             heroes.push_back({Page::fm, "hero-fm", {}, {}, provider().radio_title, "A station that learns your taste", "radio", "play-fill"});
         }
         if (features.radar) {
-            heroes.push_back({Page::radar, "hero-radar", {}, {}, "Radar", "Favorites and new discoveries", "sparkles", "play-fill"});
+            heroes.push_back({Page::radar, "hero-radar", {}, {}, "Radar", "Favorites and new discoveries", "radio", "play-fill"});
         }
         if (browser_.supports(Page::releases, browser_.active())) {
             heroes.push_back({Page::releases, "hero-releases", {}, {}, "New releases", "Latest songs and albums", "disc-3", "chevron-right"});
@@ -552,14 +548,14 @@ namespace lyren {
         }
         y += title_h + heroes_h;
         if (!lib.daily_lists.empty()) {
-            section_heading(ui, body.x, y, body.w, lyren::tr("Daily playlists"), std::to_string(lib.daily_lists.size()));
+            section_heading(ui, body.x, y, body.w, lyren::tr("Daily playlists"), int_text(lib.daily_lists.size()));
             if (int i = card_grid(ui, {body.x, y + 42, body.w, 0}, ui.id("daily-cards"), lib.daily_lists, false, std::max(browser_.entered + 0.06, lib.daily_since)); i >= 0) {
                 browser_.open(lib.daily_lists[static_cast<size_t>(i)]);
             }
             y += daily_h;
         }
         const Listing &res = lib.recommended;
-        section_heading(ui, body.x, y, body.w, lyren::tr("Recommended playlists"), res.cards.empty() ? std::string() : std::to_string(res.cards.size()));
+        section_heading(ui, body.x, y, body.w, lyren::tr("Recommended playlists"), res.cards.empty() ? SmallText<24>{} : int_text(res.cards.size()));
         y += 42;
         if (!page_status(ui, {body.x, y, body.w, std::max(120.f, r.bottom() - y)}, res.loading && res.cards.empty(), res.error, false, Placeholder::cards)) {
             if (int i = card_grid(ui, {body.x, y, body.w, 0}, ui.id("rec-cards"), res.cards, false, std::max(browser_.entered + 0.06, res.since)); i >= 0) {
@@ -632,7 +628,7 @@ namespace lyren {
 
         const float gy = y + grid_y;
         if (!page_status(ui, {body.x, gy, body.w, std::max(120.f, r.bottom() - gy)}, lib.square.loading && lib.square.cards.empty(),
-                         lib.square.cards.empty() ? lib.square.error : "", false, Placeholder::cards)) {
+                         lib.square.cards.empty() ? lib.square.error : std::string_view{}, false, Placeholder::cards)) {
             const double since = std::max({browser_.entered + 0.04, lib.square_since, lib.square.since});
             if (int i = card_grid(ui, {body.x, gy, body.w, 0}, ui.id("square-cards"), lib.square.cards, false, since); i >= 0) {
                 browser_.open(lib.square.cards[static_cast<size_t>(i)]);
@@ -652,7 +648,7 @@ namespace lyren {
         const auto &t = ui.theme();
         page_title(ui, page_frame(r), r.y + 28, lyren::tr(provider().radio_title), lyren::tr("Tuned to what you play"));
         const Rect below{r.x, r.y + 100, r.w, r.h - 100};
-        if (page_status(ui, below, lib.radio_loading && lib.radio.empty(), lib.radio.empty() ? lib.radio_error : "", !signed_in())) {
+        if (page_status(ui, below, lib.radio_loading && lib.radio.empty(), lib.radio.empty() ? lib.radio_error : std::string_view{}, !signed_in())) {
             return;
         }
         if (lib.radio.empty()) {
@@ -807,12 +803,11 @@ namespace lyren {
         const float top = bar_y + control::medium + 14;
         Rect content{body.x - 12, top, body.w + 24, r.bottom() - top - 8};
         Fade fade(p, tab_enter(ui, content));
-        std::string error = res.error;
-        if (res.loaded && res.size() == 0 && error.empty()) {
-            error = tab ? lyren::tr("No albums found") : lyren::tr("No songs here yet");
-        }
-        if (res.size() == 0 && page_status(ui, tab ? content.inset(12, 12) : content, res.loading, error, false, tab ? Placeholder::cards : Placeholder::rows)) {
+        if (res.size() == 0 && page_status(ui, tab ? content.inset(12, 12) : content, res.loading, res.error, false, tab ? Placeholder::cards : Placeholder::rows)) {
             return;
+        }
+        if (res.loaded && res.size() == 0) {
+            return empty(ui, content, tab ? "disc-album" : "music", lyren::tr(tab ? "No albums found" : "No songs here yet"));
         }
         if (tab == 0) {
             shell_.tracks.list(ui, content, ui.id("release-songs"), res.tracks, std::max({browser_.entered, browser_.tab_since, res.since}));
@@ -849,12 +844,12 @@ namespace lyren {
         }
         Rect content{body.x - 12, tab_bar.bottom() + 10, body.w + 24, r.bottom() - tab_bar.bottom() - 18};
         Fade fade(ui.painter(), tab_enter(ui, content));
-        std::string error = res.cards.empty() ? res.error : "";
-        if (res.cards.empty() && res.loaded && error.empty()) {
-            error = lib.collection_tab ? lyren::tr("No followed artists yet") : lyren::tr("No saved albums yet");
-        }
-        if (res.cards.empty() && page_status(ui, content.inset(12, 12), res.loading && !res.loaded, error, false, lib.collection_tab ? Placeholder::faces : Placeholder::cards)) {
+        if (res.cards.empty() &&
+            page_status(ui, content.inset(12, 12), res.loading && !res.loaded, res.error, false, lib.collection_tab ? Placeholder::faces : Placeholder::cards)) {
             return;
+        }
+        if (res.loaded && res.cards.empty()) {
+            return empty(ui, content, lib.collection_tab ? "users" : "disc-album", lyren::tr(lib.collection_tab ? "No followed artists yet" : "No saved albums yet"));
         }
         bool near_end;
         const ui::Id id = ui.id(lib.collection_tab ? "collection-artists" : "collection-albums");
@@ -875,7 +870,7 @@ namespace lyren {
         const Rect tab_bar{body.x, r.y + 96, body.w, 38};
         p.rect({tab_bar.x, tab_bar.bottom() - 1, tab_bar.w, 1}, t.line());
         const std::array<std::string_view, 3> tabs = {lyren::tr("Songs"), lyren::tr("Artists"), lyren::tr("Styles")};
-        const std::array icons = {"music", "mic-vocal", "sparkles"};
+        const std::array icons = {"music", "mic-vocal", "audio-lines"};
         if (page_tabs(ui, ui.id("dislike-tabs"), {tab_bar.x, tab_bar.y, tab_bar.w - 44, tab_bar.h}, tabs, lib.dislike_tab)) {
             if (!lib.dislikes[lib.dislike_tab]) {
                 spawn(library_.load_dislikes(browser_.active(), static_cast<DislikeKind>(lib.dislike_tab)));
@@ -961,7 +956,7 @@ namespace lyren {
         const float tx = cov.right() + (compact ? 20.f : 28.f), tw = head.right() - tx;
         ui.label({tx, head.y + 2, tw, 16}, lyren::tr("Artists"), t.style(type::micro, t.faint(), text::semibold));
         ui.label({tx, head.y + 20, tw, compact ? 30.f : 38.f}, a.info ? a.info->name : c.title, t.style(compact ? type::title : type::display, t.text, text::semibold));
-        std::string about = a.error;
+        std::string about(lyren::tr(a.error));
         if (a.info) {
             about = lyren::trf("{} songs · {} albums", a.info->songs, a.info->albums);
             if (!a.info->alias.empty()) {
@@ -998,17 +993,16 @@ namespace lyren {
             }
         }
         const bool is_empty = a.tab == 2 ? a.sections.empty() : res.size() == 0;
-        std::string error = is_empty ? res.error : "";
-        if (is_empty && res.loaded && error.empty()) {
-            error = a.tab == 2 ? lyren::tr("No biography available") : lyren::tr("Nothing here yet");
-        }
         const std::array looks{Placeholder::rows, Placeholder::cards, Placeholder::spinner};
         if (is_empty &&
-            page_status(ui, a.tab == 1 ? content.inset(12, 12) : content, res.loading || (!res.loaded && error.empty()), error, false, looks[static_cast<size_t>(a.tab)])) {
+            page_status(ui, a.tab == 1 ? content.inset(12, 12) : content, res.loading || (!res.loaded && res.error.empty()), res.error, false, looks[static_cast<size_t>(a.tab)])) {
             return;
         }
+        if (is_empty && res.loaded) {
+            return empty(ui, content, a.tab == 2 ? "user" : "music", lyren::tr(a.tab == 2 ? "No biography available" : "Nothing here yet"));
+        }
         if (!res.error.empty()) {
-            ui.label(ui::cut_bottom(content, 32).inset(12, 0), res.error, t.style(type::caption, t.danger));
+            ui.label(ui::cut_bottom(content, 32).inset(12, 0), lyren::tr(res.error), t.style(type::caption, t.danger));
         }
         const double since = std::max({browser_.entered + 0.04, browser_.tab_since, res.since});
         bool near_end = false;
@@ -1078,19 +1072,18 @@ namespace lyren {
         Fade fade(ui.painter(), tab_enter(ui, content));
         const double since = std::max({browser_.entered, browser_.tab_since, shown.since});
         const bool is_empty = shown.size() == 0;
-        std::string error = is_empty ? shown.error : "";
-        if (is_empty && shown.more() && error.empty()) {
+        if (is_empty && shown.more() && shown.error.empty()) {
             browser_.load_results(tab);
         }
-        if (is_empty && shown.loaded && !shown.more() && error.empty()) {
-            error = lyren::tr("No results found");
-        }
         const std::array looks{Placeholder::rows, Placeholder::cards, Placeholder::faces, Placeholder::cards, Placeholder::faces};
-        if (is_empty && page_status(ui, tab ? content.inset(12, 12) : content, shown.loading, error, false, looks[static_cast<size_t>(tab)])) {
+        if (is_empty && page_status(ui, tab ? content.inset(12, 12) : content, shown.loading, shown.error, false, looks[static_cast<size_t>(tab)])) {
             return;
         }
+        if (is_empty && shown.loaded && !shown.more()) {
+            return empty(ui, content, "search", lyren::tr("No results found"));
+        }
         if (!shown.error.empty()) {
-            ui.label(ui::cut_bottom(content, 32).inset(12, 0), shown.error, t.style(type::caption, t.danger));
+            ui.label(ui::cut_bottom(content, 32).inset(12, 0), lyren::tr(shown.error), t.style(type::caption, t.danger));
         }
         if (tab == 0) {
             if (shell_.tracks.list(ui, content, scroll, shown.tracks, since)) {
@@ -1122,7 +1115,7 @@ namespace lyren {
         return i;
     }
 
-    void Pages::list_page(ui::Ui &ui, Rect r, const std::vector<Track> &tracks, bool loading, const std::string &list_error, double since) {
+    void Pages::list_page(ui::Ui &ui, Rect r, const std::vector<Track> &tracks, bool loading, std::string_view list_error, double since) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Card &c = browser_.route().card;
@@ -1145,12 +1138,11 @@ namespace lyren {
                 built_in_art(p, t, cov, special_hue(Page::cloud), t.radius_l(), "cloud");
                 break;
             case Page::radar:
-                built_in_art(p, t, cov, 0.78f, t.radius_l(), "sparkles");
+                built_in_art(p, t, cov, 0.78f, t.radius_l(), "radio");
                 break;
             case Page::daily: {
                 built_in_art(p, t, cov, 0.98f, t.radius_l(), "");
-                const std::string day(browser_.today().substr(3));
-                ui.label(cov, day.substr(0, day.find(' ')), t.style(compact ? 42.f : type::numeral + 8, white, text::semibold | text::tabular_nums), Align::center);
+                ui.label(cov, std::string_view(browser_.today()).substr(3), t.style(compact ? 42.f : type::numeral + 8, white, text::semibold | text::tabular_nums), Align::center);
                 break;
             }
             default:
@@ -1241,39 +1233,28 @@ namespace lyren {
 
         Rect body{head.x - 12, head.bottom() + 24, head.w + 24, r.bottom() - head.bottom() - 32};
         const bool login = Browser::needs_login(page) && !signed_in();
-        std::string error = list_error;
-        if (tracks.empty() && error.empty() && !loading && !login) {
-            error = page == Page::similar ? lyren::tr("No similar songs found") : lyren::tr("No songs here yet");
-        }
-        if (tracks.empty() && page_status(ui, body, loading, error, login, Placeholder::rows)) {
+        if (tracks.empty() && page_status(ui, body, loading, list_error, login, Placeholder::rows)) {
             if (!loading && !login && !list_error.empty()) {
                 const auto centre = ui::center(body, std::min(body.w, 360.f), 156);
                 const float rw = ui.button_width(lyren::tr("Retry"), true);
                 if (ui.button(ui.id("list-retry"), {centre.x + (centre.w - rw) / 2, centre.y + 112, rw, control::medium}, lyren::tr("Retry"), ui::ButtonKind::secondary,
                               "refresh-cw")) {
-                    if (page == Page::recent) {
-                        spawn(library_.load_recent_plays(c.source, true));
-                    } else if (browser_.route().list) {
-                        spawn(browser_.load_list(browser_.route().list, page, c));
-                    } else {
-                        spawn(library_.load(browser_.active()));
-                    }
+                    browser_.reload_list();
                 }
             }
             return;
+        }
+        if (tracks.empty()) {
+            return empty(ui, body, "music", lyren::tr(page == Page::similar ? "No similar songs found" : "No songs here yet"));
         }
         if (!list_error.empty()) {
             const Rect retry = ui::cut_top(body, 40).inset(12, 0);
             const float w = ui.button_width(lyren::tr("Retry"), true);
             ui.label({retry.x, retry.y, retry.w - w - 12, 32}, lyren::tr(list_error), t.style(type::caption, t.danger));
             if (ui.button(ui.id("list-retry"), {retry.right() - w, retry.y, w, control::small + 4}, lyren::tr("Retry"), ui::ButtonKind::secondary, "refresh-cw")) {
-                if (page == Page::recent) {
-                    spawn(library_.load_recent_plays(c.source, true));
-                } else {
-                    spawn(browser_.load_list(browser_.route().list, page, c));
-                    if (c.owned) {
-                        spawn(library_.load(c.source));
-                    }
+                browser_.reload_list();
+                if (c.owned) {
+                    spawn(library_.load(c.source));
                 }
             }
         }

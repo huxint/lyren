@@ -78,6 +78,7 @@ namespace lyren {
             bool choosing = false;
             const std::vector<Track> *list = nullptr;
             StringHashSet chosen;
+            uint64_t revision = 1;
 
             // The picked songs of tracks, in its order.
             std::vector<Track> of(const std::vector<Track> &tracks) const;
@@ -161,8 +162,7 @@ namespace lyren {
         void reload_profile();
         // The song leaves the daily list at once; the one the service recommends instead takes its place.
         void dislike_daily(std::shared_ptr<TrackList> list, Track track);
-        void add_to_playlist(std::vector<Track> tracks, Card playlist);
-        void remove_from_playlist(Card playlist, std::vector<Track> tracks);
+        void add_to_playlist(std::vector<Track> tracks, Card playlist, uint64_t selection_tag = 0);
         void move_track(std::shared_ptr<TrackList> list, Card playlist, int from, int to);
         void delete_playlist(Card playlist);
 
@@ -172,7 +172,8 @@ namespace lyren {
         void choose(const std::vector<Track> &tracks, int i, bool range);
         void choose_all();
         void reset_selection() {
-            selection_ = {};
+            const uint64_t next = selection_.revision + 1;
+            selection_ = {.revision = next};
         }
 
     private:
@@ -221,7 +222,7 @@ namespace lyren {
         static void trim_history(std::vector<Route> &stack);
         void refresh_clock();
         std::shared_ptr<TrackList> cached_list(Source source, Page page, std::string_view id, bool create);
-        std::shared_ptr<Artist> cached_artist(Source source, std::string_view id, bool create);
+        std::shared_ptr<Artist> cached_artist(Source source, std::string_view id);
         void enter(Route route, int direction);
         void on_library(const Library::Event &event);
         template <class F>

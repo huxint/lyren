@@ -33,7 +33,7 @@ namespace lyren {
             std::string_view icon, title;
         };
         constexpr std::array<Category, 5> categories{{
-            {"sparkles", "Appearance"},
+            {"layout-grid", "Appearance"},
             {"headphones", "Playback"},
             {"captions", "Lyrics"},
             {"music", "Services"},
@@ -227,8 +227,7 @@ namespace lyren {
 
     void SettingsPage::ensure_preview_themes() {
         const auto &cfg = env_.config.theme;
-        const std::array<std::optional<std::string>, 7> colors{cfg.colors.bg,   cfg.colors.surface,  cfg.colors.elevated, cfg.colors.border,
-                                                               cfg.colors.text, cfg.colors.text_dim, cfg.colors.danger};
+        const auto &colors = cfg.colors;
         if (previews_ready_ && preview_fs_ == cfg.font_size && preview_radius_ == cfg.radius && preview_accent_ == cfg.accent && preview_colors_ == colors) {
             return;
         }
@@ -455,7 +454,7 @@ namespace lyren {
                 if (const Track *track = playback_.current()) {
                     cover(ui, s, track->cover, s.w / 2, "");
                 } else {
-                    p.icon("sparkles", ui::center(s, 12, 12), t.on_accent());
+                    p.icon("image", ui::center(s, 12, 12), t.on_accent());
                 }
             });
             if (picked == 0 && !automatic) {
@@ -611,7 +610,7 @@ namespace lyren {
                 const int picked = rows.swatches("sung", lyren::tr("Sung words"), {}, sung_colors.size() + 1, chosen, false, false, [&](size_t i, Rect s) {
                     p.rect(s, i == 0 ? shell_.stage_theme().accent : *ui::parse_color(sung_colors[i - 1]), s.w / 2);
                     if (i == 0) {
-                        p.icon("sparkles", ui::center(s, 12, 12), white.with_alpha(0.9f));
+                        p.icon("image", ui::center(s, 12, 12), white.with_alpha(0.9f));
                     }
                 });
                 if (picked >= 0 && picked != chosen) {
@@ -882,22 +881,22 @@ namespace lyren {
             if (info_a > 0.01f) {
                 Fade fade(p, info_a);
                 const std::string_view tier_sv = quality_name(playback_.level());
-                std::string tech;
+                SmallText<32> tech;
                 if (!player.codec().empty() && player.format().rate > 0) {
-                    tech = std::format("{} · {:.1f} kHz", player.codec(), player.format().rate / 1000.0);
-                    for (char &ch : tech) {
-                        if (ch >= 'a' && ch <= 'z' && (&ch - tech.data()) < 5) {
+                    tech = small_format<32>("{} · {:.1f} kHz", player.codec(), player.format().rate / 1000.0);
+                    for (char &ch : std::span(tech.buf).first(std::min(tech.len, player.codec().size()))) {
+                        if (ch >= 'a' && ch <= 'z') {
                             ch = static_cast<char>(ch - 'a' + 'A');
                         }
                     }
                 }
                 const float col_w = std::min(148.f, std::max(0.f, right - r.x - 180));
                 if (col_w > 48) {
-                    if (!tier_sv.empty() && !tech.empty()) {
+                    if (!tier_sv.empty() && tech.len != 0) {
                         ui.label({right - col_w, r.y + 3, col_w, 18}, tier_sv, t.style(type::caption, t.text, text::medium), Align::right);
                         ui.label({right - col_w, r.y + 22, col_w, 18}, tech, t.style(type::micro, t.faint(), text::tabular_nums), Align::right);
                     } else {
-                        const std::string_view single = !tech.empty() ? std::string_view(tech) : tier_sv;
+                        const std::string_view single = tech.len != 0 ? std::string_view(tech) : tier_sv;
                         ui.label({right - col_w, r.y + (r.h - 18) / 2, col_w, 18}, single, t.style(type::caption, t.text_dim, text::tabular_nums), Align::right);
                     }
                     right -= col_w + 12;
@@ -969,8 +968,7 @@ namespace lyren {
         if (const Track *track = playback_.current()) {
             const auto &e = images_.get(track->cover, 128, true);
             if (e.ready) {
-                const float aspect = r.w / r.h;
-                const Rect uv = aspect > 1 ? Rect{0, (1 - 1 / aspect) / 2, 1, 1 / aspect} : Rect{(1 - aspect) / 2, 0, aspect, 1};
+                const Rect uv = cover_uv(1, r.w / r.h);
                 Fade fade(p, ui.progress(e.ready_at, 400));
                 p.image(r, e.tex, radius, white, uv);
             }

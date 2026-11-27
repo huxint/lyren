@@ -71,8 +71,7 @@ namespace lyren::bodian {
         if (!get("devid").empty()) {
             return;
         }
-        const std::string hex = crypto::random_hex(32);
-        session["devid"] = std::format("{}-{}-{}-{}-{}", hex.substr(0, 8), hex.substr(8, 4), hex.substr(12, 4), hex.substr(16, 4), hex.substr(20));
+        session["devid"] = crypto::random_uuid();
         if (on_session) {
             on_session();
         }
@@ -123,7 +122,7 @@ namespace lyren::bodian {
         if (token != get("token")) {
             co_return Reply{.error = "Bodian Music session changed; retry the action"};
         }
-        if (reply.code == 11012 && !token.empty() && token == get("token")) {
+        if (reply.code == 11012 && !token.empty()) {
             clear_login();
         }
         co_return reply;

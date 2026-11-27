@@ -19,12 +19,22 @@ namespace lyren::audio {
         }
 
         // The volume control only exists once the format is negotiated; setting it earlier is silently dropped.
-        static void state_changed(void *ud, pw_stream_state, pw_stream_state state, const char *) {
+        static void state_changed(void *ud, pw_stream_state, pw_stream_state state, const char *err) {
+            auto *o = self(ud);
+            if (state == PW_STREAM_STATE_ERROR) {
+                o->stream_error_.store(true, std::memory_order_release);
+                o->wake_.fetch_add(1, std::memory_order_release);
+                o->wake_.notify_one();
+                if (o->ev_.error) {
+                    o->ev_.error(o->generation_, err && *err ? err : "PipeWire stream error");
+                }
+                return;
+            }
             if (state != PW_STREAM_STATE_PAUSED && state != PW_STREAM_STATE_STREAMING) {
                 return;
             }
-            self(ud)->apply_volume();
-            self(ud)->volume_ready_.store(true, std::memory_order_release);
+            o->apply_volume();
+            o->volume_ready_.store(true, std::memory_order_release);
         }
 
         static void control_info(void *ud, uint32_t id, const pw_stream_control *c) {
@@ -47,7 +57,7 @@ namespace lyren::audio {
 
         static void drained(void *ud) {
             if (self(ud)->ev_.drained) {
-                self(ud)->ev_.drained();
+                self(ud)->ev_.drained(self(ud)->drain_sequence_.load(std::memory_order_acquire));
             }
         }
 
@@ -85,12 +95,13 @@ namespace lyren::audio {
         pw_deinit();
     }
 
-    Result<void> Output::start(Format f) {
+    Result<void> Output::start(Format f, uint64_t generation) {
         if (f.channels > SPA_AUDIO_MAX_CHANNELS) {
             return std::unexpected("This audio file has more channels than PipeWire supports");
         }
         pw_thread_loop_lock(loop_);
-        if (stream_ && f == fmt_) {
+        if (stream_ && !stream_error_.load(std::memory_order_acquire) && f == fmt_) {
+            generation_ = generation;
             pw_thread_loop_unlock(loop_);
             flush(0);
             return {};
@@ -101,15 +112,32 @@ namespace lyren::audio {
             pw_stream_destroy(stream_);
             stream_ = nullptr;
         }
+        if (stream_error_.exchange(false, std::memory_order_acq_rel)) {
+            if (core_) {
+                pw_core_disconnect(core_);
+                core_ = nullptr;
+            }
+            if (context_) {
+                pw_context_destroy(context_);
+                context_ = nullptr;
+            }
+        }
         if (!core_) {
             context_ = pw_context_new(pw_thread_loop_get_loop(loop_), nullptr, 0);
+            if (!context_) {
+                pw_thread_loop_unlock(loop_);
+                return std::unexpected("PipeWire context creation failed");
+            }
             core_ = pw_context_connect(context_, nullptr, 0);
             if (!core_) {
                 log::error("cannot connect to PipeWire");
+                pw_context_destroy(context_);
+                context_ = nullptr;
                 pw_thread_loop_unlock(loop_);
                 return std::unexpected("PipeWire is not running");
             }
         }
+        generation_ = generation;
         fmt_ = f;
         volume_ready_ = false;
         cap_ = f.rate;
@@ -125,6 +153,10 @@ namespace lyren::audio {
             pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback", PW_KEY_MEDIA_ROLE, "Music", PW_KEY_APP_NAME, "Lyren", PW_KEY_APP_ICON_NAME, "lyren",
                               PW_KEY_NODE_NAME, "lyren", PW_KEY_NODE_LATENCY, "2048/48000", "state.restore-props", "false", PW_KEY_MEDIA_NAME, name_.c_str(), nullptr);
         stream_ = pw_stream_new(core_, "Lyren", props);
+        if (!stream_) {
+            pw_thread_loop_unlock(loop_);
+            return std::unexpected("Could not create PipeWire audio stream");
+        }
         pw_stream_add_listener(stream_, &listener_, &StreamEvents::events, this);
         alignas(SPA_POD_ALIGN) std::array<uint8_t, 1024> buf;
         spa_pod_builder b = SPA_POD_BUILDER_INIT(buf.data(), buf.size());
@@ -141,7 +173,13 @@ namespace lyren::audio {
         if (!active_) {
             flags = flags | PW_STREAM_FLAG_INACTIVE;
         }
-        pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, pw_stream_flags(flags), params.data(), static_cast<uint32_t>(params.size()));
+        if (pw_stream_connect(stream_, PW_DIRECTION_OUTPUT, PW_ID_ANY, pw_stream_flags(flags), params.data(), static_cast<uint32_t>(params.size())) < 0) {
+            spa_hook_remove(&listener_);
+            pw_stream_destroy(stream_);
+            stream_ = nullptr;
+            pw_thread_loop_unlock(loop_);
+            return std::unexpected("Could not connect PipeWire audio stream");
+        }
         pw_thread_loop_unlock(loop_);
         log::debug("pipewire stream: {} Hz, {} ch", f.rate, f.channels);
         return {};
@@ -178,7 +216,8 @@ namespace lyren::audio {
         w_.store(w + n, std::memory_order_release);
     }
 
-    void Output::finish() {
+    void Output::finish(uint64_t sequence) {
+        eos_sequence_.store(sequence, std::memory_order_relaxed);
         eos_.store(w_.load(std::memory_order_relaxed), std::memory_order_release);
     }
 
@@ -236,6 +275,7 @@ namespace lyren::audio {
 
         if (k < n && r + k == eos_.load(std::memory_order_acquire) && !draining_) {
             draining_ = true;
+            drain_sequence_.store(eos_sequence_.load(std::memory_order_relaxed), std::memory_order_release);
             pw_stream_flush(stream_, true);
         }
         if (waiting_.load(std::memory_order_relaxed) && space() >= cap_ / 4) {

@@ -81,7 +81,7 @@ namespace lyren {
     private:
         Task<void> fetch(uint64_t gen, int tab, int page, std::string cursor);
         Task<void> fetch_replies(std::shared_ptr<Replies> view, int page, std::string cursor);
-        void append(Feed &feed, CommentPage page, int number);
+        void append(Feed &feed, CommentPage page);
         // Reconcile cached copies before returning a confirmed like to the service's own numbers.
         void settle_likes(const std::vector<Comment> &comments);
 

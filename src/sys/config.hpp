@@ -59,6 +59,7 @@ namespace lyren {
             double motion = 1.0;
             struct Colors {
                 std::optional<std::string> bg, surface, elevated, border, text, text_dim, danger;
+                bool operator==(const Colors &) const = default;
             } colors;
         } theme;
         struct DesktopLyrics {

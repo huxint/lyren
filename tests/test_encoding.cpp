@@ -29,6 +29,11 @@ TEST_CASE("base64 matches RFC 4648 vectors and UTF-8 bytes") {
         CHECK(base64(plain) == encoded);
         CHECK(unbase64(encoded) == plain);
     }
+    CHECK(unbase64("Zg==\r\n") == "f");
+    CHECK(unbase64("Zm8= \t") == "fo");
+    for (const auto invalid : {"=", "Zg=", "=g==", "Z=g=", "Zg=A", "Zg==="}) {
+        CHECK(unbase64(invalid).empty());
+    }
 }
 
 TEST_CASE("url_encode and query_string cover RFC 3986, URI component and form rules") {

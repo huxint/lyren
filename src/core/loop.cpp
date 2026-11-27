@@ -6,8 +6,12 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <array>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
+
+#include "core/log.hpp"
 
 namespace lyren {
 
@@ -15,6 +19,10 @@ namespace lyren {
     : epoll_(epoll_create1(EPOLL_CLOEXEC)),
       timerfd_(timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK)),
       eventfd_(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)) {
+        if (epoll_ < 0 || timerfd_ < 0 || eventfd_ < 0) {
+            log::error("loop init failed: {}", std::strerror(errno));
+            std::exit(1);
+        }
         watch(timerfd_, EPOLLIN, [this](uint32_t) {
             uint64_t n;
             static_cast<void>(read(timerfd_, &n, sizeof n));
@@ -43,6 +51,11 @@ namespace lyren {
     void Loop::unwatch(int fd) {
         epoll_ctl(epoll_, EPOLL_CTL_DEL, fd, nullptr);
         watches_.erase(fd);
+        for (auto &e : events_) {
+            if (e.events && e.data.fd == fd) {
+                e.events = 0;
+            }
+        }
     }
 
     Loop::TimerId Loop::at(Clock::time_point when, std::move_only_function<void() &> fn) {
@@ -98,9 +111,7 @@ namespace lyren {
             const TimerId id = timer_heap_.back().id;
             timer_heap_.pop_back();
             auto node = timers_.extract(id);
-            if (node) {
-                node.mapped()();
-            }
+            node.mapped()();
         }
     }
 
@@ -133,14 +144,18 @@ namespace lyren {
     }
 
     void Loop::set_poll_hook(PollHook hook) {
+        if (hook_.fd >= 0) {
+            unwatch(hook_.fd);
+        }
         hook_ = std::move(hook);
-        epoll_event ev{.events = EPOLLIN, .data = {.fd = hook_.fd}};
-        epoll_ctl(epoll_, EPOLL_CTL_ADD, hook_.fd, &ev);
+        if (hook_.fd >= 0) {
+            epoll_event ev{.events = EPOLLIN, .data = {.fd = hook_.fd}};
+            epoll_ctl(epoll_, EPOLL_CTL_ADD, hook_.fd, &ev);
+        }
     }
 
     void Loop::run() {
         running_ = true;
-        std::array<epoll_event, 16> events;
         while (running_) {
             while (!deferred_.empty()) {
                 auto batch = std::move(deferred_);
@@ -162,19 +177,21 @@ namespace lyren {
                 break;
             }
             arm_timer(); // The Wayland prepare-read hook may have dispatched a callback that changed the timers.
-            int n = epoll_wait(epoll_, events.data(), static_cast<int>(events.size()), deferred_.empty() ? -1 : 0);
+            int n = epoll_wait(epoll_, events_.data(), static_cast<int>(events_.size()), deferred_.empty() ? -1 : 0);
             if (hook_.after) {
                 bool readable = false;
                 for (int i = 0; i < n; ++i) {
-                    readable |= events[i].data.fd == hook_.fd;
+                    readable |= events_[i].events != 0 && events_[i].data.fd == hook_.fd;
                 }
                 hook_.after(readable);
             }
             for (int i = 0; i < n; ++i) {
-                auto it = watches_.find(events[i].data.fd);
-                if (it != watches_.end()) {
+                if (!events_[i].events) {
+                    continue;
+                }
+                if (auto it = watches_.find(events_[i].data.fd); it != watches_.end()) {
                     auto fn = it->second;
-                    fn(events[i].events);
+                    fn(events_[i].events);
                 }
             }
         }

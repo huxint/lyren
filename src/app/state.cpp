@@ -2,7 +2,11 @@
 
 #include <glaze/glaze.hpp>
 
+#include <unistd.h>
+
 #include <cstdio>
+#include <filesystem>
+#include <format>
 #include <fstream>
 #include <algorithm>
 #include <utility>
@@ -71,15 +75,20 @@ namespace lyren {
     void save_state(const SavedStateView &s) {
         const std::string text = format_state(s);
         auto path = paths::state_dir() / "state.json", tmp = path;
-        tmp += ".tmp";
+        tmp += std::format(".tmp.{}", ::getpid());
         {
             std::ofstream out(tmp, std::ios::trunc);
             out << text;
+            out.close();
             if (!out) {
+                std::error_code ec;
+                std::filesystem::remove(tmp, ec);
                 return log::warn("cannot write {}", tmp.string());
             }
         }
         if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
             log::warn("cannot replace {}", path.string());
         }
     }

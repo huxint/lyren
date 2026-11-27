@@ -19,6 +19,8 @@ namespace lyren {
 
     // The queue and what plays from it: the transport, the current song's stream and lyrics, the listening history, and
     // what the desktop's media controls and the listener's account hear about it.
+    class Library;
+
     class Playback {
     public:
         using State = audio::Player::State;
@@ -35,6 +37,7 @@ namespace lyren {
         std::move_only_function<void(const Track &, bool)> on_cloud_play; // a cloud-reported listen started or settled
 
         // Answers the desktop's media controls from now on. raise brings the window forward.
+        void connect(Library &library);
         void connect(Bus &bus, std::move_only_function<void(std::string_view token)> raise);
         void save(SavedStateView &to);
         void config_changed();
@@ -155,6 +158,10 @@ namespace lyren {
         // A stream fetched ahead of its turn.
         struct Prefetched {
             std::string key;
+            Source source = Source::netease;
+            uint64_t source_gen = 0;
+            bool signed_in = false;
+            Quality quality = Quality::exhigh;
             std::shared_ptr<audio::Spool> spool;
             uint64_t gen = 0;
             Stream stream;
@@ -203,7 +210,8 @@ namespace lyren {
         int shuffle_next_ = -1;
         uint64_t rng_ = 0x2545f4914f6cdd1dull;
 
-        uint64_t play_gen_ = 0;
+        uint64_t play_gen_ = 0, queue_gen_ = 0;
+        std::array<uint64_t, platforms.size()> source_gen_{};
         uint64_t player_event_ = 0;
         State last_state_ = State::idle;
         bool want_play_ = false, fetching_ = false;

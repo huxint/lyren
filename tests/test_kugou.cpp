@@ -1,4 +1,6 @@
 #include <doctest/doctest.h>
+#include "async.hpp"
+#include "http_server.hpp"
 #include <openssl/evp.h>
 
 #include <algorithm>
@@ -211,4 +213,20 @@ TEST_CASE("KuGou KRC decodes relative word timing and keeps translations with so
     REQUIRE(lrc);
     REQUIRE(lrc->size() == 1);
     CHECK(lrc->front().text == "测试歌词");
+}
+
+TEST_CASE("KuGou can validate a session without paging through the listener's library") {
+    std::atomic<int> pages = 0;
+    test::Server server([&](std::string_view req) {
+        CHECK(req.starts_with("POST /v7/get_all_list?"));
+        return test::ok(std::format(R"({{"status":1,"data":{{"total":2,"info":[{{"listid":{}}}]}}}})", ++pages));
+    });
+    Loop loop;
+    net::Http http;
+    kugou::Kugou provider(loop, http, server.url());
+    provider.session() = {{"userid", "42"}, {"token", "unit-token"}, {"mid", "device"}, {"dfid", "registered"}};
+    const auto account = test::run(loop, provider.account());
+    REQUIRE(account);
+    CHECK(account->id == "42");
+    CHECK(pages == 1);
 }

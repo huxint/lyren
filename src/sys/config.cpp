@@ -5,7 +5,9 @@
 #include <unistd.h>
 
 #include <array>
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <iterator>
@@ -13,6 +15,7 @@
 
 #include "core/log.hpp"
 #include "core/loop.hpp"
+#include "core/string_map.hpp"
 #include "sys/paths.hpp"
 
 template <>
@@ -79,16 +82,6 @@ namespace lyren {
         std::string line = head.substr(0, colon);
         std::string code = head.substr(head.find(": ") == std::string::npos ? head.size() : head.find(": ") + 2);
         return std::format("Config line {} is invalid ({}): {}; previous settings were kept", line, code, context);
-    }
-
-    static std::string_view trim(std::string_view s) {
-        while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
-            s.remove_prefix(1);
-        }
-        while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) {
-            s.remove_suffix(1);
-        }
-        return s;
     }
 
     static size_t value_size(std::string_view text) {
@@ -167,7 +160,11 @@ namespace lyren {
     }
 
     Result<void> save_settings(ConfigFile &f, std::span<const SettingChange> changes) {
+        errno = 0;
         std::ifstream in(f.path);
+        if (!in && errno != ENOENT) {
+            return std::unexpected(std::format("Settings were not saved: could not read {} ({})", f.path.string(), std::strerror(errno)));
+        }
         std::string text = in ? std::string{std::istreambuf_iterator<char>(in), {}} : std::string(default_config_text());
         for (const auto &change : changes) {
             text = set_config_value(text, change.section, change.key, change.value);
@@ -177,15 +174,20 @@ namespace lyren {
             return std::unexpected(describe_config_error(c.error()));
         }
         auto tmp = f.path;
-        tmp += ".tmp";
+        tmp += std::format(".tmp.{}", ::getpid());
         {
             std::ofstream out(tmp, std::ios::trunc);
             out << text;
+            out.close();
             if (!out) {
+                std::error_code ec;
+                std::filesystem::remove(tmp, ec);
                 return std::unexpected("Settings were not saved: could not write " + tmp.string());
             }
         }
         if (std::rename(tmp.c_str(), f.path.c_str()) != 0) {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
             return std::unexpected("Settings were not saved: could not replace " + f.path.string());
         }
         f.config = *c;

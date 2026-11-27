@@ -54,11 +54,11 @@ namespace lyren {
         }
 
         // A cover, an avatar or a playlist's picture, fading in over its placeholder once it has loaded.
-        void cover(ui::Ui &ui, ui::Rect r, const std::string &url, float radius, std::string_view placeholder = "music");
+        void cover(ui::Ui &ui, ui::Rect r, std::string_view url, float radius, std::string_view placeholder = "music");
         // The dominant hue of a cover, 0..1; -1 for a colourless one, -2 while it is not known.
-        float cover_hue(const std::string &url, float size);
+        float cover_hue(std::string_view url, float size);
         // Loading, error and signed-out states of a page; true when one was drawn.
-        bool page_status(ui::Ui &ui, ui::Rect r, bool loading, const std::string &error, bool needs_login, Placeholder look = Placeholder::spinner);
+        bool page_status(ui::Ui &ui, ui::Rect r, bool loading, std::string_view error, bool needs_login, Placeholder look = Placeholder::spinner);
         // An empty state: an icon in a disc, a line and a quieter one under it.
         void empty(ui::Ui &ui, ui::Rect r, std::string_view icon, std::string_view title, std::string_view detail = {});
         // The size of a heart that pops when its song has just been liked.

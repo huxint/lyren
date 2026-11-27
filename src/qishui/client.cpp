@@ -34,7 +34,7 @@ namespace lyren::qishui {
     }
 
     namespace {
-        Result<Json> received(net::Response response, bool *session_expired = nullptr) {
+        Result<Json> received(const net::Response &response, bool *session_expired = nullptr) {
             if (!response.error.empty()) {
                 return std::unexpected("Network connection failed");
             }
@@ -101,8 +101,7 @@ namespace lyren::qishui {
             }
         }
         if (get("search_cdid").empty()) {
-            const auto random = crypto::random_hex(32);
-            session["search_cdid"] = std::format("{}-{}-{}-{}-{}", random.substr(0, 8), random.substr(8, 4), random.substr(12, 4), random.substr(16, 4), random.substr(20));
+            session["search_cdid"] = crypto::random_uuid();
             session["search_first_use"] = std::to_string(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
             changed = true;
         }
@@ -120,28 +119,26 @@ namespace lyren::qishui {
         if (generation != gen) {
             co_return std::unexpected("Qishui Music session changed; retry the action");
         }
-        const auto &identity = json::field(config, "identity");
-        for (std::string_view name : {"device_id", "iid", "fp"}) {
-            std::string custom = get(std::format("custom_{}", name));
-            if (!custom.empty()) {
-                session.insert_or_assign(std::string(name), std::move(custom));
-                continue;
-            }
-            auto value = json::text(json::field(identity, name));
-            if (!value.empty()) {
-                session.insert_or_assign(std::string(name), std::move(value));
-            }
-        }
-        if (get("device_id").empty() || get("iid").empty()) {
-            co_return std::unexpected("Qishui Music signer must provide device_id and iid, or include them in the connection settings");
-        }
-        if (get("fp").empty()) {
-            session["fp"] = get("device_id");
-        }
+        co_await ok(apply_identity(config));
         if (on_session) {
             on_session();
         }
         co_return Result<void>{};
+    }
+
+    Result<void> Client::apply_identity(const Json &config) {
+        const auto &identity = json::field(config, "identity");
+        for (const auto &[name, override_key] : {std::pair{"device_id", "custom_device_id"}, {"iid", "custom_iid"}, {"fp", "custom_fp"}}) {
+            const auto &custom = get(override_key);
+            session[name] = custom.empty() ? json::text(identity, name) : custom;
+        }
+        if (get("device_id").empty() || get("iid").empty()) {
+            return std::unexpected("Qishui Music signer must provide device_id and iid, or include them in the connection settings");
+        }
+        if (get("fp").empty()) {
+            session["fp"] = get("device_id");
+        }
+        return {};
     }
 
     Task<Result<Json>> Client::call(std::string path, Query query, std::optional<std::string> body, Operation operation) {
@@ -170,13 +167,7 @@ namespace lyren::qishui {
         }
         if (body) {
             headers["content-type"] = "application/json; charset=utf-8";
-            auto stub = crypto::md5_hex(*body);
-            for (auto &c : stub) {
-                if (c >= 'a' && c <= 'f') {
-                    c += 'A' - 'a';
-                }
-            }
-            headers["x-ss-stub"] = std::move(stub);
+            headers["x-ss-stub"] = crypto::md5_hex(*body, true);
         }
         if (!get("signer_url").empty()) {
             const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -255,23 +246,24 @@ namespace lyren::qishui {
         if (generation != gen) {
             co_return std::unexpected("Qishui Music session changed; retry the action");
         }
-        if (!response.cookies.empty()) {
-            cookies_.merge(baseline, response.cookie_jar);
-            session["cookie_jar"] = cookies_.netscape();
-            if (on_session) {
-                on_session();
-            }
-        }
         bool expired = false;
-        auto result = received(std::move(response), &expired);
-        if (expired && logged_in()) {
+        auto result = received(response, &expired);
+        if (expired && (!get("user_id").empty() || !get("cookie_jar").empty())) {
             ++generation;
             session.erase("cookie_jar");
             session.erase("user_id");
             cookies_ = {};
-            if (on_session) {
-                on_session();
+            if (on_expired) {
+                on_expired();
             }
+        } else if (!expired && !response.cookies.empty()) {
+            cookies_.merge(baseline, response.cookie_jar);
+            session["cookie_jar"] = cookies_.netscape();
+        } else {
+            co_return result;
+        }
+        if (on_session) {
+            on_session();
         }
         co_return result;
     }

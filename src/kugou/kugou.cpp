@@ -5,6 +5,7 @@
 #include <cctype>
 #include <chrono>
 #include <format>
+#include <ranges>
 #include <unordered_set>
 
 #include "core/crypto.hpp"
@@ -259,6 +260,9 @@ namespace lyren::kugou {
     } // namespace
 
     Result<Batch> parse_search(std::string_view body, SearchKind kind, int offset, int limit) {
+        if (kind != SearchKind::tracks && kind != SearchKind::albums && kind != SearchKind::playlists) {
+            return std::unexpected("Unsupported search category");
+        }
         auto parsed = parse_response(body);
         if (!parsed) {
             return std::unexpected(parsed.error());
@@ -296,7 +300,7 @@ namespace lyren::kugou {
         return result;
     }
 
-    Result<std::vector<Track>> parse_metadata(std::string_view body, std::span<const std::string> hashes) {
+    Result<std::vector<Track>> parse_metadata(std::string_view body, std::span<const std::string> hashes, bool allow_missing) {
         auto parsed = parse_response(body);
         if (!parsed) {
             return std::unexpected(parsed.error());
@@ -310,6 +314,10 @@ namespace lyren::kugou {
         for (const auto &hash : hashes) {
             const auto *row = metadata_row(*index, hash, hashes.size() == 1);
             if (!row) {
+                if (allow_missing) {
+                    result.emplace_back();
+                    continue;
+                }
                 return std::unexpected("KuGou Music could not match the requested song details");
             }
             result.push_back(metadata_track(*row));
@@ -346,8 +354,8 @@ namespace lyren::kugou {
         return result;
     }
 
-    Kugou::Kugou(Loop &loop, net::Http &http)
-    : client(loop, http) {
+    Kugou::Kugou(Loop &loop, net::Http &http, std::string base_url)
+    : client(loop, http, std::move(base_url)) {
         capabilities.search = {true, true, false, true};
         capabilities.toplists = true;
         capabilities.square = true;
@@ -366,11 +374,21 @@ namespace lyren::kugou {
         co_return co_await client.ensure_device();
     }
 
+    static Task<Result<Value>> playlist_page(Client &client, int page, int page_size) {
+        auto query = client.common();
+        query.insert({{"plat", "1"}, {"userid", client.get("userid")}, {"token", client.get("token")}});
+        Value body{{"userid", client.get("userid")}, {"token", client.get("token")}, {"total_ver", 979}, {"type", 2}, {"page", page}, {"pagesize", page_size}};
+        co_return parse_response(co_await ok(co_await client.send(request("https://gateway.kugou.com/v7/get_all_list", query, json::write(body), android_salt,
+                                                                          client.headers(query, "cloudlist.service.kugou.com")))),
+                                 true);
+    }
+
     Task<Result<Account>> Kugou::account() {
         if (!logged_in()) {
             co_return std::unexpected("Sign in to KuGou Music and try again");
         }
-        (void)co_await ok(co_await account_playlists());
+        co_await ok(co_await client.ensure_device());
+        (void)co_await ok(co_await playlist_page(client, 1, 1));
         co_return Account{client.get("userid"), client.get("nickname"), client.get("avatar")};
     }
 
@@ -467,8 +485,8 @@ namespace lyren::kugou {
     }
 
     Task<Result<Batch>> Kugou::search(std::string query, SearchKind kind, int offset, int limit) {
-        if (kind == SearchKind::artists) {
-            co_return std::unexpected("KuGou Music artist search is unavailable");
+        if (!capabilities.supports_search(kind)) {
+            co_return std::unexpected("Unsupported search category");
         }
         Params params{{"keyword", std::move(query)}, {"page", std::to_string(offset / limit + 1)}, {"pagesize", std::to_string(limit)}};
         std::string url;
@@ -506,20 +524,15 @@ namespace lyren::kugou {
                        {"clienttime", milliseconds()},
                        {"key", std::string(android_salt)},
                        {"fields", "album_info,author_name,audio_info,ori_audio_name,base,songname,classification"}};
-            auto reply = co_await ok(co_await client.send(request("http://gateway.kugou.com/v3/album_audio/audio", {}, json::write(body), {},
+            auto reply = co_await ok(co_await client.send(request("https://gateway.kugou.com/v3/album_audio/audio", {}, json::write(body), {},
                                                                   {"x-router: kmr.service.kugou.com", "KG-THash: 13a3164", "KG-RC: 1", "KG-Fake: 0", "KG-RF: 00869891",
                                                                    "User-Agent: Android712-AndroidPhone-11451-376-0-FeeCacheUpdate-wifi"})));
-            auto parsed = co_await ok(parse_response(reply));
-            auto index = co_await ok(index_metadata(response_data(parsed)));
-            for (const auto &hash : batch) {
-                if (const auto *row = metadata_row(index, hash, batch.size() == 1)) {
-                    result.push_back(metadata_track(*row));
-                } else {
-                    if (batch.size() == 1) {
-                        co_return std::unexpected("KuGou Music could not match the requested song details");
-                    }
-                    result.push_back(co_await ok(co_await song_detail(hash)));
+            auto songs = co_await ok(parse_metadata(reply, batch, batch.size() > 1));
+            for (auto [i, song] : std::views::enumerate(songs)) {
+                if (song.id.empty()) {
+                    song = co_await ok(co_await song_detail(batch[i]));
                 }
+                result.push_back(std::move(song));
             }
         }
         co_return result;
@@ -594,7 +607,7 @@ namespace lyren::kugou {
         if (logged_in()) {
             auto auth_query = client.common();
             auth_query.insert({{"userid", client.get("userid")}, {"token", client.get("token")}, {"module_id", "51"}});
-            auto user_auth = co_await ok(parse_response(co_await ok(co_await client.send(request("http://gateway.kugou.com/v1/user_verify", auth_query, {}, android_salt,
+            auto user_auth = co_await ok(parse_response(co_await ok(co_await client.send(request("https://gateway.kugou.com/v1/user_verify", auth_query, {}, android_salt,
                                                                                                  client.headers(auth_query, "trackercdngz.kugou.com")))),
                                                         true));
             auto authorization = text(field(user_auth, "data"), "auth");
@@ -604,7 +617,7 @@ namespace lyren::kugou {
             auth_query.insert({{"authorization", std::move(authorization)}, {"hash", hash}, {"album_audio_id", query.at("album_audio_id")}});
             auth_query["clientver"] = "11561";
             auto track_auth = co_await ok(parse_response(co_await ok(
-                co_await client.send(request("http://gateway.kugou.com/v1/authorization", auth_query, {}, android_salt, client.headers(auth_query, "trackercdngz.kugou.com"))))));
+                co_await client.send(request("https://gateway.kugou.com/v1/authorization", auth_query, {}, android_salt, client.headers(auth_query, "trackercdngz.kugou.com"))))));
             const auto &data = field(track_auth, "data");
             const auto auth = text(data, "auth"), open_time = text(data, "open_time");
             if (auth.empty() || open_time.empty()) {
@@ -621,7 +634,7 @@ namespace lyren::kugou {
         if (json::number(field(full, "status")) != 2) {
             co_return parse_stream(reply, false, granted);
         }
-        // Observed KG-39 responses use status=2 for a denied full track. Only request a preview
+        // The service uses status=2 for a denied full track. Only request a preview
         // when the service actually supplies its playable interval; this does not grant full playback.
         const auto &offset = field(full, "hash_offset").is_null() ? field(field(resource, "trans_param"), "hash_offset") : field(full, "hash_offset");
         if (json::number(field(offset, "end_ms")) <= json::number(field(offset, "start_ms"))) {
@@ -640,7 +653,10 @@ namespace lyren::kugou {
     }
 
     Task<Result<std::vector<LyricLine>>> Kugou::lyrics(Track track) {
-        Params query{{"ver", "1"}, {"man", "yes"}, {"client", "pc"}, {"keyword", track.title}, {"hash", track.id}, {"timelength", std::to_string(track.duration)}, {"lrctxt", "1"}};
+        Params query{{"ver", "1"},       {"man", "yes"},
+                     {"client", "pc"},   {"keyword", track.title},
+                     {"hash", track.id}, {"timelength", std::to_string(static_cast<int64_t>(track.duration) * 1000)},
+                     {"lrctxt", "1"}};
         auto parsed = co_await ok(parse_json(co_await ok(co_await client.send(request("http://lyrics.kugou.com/search", std::move(query), {}, {}, lyric_headers())))));
         const auto candidates = array(field(parsed, "candidates"));
         if (candidates.empty()) {
@@ -981,12 +997,7 @@ namespace lyren::kugou {
         std::unordered_set<std::string> ids;
         int total = -1;
         for (int page = 1;; ++page) {
-            auto query = client.common();
-            query.insert({{"plat", "1"}, {"userid", client.get("userid")}, {"token", client.get("token")}});
-            Value body{{"userid", client.get("userid")}, {"token", client.get("token")}, {"total_ver", 979}, {"type", 2}, {"page", page}, {"pagesize", 100}};
-            auto parsed = co_await ok(parse_response(co_await ok(co_await client.send(request("https://gateway.kugou.com/v7/get_all_list", query, json::write(body), android_salt,
-                                                                                              client.headers(query, "cloudlist.service.kugou.com")))),
-                                                     true));
+            auto parsed = co_await ok(co_await playlist_page(client, page, 100));
             const auto &data = field(parsed, "data"), &rows = first(data, {"info", "list"});
             if (!rows.is_array()) {
                 co_return std::unexpected("KuGou Music returned an incomplete account library");

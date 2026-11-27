@@ -24,6 +24,7 @@ namespace lyren::encoding {
 
     void append_url_encoded(std::string &out, std::string_view value, UrlStyle style = UrlStyle::rfc3986);
     std::string url_encode(std::string_view value, UrlStyle style = UrlStyle::rfc3986);
+    std::string url_decode(std::string_view value, UrlStyle style = UrlStyle::rfc3986);
 
     template <class Range>
     std::string query_string(const Range &fields, UrlStyle style = UrlStyle::rfc3986) {

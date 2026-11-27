@@ -36,6 +36,10 @@ namespace lyren {
     std::vector<LyricLine> parse_qrc(std::string_view qrc, std::string_view translation = {});
     // Uncompressed KRC: relative <offset,duration,0> word timing and an optional Base64 translation payload.
     std::vector<LyricLine> parse_krc(std::string_view text);
+    // LRC mixed with "[start,duration]text<start,duration>word…" absolute ms lines (Qishui).
+    std::vector<LyricLine> parse_timed_lrc(std::string_view text);
+    // Kuwo LRCx ("[kuwo:octal]" key with "<a,b>word" tags and "<0,0>translation" lines).
+    std::vector<LyricLine> parse_kuwo(std::string_view text);
 
     // Index of the line playing at t, or -1 before the first.
     int lyric_at(const std::vector<LyricLine> &lines, double t);

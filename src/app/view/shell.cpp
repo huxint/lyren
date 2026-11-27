@@ -54,31 +54,10 @@ namespace lyren {
         playback.on_change = [this] {
             changed();
         };
-        // A radio has no queue to walk: its platform says what comes next.
-        playback.on_radio_skip = [this](Source source) {
-            if (library.advance_radio(source)) {
-                const auto &shelf = library.shelf(source);
-                playback.play_radio(source, shelf.radio, shelf.radio_pos);
-            } else {
-                playback.stop();
-            }
-        };
-        playback.on_cloud_play = [this](const Track &track, bool settled) {
-            library.note_cloud_play(track, settled);
-        };
+        playback.connect(library);
         browser.on_change = [this] {
             changed();
         };
-        library.subscribe([this](const Library::Event &event) {
-            if (event.kind == Library::Event::Kind::left) {
-                playback.forget(event.source);
-            } else if (event.kind == Library::Event::Kind::radio_ready && playback.radio(event.source)) {
-                const auto &shelf = library.shelf(event.source);
-                if (shelf.radio_pos >= 0 && shelf.radio_pos < static_cast<int>(shelf.radio.size())) {
-                    playback.play_radio(event.source, shelf.radio, shelf.radio_pos);
-                }
-            }
-        });
         playback.connect(d.bus, std::move(d.raise));
     }
 

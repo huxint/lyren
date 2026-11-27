@@ -13,6 +13,7 @@
 #include <string_view>
 #include <thread>
 
+#include "async.hpp"
 #include "audio/spool.hpp"
 #include "core/task.hpp"
 #include "net/fetch.hpp"
@@ -27,17 +28,7 @@ namespace {
     net::Response request_with_retry(net::Request req, net::Retry retry) {
         Loop loop;
         net::Http http;
-        std::optional<net::Response> result;
-        loop.after(5s, [&] {
-            loop.quit();
-        });
-        spawn([](Loop *loop, net::Http *http, net::Request req, net::Retry retry, std::optional<net::Response> *result) -> Task<void> {
-            *result = co_await net::fetch_retry(*loop, *http, std::move(req), retry);
-            loop->quit();
-        }(&loop, &http, std::move(req), retry, &result));
-        loop.run();
-        REQUIRE(result);
-        return std::move(*result);
+        return test::run(loop, net::fetch_retry(loop, http, std::move(req), retry));
     }
 
 } // namespace
@@ -124,26 +115,6 @@ TEST_CASE("fetch resumes on the loop thread and preserves cookies across redirec
     CHECK(result->cookies == std::vector<std::string>{"first=one; Path=/", "second=two; Path=/"});
     CHECK(result->location.empty());
     CHECK(resumed_on == std::this_thread::get_id());
-}
-
-TEST_CASE("an HTTP client wakes for a new request after the previous one finishes") {
-    Server server([](std::string_view) {
-        return ok("ready");
-    });
-    net::Http http;
-    for (int i = 0; i < 2; ++i) {
-        CAPTURE(i);
-        auto response = std::make_shared<std::promise<net::Response>>();
-        auto ready = response->get_future();
-        http.request({.url = server.url()}, [response](net::Response r) {
-            response->set_value(std::move(r));
-        });
-        REQUIRE(ready.wait_for(2s) == std::future_status::ready);
-        auto r = ready.get();
-        CHECK(r.status == 200);
-        CHECK(r.body == "ready");
-        CHECK(r.error.empty());
-    }
 }
 
 TEST_CASE("cookie sessions preserve domain and path scopes across separate requests") {
@@ -267,6 +238,30 @@ TEST_CASE("chunked audio downloads expose the exact bytes and final size") {
     CHECK(spool->error().empty());
 }
 
+TEST_CASE("HTTP rejects a 206 with an incomplete range field before publishing its bytes") {
+    Server server([](std::string_view) {
+        return std::string("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4x-5/6\r\nContent-Length: 2\r\nConnection: close\r\n\r\nxy");
+    });
+    std::promise<std::string> done;
+    auto future = done.get_future();
+    net::Http http;
+    http.stream({.url = server.url(), .from = 4}, {.head =
+                                                       [](uint64_t, uint64_t) {
+                                                           FAIL_CHECK("Malformed range was published");
+                                                       },
+                                                   .data =
+                                                       [](uint64_t, std::span<const std::byte>) {
+                                                           FAIL_CHECK("Malformed range data was published");
+                                                       },
+                                                   .done =
+                                                       [&](long status, std::string error) {
+                                                           CHECK(status == 206);
+                                                           done.set_value(std::move(error));
+                                                       }});
+    REQUIRE(future.wait_for(2s) == std::future_status::ready);
+    CHECK_FALSE(future.get().empty());
+}
+
 TEST_CASE("HTTP byte ranges retain the response offset and resource size") {
     const std::string body = "range data";
     Server server([&](std::string_view) {
@@ -304,7 +299,7 @@ TEST_CASE("HTTP byte ranges retain the response offset and resource size") {
     CHECK(bytes == body);
 }
 
-TEST_CASE("partial audio responses fill subsequent gaps without overwriting earlier bytes") {
+TEST_CASE("partial audio responses fill subsequent gaps even when the first segment omits the total") {
     std::string body(6145, '\0');
     for (size_t i = 0; i < body.size(); ++i) {
         body[i] = static_cast<char>(i % 251);
@@ -314,9 +309,10 @@ TEST_CASE("partial audio responses fill subsequent gaps without overwriting earl
         uint64_t from = 0;
         std::from_chars(request.data() + start, request.data() + request.find('-', start), from);
         size_t end = std::min<size_t>(from + 2048, body.size());
+        const auto total = from == 0 ? "*" : std::to_string(body.size());
         return std::format("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\n"
                            "Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                           from, end - 1, body.size(), end - from, body.substr(from, end - from));
+                           from, end - 1, total, end - from, body.substr(from, end - from));
     });
     net::Http http;
     auto spool = audio::Spool::url(http, server.url());

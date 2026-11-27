@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <span>
 
+#include "core/log.hpp"
 #include "wl/display.hpp"
 
 namespace lyren::wl {
@@ -64,7 +65,10 @@ namespace lyren::wl {
             unsetenv("XDG_ACTIVATION_TOKEN");
         }
         while (!needs_ack_) {
-            wl_display_dispatch(display_.display);
+            if (wl_display_dispatch(display_.display) < 0) {
+                log::error("Wayland connection lost");
+                std::exit(1);
+            }
         }
     }
 

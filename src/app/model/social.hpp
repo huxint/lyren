@@ -104,10 +104,11 @@ namespace lyren {
         std::shared_ptr<Page> find_page(const Card &who, bool touch);
         std::shared_ptr<Page> create(Card who, const Page *previous = nullptr, bool reloading = false);
         Task<void> load_profile(std::shared_ptr<Page> page, bool reloading = false);
-        Task<void> fetch_people(std::shared_ptr<Page> page, bool fans, uint64_t gen);
+        Task<void> fetch_people(std::shared_ptr<Page> page, bool fans);
         Task<void> fetch_chart(std::shared_ptr<Page> page, int tab);
         Task<void> load_playlists(std::shared_ptr<Page> page);
-        Task<void> fetch_posts(std::shared_ptr<Posts> list, Source source, std::string author, uint64_t gen);
+        Task<void> fetch_posts(std::shared_ptr<Posts> list, Source source, std::string author);
+        void settle_likes(Source source, const std::vector<Post> &posts);
         // The account's own pages show what it has just posted.
         void refresh_own(Source source);
         template <class F>

@@ -23,10 +23,11 @@ namespace lyren::audio {
     // A PipeWire playback stream fed from a one-second ring. The decoder thread writes, PipeWire's realtime thread reads.
     class Output {
     public:
-        // Both run on PipeWire's (non-realtime) thread.
+        // Run on PipeWire's (non-realtime) thread.
         struct Events {
-            std::move_only_function<void()> drained;     // the last frame after finish() has played
-            std::move_only_function<void(float)> volume; // linear volume changed elsewhere (desktop mixer)
+            std::move_only_function<void(uint64_t)> drained;            // the last frame after finish() has played
+            std::move_only_function<void(float)> volume;                // linear volume changed elsewhere (desktop mixer)
+            std::move_only_function<void(uint64_t, std::string)> error; // PipeWire stream entered error state
         };
 
         // wake is bumped and notified when space frees up while set_waiting(true).
@@ -36,14 +37,14 @@ namespace lyren::audio {
         Output &operator=(const Output &) = delete;
 
         // Decoder thread.
-        Result<void> start(Format f);     // checks PipeWire's channel limit, then starts or recreates the stream
-        void flush(uint64_t first_frame); // seek: drops queued audio, the next written frame is first_frame
+        Result<void> start(Format f, uint64_t generation); // checks PipeWire's channel limit, then starts or recreates the stream
+        void flush(uint64_t first_frame);                  // seek: drops queued audio, the next written frame is first_frame
         size_t space() const;
         size_t capacity() const {
             return cap_;
         }
         void write(const float *frames, size_t n); // n <= space()
-        void finish();                             // end of stream after the last write
+        void finish(uint64_t sequence);            // end of stream after the last write
         void set_waiting(bool w) {
             waiting_.store(w, std::memory_order_relaxed);
         }
@@ -76,13 +77,14 @@ namespace lyren::audio {
 
         std::atomic<uint32_t> &wake_;
         Events ev_;
+        uint64_t generation_ = 0; // protected by the PipeWire loop lock
         pw_thread_loop *loop_ = nullptr;
         pw_context *context_ = nullptr;
         pw_core *core_ = nullptr;
         pw_stream *stream_ = nullptr;
         spa_hook listener_{};
         Format fmt_;
-        std::atomic<bool> active_{false}, waiting_{false}, volume_ready_{false};
+        std::atomic<bool> active_{false}, waiting_{false}, volume_ready_{false}, stream_error_{false};
         float volume_ = 1;
         std::atomic<float> gain_{1};
         std::string name_ = "Lyren";
@@ -96,6 +98,8 @@ namespace lyren::audio {
         alignas(cache_line_bytes) std::atomic<uint64_t> w_{0};
         // A flush is published as (drop_to, base) then a new flush_seq_; the reader applies it before its next read.
         std::atomic<uint64_t> drop_to_{0}, base_{0}, eos_{UINT64_MAX};
+        // The completion belongs to the segment that triggered a drain, even after a seek.
+        std::atomic<uint64_t> eos_sequence_{0}, drain_sequence_{0};
         std::atomic<uint32_t> flush_seq_{0};
 
         alignas(cache_line_bytes) std::atomic<uint64_t> r_{0};

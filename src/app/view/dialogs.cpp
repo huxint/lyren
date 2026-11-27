@@ -39,9 +39,7 @@ namespace lyren {
             ui.label({r.x, y + 22, r.w - 60, 18}, lyren::tr("Only you can see it"), t.style(type::caption, t.text_dim));
             ui.toggle(ui.id("playlist-hidden"), {r.right() - 40, y + 9, 40, 22}, edit_hidden_);
         }
-        std::string name = edit_name_;
-        name.erase(0, name.find_first_not_of(' '));
-        name.erase(name.find_last_not_of(' ') + 1);
+        const auto name = trim(edit_name_);
         const bool busy = library_.writing(edit_source_, card.id);
         submit |= dialog_actions(ui, r, create ? lyren::tr("Create") : lyren::tr("Save changes"), !busy && !name.empty());
         if (!submit || name.empty() || busy || !ui.modal_open()) {
@@ -49,9 +47,9 @@ namespace lyren {
         }
         ui.close_modal();
         if (create) {
-            spawn(library_.create_playlist(edit_source_, std::move(name), edit_hidden_, std::move(tracks)));
+            spawn(library_.create_playlist(edit_source_, std::string(name), edit_hidden_, std::move(tracks)));
         } else if (name != card.title) {
-            spawn(library_.rename_playlist(card, std::move(name)));
+            spawn(library_.rename_playlist(card, std::string(name)));
         }
     }
 
@@ -62,7 +60,7 @@ namespace lyren {
         });
     }
 
-    void Dialogs::pick_playlist(ui::Ui &ui, std::vector<Track> tracks) {
+    void Dialogs::pick_playlist(ui::Ui &ui, std::vector<Track> tracks, uint64_t selection_tag) {
         if (tracks.empty()) {
             return;
         }
@@ -71,12 +69,12 @@ namespace lyren {
             return ui.toast(lyren::trf("Sign in to {} to add songs to a playlist", lyren::tr(platform(source).name)), "folder-plus");
         }
         std::string sub = tracks.size() == 1 ? tracks.front().title + " · " + tracks.front().artist : lyren::trf("{} songs · {}", tracks.size(), lyren::tr(platform(source).name));
-        ui.open_modal(420, 480, [this, source, sub = std::move(sub), tracks = std::move(tracks)](ui::Ui &u, Rect r) mutable {
-            picker(u, r, source, sub, tracks);
+        ui.open_modal(420, 480, [this, source, selection_tag, sub = std::move(sub), tracks = std::move(tracks)](ui::Ui &u, Rect r) mutable {
+            picker(u, r, source, sub, tracks, selection_tag);
         });
     }
 
-    void Dialogs::picker(ui::Ui &ui, Rect r, Source source, std::string_view sub, std::vector<Track> &tracks) {
+    void Dialogs::picker(ui::Ui &ui, Rect r, Source source, std::string_view sub, std::vector<Track> &tracks, uint64_t selection_tag) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         dialog_title(ui, r, lyren::tr("Add to playlist"), sub);
@@ -139,7 +137,7 @@ namespace lyren {
             edit_playlist(ui, {}, std::move(tracks));
         } else if (picked) {
             ui.close_modal();
-            browser_.add_to_playlist(std::move(tracks), std::move(*picked));
+            browser_.add_to_playlist(std::move(tracks), std::move(*picked), selection_tag);
         }
     }
 

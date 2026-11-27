@@ -26,6 +26,7 @@ namespace lyren {
 
         Loop &loop_;
         sd_bus *bus_ = nullptr;
+        int fd_ = -1;
         uint32_t events_ = 0;
         uint64_t timeout_ = UINT64_MAX;
         Loop::TimerId timer_ = 0;

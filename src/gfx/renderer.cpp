@@ -617,14 +617,14 @@ namespace lyren::gfx {
         for (size_t i = 0; i < copies_.size();) {
             TextureId id = copies_[i].tex;
             size_t j = i;
-            std::vector<VkBufferImageCopy> regions;
+            upload_regions_.clear();
             while (j < copies_.size() && copies_[j].tex == id) {
-                regions.push_back(copies_[j++].region);
+                upload_regions_.push_back(copies_[j++].region);
             }
             Texture &t = textures_[id];
             image_barrier(cmd, t.image, t.layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT,
                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
-            vkCmdCopyBufferToImage(cmd, staging_.buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(regions.size()), regions.data());
+            vkCmdCopyBufferToImage(cmd, staging_.buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(upload_regions_.size()), upload_regions_.data());
             image_barrier(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             t.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;

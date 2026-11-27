@@ -126,7 +126,6 @@ namespace lyren::audio {
 
         std::mutex m_;
         std::vector<Cmd> cmds_;
-        std::atomic<uint64_t> writing_gen_{0};
         std::thread thread_;
     };
 

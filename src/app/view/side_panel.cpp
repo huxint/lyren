@@ -70,7 +70,7 @@ namespace lyren {
         const float title_w = p.measure(lyren::tr("Queue"), title);
         ui.label({r.x + 20, r.y + 16, title_w + 1, 28}, lyren::tr("Queue"), title);
         if (!songs.empty()) {
-            ui.label({r.x + 28 + title_w, r.y + 17, 80, 28}, std::to_string(songs.size()), t.style(type::label, t.faint(), text::tabular_nums));
+            ui.label({r.x + 28 + title_w, r.y + 17, 80, 28}, int_text(songs.size()), t.style(type::label, t.faint(), text::tabular_nums));
             const std::string_view clear = lyren::tr("Clear");
             const float w = ui.button_width(clear);
             if (ui.button(ui.id("queue-clear"), {r.right() - 14 - w, r.y + 16, w, ui::control::small}, clear, ui::ButtonKind::ghost)) {

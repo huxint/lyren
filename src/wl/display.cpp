@@ -21,27 +21,27 @@ namespace lyren::wl {
         auto is = [&](const wl_interface &i) {
             return std::string_view(iface) == i.name;
         };
-        if (is(wl_compositor_interface)) {
+        if (is(wl_compositor_interface) && !d->compositor) {
             bind(reg, name, &wl_compositor_interface, ver, 6, d->compositor);
-        } else if (is(xdg_wm_base_interface)) {
+        } else if (is(xdg_wm_base_interface) && !d->wm_base) {
             bind(reg, name, &xdg_wm_base_interface, ver, 6, d->wm_base);
         } else if (is(wl_seat_interface) && !d->seat) {
             bind(reg, name, &wl_seat_interface, ver, 9, d->seat);
-        } else if (is(wp_viewporter_interface)) {
+        } else if (is(wp_viewporter_interface) && !d->viewporter) {
             bind(reg, name, &wp_viewporter_interface, ver, 1, d->viewporter);
-        } else if (is(wp_fractional_scale_manager_v1_interface)) {
+        } else if (is(wp_fractional_scale_manager_v1_interface) && !d->fractional_scale) {
             bind(reg, name, &wp_fractional_scale_manager_v1_interface, ver, 1, d->fractional_scale);
-        } else if (is(wp_cursor_shape_manager_v1_interface)) {
+        } else if (is(wp_cursor_shape_manager_v1_interface) && !d->cursor_shape) {
             bind(reg, name, &wp_cursor_shape_manager_v1_interface, ver, 1, d->cursor_shape);
-        } else if (is(zxdg_decoration_manager_v1_interface)) {
+        } else if (is(zxdg_decoration_manager_v1_interface) && !d->decoration) {
             bind(reg, name, &zxdg_decoration_manager_v1_interface, ver, 1, d->decoration);
-        } else if (is(zwp_text_input_manager_v3_interface)) {
+        } else if (is(zwp_text_input_manager_v3_interface) && !d->text_input) {
             bind(reg, name, &zwp_text_input_manager_v3_interface, ver, 1, d->text_input);
-        } else if (is(xdg_activation_v1_interface)) {
+        } else if (is(xdg_activation_v1_interface) && !d->activation) {
             bind(reg, name, &xdg_activation_v1_interface, ver, 1, d->activation);
-        } else if (is(zwlr_layer_shell_v1_interface)) {
+        } else if (is(zwlr_layer_shell_v1_interface) && !d->layer_shell) {
             bind(reg, name, &zwlr_layer_shell_v1_interface, ver, 4, d->layer_shell);
-        } else if (is(wl_data_device_manager_interface)) {
+        } else if (is(wl_data_device_manager_interface) && !d->data_device_manager) {
             bind(reg, name, &wl_data_device_manager_interface, ver, 3, d->data_device_manager);
         }
     }
@@ -97,8 +97,27 @@ namespace lyren::wl {
     }
 
     Display::~Display() {
+        loop.set_poll_hook({});
         clipboard.reset();
         input.reset();
+        // Disconnect releases the server objects. Drop the client-side global proxies first.
+        auto release = [](auto *proxy) {
+            if (proxy) {
+                wl_proxy_destroy(reinterpret_cast<wl_proxy *>(proxy));
+            }
+        };
+        release(layer_shell);
+        release(activation);
+        release(text_input);
+        release(decoration);
+        release(cursor_shape);
+        release(fractional_scale);
+        release(viewporter);
+        release(data_device_manager);
+        release(seat);
+        release(wm_base);
+        release(compositor);
+        release(registry);
         wl_display_flush(display);
         wl_display_disconnect(display);
     }

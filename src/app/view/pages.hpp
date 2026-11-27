@@ -24,10 +24,9 @@ namespace lyren {
         // the fade of.
         bool page_tabs(ui::Ui &ui, ui::Id id, ui::Rect r, std::span<const std::string_view> labels, int &selected, std::span<const bool> enabled = {});
         float tab_enter(ui::Ui &ui, ui::Rect &content) const;
-        // "5/17", for today's mix.
-        std::string date_label() const;
 
     private:
+        std::string date_label() const;
         void recommend_page(ui::Ui &ui, ui::Rect r);
         void toplist_page(ui::Ui &ui, ui::Rect r);
         void square_page(ui::Ui &ui, ui::Rect r);
@@ -37,7 +36,7 @@ namespace lyren {
         void dislikes_page(ui::Ui &ui, ui::Rect r);
         void artist_page(ui::Ui &ui, ui::Rect r);
         void search_page(ui::Ui &ui, ui::Rect r);
-        void list_page(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, bool loading, const std::string &error, double since);
+        void list_page(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, bool loading, std::string_view error, double since);
         // card_grid in its own scrolling view; near_end tells when the last rows are close.
         int grid_view(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Card> &cards, bool round, double since, bool more, bool &near_end);
         struct HeroSlot {

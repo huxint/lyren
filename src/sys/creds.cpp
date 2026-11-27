@@ -79,7 +79,9 @@ namespace lyren::creds {
                         close(fd);
                         fd = -1;
                     }
-                    h.resume();
+                    if (auto handle = std::exchange(h, {})) {
+                        handle.resume();
+                    }
                 }
             };
 
@@ -87,20 +89,25 @@ namespace lyren::creds {
             std::string request;
             std::shared_ptr<State> state;
 
+            ~Call() {
+                if (state && !state->done) {
+                    state->h = {};
+                    state->finish();
+                }
+            }
+
             bool await_ready() const noexcept {
                 return false;
             }
-            void await_suspend(std::coroutine_handle<> h) {
+            bool await_suspend(std::coroutine_handle<> h) {
                 state = std::make_shared<State>(State{.loop = loop, .request = std::move(request), .h = h});
                 state->request += '\0';
                 state->fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
                 if (state->fd < 0) {
                     state->error = std::format("systemd-creds: {}", std::strerror(errno));
                     state->done = true;
-                    loop.defer([h] {
-                        h.resume();
-                    });
-                    return;
+                    state->h = {};
+                    return false;
                 }
                 sockaddr_un addr{.sun_family = AF_UNIX, .sun_path = "/run/systemd/io.systemd.Credentials"};
                 if (connect(state->fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) < 0 && errno != EINPROGRESS && errno != EAGAIN) {
@@ -108,10 +115,8 @@ namespace lyren::creds {
                     close(state->fd);
                     state->fd = -1;
                     state->done = true;
-                    loop.defer([h] {
-                        h.resume();
-                    });
-                    return;
+                    state->h = {};
+                    return false;
                 }
                 state->timer = loop.after(2s, [s = state] {
                     s->finish("systemd-creds: timed out");
@@ -162,6 +167,7 @@ namespace lyren::creds {
                         pump_read(s);
                     }
                 });
+                return true;
             }
             void await_resume() const noexcept {}
         };
@@ -419,20 +425,19 @@ namespace lyren::creds {
             bool await_ready() const noexcept {
                 return false;
             }
-            void await_suspend(std::coroutine_handle<> h) {
+            bool await_suspend(std::coroutine_handle<> h) {
                 shared = std::make_shared<BlobWriter::Completion>();
                 shared->efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
                 if (shared->efd < 0) {
                     shared->result = blob_writer().write_sync(std::move(blob), seq);
                     shared->done = true;
-                    loop.defer([h] {
-                        h.resume();
-                    });
-                    return;
+                    return false;
                 }
                 loop.watch(shared->efd, EPOLLIN, [&loop = loop, s = shared, h](uint32_t) {
                     uint64_t v = 0;
-                    static_cast<void>(read(s->efd, &v, sizeof v));
+                    if (read(s->efd, &v, sizeof v) != sizeof v) {
+                        return;
+                    }
                     loop.unwatch(s->efd);
                     if (!s->done) {
                         s->done = true;
@@ -440,6 +445,7 @@ namespace lyren::creds {
                     }
                 });
                 blob_writer().submit(std::move(blob), seq, shared);
+                return true;
             }
             Result<void> await_resume() noexcept {
                 return std::move(shared->result);

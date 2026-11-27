@@ -45,6 +45,8 @@ namespace lyren::qishui {
 
     private:
         friend class Qishui;
+        Result<void> apply_identity(const Json &config);
+        std::move_only_function<void()> on_expired;
         Task<Result<Json>> signer(std::string path, std::optional<std::string> body = {});
         Task<Result<Json>> send(net::Request request, net::Retry retry);
         net::CookieJar cookies_;

@@ -149,6 +149,7 @@ namespace lyren::gfx {
         std::vector<TextureId> free_slots_;
         uint64_t texture_version_ = 0;
         std::vector<Copy> copies_;
+        std::vector<VkBufferImageCopy> upload_regions_;
         Staging staging_;
         std::vector<Retired> retired_;
         uint64_t submitted_ = 0, completed_ = 0;

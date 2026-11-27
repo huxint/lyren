@@ -49,6 +49,7 @@ namespace lyren::audio {
         uint64_t size(); // blocks until known; 0 on failure
 
         void close(); // any thread: stops the download and wakes readers for good
+        bool closed() const;
         void invalidate_cache();
         std::string error() const;
         long status() const; // HTTP status of a failed download, 0 for network errors
@@ -72,7 +73,7 @@ namespace lyren::audio {
         std::condition_variable cv_;
         Ranges have_;
         uint64_t size_ = unknown;
-        bool closed_ = false, waiting_ = false, no_ranges_ = false;
+        bool closed_ = false, waiting_ = false, no_ranges_ = false, progressed_ = false;
         std::string error_;
         net::Http::Id http_id_ = 0; // running request, numbered req_
         uint64_t req_ = 0;

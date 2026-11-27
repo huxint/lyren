@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -24,15 +25,17 @@ namespace lyren::ncm {
     struct Reply {
         long code = 0; // business code, or the HTTP status when the body has none
         std::string body;
-        std::string error; // empty on success
+        std::string error;     // empty on success
+        bool has_code = false; // writes require an explicit business acknowledgement
     };
 
     // The cookie session and the official API request encodings.
     class Client {
     public:
-        Client(Loop &loop, net::Http &http)
+        Client(Loop &loop, net::Http &http, std::string base_url = {})
         : loop_(loop),
-          http_(http) {}
+          http_(http),
+          base_url_(std::move(base_url)) {}
 
         // The whole session including the device fingerprint; persisted with the credentials.
         StringMap<std::string> cookies;
@@ -46,16 +49,18 @@ namespace lyren::ncm {
         }
 
         // fields: JSON object members without the braces, e.g. R"("id":1)". uri is the /api/... path.
-        Task<Reply> call(std::string uri, std::string fields, Api api = Api::eapi, net::Retry retry = net::Retry::network);
+        Task<Reply> call(std::string uri, std::string fields, Api api = Api::eapi, net::Retry retry = net::Retry::network, std::span<const int> accepted = {});
         Task<Reply> call_xeapi(std::string uri, std::vector<std::pair<std::string, std::string>> fields);
 
     private:
         void apply_set_cookie(std::string_view raw);
-        Task<Reply> exchange(std::string uri, net::Request request, net::Retry retry, bool encrypted = false);
+        Task<Reply> exchange(std::string uri, net::Request request, net::Retry retry, bool encrypted, std::span<const int> accepted = {});
+        std::string endpoint(std::string url) const;
         std::optional<XeapiKey> xeapi_key_;
 
         Loop &loop_;
         net::Http &http_;
+        std::string base_url_;
     };
 
 } // namespace lyren::ncm

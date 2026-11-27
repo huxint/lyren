@@ -111,6 +111,7 @@ namespace lyren {
         std::unique_ptr<wl::LayerSurface> lyrics_;
         ConfigWatcher watcher_;
         SavedState saved_ = load_state();
+        int saved_w_ = saved_.width, saved_h_ = saved_.height;
         net::Http http_;
         audio::Player player_;
         ncm::Netease ncm_;

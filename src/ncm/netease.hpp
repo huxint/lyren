@@ -13,21 +13,18 @@ namespace lyren::ncm {
     Result<PlaylistPage> parse_user_playlists(const Reply &reply, std::string_view uid);
     Result<std::vector<Track>> parse_new_songs(const Reply &reply);
     Result<Batch> parse_new_albums(const Reply &reply, int offset = 0);
-    Result<void> parse_playlist_write(const Reply &reply);
     Result<CommentPage> parse_comments(const Reply &reply, bool replies = false);
-    Result<void> parse_comment_write(const Reply &reply);
     Result<std::string> parse_comment_post(const Reply &reply);
     Result<Profile> parse_profile(const Reply &reply);
     // offset: where the page asked for starts.
     Result<PeoplePage> parse_people(const Reply &reply, bool fans, int offset);
     Result<PostPage> parse_posts(const Reply &reply);
     Result<Ranking> parse_ranking(const Reply &reply, bool all_time);
-    Result<void> parse_social_write(const Reply &reply);
 
     // NetEase Cloud Music API adapter.
     class Netease : public Provider {
     public:
-        Netease(Loop &loop, net::Http &http);
+        Netease(Loop &loop, net::Http &http, std::string base_url = {});
 
         Client client;
 

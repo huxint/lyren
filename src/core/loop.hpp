@@ -1,4 +1,7 @@
 #pragma once
+#include <sys/epoll.h>
+
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -77,6 +80,7 @@ namespace lyren {
         std::vector<std::move_only_function<void() &>> deferred_;
         std::mutex post_mutex_;
         std::vector<std::move_only_function<void() &>> posted_;
+        std::array<epoll_event, 16> events_{};
         PollHook hook_;
     };
 

@@ -1,6 +1,9 @@
 #include <doctest/doctest.h>
+#include "language_guard.hpp"
 
 #include "core/i18n.hpp"
+#include "async.hpp"
+#include "http_server.hpp"
 #include "ncm/crypto.hpp"
 #include "ncm/netease.hpp"
 
@@ -65,7 +68,6 @@ TEST_CASE("NetEase new albums retain pagination totals and all credited artists"
     auto empty = parse_new_albums({.body = R"({"code":200,"total":500,"albums":[]})"});
     REQUIRE(empty);
     CHECK(empty->cards.empty());
-    CHECK_FALSE(parse_new_albums({.body = R"({"code":502,"message":"请求失败"})"}));
 }
 
 TEST_CASE("NetEase playlist pages distinguish owned, liked, private and saved lists") {
@@ -93,16 +95,6 @@ TEST_CASE("NetEase playlist pages distinguish owned, liked, private and saved li
     REQUIRE(end);
     CHECK_FALSE(end->more);
     CHECK_FALSE(parse_user_playlists({.body = R"({"code":200,"playlist":null})"}, "123"));
-}
-
-TEST_CASE("NetEase playlist writes preserve refusals instead of reporting success") {
-    CHECK(parse_playlist_write({.body = R"({"code":200})"}));
-    CHECK_FALSE(parse_playlist_write({.body = "{}"}));
-    CHECK_FALSE(parse_playlist_write({.body = R"({"code":502})"}));
-    auto refused = parse_playlist_write({.body = R"({"code":400,"message":"没有权限修改歌单"})"});
-    REQUIRE_FALSE(refused);
-    CHECK(refused.error() == "没有权限修改歌单");
-    CHECK_FALSE(parse_playlist_write({.error = "Connection failed"}));
 }
 
 TEST_CASE("NetEase comment pages keep exact IDs, pictures, cursors and failures") {
@@ -163,7 +155,7 @@ TEST_CASE("NetEase comment pages keep exact IDs, pictures, cursors and failures"
         REQUIRE(empty);
         CHECK(empty->comments.empty());
         CHECK_FALSE(empty->more);
-        CHECK_FALSE(parse_comments({.body = R"({"code":400,"message":"无法加载"})"}));
+        CHECK_FALSE(parse_comments({.code = 400, .error = "无法加载"}));
         CHECK_FALSE(parse_comments({.body = R"({"code":200})"}));
         CHECK_FALSE(parse_comments({.body = R"({"code":200,"data":{"comments":[{"content":"missing ID"}]}})"}));
         CHECK_FALSE(parse_comments({.body = R"({"code":200,"data":{"hasMore":true,"comments":[{"commentId":1}]}})"}));
@@ -172,13 +164,10 @@ TEST_CASE("NetEase comment pages keep exact IDs, pictures, cursors and failures"
 }
 
 TEST_CASE("NetEase comment writes require business success and posting returns its assigned ID") {
-    CHECK(parse_comment_write({.body = R"({"code":200})"}));
-    CHECK_FALSE(parse_comment_write({.body = R"({"code":502})"}));
-    CHECK_FALSE(parse_comment_write({.body = "{}"}));
     auto posted = parse_comment_post({.body = R"({"code":200,"comment":{"commentId":9007199254740993,"content":"新评论"}})"});
     REQUIRE(posted);
     CHECK(*posted == "9007199254740993");
-    auto refused = parse_comment_post({.body = R"({"code":400,"message":"评论内容过长"})"});
+    auto refused = parse_comment_post({.code = 400, .error = "评论内容过长"});
     REQUIRE_FALSE(refused);
     CHECK(refused.error() == "评论内容过长");
     CHECK_FALSE(parse_comment_post({.body = R"({"code":200,"comment":null})"}));
@@ -191,7 +180,7 @@ TEST_CASE("NetEase listener pages keep counts, relations and the province in eit
         "userId":9007199254740993,"nickname":"听众","avatarUrl":"http://p1.music.126.net/a.jpg","backgroundUrl":"https://p1.music.126.net/b.jpg",
         "signature":"\n 签名 \n","follows":12,"followeds":34567,"eventCount":8,"playlistCount":5,"vipType":11,"province":440000,
         "followed":true,"followMe":false}})"};
-    const auto before = lyren::language();
+    const lyren::test::LanguageGuard language_guard;
     lyren::set_language(lyren::Language::en);
     auto profile = parse_profile(reply);
     REQUIRE(profile);
@@ -213,7 +202,6 @@ TEST_CASE("NetEase listener pages keep counts, relations and the province in eit
     CHECK_FALSE(profile->follows_me);
     lyren::set_language(lyren::Language::zh);
     CHECK(parse_profile(reply)->location == "广东");
-    lyren::set_language(before);
 
     auto plain = parse_profile({.body = R"({"code":200,"level":0,"profile":{"userId":1,"nickname":"新人","province":999999}})"});
     REQUIRE(plain);
@@ -383,20 +371,55 @@ TEST_CASE("NetEase listening rankings keep plays and scores, and report privacy"
     CHECK_FALSE(parse_ranking({.error = "Network connection failed"}, true));
 }
 
-TEST_CASE("NetEase social writes succeed only with code 200 and keep the service's words") {
-    CHECK(parse_social_write({.body = R"({"code":200})"}));
-    auto busy = parse_social_write({.body = R"({"code":400,"message":"操作太频繁"})"});
-    REQUIRE_FALSE(busy);
-    CHECK(busy.error() == "操作太频繁");
-    auto self = parse_social_write({.body = R"({"code":502,"msg":"不能关注自己"})"});
-    REQUIRE_FALSE(self);
-    CHECK(self.error() == "不能关注自己");
-    const auto before = lyren::language();
-    lyren::set_language(lyren::Language::en);
-    auto bare = parse_social_write({.body = R"({"code":201})"});
-    REQUIRE_FALSE(bare);
-    CHECK(bare.error() == "NetEase Music refused the request (201)");
-    lyren::set_language(before);
-    CHECK_FALSE(parse_social_write({.body = "{}"}));
-    CHECK_FALSE(parse_social_write({.error = "Network connection failed"}));
+TEST_CASE("NetEase enforces business status for reads and writes and preserves QR poll states") {
+    using namespace lyren;
+    static constexpr std::array replies{R"({"code":200})",
+                                        R"({"code":400,"message":"操作太频繁"})",
+                                        R"({"code":502,"msg":"不能关注自己","albums":[]})",
+                                        R"({"code":201})",
+                                        R"({"code":302})",
+                                        R"({"code":"200abc"})",
+                                        R"({"code":""})",
+                                        R"({"code":null})",
+                                        R"({"code":"200"})",
+                                        R"({"code":801})",
+                                        "{}"};
+    test::LanguageGuard language_guard;
+    set_language(Language::en);
+    std::atomic<size_t> response = 0;
+    test::Server server([&](std::string_view) {
+        return test::ok(replies[response.load()]);
+    });
+    Loop loop;
+    net::Http http;
+    Netease provider(loop, http, server.url());
+    CHECK(test::run(loop, provider.follow_user("1", true)));
+    response = 1;
+    auto refused = test::run(loop, provider.delete_playlist("1"));
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error() == "操作太频繁");
+    response = 2;
+    auto albums = test::run(loop, provider.new_albums("ALL", 0));
+    REQUIRE_FALSE(albums);
+    CHECK(albums.error() == "不能关注自己");
+    auto comment = test::run(loop, provider.like_comment(Subject::song, "1", "2", true));
+    REQUIRE_FALSE(comment);
+    CHECK(comment.error() == "不能关注自己");
+    for (size_t i = 3; i <= 7; ++i) {
+        response = i;
+        const auto result = test::run(loop, provider.collect_playlist("1", true));
+        REQUIRE_FALSE(result);
+        if (i == 3) {
+            CHECK(result.error() == "NetEase Music refused the request (201)");
+        }
+    }
+    response = 8;
+    CHECK(test::run(loop, provider.collect_playlist("1", true)));
+    response = 9;
+    CHECK_FALSE(test::run(loop, provider.collect_playlist("1", true)));
+    const auto poll = test::run(loop, provider.qr_poll());
+    REQUIRE(poll);
+    CHECK(poll->state == QrState::waiting);
+    response = 10;
+    CHECK_FALSE(test::run(loop, provider.follow_user("1", true)));
 }

@@ -114,3 +114,10 @@ TEST_CASE("QQ plain and XML lyrics can use either word timing or LRC") {
     REQUIRE(xml.size() == 1);
     CHECK(xml[0].translation == "Translation");
 }
+
+TEST_CASE("adjacent lyric lines reserve a translation for its exact timestamp") {
+    const auto lines = lyren::parse_lyrics("[00:01.000]first\n[00:01.030]second", "[00:01.030]translation");
+    REQUIRE(lines.size() == 2);
+    CHECK(lines.front().translation.empty());
+    CHECK(lines.back().translation == "translation");
+}

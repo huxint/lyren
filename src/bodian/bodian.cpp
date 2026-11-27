@@ -494,19 +494,29 @@ namespace lyren::bodian {
         }
 
         Result<std::string> audio_spec(const Song &song, Quality quality) {
-            const int wanted = quality >= Quality::lossless ? 2 : quality >= Quality::higher ? 1 : 0;
+            const int wanted = std::to_underlying(quality);
             const Audio *selected = nullptr;
             int best = -1;
+            uint64_t best_bitrate = 0;
             if (song.audios) {
                 for (const auto &audio : *song.audios) {
                     const auto level = view(audio.level);
                     const auto format = view(audio.format);
-                    int rank = format == "flac" && level == "ff" ? 2 : format == "mp3" && level == "p" ? 1 : format == "mp3" && (level == "s" || level == "h") ? 0 : -1;
-                    if (rank < 0 || rank > wanted || rank <= best || !audio.bitrate || !id_number(*audio.bitrate)) {
+                    const int rank = format == "flac" && level == "ff" ? 3 : format != "mp3" ? -1 : level == "p" ? 2 : level == "h" ? 1 : level == "s" ? 0 : -1;
+                    if (rank < 0 || !audio.bitrate) {
                         continue;
                     }
-                    selected = &audio;
-                    best = rank;
+                    const auto bitrate = id_number(*audio.bitrate);
+                    if (!bitrate) {
+                        continue;
+                    }
+                    // Prefer the highest tier within the request, then the lowest available upgrade.
+                    const int score = rank <= wanted ? 4 + rank : 3 - rank;
+                    if (score > best || (score == best && *bitrate > best_bitrate)) {
+                        selected = &audio;
+                        best = score;
+                        best_bitrate = *bitrate;
+                    }
                 }
             }
             if (!selected) {
@@ -564,7 +574,7 @@ namespace lyren::bodian {
             case SearchKind::users:
                 break;
         }
-        std::unreachable();
+        return std::unexpected("Unsupported search category");
     }
 
     Result<Stream> parse_stream(const Reply &reply) {
@@ -586,83 +596,7 @@ namespace lyren::bodian {
             if (text.empty()) {
                 return std::unexpected("Could not parse server response");
             }
-            int start_factor = 0, duration_factor = 0;
-            if (auto at = text.find("[kuwo:"); at != text.npos) {
-                auto end = text.find(']', at);
-                if (end != text.npos) {
-                    int value = 0;
-                    auto parsed = std::from_chars(text.data() + at + 6, text.data() + end, value, 8);
-                    if (parsed.ec == std::errc{} && parsed.ptr == text.data() + end && value > 0) {
-                        start_factor = value / 10;
-                        duration_factor = value % 10;
-                    }
-                }
-            }
-            auto lines = lyren::parse_lyrics(text);
-            std::vector<LyricLine> out;
-            out.reserve(lines.size());
-            for (auto &line : lines) {
-                std::string_view remaining = line.text;
-                std::string plain;
-                std::vector<LyricWord> words;
-                bool zero_tags = false, timed_tags = false;
-                while (!remaining.empty()) {
-                    const auto at = remaining.find('<');
-                    plain += remaining.substr(0, at);
-                    if (at == remaining.npos) {
-                        break;
-                    }
-                    remaining.remove_prefix(at);
-                    const auto end = remaining.find('>');
-                    int64_t a = 0, b = 0;
-                    bool timed = false;
-                    if (end != remaining.npos) {
-                        const char *last = remaining.data() + end;
-                        const auto first = std::from_chars(remaining.data() + 1, last, a);
-                        if (first.ec == std::errc{} && first.ptr != last && *first.ptr == ',') {
-                            const auto second = std::from_chars(first.ptr + 1, last, b);
-                            timed = second.ec == std::errc{} && second.ptr == last;
-                        }
-                    }
-                    if (!timed) {
-                        plain += remaining.front();
-                        remaining.remove_prefix(1);
-                        continue;
-                    }
-                    zero_tags |= a == 0 && b == 0;
-                    timed_tags |= a != 0 || b != 0;
-                    remaining.remove_prefix(end + 1);
-                    auto next = remaining.find('<');
-                    auto word = remaining.substr(0, next);
-                    const auto from = static_cast<uint32_t>(plain.size());
-                    plain += word;
-                    if (start_factor && duration_factor && (a || b)) {
-                        const long double offset = std::floor(std::abs(static_cast<long double>(a) + b) / (2 * start_factor));
-                        const long double duration = std::floor(std::abs(static_cast<long double>(a) - b) / (2 * duration_factor));
-                        const long double start = std::round(line.time * 1000) + offset;
-                        if (start >= 0 && start <= UINT32_MAX && duration > 0 && duration <= UINT32_MAX - start) {
-                            words.push_back({static_cast<uint32_t>(start), static_cast<uint32_t>(duration), from, static_cast<uint32_t>(plain.size())});
-                        }
-                    }
-                    remaining = next == remaining.npos ? std::string_view{} : remaining.substr(next);
-                }
-                // All-zero word tags mark the translation after its original. Its timestamp can be the
-                // next original's start, so a timestamp join would attach it to the wrong sentence.
-                if (zero_tags && !timed_tags) {
-                    if (!out.empty() && plain.find_first_not_of(" \t") != plain.npos && plain != out.back().text) {
-                        out.back().translation = std::move(plain);
-                    }
-                    continue;
-                }
-                line.text = std::move(plain);
-                line.words = std::move(words);
-                if (line.text.empty()) {
-                    continue;
-                }
-                std::ranges::stable_sort(line.words, {}, &LyricWord::start_ms);
-                out.push_back(std::move(line));
-            }
-            return out;
+            return lyren::parse_kuwo(text);
         });
     }
 
@@ -684,6 +618,9 @@ namespace lyren::bodian {
     }
 
     Task<Result<Batch>> Bodian::search(std::string query, SearchKind kind, int offset, int limit) {
+        if (!capabilities.supports_search(kind)) {
+            co_return std::unexpected("Unsupported search category");
+        }
         constexpr std::array names{"music", "album", "artist", "playlist"};
         Call call{.path = std::format("search/{}/list", names[static_cast<size_t>(kind)]),
                   .query = {{"keyword", std::move(query)}, {"pn", std::to_string(offset / limit)}, {"rn", std::to_string(limit)}}};
@@ -752,6 +689,9 @@ namespace lyren::bodian {
         }
         if (card.id.starts_with("ai:")) {
             const auto colon = card.id.find(':', 3);
+            if (colon == card.id.npos) {
+                co_return std::unexpected("Invalid resource ID");
+            }
             auto reply =
                 co_await client.call({.path = "service/home/aiPlaylistDetail", .query = {{"index", card.id.substr(3, colon - 3)}, {"passRecName", card.id.substr(colon + 1)}}});
             co_return parse<ModuleData<Group>>(reply).transform([](auto data) {
@@ -779,9 +719,6 @@ namespace lyren::bodian {
                 continue;
             }
             auto reply = co_await client.call({.path = "service/home/module", .query = {{"moduleId", std::to_string(module.id)}}});
-            if (!reply.error.empty()) {
-                co_return std::unexpected(reply.error);
-            }
             if (module.type == 5) {
                 auto data = co_await ok(parse<ModuleData<Playlist>>(reply));
                 if (data.songList) {
@@ -1003,58 +940,38 @@ namespace lyren::bodian {
         if (!logged_in()) {
             co_return std::unexpected("Sign in to continue");
         }
-        const auto reply = co_await client.call({.path = "ucenter/users/pub/" + client.get("uid"), .sign = true});
-        co_return write_result(reply).transform([this, &reply] {
-            Envelope<PubUser> parsed;
-            std::string name, avatar;
-            if (!glz::read<lax>(parsed, reply.body) && parsed.data) {
-                name = take(parsed.data->nickname);
-                avatar = take(parsed.data->headImg);
-            }
-            if (name.empty()) {
-                name = client.get("nickname").empty() ? "Bodian Music" : client.get("nickname");
-            }
-            if (avatar.empty()) {
-                avatar = client.get("avatar");
-            }
-            return Account{.id = client.get("uid"), .name = std::move(name), .avatar = std::move(avatar)};
-        });
+        auto user = co_await ok(co_await profile(client.get("uid")));
+        co_return Account{.id = std::move(user.id), .name = std::move(user.name), .avatar = std::move(user.avatar)};
     }
 
     Task<Result<Profile>> Bodian::profile(std::string uid) {
-        const auto reply = co_await client.call({.path = "ucenter/users/pub/" + uid, .sign = true});
-        co_return write_result(reply).transform([this, uid = std::move(uid), &reply] {
-            Profile out{.id = uid};
-            Envelope<PubUser> parsed;
-            if (!glz::read<lax>(parsed, reply.body) && parsed.data) {
-                auto &u = *parsed.data;
-                out.name = take(u.nickname);
-                out.avatar = take(u.headImg);
-                out.signature = take(u.signature, u.intro);
-                if (out.signature.empty()) {
-                    out.signature = take(u.desc);
-                }
-                out.background = take(u.background, u.bgImg);
-                if (u.followCount && *u.followCount >= 0) {
-                    out.follows = *u.followCount;
-                }
-                if (u.fansCount && *u.fansCount >= 0) {
-                    out.fans = *u.fansCount;
-                }
-                if (u.vip && *u.vip > 0) {
-                    out.vip = true;
-                }
+        auto u = co_await ok(parse<PubUser>(co_await client.call({.path = "ucenter/users/pub/" + uid, .sign = true})));
+        Profile out{.id = uid};
+        out.name = take(u.nickname);
+        out.avatar = take(u.headImg);
+        out.signature = take(u.signature, u.intro);
+        if (out.signature.empty()) {
+            out.signature = take(u.desc);
+        }
+        out.background = take(u.background, u.bgImg);
+        if (u.followCount && *u.followCount >= 0) {
+            out.follows = *u.followCount;
+        }
+        if (u.fansCount && *u.fansCount >= 0) {
+            out.fans = *u.fansCount;
+        }
+        if (u.vip && *u.vip > 0) {
+            out.vip = true;
+        }
+        if (uid == client.get("uid")) {
+            if (out.name.empty()) {
+                out.name = client.get("nickname");
             }
-            if (uid == client.get("uid")) {
-                if (out.name.empty()) {
-                    out.name = client.get("nickname").empty() ? "Bodian Music" : client.get("nickname");
-                }
-                if (out.avatar.empty()) {
-                    out.avatar = client.get("avatar");
-                }
+            if (out.avatar.empty()) {
+                out.avatar = client.get("avatar");
             }
-            return out;
-        });
+        }
+        co_return out;
     }
 
     Task<void> Bodian::logout() {

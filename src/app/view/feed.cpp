@@ -474,19 +474,14 @@ namespace lyren {
         const float text_y = head_y + head_h + (byline ? 10 : 6);
         const float attach_y = text_y + static_cast<float>(lines.size()) * lh + (lines.empty() ? 0 : 10);
         ui.push_id(ui.id(post.id));
-        const float action_y = attach_y + attachments(ui, source, post, cx, attach_y, inner, false);
-        const float h = action_y + look::actions + look::pad - 6 - y;
         if (!draw) {
+            const float attach_h = attachments(ui, source, post, cx, attach_y, inner, false);
             ui.pop_id();
-            return h;
+            return attach_y + attach_h + look::actions + look::pad - 6 - y;
         }
 
-        // A post on its way out fades and stops answering.
         const bool leaving = social_.removing(source, post);
         ui::Enabled alive(ui, !leaving, 0.4f);
-        if (divider) {
-            p.rect({cx, y + h - 1, inner, 1}, t.line(byline ? 1.f : 0.65f));
-        }
         const auto quiet = t.style(type::caption, t.faint(), text::tabular_nums);
         if (byline) {
             // Who posted, which opens their page.
@@ -523,7 +518,11 @@ namespace lyren {
             rich_line(p, cx, line_y + lh * 0.72f, post.text, line, marks, body, t.accent);
             line_y += lh;
         }
-        attachments(ui, source, post, cx, attach_y, inner, true);
+        const float action_y = attach_y + attachments(ui, source, post, cx, attach_y, inner, true);
+        const float h = action_y + look::actions + look::pad - 6 - y;
+        if (divider) {
+            p.rect({cx, y + h - 1, inner, 1}, t.line(byline ? 1.f : 0.65f));
+        }
 
         // Likes, comments and reposts along the bottom; the rest behind the menu.
         const auto &caps = provider(source).capabilities;

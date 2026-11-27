@@ -25,13 +25,26 @@ namespace lyren::encoding {
     }
 
     std::string unbase64(std::string_view text) {
-        std::string out(3 * (text.size() / 4), '\0');
-        const int size = EVP_DecodeBlock(reinterpret_cast<unsigned char *>(out.data()), reinterpret_cast<const unsigned char *>(text.data()), static_cast<int>(text.size()));
-        if (size < 0) {
+        const auto last = text.find_last_not_of(" \t\r\n\f\v");
+        if (last == text.npos) {
             return {};
         }
-        // EVP_DecodeBlock includes the bytes represented by padding.
-        const size_t padding = text.ends_with("==") ? 2 : text.ends_with('=') ? 1 : 0;
+        text = text.substr(0, last + 1);
+        if (text.size() % 4 != 0 || text.find_first_of(" \t\r\n\f\v") != text.npos) {
+            return {};
+        }
+        size_t padding = 0;
+        if (const size_t eq = text.find('='); eq != text.npos) {
+            if (eq < text.size() - 2 || (eq == text.size() - 2 && text.back() != '=')) {
+                return {};
+            }
+            padding = text.size() - eq;
+        }
+        std::string out(3 * (text.size() / 4), '\0');
+        const int size = EVP_DecodeBlock(reinterpret_cast<unsigned char *>(out.data()), reinterpret_cast<const unsigned char *>(text.data()), static_cast<int>(text.size()));
+        if (size < static_cast<int>(padding)) {
+            return {};
+        }
         out.resize(static_cast<size_t>(size) - padding);
         return out;
     }
@@ -57,6 +70,35 @@ namespace lyren::encoding {
         std::string out;
         out.reserve(value.size());
         append_url_encoded(out, value, style);
+        return out;
+    }
+
+    std::string url_decode(std::string_view value, UrlStyle style) {
+        auto nibble = [](char c) -> int {
+            if (c >= '0' && c <= '9') {
+                return c - '0';
+            }
+            if (c >= 'a' && c <= 'f') {
+                return c - 'a' + 10;
+            }
+            if (c >= 'A' && c <= 'F') {
+                return c - 'A' + 10;
+            }
+            return -1;
+        };
+        std::string out;
+        out.reserve(value.size());
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (value[i] == '%' && i + 2 < value.size()) {
+                const int hi = nibble(value[i + 1]), lo = nibble(value[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    out += static_cast<char>((hi << 4) | lo);
+                    i += 2;
+                    continue;
+                }
+            }
+            out += style == UrlStyle::form && value[i] == '+' ? ' ' : value[i];
+        }
         return out;
     }
 

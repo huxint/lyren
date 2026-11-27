@@ -30,7 +30,7 @@ namespace lyren::gfx {
         for (int i = 0; i < 8 && vendor.empty(); ++i) {
             std::string dev = "/sys/class/drm/card" + std::to_string(i) + "/device/";
             bool boot = read_line(dev + "boot_vga") == "1";
-            if (boot == (gpu == GpuChoice::integrated) && !read_line(dev + "vendor").empty()) {
+            if (boot == (gpu == GpuChoice::integrated)) {
                 vendor = read_line(dev + "vendor");
             }
         }

@@ -15,6 +15,7 @@
 #include "core/crypto.hpp"
 #include "http_server.hpp"
 #include "sys/paths.hpp"
+#include "temp_dir.hpp"
 
 using namespace lyren::audio;
 
@@ -22,7 +23,7 @@ TEST_CASE("audio output rejects more channels than the PipeWire format can store
     // Vorbis permits up to 255 channels; PipeWire's raw format and control arrays hold at most 64.
     std::atomic<uint32_t> wake{0};
     Output output(wake, {});
-    const auto result = output.start({22050, 65});
+    const auto result = output.start({22050, 65}, 1);
     REQUIRE_FALSE(result);
     CHECK(result.error() == "This audio file has more channels than PipeWire supports");
 }
@@ -362,37 +363,59 @@ TEST_CASE("MP4 decoder bounds box recursion, surfaces corrupt AAC tails, and rej
         std::fclose(stream);
     };
 
-    SUBCASE("deeply nested sinf boxes do not overflow the stack") {
-        constexpr int depth = 120000;
-        const size_t total = static_cast<size_t>(depth) * 8 + 8;
-        std::vector<uint8_t> nested(total, 0);
-        auto put32 = [&](size_t off, uint32_t v) {
-            nested[off + 0] = static_cast<uint8_t>((v >> 24) & 0xff);
-            nested[off + 1] = static_cast<uint8_t>((v >> 16) & 0xff);
-            nested[off + 2] = static_cast<uint8_t>((v >> 8) & 0xff);
-            nested[off + 3] = static_cast<uint8_t>(v & 0xff);
-        };
-        auto put4cc = [&](size_t off, const char *s) {
-            for (int i = 0; i < 4; ++i) {
-                nested[off + i] = static_cast<uint8_t>(s[i]);
+    SUBCASE("the sample description accepts eight nested containers and rejects a ninth") {
+        auto nested = [&](unsigned depth) {
+            std::ifstream input(LYREN_TEST_DATA "/tone.m4a", std::ios::binary);
+            std::string bytes{std::istreambuf_iterator<char>(input), {}};
+            auto read_size = [&](size_t at) {
+                uint32_t n = 0;
+                for (unsigned char c : std::string_view(bytes).substr(at, 4)) {
+                    n = (n << 8) | c;
+                }
+                return n;
+            };
+            auto put_size = [&](size_t at, uint32_t n) {
+                for (int i = 3; i >= 0; --i, n >>= 8) {
+                    bytes[at + i] = static_cast<char>(n);
+                }
+            };
+            // Wrap the valid AAC descriptor from the fixture and move its media offsets with it.
+            for (const auto box : {"moov", "trak", "mdia", "minf", "stbl", "stsd", "mp4a"}) {
+                auto pos = bytes.find(box);
+                REQUIRE(pos != bytes.npos);
+                put_size(pos - 4, read_size(pos - 4) + 8 * depth);
+            }
+            const auto stco = bytes.find("stco");
+            REQUIRE(stco != bytes.npos);
+            for (uint32_t i = 0; i < read_size(stco + 8); ++i) {
+                const size_t offset = stco + 12 + i * 4;
+                put_size(offset, read_size(offset) + depth * 8);
+            }
+            const auto esds = bytes.find("esds");
+            REQUIRE(esds != bytes.npos);
+            const auto start = esds - 4;
+            const uint32_t size = read_size(start);
+            bytes.insert(start, depth * 8, '\0');
+            for (unsigned i = 0; i < depth; ++i) {
+                put_size(start + i * 8, size + (depth - i) * 8);
+                bytes.replace(start + i * 8 + 4, 4, "sinf");
+            }
+            std::unique_ptr<FILE, decltype(close_file)> file(std::tmpfile(), close_file);
+            REQUIRE(file);
+            REQUIRE(std::fwrite(bytes.data(), 1, bytes.size(), file.get()) == bytes.size());
+            REQUIRE(std::fflush(file.get()) == 0);
+            auto spool = Spool::file("/proc/self/fd/" + std::to_string(fileno(file.get())));
+            std::string error;
+            auto decoder = open_decoder(*spool, error);
+            if (depth == 8) {
+                REQUIRE_MESSAGE(decoder, error);
+            } else {
+                CHECK_FALSE(decoder);
+                CHECK(error == "no audio track in mp4");
             }
         };
-        for (int i = 0; i < depth; ++i) {
-            const size_t off = static_cast<size_t>(i) * 8;
-            put32(off, static_cast<uint32_t>(total - off));
-            put4cc(off + 4, i == 0 ? "moov" : i == 1 ? "trak" : i == 2 ? "mdia" : i == 3 ? "minf" : i == 4 ? "stbl" : "sinf");
-        }
-        put32(static_cast<size_t>(depth) * 8, 8);
-        put4cc(static_cast<size_t>(depth) * 8 + 4, "free");
-
-        std::unique_ptr<FILE, decltype(close_file)> file(std::tmpfile(), close_file);
-        REQUIRE(file);
-        REQUIRE(std::fwrite(nested.data(), 1, nested.size(), file.get()) == nested.size());
-        REQUIRE(std::fflush(file.get()) == 0);
-        auto spool = Spool::file("/proc/self/fd/" + std::to_string(fileno(file.get())));
-        std::string error;
-        auto decoder = open_decoder(*spool, error);
-        CHECK_FALSE(decoder);
+        nested(8);
+        nested(9);
     }
 
     SUBCASE("corrupted AAC tail reports a decode error instead of silent EOF") {
@@ -451,6 +474,23 @@ TEST_CASE("Player resets pending seek on load failure and Spool reuses persisten
     }
 
     SUBCASE("Spool caches completed streams on disk and evicts oldest entries above limit") {
+        lyren::test::TempDir dir;
+        struct RestoreCache {
+            uint64_t limit = Spool::cache_limit();
+            std::optional<std::string> previous;
+            ~RestoreCache() {
+                Spool::set_cache_limit(limit);
+                if (previous) {
+                    setenv("XDG_CACHE_HOME", previous->c_str(), 1);
+                } else {
+                    unsetenv("XDG_CACHE_HOME");
+                }
+            }
+        } restore;
+        if (const char *previous = std::getenv("XDG_CACHE_HOME")) {
+            restore.previous = previous;
+        }
+        REQUIRE(setenv("XDG_CACHE_HOME", dir.path.c_str(), 1) == 0);
         std::ifstream input(LYREN_TEST_DATA "/tone.mp3", std::ios::binary);
         const std::string audio_bytes{std::istreambuf_iterator<char>(input), {}};
         REQUIRE(audio_bytes.size() > 1024);
@@ -482,8 +522,8 @@ TEST_CASE("Player resets pending seek on load failure and Spool reuses persisten
         CHECK(hits == 2);
         fetch_all("test:cache:song-2");
         CHECK(hits == 2);
-        const auto dir = lyren::paths::cache_dir() / "audio";
-        const auto first = dir / lyren::crypto::md5_hex("test:cache:song-1"), second = dir / lyren::crypto::md5_hex("test:cache:song-2");
+        const auto cache = lyren::paths::cache_dir() / "audio";
+        const auto first = cache / lyren::crypto::md5_hex("test:cache:song-1"), second = cache / lyren::crypto::md5_hex("test:cache:song-2");
         const auto evicted = [&] {
             return std::filesystem::exists(second) && !std::filesystem::exists(first);
         };

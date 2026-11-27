@@ -24,7 +24,10 @@ namespace lyren {
         if (!bus_) {
             return;
         }
-        loop_.unwatch(sd_bus_get_fd(bus_));
+        if (fd_ >= 0) {
+            loop_.unwatch(fd_);
+            fd_ = -1;
+        }
         loop_.cancel(timer_);
         sd_bus_flush_close_unref(bus_);
     }
@@ -36,22 +39,36 @@ namespace lyren {
         if (r < 0) {
             // The bus went away (the session is ending); nothing more will arrive on this connection.
             log::warn("session bus: {}", std::strerror(-r));
-            loop_.unwatch(sd_bus_get_fd(bus_));
+            if (fd_ >= 0) {
+                loop_.unwatch(fd_);
+                fd_ = -1;
+            }
+            events_ = 0;
             loop_.cancel(timer_);
+            timer_ = 0;
+            timeout_ = UINT64_MAX;
             return;
         }
         arm();
     }
 
     void Bus::arm() {
+        if (!bus_) {
+            return;
+        }
         int ev = sd_bus_get_events(bus_);
-        if (ev < 0) {
+        int fd = ev < 0 ? -1 : sd_bus_get_fd(bus_);
+        if (fd < 0) {
             return;
         }
         uint32_t events = (ev & POLLIN ? static_cast<uint32_t>(EPOLLIN) : 0) | (ev & POLLOUT ? static_cast<uint32_t>(EPOLLOUT) : 0);
-        if (events != events_) {
+        if (fd != fd_ || events != events_) {
+            if (fd_ >= 0 && fd_ != fd) {
+                loop_.unwatch(fd_);
+            }
+            fd_ = fd;
             events_ = events;
-            loop_.watch(sd_bus_get_fd(bus_), events, [this](uint32_t) {
+            loop_.watch(fd_, events, [this](uint32_t) {
                 dispatch();
             });
         }

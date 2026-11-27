@@ -1,9 +1,10 @@
 #include "core/crypto.hpp"
 
 #include <openssl/evp.h>
-#include <openssl/rand.h>
+#include <stdlib.h>
 
 #include <array>
+#include <format>
 #include <memory>
 
 #include "core/encoding.hpp"
@@ -58,17 +59,23 @@ namespace lyren::crypto {
         }
     } // namespace
 
-    std::string md5_hex(std::string_view bytes) {
+    std::string md5_hex(std::string_view bytes, bool upper) {
         std::array<unsigned char, 16> digest;
         unsigned size = 0;
         EVP_Digest(bytes.data(), bytes.size(), digest.data(), &size, EVP_md5(), nullptr);
-        return encoding::hex({reinterpret_cast<const char *>(digest.data()), size});
+        return encoding::hex({reinterpret_cast<const char *>(digest.data()), size}, upper);
     }
 
     std::string random_hex(size_t digits, bool upper) {
         std::string bytes((digits + 1) / 2, '\0');
-        RAND_bytes(reinterpret_cast<unsigned char *>(bytes.data()), static_cast<int>(bytes.size()));
+        ::arc4random_buf(bytes.data(), bytes.size());
         return encoding::hex(bytes, upper).substr(0, digits);
+    }
+
+    std::string random_uuid() {
+        const std::string hex = random_hex(32);
+        const std::string_view sv(hex);
+        return std::format("{}-{}-{}-{}-{}", sv.substr(0, 8), sv.substr(8, 4), sv.substr(12, 4), sv.substr(16, 4), sv.substr(20));
     }
 
     std::string aes_ecb_encrypt(std::string_view key, std::string_view plain) {

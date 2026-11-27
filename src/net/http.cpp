@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "core/log.hpp"
+#include "core/string_map.hpp"
 
 namespace lyren::net {
 
@@ -196,9 +197,9 @@ namespace lyren::net {
         std::move_only_function<void(Response)> done; // whole-body request
         Response resp;
         std::string post;
-        uint64_t offset = 0, total = 0, at = 0;
+        uint64_t from = 0, offset = 0, total = 0, at = 0, range_end = 0;
         size_t max_bytes = 32u << 20;
-        bool started = false, keep_cookies = false;
+        bool started = false, keep_cookies = false, has_range = false;
         std::chrono::steady_clock::time_point due;
         std::array<char, CURL_ERROR_SIZE> error{};
 
@@ -226,38 +227,43 @@ namespace lyren::net {
         std::string_view line(p, n);
         if (line.starts_with("HTTP/")) {
             t->offset = t->total = 0;
+            t->has_range = false;
             t->resp.location.clear();
             t->resp.verification = Verification::none;
         } else if (t->done && has_key(line, "set-cookie:")) {
-            line.remove_prefix(11);
-            while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
-                line.remove_prefix(1);
-            }
-            while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
-                line.remove_suffix(1);
-            }
-            t->resp.cookies.emplace_back(line);
+            t->resp.cookies.emplace_back(trim(line.substr(11)));
         } else if (t->done && has_key(line, "location:")) {
-            line.remove_prefix(9);
-            while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
-                line.remove_prefix(1);
-            }
-            while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
-                line.remove_suffix(1);
-            }
-            t->resp.location = line;
+            t->resp.location = trim(line.substr(9));
         } else if (t->done && (has_key(line, "bdturing-verify:") || has_key(line, "x-tt-verify-passport-decision:"))) {
             auto value = line.substr(line.find(':') + 1);
-            if (value.find_first_not_of(" \t\r\n") != value.npos) {
+            if (!trim(value).empty()) {
                 t->resp.verification = has_key(line, "bdturing-verify:") ? Verification::captcha : Verification::passport;
             }
         } else if (has_key(line, "content-range:")) {
-            // content-range: bytes FROM-TO/TOTAL
-            auto b = line.find("bytes ");
-            auto dash = line.find('-', b), slash = line.find('/', dash);
-            if (b != line.npos && dash != line.npos && slash != line.npos) {
-                std::from_chars(line.data() + b + 6, line.data() + dash, t->offset);
-                std::from_chars(line.data() + slash + 1, line.data() + line.size(), t->total);
+            // content-range: bytes FROM-TO/TOTAL (or /*)
+            t->has_range = false;
+            auto v = trim(line.substr(14));
+            if (has_key(v, "bytes ")) {
+                v.remove_prefix(6);
+                const auto dash = v.find('-'), slash = v.find('/', dash);
+                uint64_t from = 0, to = 0, total = 0;
+                if (dash != v.npos && slash != v.npos) {
+                    const auto r1 = std::from_chars(v.data(), v.data() + dash, from);
+                    const auto r2 = std::from_chars(v.data() + dash + 1, v.data() + slash, to);
+                    const auto tail = v.substr(slash + 1);
+                    bool total_ok = tail == "*";
+                    if (!total_ok) {
+                        const auto r3 = std::from_chars(tail.data(), tail.data() + tail.size(), total);
+                        total_ok = r3.ec == std::errc{} && r3.ptr == tail.data() + tail.size() && total > to;
+                    }
+                    if (r1.ec == std::errc{} && r1.ptr == v.data() + dash && r2.ec == std::errc{} && r2.ptr == v.data() + slash && from == t->from && from <= to &&
+                        to != UINT64_MAX && total_ok) {
+                        t->offset = from;
+                        t->total = total;
+                        t->range_end = to + 1;
+                        t->has_range = true;
+                    }
+                }
             }
         }
         return n;
@@ -279,13 +285,21 @@ namespace lyren::net {
             t->started = true;
             long status = 0;
             curl_easy_getinfo(t->easy, CURLINFO_RESPONSE_CODE, &status);
+            if (status == 206 && !t->has_range) {
+                return 0;
+            }
             if (status != 206) {
+                t->has_range = false;
                 curl_off_t len = -1;
                 curl_easy_getinfo(t->easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &len);
-                t->offset = 0, t->total = len > 0 ? static_cast<uint64_t>(len) : 0;
+                t->offset = 0;
+                t->total = len > 0 ? static_cast<uint64_t>(len) : 0;
             }
             t->at = t->offset;
             t->cb.head(t->offset, t->total);
+        }
+        if (t->has_range && n > t->range_end - t->at) {
+            return 0;
         }
         t->cb.data(t->at, {reinterpret_cast<const std::byte *>(p), n});
         t->at += n;
@@ -342,6 +356,7 @@ namespace lyren::net {
     Http::Id Http::stream(Get get, Stream cb) {
         auto t = std::make_unique<Transfer>();
         t->cb = std::move(cb);
+        t->from = get.from;
         setup(*t, get.url, get.headers);
         curl_easy_setopt(t->easy, CURLOPT_FAILONERROR, 1L);
         std::string range = std::to_string(get.from) + '-';
@@ -463,7 +478,9 @@ namespace lyren::net {
                 long status = 0;
                 curl_easy_getinfo(owned->easy, CURLINFO_RESPONSE_CODE, &status);
                 std::string err;
-                if (rc != CURLE_OK) {
+                if (!owned->done && status == 206 && (!owned->has_range || owned->at != owned->range_end)) {
+                    err = "Invalid HTTP byte range";
+                } else if (rc != CURLE_OK) {
                     err = owned->error[0] ? owned->error.data() : curl_easy_strerror(rc);
                 }
                 log::debug("http {}: {} {}", owned->id, status, err);

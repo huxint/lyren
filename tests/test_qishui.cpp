@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "language_guard.hpp"
 
 #include <atomic>
 #include <future>
@@ -7,6 +8,7 @@
 #include "audio/decoder.hpp"
 #include "audio/spool.hpp"
 #include "core/i18n.hpp"
+#include "async.hpp"
 #include "http_server.hpp"
 #include "qishui/media.hpp"
 #include "qishui/qishui.hpp"
@@ -15,23 +17,7 @@ using namespace lyren;
 using qishui::Json;
 
 namespace {
-    template <class T>
-    T run(Loop &loop, Task<T> task) {
-        std::optional<T> result;
-        const auto timeout = loop.after(5s, [&] {
-            loop.quit();
-        });
-        spawn([](Loop &loop, Task<T> task, std::optional<T> &result) -> Task<void> {
-            result = co_await std::move(task);
-            loop.quit();
-        }(loop, std::move(task), result));
-        if (!result) {
-            loop.run();
-        }
-        loop.cancel(timeout);
-        REQUIRE(result);
-        return std::move(*result);
-    }
+    using test::run;
 
     std::string_view body(std::string_view request) {
         return request.substr(request.find("\r\n\r\n") + 4);
@@ -107,25 +93,24 @@ TEST_CASE("Qishui signs the exact URL, Cookie and body that reach the gateway") 
 }
 
 TEST_CASE("Qishui connection import validates before replacing a session and can be cancelled") {
-    std::atomic<bool> delay = false;
+    Context c("");
+    std::atomic<bool> cancel = false;
     test::Server api([&](std::string_view request) {
         CHECK(request.starts_with("GET /luna/pc/me?"));
-        if (delay) {
-            std::this_thread::sleep_for(30ms);
+        if (cancel.exchange(false)) {
+            c.loop.post([&] {
+                c.service.cancel_login();
+            });
         }
         return test::ok(R"({"my_info":{"id":"9007199254740993","nickname":"测试账号"}})");
     });
-    Context c(api.url());
+    c.service.client.api_base = api.url();
     const auto original = c.service.session();
     CHECK_FALSE(run(c.loop, c.service.import_session(R"({"cookie":"incomplete"})")));
     CHECK(c.service.session() == original);
-    delay = true;
-    c.loop.after(10ms, [&] {
-        c.service.cancel_login();
-    });
+    cancel = true;
     CHECK_FALSE(run(c.loop, c.service.import_session(c.connection())));
     CHECK(c.service.session() == original);
-    delay = false;
     REQUIRE(run(c.loop, c.service.import_session(c.connection())));
     CHECK(c.service.logged_in());
     CHECK(c.service.session().at("user_id") == "9007199254740993");
@@ -273,14 +258,22 @@ TEST_CASE("Qishui session expiry and verification decisions remain visible") {
             response.insert(response.find("\r\n") + 2, "BdTuring-Verify: synthetic-decision\r\n");
             return response;
         }
-        return test::ok(R"({"status_code":1000016,"status_info":{"status_msg":"expired"}})");
+        auto response = test::ok(R"({"status_code":1000016,"status_info":{"status_msg":"expired"}})");
+        response.insert(response.find("\r\n") + 2, "Set-Cookie: sessionid=; Max-Age=0; Path=/\r\n");
+        return response;
     });
     Context c(api.url());
     auto verification = run(c.loop, c.service.client.call("/verify"));
     REQUIRE_FALSE(verification);
     CHECK(verification.error().contains("verification"));
     CHECK(c.service.logged_in());
+    int changes = 0;
+    c.service.on_session_changed([&] {
+        ++changes;
+    });
     CHECK_FALSE(run(c.loop, c.service.account()));
+    CHECK(changes == 1);
+    CHECK_FALSE(c.service.session().contains("user_id"));
     CHECK_FALSE(c.service.logged_in());
     CHECK_FALSE(c.service.session().contains("cookie_jar"));
     CHECK(c.service.session().contains("signer_url"));
@@ -496,7 +489,7 @@ TEST_CASE("Qishui profiles, other user playlists, and comment user IDs") {
     CHECK(page->comments[0].user_id == "99");
 }
 
-TEST_CASE("Qishui lenient cookie parsing, signer error attribution, diagnostic check, and collection caching") {
+TEST_CASE("Qishui lenient cookie parsing, signer error attribution, and connection diagnostics") {
     SUBCASE("lenient cookie formats and Netscape cookie_jar") {
         auto trailing = qishui::parse_cookie_input("  Cookie: sessionid=abc; sid_tt=123; ;  \r\n");
         REQUIRE(trailing);
@@ -535,7 +528,7 @@ TEST_CASE("Qishui lenient cookie parsing, signer error attribution, diagnostic c
         qishui::Qishui qs(loop, http);
         qs.client.api_base = api.url();
 
-        const Language prev_lang = language();
+        const lyren::test::LanguageGuard language_guard;
         set_language(Language::en);
         auto r404_en = run(loop, qs.import_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value()));
         REQUIRE_FALSE(r404_en);
@@ -544,7 +537,6 @@ TEST_CASE("Qishui lenient cookie parsing, signer error attribution, diagnostic c
         auto r404_zh = run(loop, qs.import_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value()));
         REQUIRE_FALSE(r404_zh);
         CHECK(r404_zh.error().contains("签名服务"));
-        set_language(prev_lang);
 
         signer_mode = 401;
         auto chk401 = run(loop, qs.check_session(glz::write_json(glz::obj{"signer_url", bad_signer.url()}).value()));

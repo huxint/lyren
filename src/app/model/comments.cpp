@@ -16,15 +16,26 @@ namespace lyren {
                 case Kind::left:
                     likes_.forget(event.source);
                     removals_.forget(event.source);
-                    [[fallthrough]];
+                    if (mine) {
+                        ++thread_.gen;
+                        for (auto &feed : thread_.feeds) {
+                            feed = std::make_shared<Feed>();
+                        }
+                        thread_.draft = std::make_shared<Draft>();
+                        thread_.replies.reset();
+                        if (!thread_.id.empty()) {
+                            load(thread_.tab);
+                        }
+                    }
+                    break;
                 case Kind::account:
                     // What was being written was the other account's to send.
                     if (mine) {
                         thread_.draft = std::make_shared<Draft>();
                         thread_.replies.reset();
-                    }
-                    if (mine && event.kind == Kind::account && !thread_.id.empty()) {
-                        refresh();
+                        if (!thread_.id.empty()) {
+                            refresh();
+                        }
                     }
                     break;
                 case Kind::signed_out:
@@ -73,10 +84,9 @@ namespace lyren {
         spawn(fetch(thread_.gen, tab, feed.page + 1, feed.cursor));
     }
 
-    void Comments::append(Feed &feed, CommentPage page, int number) {
+    void Comments::append(Feed &feed, CommentPage page) {
         settle_likes(page.comments);
         feed.append(std::move(page.comments), std::move(page.cursor), page.more, env_.now(), page.total);
-        feed.page = number;
     }
 
     Task<void> Comments::fetch(uint64_t gen, int tab, int page, std::string cursor) {
@@ -87,7 +97,7 @@ namespace lyren {
         Feed &feed = *thread_.feeds[tab];
         feed.loading = false;
         if (r) {
-            append(feed, std::move(*r), page);
+            append(feed, std::move(*r));
         } else {
             feed.error = r.error();
         }
@@ -134,7 +144,7 @@ namespace lyren {
         }
         feed->loading = false;
         if (r) {
-            append(*feed, std::move(*r), page);
+            append(*feed, std::move(*r));
         } else {
             feed->error = r.error();
         }

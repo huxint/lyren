@@ -480,6 +480,7 @@ namespace lyren {
         if (std::ranges::none_of(lib.playlists, [&](const Card &card) {
                 return same(card, playlist);
             })) {
+            emit({.kind = Event::Kind::playlist_deleted, .source = playlist.source, .playlist = &playlist});
             env_.notify(lyren::trf("Deleted playlist {}", playlist.title), "trash");
         } else {
             env_.notify(result ? std::string(lyren::tr("Playlist was not deleted")) : lyren::trf("Could not delete playlist: {}", lyren::tr(result.error())), "triangle-alert",
@@ -487,7 +488,7 @@ namespace lyren {
         }
     }
 
-    Task<void> Library::edit_playlist(Card playlist, std::vector<Track> tracks, bool add) {
+    Task<void> Library::edit_playlist(Card playlist, std::vector<Track> tracks, bool add, uint64_t tag) {
         if (!begin_write(playlist)) {
             co_return;
         }
@@ -531,7 +532,7 @@ namespace lyren {
                 card.count = static_cast<int>(fresh->size());
             }
         }
-        emit({.kind = Event::Kind::tracks, .source = playlist.source, .playlist = &playlist, .fresh = &*fresh, .requested = &tracks, .on = add});
+        emit({.kind = Event::Kind::tracks, .source = playlist.source, .playlist = &playlist, .fresh = &*fresh, .requested = &tracks, .on = add, .tag = tag});
         co_await refresh_playlists(playlist.source, account_gen);
         if (account_gen != lib.account_gen) {
             co_return;

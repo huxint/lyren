@@ -343,6 +343,7 @@ namespace lyren::ui {
             float scroll_x = 0, scroll_y = 0, preferred_x = -1;
             bool line_end = false; // at a soft wrap, the caret belongs to the preceding line
             double blink = 0;
+            uint64_t seen = 0;
             std::string preedit;
             int preedit_cursor = -1;
             std::vector<EditLine> lines;

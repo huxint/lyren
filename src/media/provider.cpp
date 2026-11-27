@@ -103,7 +103,7 @@ namespace lyren {
     Task<Result<void>> Provider::edit_playlist(std::string id, Track track, bool add) {
         std::vector<Track> tracks;
         tracks.push_back(std::move(track));
-        co_return co_await edit_playlist(std::move(id), std::move(tracks), add);
+        return edit_playlist(std::move(id), std::move(tracks), add);
     }
 
     Task<Result<void>> Provider::edit_playlist(std::string, std::vector<Track>, bool) {

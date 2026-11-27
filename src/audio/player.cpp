@@ -13,9 +13,9 @@ namespace lyren::audio {
     : loop_(loop),
       http_(http),
       out_(wake_, {.drained =
-                       [this] {
-                           loop_.post([this, gen = writing_gen_.load()] {
-                               if (gen != gen_ || state_ != State::playing) {
+                       [this](uint64_t seq) {
+                           loop_.post([this, seq] {
+                               if (seq != seek_seq_ || state_ != State::playing) {
                                    return;
                                }
                                state_ = State::ended;
@@ -27,6 +27,24 @@ namespace lyren::audio {
                        [this](float linear) {
                            loop_.post([this, v = std::cbrt(linear)] {
                                volume_ = v;
+                               changed();
+                           });
+                       },
+                   .error =
+                       [this](uint64_t gen, std::string err) {
+                           loop_.post([this, gen, err = std::move(err)] {
+                               if (gen != gen_ || state_ == State::idle || state_ == State::failed) {
+                                   return;
+                               }
+                               log::warn("playback failed: {}", err);
+                               if (spool_) {
+                                   spool_->close();
+                               }
+                               state_ = State::failed;
+                               pending_seek_.reset();
+                               error_ = err;
+                               out_.set_active(false);
+                               push({.kind = Cmd::stop, .gen = gen_});
                                changed();
                            });
                        }}) {
@@ -65,6 +83,7 @@ namespace lyren::audio {
         }
         spool_ = std::move(spool);
         ++gen_;
+        ++seek_seq_;
         state_ = State::loading;
         want_play_ = play;
         pending_seek_.reset();
@@ -72,7 +91,7 @@ namespace lyren::audio {
         codec_ = {};
         error_.clear();
         out_.set_active(false);
-        push({.kind = Cmd::open, .gen = gen_, .spool = spool_, .key = key});
+        push({.kind = Cmd::open, .gen = gen_, .spool = spool_, .seq = seek_seq_, .key = key});
         changed();
     }
 
@@ -155,7 +174,7 @@ namespace lyren::audio {
     void Player::run() {
         std::unique_ptr<Decoder> dec;
         std::shared_ptr<Spool> spool;
-        uint64_t gen = 0;
+        uint64_t gen = 0, sequence = 0;
         bool done = true;
         std::vector<float> buf;
         auto fail = [this](uint64_t gen, std::string error) {
@@ -192,18 +211,21 @@ namespace lyren::audio {
                     std::string error;
                     dec = open_decoder(*spool, error, c.key);
                     if (!dec) {
-                        if (spool->error().empty()) {
+                        if (!spool->closed() && spool->error().empty()) {
                             spool->invalidate_cache();
                         }
-                        fail(gen, std::move(error));
+                        if (!spool->closed()) {
+                            fail(gen, std::move(error));
+                        }
                         continue;
                     }
-                    if (auto started = out_.start(dec->format); !started) {
+                    if (auto started = out_.start(dec->format, gen); !started) {
                         dec.reset();
                         fail(gen, std::move(started.error()));
                         continue;
                     }
-                    writing_gen_ = gen, done = false;
+                    sequence = c.seq;
+                    done = false;
                     buf.resize(chunk * dec->format.channels);
                     log::debug("open: {} {} Hz {} ch, {} frames", dec->codec, dec->format.rate, dec->format.channels, dec->length);
                     loop_.post([this, gen, f = dec->format, len = dec->length, codec = dec->codec] {
@@ -232,6 +254,7 @@ namespace lyren::audio {
                     if (!dec->seek(frame)) {
                         log::warn("seek to {} failed", frame);
                     }
+                    sequence = c.seq;
                     out_.flush(frame);
                     done = false;
                     loop_.post([this, gen, seq = c.seq] {
@@ -262,9 +285,9 @@ namespace lyren::audio {
             size_t n = dec->read(buf.data(), std::min(space, chunk));
             if (!n) {
                 done = true;
-                out_.finish();
+                out_.finish(sequence);
                 std::string e = spool->error();
-                if (e.empty()) {
+                if (e.empty() && !spool->closed()) {
                     e = std::move(dec->error);
                     if (!e.empty()) {
                         spool->invalidate_cache();

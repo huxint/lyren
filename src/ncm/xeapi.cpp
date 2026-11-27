@@ -11,6 +11,7 @@
 #include <optional>
 
 #include "core/crypto.hpp"
+#include "core/json.hpp"
 #include "core/encoding.hpp"
 
 namespace lyren::ncm {
@@ -46,17 +47,9 @@ namespace lyren::ncm {
             }
             return std::unexpected("NetEase Music returned an invalid encrypted response");
         }
-        std::string scalar(const glz::raw_json &raw) {
-            if (!raw.str.starts_with('"')) {
-                return raw.str;
-            }
-            std::string value;
-            static_cast<void>(glz::read_json(value, raw.str));
-            return value;
-        }
         struct KeyData {
             std::string encryptedData, signature;
-            glz::raw_json timestamp;
+            json::Value timestamp;
         };
         struct KeyReply {
             int code = 0;
@@ -64,7 +57,7 @@ namespace lyren::ncm {
         };
         struct KeyPlaintext {
             std::string publicKey, sk;
-            glz::raw_json version;
+            json::Value version;
         };
         struct RequestPlaintext {
             std::string_view content, queryString;
@@ -80,7 +73,7 @@ namespace lyren::ncm {
         if (glz::read<glz::opts{.error_on_unknown_keys = false}>(reply, response) || reply.code != 200 || !reply.data) {
             return std::unexpected("NetEase Music encryption key request failed");
         }
-        if (reply.data->signature != xeapi_signature(scalar(reply.data->timestamp), nonce)) {
+        if (reply.data->signature != xeapi_signature(json::text(reply.data->timestamp), nonce)) {
             return std::unexpected("NetEase Music encryption key signature mismatch");
         }
         auto plain = decrypt(bytes(transport_key), encoding::unbase64(reply.data->encryptedData));
@@ -91,7 +84,7 @@ namespace lyren::ncm {
         if (glz::read<glz::opts{.error_on_unknown_keys = false}>(key, *plain)) {
             return std::unexpected("NetEase Music returned an invalid encryption key");
         }
-        XeapiKey out{encoding::unbase64(key.publicKey), scalar(key.version), std::move(key.sk)};
+        XeapiKey out{encoding::unbase64(key.publicKey), json::text(key.version), std::move(key.sk)};
         if (out.public_key.size() != 32 || out.version.empty() || out.tag.empty()) {
             return std::unexpected("NetEase Music returned an invalid encryption key");
         }

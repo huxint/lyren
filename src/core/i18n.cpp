@@ -1,5 +1,8 @@
 #include "core/i18n.hpp"
 
+#include <algorithm>
+#include <array>
+#include <format>
 #include <glaze/glaze.hpp>
 #include "core/string_map.hpp"
 
@@ -43,12 +46,16 @@ namespace lyren {
     std::string_view tr_ctx(std::string_view context, std::string_view english) {
         if (selected == Language::zh) {
             const auto &catalog = chinese();
-            std::string key;
-            key.reserve(english.size() + 1 + context.size());
-            key.append(english);
-            key.push_back('|');
-            key.append(context);
-            if (auto it = catalog.find(key); it != catalog.end()) {
+            const size_t len = english.size() + 1 + context.size();
+            std::array<char, 256> buf;
+            if (len <= buf.size()) {
+                auto out = std::ranges::copy(english, buf.begin()).out;
+                *out++ = '|';
+                std::ranges::copy(context, out);
+                if (auto it = catalog.find(std::string_view{buf.data(), len}); it != catalog.end()) {
+                    return it->second;
+                }
+            } else if (auto it = catalog.find(std::format("{}|{}", english, context)); it != catalog.end()) {
                 return it->second;
             }
             if (auto it = catalog.find(english); it != catalog.end()) {

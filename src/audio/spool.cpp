@@ -338,6 +338,7 @@ namespace lyren::audio {
             return;
         }
         start_ = pos_ = b, end_ = e;
+        progressed_ = false;
         uint64_t req = ++req_;
         std::weak_ptr<Spool> w = weak_from_this();
         http_id_ = http_->stream({.url = url_, .from = b, .end = e >= size_ ? 0 : e, .delay = delay}, {.head =
@@ -389,10 +390,12 @@ namespace lyren::audio {
             done += static_cast<size_t>(n);
         }
         std::unique_lock lk(m_);
+        const bool new_bytes = have_.available(offset) < d.size();
         have_.add(offset, offset + d.size());
         if (req == req_) {
+            progressed_ |= new_bytes;
             pos_ = offset + d.size();
-            if (!closed_ && error_.empty() && !tmp_path_.empty() && have_.available(0) == size_) {
+            if (!closed_ && error_.empty() && !tmp_path_.empty() && size_ != unknown && have_.available(0) == size_) {
                 return finish_cached_download(std::move(lk));
             }
         }
@@ -432,6 +435,9 @@ namespace lyren::audio {
         std::string path;
         {
             std::lock_guard slk(m_);
+            if (closed_ || !error_.empty()) {
+                return;
+            }
             path = std::exchange(cache_path_, {});
         }
         if (!path.empty()) {
@@ -451,7 +457,7 @@ namespace lyren::audio {
             error = "empty response";
         }
         if (!error.empty()) {
-            if (pos_ > start_) {
+            if (progressed_) {
                 retries_ = 0;
             }
             log::warn("download at {}: {}", pos_, error);
@@ -466,8 +472,8 @@ namespace lyren::audio {
             return;
         }
         retries_ = 0;
-        if (size_ == unknown) {
-            size_ = pos_; // no length was given, so the body ran to the end
+        if (size_ == unknown && status != 206 && start_ == 0 && end_ == unknown) {
+            size_ = pos_; // a full non-range response without Content-Length ran to the end
         }
         auto g = have_.gap(read_pos_, size_);
         if (g.first >= g.second) {
@@ -477,7 +483,7 @@ namespace lyren::audio {
             fetch(g.first);
         } else {
             log::debug("download complete: {} bytes", size_);
-            if (!tmp_path_.empty() && error_.empty() && size_ > 0 && have_.available(0) == size_) {
+            if (!tmp_path_.empty() && error_.empty() && size_ > 0 && size_ != unknown && have_.available(0) == size_) {
                 return finish_cached_download(std::move(lk));
             }
         }
@@ -497,7 +503,15 @@ namespace lyren::audio {
                 do {
                     r = ::pread(fd_, buf, std::min<uint64_t>(n, a), static_cast<off_t>(off));
                 } while (r < 0 && errno == EINTR);
-                return r > 0 ? static_cast<size_t>(r) : 0;
+                if (r < 0) {
+                    std::lock_guard err_lk(m_);
+                    if (error_.empty()) {
+                        error_ = std::format("cache read: {}", std::strerror(errno));
+                    }
+                    cv_.notify_all();
+                    return 0;
+                }
+                return static_cast<size_t>(r);
             }
             if (!error_.empty()) {
                 return 0;
@@ -541,6 +555,11 @@ namespace lyren::audio {
         }
         http_id_ = 0;
         cv_.notify_all();
+    }
+
+    bool Spool::closed() const {
+        std::lock_guard lk(m_);
+        return closed_;
     }
 
     std::string Spool::error() const {

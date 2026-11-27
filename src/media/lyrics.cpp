@@ -167,6 +167,47 @@ namespace lyren {
             return std::pair{a, b};
         }
 
+        void sanitize_words(LyricLine &line) {
+            for (auto &w : line.words) {
+                w.to = std::min(w.to, static_cast<uint32_t>(line.text.size()));
+                w.from = std::min(w.from, w.to);
+            }
+            if (!std::ranges::is_sorted(line.words, {}, &LyricWord::start_ms)) {
+                std::ranges::stable_sort(line.words, {}, &LyricWord::start_ms);
+            }
+        }
+
+        std::optional<LyricLine> parse_prefix_timed_line(std::string_view line, uint32_t time_ms, uint32_t word_base_ms, char open, char close) {
+            LyricLine l{.time = time_ms / 1000.0};
+            while (!line.empty()) {
+                if (const auto w = timing(line, open, close)) {
+                    if (w->first <= UINT32_MAX - word_base_ms) {
+                        const auto at = static_cast<uint32_t>(l.text.size());
+                        l.words.push_back({word_base_ms + w->first, w->second, at, at});
+                    }
+                    continue;
+                }
+                const size_t n = line.find(open, 1);
+                std::string_view chunk = line.substr(0, n);
+                while (l.text.empty() && chunk.starts_with(' ')) {
+                    chunk.remove_prefix(1);
+                }
+                l.text += chunk;
+                if (!l.words.empty()) {
+                    l.words.back().to = static_cast<uint32_t>(l.text.size());
+                }
+                line = n == line.npos ? std::string_view{} : line.substr(n);
+            }
+            while (l.text.ends_with(' ')) {
+                l.text.pop_back();
+            }
+            if (trim(l.text).empty()) {
+                return std::nullopt;
+            }
+            sanitize_words(l);
+            return l;
+        }
+
         std::vector<LyricLine> parse_yrc(std::string_view text) {
             std::vector<LyricLine> out;
             while (!text.empty()) {
@@ -175,39 +216,13 @@ namespace lyren {
                     credit(line, out);
                     continue;
                 }
-                auto head = timing(line, '[', ']');
+                const auto head = timing(line, '[', ']');
                 if (!head) {
                     continue;
                 }
-                LyricLine l{.time = head->first / 1000.0};
-                // Each word's text runs to the next timing; a '(' that doesn't start one is text.
-                while (!line.empty()) {
-                    if (auto w = timing(line, '(', ')')) {
-                        auto at = static_cast<uint32_t>(l.text.size());
-                        l.words.push_back({w->first, w->second, at, at});
-                        continue;
-                    }
-                    size_t n = line.find('(', 1);
-                    std::string_view chunk = line.substr(0, n);
-                    while (l.text.empty() && chunk.starts_with(' ')) {
-                        chunk.remove_prefix(1);
-                    }
-                    l.text += chunk;
-                    if (!l.words.empty()) {
-                        l.words.back().to = static_cast<uint32_t>(l.text.size());
-                    }
-                    line = n == line.npos ? std::string_view{} : line.substr(n);
+                if (auto parsed = parse_prefix_timed_line(line, head->first, 0, '(', ')')) {
+                    out.push_back(std::move(*parsed));
                 }
-                while (l.text.ends_with(' ')) {
-                    l.text.pop_back();
-                }
-                if (l.text.empty()) {
-                    continue;
-                }
-                for (auto &w : l.words) {
-                    w.to = std::min(w.to, static_cast<uint32_t>(l.text.size())), w.from = std::min(w.from, w.to);
-                }
-                out.push_back(std::move(l));
             }
             std::ranges::stable_sort(out, {}, &LyricLine::time);
             return out;
@@ -273,11 +288,8 @@ namespace lyren {
                 while (l.text.ends_with(' ')) {
                     l.text.pop_back();
                 }
-                if (l.text.empty()) {
+                if (trim(l.text).empty()) {
                     continue;
-                }
-                for (auto &w : l.words) {
-                    w.to = std::min(w.to, static_cast<uint32_t>(l.text.size())), w.from = std::min(w.from, w.to);
                 }
                 out.push_back(std::move(l));
             }
@@ -290,6 +302,7 @@ namespace lyren {
                     word.start_ms = static_cast<uint32_t>(std::clamp<int64_t>(start, 0, UINT32_MAX));
                     word.duration_ms = static_cast<uint32_t>(end - word.start_ms);
                 }
+                sanitize_words(line);
             }
             std::ranges::stable_sort(out, {}, &LyricLine::time);
             return out;
@@ -310,13 +323,21 @@ namespace lyren {
             std::erase_if(trans, [](const LyricLine &l) {
                 return l.text == "//";
             });
-            size_t j = 0;
-            for (auto &l : lines) {
-                while (j < trans.size() && trans[j].time < l.time - 0.05) {
-                    ++j;
-                }
-                if (j < trans.size() && std::abs(trans[j].time - l.time) <= 0.05 && trans[j].text != l.text) {
-                    l.translation = trans[j].text;
+            size_t next = 0;
+            for (size_t i = 0; i < lines.size(); ++i) {
+                auto &line = lines[i];
+                double best = 0.05;
+                while (next < trans.size() && trans[next].time <= line.time + 0.05) {
+                    auto &candidate = trans[next];
+                    const double distance = std::abs(candidate.time - line.time);
+                    if (i + 1 < lines.size() && std::abs(candidate.time - lines[i + 1].time) < distance) {
+                        break;
+                    }
+                    if (distance <= best) {
+                        best = distance;
+                        line.translation = candidate.text == line.text ? std::string{} : std::move(candidate.text);
+                    }
+                    ++next;
                 }
             }
         }
@@ -348,36 +369,9 @@ namespace lyren {
                 continue;
             }
             starts.push_back(head->first);
-            LyricLine l{.time = head->first / 1000.0};
-            while (!line.empty()) {
-                if (const auto word = timing(line, '<', '>')) {
-                    if (word->first <= UINT32_MAX - head->first) {
-                        const auto at = static_cast<uint32_t>(l.text.size());
-                        l.words.push_back({head->first + word->first, word->second, at, at});
-                    }
-                    continue;
-                }
-                const auto next = line.find('<', 1);
-                std::string_view chunk = line.substr(0, next);
-                while (l.text.empty() && chunk.starts_with(' ')) {
-                    chunk.remove_prefix(1);
-                }
-                l.text += chunk;
-                if (!l.words.empty()) {
-                    l.words.back().to = static_cast<uint32_t>(l.text.size());
-                }
-                line = next == line.npos ? std::string_view{} : line.substr(next);
+            if (auto parsed = parse_prefix_timed_line(line, head->first, head->first, '<', '>')) {
+                lines.push_back(std::move(*parsed));
             }
-            while (l.text.ends_with(' ')) {
-                l.text.pop_back();
-            }
-            if (l.text.empty()) {
-                continue;
-            }
-            for (auto &w : l.words) {
-                w.to = std::min(w.to, static_cast<uint32_t>(l.text.size())), w.from = std::min(w.from, w.to);
-            }
-            lines.push_back(std::move(l));
         }
         std::ranges::stable_sort(lines, {}, &LyricLine::time);
         std::vector<LyricLine> trans;
@@ -401,6 +395,109 @@ namespace lyren {
         std::ranges::stable_sort(trans, {}, &LyricLine::time);
         add_translation(lines, std::move(trans));
         return lines;
+    }
+
+    std::vector<LyricLine> parse_timed_lrc(std::string_view text) {
+        auto result = parse_lrc(text);
+        while (!text.empty()) {
+            auto line = next_line(text);
+            const auto head = timing(line, '[', ']');
+            if (!head) {
+                continue;
+            }
+            if (auto parsed = parse_prefix_timed_line(line, head->first, 0, '<', '>')) {
+                result.push_back(std::move(*parsed));
+            }
+        }
+        std::ranges::stable_sort(result, {}, &LyricLine::time);
+        return result;
+    }
+
+    std::vector<LyricLine> parse_kuwo(std::string_view text) {
+        int start_factor = 0, duration_factor = 0;
+        if (const auto at = text.find("[kuwo:"); at != text.npos) {
+            if (const auto end = text.find(']', at); end != text.npos) {
+                int value = 0;
+                const auto parsed = std::from_chars(text.data() + at + 6, text.data() + end, value, 8);
+                if (parsed.ec == std::errc{} && parsed.ptr == text.data() + end && value > 0) {
+                    start_factor = value / 10;
+                    duration_factor = value % 10;
+                }
+            }
+        }
+        auto lines = parse_lrc(text);
+        std::vector<LyricLine> out;
+        out.reserve(lines.size());
+        for (auto &line : lines) {
+            std::string_view remaining = line.text;
+            std::string plain;
+            std::vector<LyricWord> words;
+            bool zero_tags = false, timed_tags = false;
+            while (!remaining.empty()) {
+                const auto at = remaining.find('<');
+                plain += remaining.substr(0, at);
+                if (at == remaining.npos) {
+                    break;
+                }
+                remaining.remove_prefix(at);
+                const auto end = remaining.find('>');
+                int64_t a = 0, b = 0;
+                bool timed = false;
+                if (end != remaining.npos) {
+                    const char *last = remaining.data() + end;
+                    const auto first = std::from_chars(remaining.data() + 1, last, a);
+                    if (first.ec == std::errc{} && first.ptr != last && *first.ptr == ',') {
+                        const auto second = std::from_chars(first.ptr + 1, last, b);
+                        timed = second.ec == std::errc{} && second.ptr == last;
+                    }
+                }
+                if (!timed) {
+                    plain += remaining.front();
+                    remaining.remove_prefix(1);
+                    continue;
+                }
+                zero_tags |= a == 0 && b == 0;
+                timed_tags |= a != 0 || b != 0;
+                remaining.remove_prefix(end + 1);
+                const auto next = remaining.find('<');
+                const auto word = remaining.substr(0, next);
+                const auto from = static_cast<uint32_t>(plain.size());
+                plain += word;
+                if (start_factor && duration_factor && (a || b)) {
+                    const long double offset = std::floor(std::abs(static_cast<long double>(a) + b) / (2 * start_factor));
+                    const long double duration = std::floor(std::abs(static_cast<long double>(a) - b) / (2 * duration_factor));
+                    const long double start = std::round(line.time * 1000) + offset;
+                    if (start >= 0 && start <= UINT32_MAX && duration > 0 && duration <= UINT32_MAX - start) {
+                        words.push_back({static_cast<uint32_t>(start), static_cast<uint32_t>(duration), from, static_cast<uint32_t>(plain.size())});
+                    }
+                }
+                remaining = next == remaining.npos ? std::string_view{} : remaining.substr(next);
+            }
+            // All-zero word tags mark the translation after its original. Its timestamp can be the
+            // next original's start, so a timestamp join would attach it to the wrong sentence.
+            if (zero_tags && !timed_tags) {
+                const auto cleaned = trim(plain);
+                if (!out.empty() && !cleaned.empty() && cleaned != out.back().text) {
+                    out.back().translation = std::string(cleaned);
+                }
+                continue;
+            }
+            line.text = std::string(trim(plain));
+            if (line.text.empty()) {
+                continue;
+            }
+            if (plain.size() != line.text.size()) {
+                const auto lead = static_cast<uint32_t>(plain.find_first_not_of(" \t\r"));
+                for (auto &w : words) {
+                    w.from = w.from > lead ? w.from - lead : 0;
+                    w.to = w.to > lead ? w.to - lead : 0;
+                }
+            }
+            line.words = std::move(words);
+            sanitize_words(line);
+            out.push_back(std::move(line));
+        }
+        return out;
     }
 
     std::vector<LyricLine> parse_qrc(std::string_view qrc, std::string_view translation) {

@@ -10,6 +10,9 @@
 
 #include "core/encoding.hpp"
 #include "ncm/xeapi.hpp"
+#include "ncm/client.hpp"
+#include "http_server.hpp"
+#include "async.hpp"
 
 using namespace lyren;
 
@@ -137,4 +140,34 @@ TEST_CASE("a server can authenticate and decrypt an independently negotiated xea
     CHECK(fields.at("content") == content);
     CHECK(fields.at("queryString") == "e_r=true");
     CHECK(ecb(transport_key, encoding::unbase64(packet->r)) == "1000000000000|");
+}
+
+TEST_CASE("NetEase XEAPI registers a key, reuses it, and decrypts gateway responses") {
+    const auto &f = fixture();
+    std::atomic<int> keys = 0, requests = 0;
+    test::Server server([&](std::string_view req) {
+        if (req.starts_with("POST /api/bsr/sk/get ")) {
+            ++keys;
+            const auto start = req.find("nonce=");
+            REQUIRE(start != req.npos);
+            const auto nonce = req.substr(start + 6, 16);
+            auto key = f.registration.str;
+            key.replace(key.find(f.signature), f.signature.size(), ncm::xeapi_signature("1700000000123", nonce));
+            return test::ok(key);
+        }
+        ++requests;
+        CHECK(req.starts_with("POST /xeapi/song/enhance/player/url/v1 "));
+        CHECK(req.contains("X-Client-Enc-State: ENCRYPTED"));
+        return test::ok(encoding::unbase64(f.gzip_response));
+    });
+    Loop loop;
+    net::Http http;
+    ncm::Client client(loop, http, server.url());
+    for (int i = 0; i < 2; ++i) {
+        auto reply = test::run(loop, client.call_xeapi("/api/song/enhance/player/url/v1", {{"ids", "[1]"}}));
+        CHECK(reply.error.empty());
+        CHECK(reply.body == f.plaintext);
+    }
+    CHECK(keys == 1);
+    CHECK(requests == 2);
 }

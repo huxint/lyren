@@ -138,9 +138,7 @@ namespace lyren {
             const uint64_t gen = save_gen_;
             std::string json = snapshot();
             if (json == saved_json_) {
-                if (gen == save_gen_) {
-                    dirty_ = false;
-                }
+                dirty_ = false;
                 continue;
             }
             auto r = co_await creds::save(env_.loop, json);
@@ -187,7 +185,7 @@ namespace lyren {
             return;
         }
         std::string json = snapshot();
-        if (json == saved_json_) {
+        if (!saving_ && json == saved_json_) {
             dirty_ = false;
             return;
         }
@@ -241,10 +239,6 @@ namespace lyren {
     }
 
     std::string Accounts::compose_settings() const {
-        if (!sign_in_.structured && sign_in_.signer_url.empty() && sign_in_.signer_token.empty() && sign_in_.cookie.empty() && sign_in_.device_id.empty() && sign_in_.iid.empty() &&
-            sign_in_.fp.empty()) {
-            return sign_in_.settings;
-        }
         StringMap<std::string> out;
         out["signer_url"] = sign_in_.signer_url;
         if (!sign_in_.signer_token.empty()) {
@@ -262,14 +256,13 @@ namespace lyren {
         if (!sign_in_.fp.empty()) {
             out["fp"] = sign_in_.fp;
         }
-        return glz::write_json(out).value_or("{}");
+        return *glz::write_json(out);
     }
 
     void Accounts::begin(Source source) {
         sign_in_ = {.source = source, .since = env_.now()};
         auto &p = env_.provider(source);
         if (p.capabilities.session_import) {
-            sign_in_.structured = true;
             const auto &s = p.session();
             sign_in_.signer_url = std::string(get(s, "signer_url"));
             sign_in_.signer_token = std::string(get(s, "signer_token"));

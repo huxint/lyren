@@ -32,6 +32,8 @@ namespace lyren {
         };
         struct RecentPlays : Fetch {
             std::vector<Track> tracks;
+            std::vector<Track> pending_plays;
+            bool pending_settled = false;
         };
         // One writer per resource. Further clicks change the desired value while the current request finishes.
         struct Edit {
@@ -85,16 +87,17 @@ namespace lyren {
         // Told to the parts that keep copies of what changed.
         struct Event {
             enum class Kind : uint8_t {
-                account,       // another account is signed in on the platform
-                loaded,        // the account's playlists and likes arrived
-                left,          // the account is gone and its data with it
-                signed_out,    // the service has been told
-                liked,         // a song joined or left the liked songs
-                liked_stale,   // the liked songs changed on the service in ways only a reload shows
-                playlists,     // the account's playlists changed
-                tracks,        // a playlist's songs changed: fresh is what it holds now, requested what was asked
-                tracks_failed, // a playlist's songs may have changed, and reading them back failed
-                radio_ready    // the next radio songs arrived while waiting at the end of a batch
+                account,          // another account is signed in on the platform
+                loaded,           // the account's playlists and likes arrived
+                left,             // the account is gone and its data with it
+                signed_out,       // the service has been told
+                liked,            // a song joined or left the liked songs
+                liked_stale,      // the liked songs changed on the service in ways only a reload shows
+                playlists,        // the account's playlists changed
+                playlist_deleted, // a playlist deletion was confirmed by the service
+                tracks,           // a playlist's songs changed: fresh is what it holds now, requested what was asked
+                tracks_failed,    // a playlist's songs may have changed, and reading them back failed
+                radio_ready       // the next radio songs arrived while waiting at the end of a batch
             };
             Kind kind;
             Source source;
@@ -102,6 +105,7 @@ namespace lyren {
             const Card *playlist = nullptr;
             const std::vector<Track> *fresh = nullptr, *requested = nullptr;
             bool on = false; // liked: joined; tracks: added
+            uint64_t tag = 0;
             std::string_view error;
         };
 
@@ -167,7 +171,7 @@ namespace lyren {
         Task<void> rename_playlist(Card playlist, std::string name);
         Task<void> delete_playlist(Card playlist);
         // Adds the songs to the playlist or takes them out, then reads it back: the service's list decides the outcome.
-        Task<void> edit_playlist(Card playlist, std::vector<Track> tracks, bool add);
+        Task<void> edit_playlist(Card playlist, std::vector<Track> tracks, bool add, uint64_t tag = 0);
 
         // Recommendations the listener turned down.
         Task<void> load_dislikes(Source source, DislikeKind kind);

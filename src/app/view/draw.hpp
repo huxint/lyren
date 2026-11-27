@@ -34,6 +34,14 @@ namespace lyren {
         }
     };
 
+    template <size_t N, class... Args>
+    SmallText<N> small_format(std::format_string<Args...> fmt, Args &&...args) {
+        SmallText<N> out;
+        auto result = std::format_to_n(out.buf.data(), N, fmt, std::forward<Args>(args)...);
+        out.len = static_cast<size_t>(result.out - out.buf.data());
+        return out;
+    }
+
     inline SmallText<16> mmss(double seconds) {
         SmallText<16> out;
         const auto whole = static_cast<uint32_t>(std::max(0.0, seconds));
@@ -126,9 +134,6 @@ namespace lyren {
             current = k < 1 ? mix(from, target, k) : target;
             return current;
         }
-        bool morphing(ui::Ui &ui, float ms = 320) const {
-            return mode >= 0 && ui.progress(since, ms, ui::ease::emphasized) < 1;
-        }
         void reset() {
             mode = -1;
             since = -10;
@@ -208,7 +213,7 @@ namespace lyren {
     }
 
     // When a post was made, as near as matters: the time today, the day this year, the date before that.
-    inline std::string post_time(int64_t ms) {
+    inline SmallText<16> post_time(int64_t ms) {
         if (ms <= 0) {
             return {};
         }
@@ -222,12 +227,12 @@ namespace lyren {
         std::tm a{};
         localtime_r(&at, &a);
         if (a.tm_year == cached_now.tm_year && a.tm_yday == cached_now.tm_yday) {
-            return std::format("{:02}:{:02}", a.tm_hour, a.tm_min);
+            return small_format<16>("{:02}:{:02}", a.tm_hour, a.tm_min);
         }
         if (a.tm_year == cached_now.tm_year) {
-            return std::format("{}/{} {:02}:{:02}", a.tm_mon + 1, a.tm_mday, a.tm_hour, a.tm_min);
+            return small_format<16>("{}/{} {:02}:{:02}", a.tm_mon + 1, a.tm_mday, a.tm_hour, a.tm_min);
         }
-        return std::format("{}/{}/{}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
+        return small_format<16>("{}/{}/{}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday);
     }
 
     // Topics (#…#) and mentions (@…), as byte ranges of s.
@@ -432,12 +437,16 @@ namespace lyren {
     }
 
     // With thousands separators: 12,345.
-    inline std::string grouped(int n) {
-        std::string s = std::to_string(n);
-        for (int i = static_cast<int>(s.size()) - 3; i > 0; i -= 3) {
-            s.insert(static_cast<size_t>(i), ",");
+    inline SmallText<16> grouped(int n) {
+        const auto digits = int_text(n);
+        SmallText<16> out;
+        for (size_t i = 0; i < digits.len; ++i) {
+            if (i > static_cast<size_t>(n < 0) && (digits.len - i) % 3 == 0) {
+                out.buf[out.len++] = ',';
+            }
+            out.buf[out.len++] = digits.buf[i];
         }
-        return s;
+        return out;
     }
 
     // A count in r, worded by text. One that goes up or down by one rolls over: the number leaving slides out as the
@@ -448,8 +457,11 @@ namespace lyren {
         const bool step = std::abs(target - std::round(ui.spring_value(id, target))) <= 1;
         const float value = ui.spring(id, target, step ? 260 : 0);
         const float low = std::floor(value), turn = value - low;
+        if (turn == 0) {
+            return ui.label(r, text(static_cast<int>(low)), style, align);
+        }
         const std::string from = text(static_cast<int>(low)), to = text(static_cast<int>(std::ceil(value)));
-        if (turn == 0 || from == to) {
+        if (from == to) {
             return ui.label(r, to, style, align);
         }
         ui.push_clip(r);

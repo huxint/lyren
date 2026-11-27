@@ -13,11 +13,11 @@
 //   replies [song|album|playlist <id>] <comment id>
 //   post-comment <song|album|playlist> <id> <text file> [reply id]
 //   like-comment [song|album|playlist <id>] <comment id> on|off
-//   login | account | library | collection
+//   login [png] | account | library | collection
 //
 // Provider-specific commands:
 //   lyren-probe [ncm] call <uri> [fields] [weapi|clientlog]
-//   lyren-probe qq call <module> <method> [param] | radar | qr [png] | renew
+//   lyren-probe qq call <module> <method> [param] | radar | renew
 //   lyren-probe qq dislikes [songs|artists|styles|all] | dislike <songs|artists|styles> <id> on|off [name]
 //   lyren-probe qq reorder <dir:ID> <song id>...
 //   lyren-probe qishui check [signer_url|json] [cookie|cookie_file]
@@ -217,17 +217,6 @@ namespace {
         QRcode_free(q);
     }
 
-    std::string_view prefix(std::string_view text, size_t bytes) {
-        size_t i = 0, end = 0;
-        while (i < text.size() && i < bytes) {
-            i = utf8::next(text, i);
-            if (i <= bytes) {
-                end = i;
-            }
-        }
-        return text.substr(0, end);
-    }
-
     std::string_view arg_at(std::span<const std::string> args, size_t i) {
         return i < args.size() ? std::string_view(args[i]) : std::string_view{};
     }
@@ -289,7 +278,8 @@ namespace {
     }
 
     std::string read_file_or_value(std::string_view input) {
-        if (!input.empty() && std::filesystem::is_regular_file(input)) {
+        std::error_code ec;
+        if (!input.empty() && !input.contains('\n') && std::filesystem::is_regular_file(input, ec)) {
             std::ifstream in{std::filesystem::path(input)};
             return std::string{std::istreambuf_iterator<char>(in), {}};
         }
@@ -334,7 +324,8 @@ namespace {
             if (args.empty()) {
                 co_return std::unexpected("Expected lyrics <id>");
             }
-            auto r = co_await ok(co_await p.lyrics(Track{.id = args[0], .source = source}));
+            Track track = resolve_track ? co_await ok(co_await resolve_track(args[0])) : Track{.id = args[0], .source = source};
+            auto r = co_await ok(co_await p.lyrics(std::move(track)));
             for (const auto &l : r) {
                 std::println("{:7.3f}  {}{}{}{}", l.time, l.text, l.translation.empty() ? "" : "  /  ", l.translation,
                              l.words.empty() ? "" : std::format("  ({} words)", l.words.size()));
@@ -346,7 +337,7 @@ namespace {
                 co_return std::unexpected("Expected album <id>");
             }
             auto r = co_await ok(co_await p.album(args[0]));
-            std::println("{} ({}) · {} · {} · comments {}\n{}", r.artist, r.artist_id, r.date, r.company, r.thread, prefix(r.about, 300));
+            std::println("{} ({}) · {} · {} · comments {}\n{}", r.artist, r.artist_id, r.date, r.company, r.thread, utf8::truncate_bytes(r.about, 300));
             print_tracks(r.tracks);
             co_return Result<void>{};
         }
@@ -364,7 +355,7 @@ namespace {
             }
             if (auto intro = co_await p.artist_intro(args[0])) {
                 for (const auto &[head, text] : *intro) {
-                    std::println("## {}\n{}", head, prefix(text, 200));
+                    std::println("## {}\n{}", head, utf8::truncate_bytes(text, 200));
                 }
             }
             co_return Result<void>{};
@@ -493,8 +484,8 @@ namespace {
                 auto r = co_await ok(std::move(res));
                 std::println("page {}: {} of {}, more {}, cursor {}", page, r.comments.size(), r.total, r.more, r.cursor);
                 for (const auto &c : r.comments) {
-                    std::println("  [{}] {} · {} likes{} · {} replies · {}: {}{}", c.time, c.id, c.likes, c.liked ? " (liked)" : "", c.replies, c.user, prefix(c.text, 80),
-                                 c.reply.empty() ? "" : " ← " + c.reply_user);
+                    std::println("  [{}] {} · {} likes{} · {} replies · {}: {}{}", c.time, c.id, c.likes, c.liked ? " (liked)" : "", c.replies, c.user,
+                                 utf8::truncate_bytes(c.text, 80), c.reply.empty() ? "" : " ← " + c.reply_user);
                 }
                 if (!r.more) {
                     break;
@@ -712,21 +703,6 @@ namespace {
             std::println("{}", on ? "Hidden from recommendations" : "Restored to recommendations");
             co_return Result<void>{};
         }
-        if (cmd == "qr") {
-            auto code = co_await ok(co_await q.qr_start());
-            auto path = arg(0).empty() ? paths::state_dir() / "qq-qr.png" : std::filesystem::path(arg(0));
-            {
-                std::ofstream out(path, std::ios::binary);
-                out.write(code.image.data(), static_cast<std::streamsize>(code.image.size()));
-                if (!out) {
-                    co_return std::unexpected("Could not save the QR code image");
-                }
-            }
-            std::println("QR code: {}\nScan with QQ and confirm QQ Music sign-in", path.string());
-            auto s = co_await ok(co_await q.qr_poll());
-            std::println("state {}", static_cast<int>(s.state));
-            co_return Result<void>{};
-        }
         if (cmd == "renew") {
             if (!q.logged_in()) {
                 co_return std::unexpected("Sign in to QQ Music first");
@@ -758,8 +734,17 @@ namespace {
         if (first_non_ws != std::string::npos && first[first_non_ws] == '{') {
             settings_json = first;
         } else {
-            StringMap<std::string> settings = qs.session();
-            settings.erase("user_id");
+            StringMap<std::string> settings;
+            for (auto key : {"signer_url", "signer_token", "cookie_jar"}) {
+                if (auto it = qs.session().find(key); it != qs.session().end()) {
+                    settings.emplace(*it);
+                }
+            }
+            for (auto key : {"device_id", "iid", "fp"}) {
+                if (auto it = qs.session().find(std::format("custom_{}", key)); it != qs.session().end()) {
+                    settings.emplace(key, it->second);
+                }
+            }
             if (!first.empty()) {
                 settings["signer_url"] = first;
             }
@@ -859,7 +844,7 @@ namespace {
                 co_return;
             }
             // QQ initialization renews the previous session. A new QR login is independent of it.
-            if (!(qq_ptr && (cmd == "login" || cmd == "qr"))) {
+            if (!(qq_ptr && cmd == "login")) {
                 if (auto ready = co_await owned->initialize(); !ready) {
                     co_return fail(ready.error());
                 }
@@ -880,7 +865,7 @@ namespace {
                 std::println("{}", r.body);
                 co_return;
             }
-            if (qq_ptr && (cmd == "radar" || cmd == "reorder" || cmd == "dislikes" || cmd == "dislike" || cmd == "qr" || cmd == "renew" || cmd == "call")) {
+            if (qq_ptr && (cmd == "radar" || cmd == "reorder" || cmd == "dislikes" || cmd == "dislike" || cmd == "renew" || cmd == "call")) {
                 if (auto r = co_await run_qq_extra(*qq_ptr, cmd, rest, loop, credentials); !r) {
                     fail(r.error());
                 }
@@ -970,7 +955,7 @@ int main(int argc, char **argv) {
                          "       lyren-probe [ncm|qq|qishui|kugou|bodian] new-songs|new-albums|saved-playlists|categories|square|similar|collect-playlist ...\n"
                          "       lyren-probe [ncm|qq|qishui|kugou|bodian] comments|replies|post-comment|like-comment|login|account|library|collection ...\n"
                          "       lyren-probe [ncm] call <uri> [fields] [weapi|clientlog]\n"
-                         "       lyren-probe qq call <module> <method> [param] | radar | dislikes | dislike | reorder | qr | renew\n"
+                         "       lyren-probe qq call <module> <method> [param] | radar | dislikes | dislike | reorder | renew\n"
                          "       lyren-probe qishui check [signer_url|json] [cookie|cookie_file]");
     return 2;
 }

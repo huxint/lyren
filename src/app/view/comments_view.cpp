@@ -148,7 +148,7 @@ namespace lyren {
             std::string sub(lyren::tr(platform(thread().source).name));
             const Feed &shown = thread().feeds[thread().tab]->page ? *thread().feeds[thread().tab] : *thread().feeds[1 - thread().tab];
             if (shown.page || shown.total > 0) {
-                sub += " · " + lyren::trf("{} comments", grouped(shown.total));
+                sub += " · " + lyren::trf("{} comments", std::string_view(grouped(shown.total)));
             }
             ui.label({tx, ty + title_h + 1, tw, sub_h}, sub, t.style(type::caption, t.text_dim, text::tabular_nums));
         }
@@ -211,7 +211,6 @@ namespace lyren {
             shell_.panel.show(SidePanel::Kind::none);
         }
 
-        // Pinned root comment: clean typographic layout, separated by a hairline without decorative cards or bars.
         const float ry = bar.bottom() + 10;
         const float tx = bar.x + 24 + 10;
         const float tw = std::max(0.f, bar.right() - tx);
@@ -497,7 +496,8 @@ namespace lyren {
             return;
         }
 
-        Feed &f = reply ? *reply->feed : *thread().feeds[thread().tab];
+        const auto feed = reply ? reply->feed : thread().feeds[thread().tab];
+        Feed &f = *feed;
         if (f.items.empty() && f.more && !f.loading && f.error.empty()) {
             if (reply) {
                 comments_.load_replies(reply);
@@ -554,7 +554,7 @@ namespace lyren {
                 if (f.loading) {
                     ui.spinner(ui::center({view.x, end_y, view.w, 56}, 20, 20), t.text_dim, 2);
                 } else if (!f.error.empty()) {
-                    ui.label({view.x + C::inset, end_y + C::small_gap, std::max(0.f, view.w - C::inset * 2), C::btn}, f.error, t.style(type::caption, t.text_dim));
+                    ui.label({view.x + C::inset, end_y + C::small_gap, std::max(0.f, view.w - C::inset * 2), C::btn}, lyren::tr(f.error), t.style(type::caption, t.text_dim));
                     const float rw = ui.button_width(lyren::tr("Retry"), true);
                     if (ui.button(ui.id("comments-retry"), {view.x + (view.w - rw) / 2, end_y + 30, rw, control::small}, lyren::tr("Retry"), ui::ButtonKind::secondary,
                                   "refresh-cw")) {
@@ -669,7 +669,7 @@ namespace lyren {
         const int count = mine.likes;
         const std::string n = count > 0 ? short_number(count) : "";
 
-        ui.push_id(ui.id(key(source, c.id)));
+        ui.push_id(ui::sub_id(ui.id(c.id), std::to_underlying(source)));
         cover(ui, {x, top + 1, C::avatar, C::avatar}, c.avatar, C::avatar / 2, "user");
 
         // Like sits quietly at the top-right of the author row.

@@ -1,7 +1,9 @@
 #include "wl/layer.hpp"
 
+#include <cstdlib>
 #include <utility>
 
+#include "core/log.hpp"
 #include "wl/display.hpp"
 
 namespace lyren::wl {
@@ -33,7 +35,10 @@ namespace lyren::wl {
         zwlr_layer_surface_v1_set_keyboard_interactivity(layer_, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
         wl_surface_commit(surface_);
         while (!needs_ack_) {
-            wl_display_dispatch(display_.display);
+            if (wl_display_dispatch(display_.display) < 0) {
+                log::error("Wayland connection lost");
+                std::exit(1);
+            }
         }
     }
 

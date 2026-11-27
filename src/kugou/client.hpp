@@ -1,5 +1,4 @@
 #pragma once
-#include <map>
 #include <string>
 #include <string_view>
 
@@ -9,19 +8,21 @@
 
 namespace lyren::kugou {
 
-    using Params = std::map<std::string, std::string, std::less<>>;
+    using Params = StringMap<std::string>;
     inline constexpr std::string_view android_salt = "OIlwieks28dk2k092lksi2UIkp";
     inline constexpr std::string_view login_salt = "NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt";
 
     std::string sign(const Params &query, std::string_view body, std::string_view salt);
-    net::Request request(std::string url, const Params &query = {}, std::optional<std::string> body = {}, std::string_view salt = {}, std::vector<std::string> headers = {});
+    net::Request request(std::string url, const Params &query = {}, std::optional<std::string> body = {}, std::string_view salt = {}, std::vector<std::string> headers = {},
+                         std::string_view content_type = "application/json");
     Result<std::string> parse_device_response(std::string_view body, std::string_view secret);
 
     class Client {
     public:
-        Client(Loop &loop, net::Http &http)
+        Client(Loop &loop, net::Http &http, std::string base_url = {})
         : loop_(loop),
-          http_(http) {}
+          http_(http),
+          base_url_(std::move(base_url)) {}
 
         StringMap<std::string> session;
         std::move_only_function<void()> on_session;
@@ -40,6 +41,7 @@ namespace lyren::kugou {
     private:
         Loop &loop_;
         net::Http &http_;
+        std::string base_url_;
     };
 
 } // namespace lyren::kugou

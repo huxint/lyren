@@ -18,7 +18,7 @@ Lyren（弦间）是面向 Wayland 桌面的 C++26 音乐播放器，使用 Vulk
 
 需要支持 C++26 的 GCC 16 工具链、CMake 4.0 或更新版本、Ninja 和 `glslc`。运行环境需提供 Wayland 会话和 Vulkan 驱动。播放需要 PipeWire 服务。
 
-系统库由 `pkg-config` 检测；完整依赖和固定下载版本见 [CMakeLists.txt](CMakeLists.txt) 与 [cmake/Deps.cmake](cmake/Deps.cmake)。
+构建需要 Wayland 客户端库与 `wayland-scanner`、Vulkan、xkbcommon、FreeType、HarfBuzz、Fontconfig、libpng、libjpeg-turbo、WebP（含 demux）、giflib、libcurl、OpenSSL libcrypto、zlib、mpg123、FLAC、FDK-AAC、Vorbisfile、PipeWire、libqrencode 和 libsystemd 的开发文件。CMake 通过 `find_package(GIF)` 查找 giflib，其余系统库由 `pkg-config` 检测。构建时下载的依赖版本见 [cmake/Deps.cmake](cmake/Deps.cmake)。
 
 ## 构建和运行
 
@@ -51,14 +51,7 @@ ctest --test-dir build --output-on-failure
 
 账号凭据通过 systemd 用户凭据接口加密保存。各平台会话独立管理。
 
-### 连接汽水音乐
-
-- **开箱即用（免登录）**：切换到汽水音乐后，无需配置即可直接匿名搜索、浏览推荐/榜单并播放公开曲目与歌词。
-- **同步个人曲库与写操作**：在「账号 → 汽水音乐」中按表单填写：
-  1. 启动兼容 `GET /config` 与 `POST /sign` 的本地或自托管签名服务，填入服务地址（如 `http://127.0.0.1:8000`）及可选访问令牌。
-  2. （可选）从已登录汽水音乐的浏览器开发者工具 Network 面板复制 `Cookie`（支持 `name=value; ...`、带 `Cookie:` 前缀、Netscape `cookie_jar`，或直接粘贴整段 JSON 配置）。
-  3. 点击「测试连接」逐项检查签名服务、设备身份与账号登录态，确认通过后点击「连接」加密保存。
-- 也可通过命令行诊断：`./build/lyren-probe qishui check http://127.0.0.1:8000 [cookie_or_file]`。完整协议契约与请求/响应示例见 [平台接口与账号连接](docs/integrations.md#汽水账号连接)。
+汽水音乐支持匿名搜索和公开曲目播放。连接个人账号所需的签名服务、Cookie 和命令行诊断步骤见 [汽水账号连接](docs/integrations.md#汽水账号连接)。
 
 ## 开发
 
@@ -96,6 +89,11 @@ git config core.hooksPath .githooks
 | [src/net/](src/net/) | HTTP 请求与下载 |
 | [src/audio/](src/audio/) | 缓冲、音频解码与 PipeWire 输出 |
 | [src/media/](src/media/) | 音乐模型、平台契约与歌词 |
+| [src/ncm/](src/ncm/) | 网易云音乐平台适配 |
+| [src/qq/](src/qq/) | QQ 音乐平台适配 |
+| [src/qishui/](src/qishui/) | 汽水音乐平台适配 |
+| [src/kugou/](src/kugou/) | 酷狗音乐平台适配 |
+| [src/bodian/](src/bodian/) | 波点音乐平台适配 |
 | [src/sys/](src/sys/) | 配置、凭据与桌面服务 |
 | [src/app/](src/app/) | 应用装配、图片缓存与保存的状态 |
 | [src/app/model/](src/app/model/) | 播放、曲库、导航、账号、评论与社交的状态和读写 |

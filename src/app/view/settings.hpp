@@ -6,6 +6,7 @@
 #include "app/view/part.hpp"
 #include "audio/meter.hpp"
 #include "core/string_map.hpp"
+#include "sys/config.hpp"
 
 namespace lyren {
 
@@ -44,7 +45,7 @@ namespace lyren {
         bool previews_ready_ = false;
         double preview_fs_ = 0, preview_radius_ = 0;
         std::string preview_accent_;
-        std::array<std::optional<std::string>, 7> preview_colors_;
+        Config::Theme::Colors preview_colors_;
         audio::Follower meter_{};
         double meter_time_ = 0;
     };

@@ -121,7 +121,7 @@ namespace lyren {
         if (timed) {
             ui.keep_animating();
         } else if (const auto next = static_cast<size_t>(line + 1); next < playback_.lyrics().size()) {
-            ui.wake(ui.now + playback_.lyrics()[next].time - lead - playback_.timeline().to_song(playback_.position()));
+            ui.wake(ui.now + playback_.lyrics()[next].time - lead - playback_.song_time());
         }
     }
 
@@ -426,7 +426,7 @@ namespace lyren {
         float front = 0;
         lyric_lifts_.clear();
         if (sung) {
-            const double now = playback_.timeline().to_song(playback_.position());
+            const double now = playback_.song_time();
             front = lyric_sung_x(p, *live, text, font, soft, now, features);
             if (t.motion > 0) {
                 fill_lyric_wave(lyric_lifts_, p.shape(live->text, {.size = font, .features = features}), *live, text, font, now, focus);
@@ -451,7 +451,7 @@ namespace lyren {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const Track *track = playback_.current();
-        const double now = playback_.timeline().to_song(playback_.position());
+        const double now = playback_.song_time();
         // The waiting row anticipates the cue; promotion follows the actual start of the line.
         const int at = lyric_at(playback_.lyrics(), now);
         const LyricLine *line = at >= 0 ? &playback_.lyrics()[static_cast<size_t>(at)] : nullptr;

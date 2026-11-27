@@ -41,7 +41,7 @@ namespace lyren {
 
         // A count as a stat shows it: whole while it fits, shortened once it is long.
         std::string stat_number(int n) {
-            return n >= 1000000 ? short_number(n) : grouped(n);
+            return n >= 1000000 ? short_number(n) : std::string(grouped(n));
         }
 
         Person person_of(const Profile &who) {
@@ -184,7 +184,7 @@ namespace lyren {
         }
         // The page's own account of them; until it has one, or where it leaves gaps, the card that led here fills in.
         std::optional<Profile> patched;
-        if (!page->info || page->info->name.empty() || page->info->avatar.empty()) {
+        if (!page->info || (page->info->name.empty() && !card.title.empty()) || (page->info->avatar.empty() && !card.cover.empty())) {
             patched = page->info ? *page->info : Profile{.id = card.id};
             if (patched->name.empty()) {
                 patched->name = card.title;
@@ -402,7 +402,7 @@ namespace lyren {
         };
         std::inplace_vector<Badge, 3> badges;
         if (who.vip) {
-            badges.push_back({"VIP", "sparkles", true});
+            badges.push_back({"VIP", "star", true});
         }
         if (who.level >= 0) {
             badges.push_back({std::format("Lv.{}", who.level), "audio-lines", false});
@@ -815,7 +815,7 @@ namespace lyren {
                 shortcuts.push_back({"quick-daily", "disc-3", lyren::tr("Daily mix"), Page::daily});
             }
             if (prov.features.radar) {
-                shortcuts.push_back({"quick-radar", "sparkles", lyren::tr("Radar"), Page::radar});
+                shortcuts.push_back({"quick-radar", "radio", lyren::tr("Radar"), Page::radar});
             }
             if (caps.radio) {
                 shortcuts.push_back({"quick-fm", "radio", lyren::tr(prov.radio_title), Page::fm});
@@ -1376,7 +1376,8 @@ namespace lyren {
             p.rect(meter, t.fill(1.6f), 1.5f);
             p.rect({meter.x, meter.y, meter.w * share * in, meter.h}, t.accent.with_alpha(0.8f), 1.5f);
             if (played > 0) {
-                ui.label({meter.x, row.y + 10, meter.w, 18}, lyren::trf("{} plays", grouped(played)), t.style(type::micro, t.faint(), text::tabular_nums), Align::right);
+                ui.label({meter.x, row.y + 10, meter.w, 18}, lyren::trf("{} plays", std::string_view(grouped(played))), t.style(type::micro, t.faint(), text::tabular_nums),
+                         Align::right);
             }
             const auto it = ui.interact(row_id, row);
             if (it.double_clicked) {

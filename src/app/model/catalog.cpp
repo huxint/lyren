@@ -165,7 +165,7 @@ namespace lyren {
         }
         const bool ready = lib.collection[0].loaded && lib.collection[1].loaded && lib.collection[0].error.empty() && lib.collection[1].error.empty();
         const double now = env_.now();
-        if (!ready || (now - lib.collection_at >= 60.0 && now >= lib.collection_retry_at)) {
+        if (now >= lib.collection_retry_at && (!ready || now - lib.collection_at >= 60.0)) {
             spawn(load_collection(source, false));
         }
     }
@@ -248,14 +248,28 @@ namespace lyren {
         }
         const bool background = !force && recent.loaded && !recent.tracks.empty();
         const uint64_t gen = ++recent.gen, account_gen = lib.account_gen;
+        recent.pending_plays.clear();
+        recent.pending_settled = false;
         recent.begin(background);
         auto r = co_await env_.provider(source).features.recent_plays();
         if (gen != recent.gen || account_gen != lib.account_gen) {
             co_return;
         }
+        auto pending = std::move(recent.pending_plays);
+        const bool settled = std::exchange(recent.pending_settled, false);
         if (r) {
             const bool had_tracks = !recent.tracks.empty();
             recent.succeed(env_.now(), !had_tracks);
+            recent.stale = settled;
+            for (const auto &track : pending | std::views::reverse) {
+                std::erase_if(*r, [&](const Track &x) {
+                    return same(x, track);
+                });
+                r->insert(r->begin(), track);
+            }
+            if (r->size() > 200) {
+                r->resize(200);
+            }
             recent.tracks = std::move(*r);
             env_.prefetch(recent.tracks);
         } else {
@@ -267,6 +281,19 @@ namespace lyren {
     void Library::note_cloud_play(const Track &track, bool settled) {
         Shelf &lib = shelf(track.source);
         auto &recent = lib.recent_plays;
+        if (recent.busy()) {
+            if (!settled) {
+                std::erase_if(recent.pending_plays, [&](const Track &x) {
+                    return same(x, track);
+                });
+                recent.pending_plays.insert(recent.pending_plays.begin(), track);
+                if (recent.pending_plays.size() > 200) {
+                    recent.pending_plays.pop_back();
+                }
+            } else {
+                recent.pending_settled = true;
+            }
+        }
         if (!recent.loaded) {
             return;
         }

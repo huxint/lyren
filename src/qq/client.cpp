@@ -62,18 +62,19 @@ namespace lyren::qq {
         co_return reply;
     }
 
+    uint64_t Client::music_id() const {
+        uint64_t id = 0;
+        const auto &raw = get("musicid");
+        const auto [end, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), id);
+        return ec == std::errc{} && end == raw.data() + raw.size() ? id : 0;
+    }
+
     Task<Reply> Client::request(const std::vector<Rpc> &parts, Comm comm, net::Retry retry) {
         // The signature covers these exact bytes, so the body is built once and sent as is.
         std::string body = comm == Comm::app ? R"({"comm":{"ct":20,"cv":1770,"tmeAppID":"qqmusic"})" : R"({"comm":{"ct":19,"cv":1,"tmeAppID":"qqmusic"})";
         if (comm == Comm::app && logged_in()) {
-            uint64_t uin = 0;
-            const std::string &raw = get("musicid");
-            auto parsed = std::from_chars(raw.data(), raw.data() + raw.size(), uin);
-            if (parsed.ec != std::errc{} || parsed.ptr != raw.data() + raw.size()) {
-                uin = 0;
-            }
             body.pop_back();
-            std::format_to(std::back_inserter(body), R"(,"uin":{},"g_tk":{}}})", uin, hash33(get("musickey"), 5381));
+            std::format_to(std::back_inserter(body), R"(,"uin":{},"g_tk":{}}})", music_id(), hash33(get("musickey"), 5381));
         }
         std::string what;
         for (size_t i = 0; i < parts.size(); ++i) {

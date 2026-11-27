@@ -8,13 +8,13 @@ namespace lyren::kugou {
     Result<Stream> parse_stream(std::string_view body, bool preview, std::string_view quality);
     Result<std::vector<LyricLine>> parse_lyric_download(std::string_view body);
     Result<std::vector<LyricLine>> parse_krc(std::string_view bytes);
-    Result<std::vector<Track>> parse_metadata(std::string_view body, std::span<const std::string> hashes);
+    Result<std::vector<Track>> parse_metadata(std::string_view body, std::span<const std::string> hashes, bool allow_missing = false);
 
     // Tracks use the standard file hash as id, with audio_id and album_audio_id in mid and media.
     // Account listid, public specialid, and rankid live in separate card ID namespaces.
     class Kugou : public Provider {
     public:
-        Kugou(Loop &loop, net::Http &http);
+        Kugou(Loop &loop, net::Http &http, std::string base_url = {});
         Client client;
 
         StringMap<std::string> &session() override {

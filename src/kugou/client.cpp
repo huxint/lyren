@@ -42,26 +42,18 @@ namespace lyren::kugou {
         return crypto::md5_hex(input);
     }
 
-    net::Request request(std::string url, const Params &query, std::optional<std::string> body, std::string_view salt, std::vector<std::string> headers) {
-        size_t size = url.size() + (salt.empty() ? 0 : 43);
-        for (const auto &[name, value] : query) {
-            size += name.size() + 2 + value.size();
-        }
-        url.reserve(size);
-        char separator = '?';
-        for (const auto &[name, value] : query) {
-            url += separator;
-            encoding::append_url_encoded(url, name);
-            url += '=';
-            encoding::append_url_encoded(url, value);
-            separator = '&';
+    net::Request request(std::string url, const Params &query, std::optional<std::string> body, std::string_view salt, std::vector<std::string> headers,
+                         std::string_view content_type) {
+        if (!query.empty()) {
+            url += '?' + encoding::query_string(query);
         }
         if (!salt.empty()) {
-            url += separator;
-            url += "signature=";
+            url += query.empty() ? "?signature=" : "&signature=";
             url += sign(query, body ? std::string_view(*body) : std::string_view{}, salt);
         }
-        headers.emplace_back("Content-Type: application/json");
+        if (body) {
+            headers.emplace_back(std::format("Content-Type: {}", content_type));
+        }
         return {.url = std::move(url), .body = std::move(body), .headers = std::move(headers)};
     }
 
@@ -119,10 +111,7 @@ namespace lyren::kugou {
         const auto plain = json::write(device), digest = crypto::md5_hex(secret);
         const std::string_view view(digest);
         const auto body = crypto::aes_cbc_encrypt(view.substr(0, 16), view.substr(16, 16), plain);
-        auto req = request("https://userservice.kugou.com/risk/v3/r_register_dev", query, encoding::base64(body), android_salt, headers(query));
-        // The encrypted Base64 is the entire form body, without a field name or JSON quotes.
-        req.headers.back() = "Content-Type: application/x-www-form-urlencoded";
-        return req;
+        return request("https://userservice.kugou.com/risk/v3/r_register_dev", query, encoding::base64(body), android_salt, headers(query), "application/x-www-form-urlencoded");
     }
 
     Result<std::string> parse_device_response(std::string_view body, std::string_view secret) {
@@ -171,6 +160,9 @@ namespace lyren::kugou {
     }
 
     Task<Result<std::string>> Client::send(net::Request req, net::Retry retry) {
+        if (!base_url_.empty()) {
+            req.url.replace(0, req.url.find('/', req.url.find("://") + 3), base_url_);
+        }
         const auto generation = session_gen;
         auto reply = co_await net::fetch_retry(loop_, http_, std::move(req), retry);
         if (generation != session_gen) {

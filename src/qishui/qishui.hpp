@@ -80,6 +80,7 @@ namespace lyren::qishui {
         Task<Result<std::vector<Track>>> recent_plays();
 
     private:
+        void reset_state();
         struct Pagination {
             std::string identity, search_id;
             std::vector<std::string> cursors{std::string{}};

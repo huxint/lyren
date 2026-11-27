@@ -292,6 +292,9 @@ namespace lyren::qishui {
     } // namespace
 
     Result<SearchPage> parse_search(const Json &response, SearchKind kind) {
+        if (std::to_underlying(kind) >= group_ids.size()) {
+            return std::unexpected("Unsupported search category");
+        }
         SearchPage result;
         const auto &groups = json::field(response, "result_groups");
         if (!groups.is_array()) {
@@ -381,6 +384,9 @@ namespace lyren::qishui {
     : client(loop, http),
       loop_(loop),
       http_(http) {
+        client.on_expired = [this] {
+            reset_state();
+        };
         capabilities = {.toplists = true,
                         .square = true,
                         .radio = true,
@@ -494,24 +500,9 @@ namespace lyren::qishui {
             co_return check;
         }
         check.signer = {State::ok, candidate.get("signer_url")};
-        const auto &identity = json::field(*config, "identity");
-        for (std::string_view name : {"device_id", "iid", "fp"}) {
-            std::string custom = candidate.get(std::format("custom_{}", name));
-            if (!custom.empty()) {
-                candidate.session.insert_or_assign(std::string(name), std::move(custom));
-                continue;
-            }
-            auto value = json::text(identity, name);
-            if (!value.empty()) {
-                candidate.session.insert_or_assign(std::string(name), std::move(value));
-            }
-        }
-        if (candidate.get("device_id").empty() || candidate.get("iid").empty()) {
-            check.identity = {State::failed, "Qishui Music signer must provide device_id and iid, or include them in the connection settings"};
+        if (auto identity = candidate.apply_identity(*config); !identity) {
+            check.identity = {State::failed, std::move(identity.error())};
             co_return check;
-        }
-        if (candidate.get("fp").empty()) {
-            candidate.session["fp"] = candidate.get("device_id");
         }
         check.identity = {State::ok, std::format("device_id {}", candidate.get("device_id"))};
         if (!parsed->cookie_jar) {
@@ -562,15 +553,7 @@ namespace lyren::qishui {
         ++client.generation;
         client.session = std::move(candidate.session);
         client.cookies_ = std::move(candidate.cookies_);
-        pagination_.clear();
-        square_seen_.clear();
-        ++square_revision_;
-        liked_playlist_id_.clear();
-        played_media_.clear();
-        feed_count_ = 0;
-        lyric_id_.clear();
-        lyric_text_.clear();
-        lyric_type_.clear();
+        reset_state();
         if (client.on_session) {
             client.on_session();
         }
@@ -598,18 +581,7 @@ namespace lyren::qishui {
         co_return profile_info(response);
     }
 
-    Task<void> Qishui::logout() {
-        const bool was_logged_in = logged_in();
-        ++client.generation;
-        client.session.erase("cookie_jar");
-        client.session.erase("cookie");
-        client.session.erase("user_id");
-        if (!was_logged_in) {
-            for (std::string_view key : {"signer_url", "signer_token", "device_id", "iid", "fp", "custom_device_id", "custom_iid", "custom_fp"}) {
-                client.session.erase(std::string(key));
-            }
-        }
-        client.cookies_ = {};
+    void Qishui::reset_state() {
         pagination_.clear();
         square_seen_.clear();
         ++square_revision_;
@@ -619,6 +591,20 @@ namespace lyren::qishui {
         lyric_id_.clear();
         lyric_text_.clear();
         lyric_type_.clear();
+    }
+
+    Task<void> Qishui::logout() {
+        const bool was_logged_in = logged_in();
+        ++client.generation;
+        client.session.erase("cookie_jar");
+        client.session.erase("user_id");
+        if (!was_logged_in) {
+            for (std::string_view key : {"signer_url", "signer_token", "device_id", "iid", "fp", "custom_device_id", "custom_iid", "custom_fp"}) {
+                client.session.erase(std::string(key));
+            }
+        }
+        client.cookies_ = {};
+        reset_state();
         if (!was_logged_in) {
             auto saved_cb = std::move(client.on_session);
             (void)co_await client.initialize();
@@ -662,6 +648,9 @@ namespace lyren::qishui {
     }
 
     Task<Result<Batch>> Qishui::search(std::string query, SearchKind kind, int offset, int limit) {
+        if (!capabilities.supports_search(kind)) {
+            co_return std::unexpected("Unsupported search category");
+        }
         const auto type = kinds[static_cast<size_t>(kind)];
         auto page = co_await ok(begin_page(std::string("search:") + type, query, offset));
         Result<Json> response;

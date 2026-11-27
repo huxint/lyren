@@ -140,10 +140,13 @@ namespace lyren::qq {
     private:
         Task<Result<void>> renew_once();
         struct Renewal {
-            Result<void> result;
+            uint64_t generation;
+            std::optional<Result<void>> result;
             std::vector<std::coroutine_handle<>> waiters;
         };
+        Task<void> run_renewal(std::shared_ptr<Renewal> state);
         std::shared_ptr<Renewal> renewal_;
+        Task<void> renewal_task_;
         Clock::time_point renew_after_{};
         Loop &loop_;
         net::Http &http_;

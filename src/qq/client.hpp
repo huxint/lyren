@@ -50,6 +50,7 @@ namespace lyren::qq {
             return lyren::get(session, key);
         }
 
+        uint64_t music_id() const;
         Task<Reply> call(std::vector<Rpc> parts, Comm comm = Comm::app, net::Retry retry = net::Retry::network);
 
     private:

@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 #include <cmath>
+#include <fstream>
+#include "temp_dir.hpp"
 
 #include "sys/config.hpp"
 #include "ui/theme.hpp"
@@ -88,8 +90,8 @@ TEST_CASE("resetting a color override restores the selected theme") {
 }
 
 TEST_CASE("save_settings applies a batch of changes in a single write") {
-    const auto path = std::filesystem::temp_directory_path() / "lyren-test-batch-config.toml";
-    std::filesystem::remove(path);
+    test::TempDir dir;
+    const auto path = dir.path / "config.toml";
     ConfigFile file{.path = path};
     const std::array<SettingChange, 3> batch{{
         {"theme", "font_size", "16"},
@@ -97,10 +99,13 @@ TEST_CASE("save_settings applies a batch of changes in a single write") {
         {"playback", "normalize", "true"},
     }};
     REQUIRE(save_settings(file, batch).has_value());
-    CHECK(file.config.theme.font_size == 16);
-    CHECK(file.config.theme.motion == 1.5);
-    CHECK(file.config.playback.normalize);
-    std::filesystem::remove(path);
+    std::ifstream in(path);
+    REQUIRE(in.is_open());
+    const auto saved = parse_config(std::string{std::istreambuf_iterator<char>(in), {}});
+    REQUIRE(saved);
+    CHECK(saved->theme.font_size == 16);
+    CHECK(saved->theme.motion == 1.5);
+    CHECK(saved->playback.normalize);
 }
 
 TEST_CASE("light theme separates surfaces and keeps text readable") {

@@ -40,7 +40,7 @@ namespace lyren::net {
         constexpr std::array delays{300ms, 900ms};
         for (auto delay : delays) {
             auto res = co_await FetchRef{loop, http, req};
-            if (res.error.empty() || retry == Retry::never) {
+            if (res.error.empty() || retry == Retry::never || res.error == "Maximum file size exceeded") {
                 co_return res;
             }
             log::warn("http {}: {}, retrying", req.url.substr(0, req.url.find('?')), res.error);

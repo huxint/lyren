@@ -48,7 +48,7 @@ namespace lyren {
             }
         }
         // Network callbacks may still hold Loader; none can call back into Images after this point.
-        loader_->pool.shutdown();
+        loader_->pool.shutdown(huxint::nexus::shutdown_policy::discard);
     }
 
     int Images::tier(float d) {

@@ -63,7 +63,7 @@ namespace lyren {
       browser_(shell.browser),
       accounts_(shell.accounts) {}
 
-    void Part::cover(ui::Ui &ui, Rect r, const std::string &url, float radius, std::string_view placeholder) {
+    void Part::cover(ui::Ui &ui, Rect r, std::string_view url, float radius, std::string_view placeholder) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         const int px = Images::tier(r.w * p.scale());
@@ -89,7 +89,7 @@ namespace lyren {
         }
     }
 
-    float Part::cover_hue(const std::string &url, float size) {
+    float Part::cover_hue(std::string_view url, float size) {
         const auto &e = images_.get(url, static_cast<uint32_t>(Images::tier(size)));
         return e.ready ? e.hue : e.failed ? -1 : -2;
     }
@@ -107,7 +107,7 @@ namespace lyren {
         }
     }
 
-    bool Part::page_status(ui::Ui &ui, Rect r, bool loading, const std::string &error, bool needs_login, Placeholder look) {
+    bool Part::page_status(ui::Ui &ui, Rect r, bool loading, std::string_view error, bool needs_login, Placeholder look) {
         const auto &t = ui.theme();
         if (needs_login) {
             const Rect c = ui::center(r, std::min(r.w, 360.f), 168);

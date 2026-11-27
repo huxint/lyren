@@ -7,10 +7,11 @@
 #include <ctime>
 #include <format>
 #include <iterator>
+#include <ranges>
 #include <random>
 #include <source_location>
-#include <curl/curl.h>
 
+#include "core/crypto.hpp"
 #include "core/encoding.hpp"
 #include "core/i18n.hpp"
 #include "core/log.hpp"
@@ -309,6 +310,12 @@ namespace lyren::qq {
             Str Msg, AddedCmId, VerifyUrl;
         };
 
+        struct Credentials {
+            std::string_view openid, access_token, refresh_token;
+            uint64_t musicid;
+            std::string_view musickey;
+            int onlyNeedAccessToken = 0, forceRefreshToken = 0;
+        };
         struct QSession {
             uint64_t musicid = 0;
             Str musickey, openid, access_token, refresh_token, unionid, encryptUin;
@@ -645,9 +652,16 @@ namespace lyren::qq {
             return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
         }
 
-        std::string random_id() {
-            std::random_device rng;
-            return std::format("{:08x}{:08x}{:08x}{:08x}", rng(), rng(), rng(), rng());
+        Result<uint64_t> directory_id(std::string_view id) {
+            if (id.starts_with("dir:")) {
+                id.remove_prefix(4);
+                uint64_t number = 0;
+                const auto [end, ec] = std::from_chars(id.data(), id.data() + id.size(), number);
+                if (ec == std::errc{} && end == id.data() + id.size()) {
+                    return number;
+                }
+            }
+            return std::unexpected("Invalid QQ Music playlist directory");
         }
 
         Result<StringMap<std::string>> login_session(const Reply &reply) {
@@ -988,11 +1002,10 @@ namespace lyren::qq {
 
     Task<Result<std::vector<Dislike>>> Qq::dislikes(DislikeKind kind) {
         const auto index = static_cast<size_t>(kind);
-        Result<std::vector<Dislike>> out(std::in_place);
+        std::vector<Dislike> out;
         std::string cursor;
-        bool more = true;
         constexpr int max_pages = 100;
-        for (int page = 1; out && more; ++page) {
+        for (int page = 1;; ++page) {
             if (page > max_pages) {
                 co_return std::unexpected("QQ Music returned too many dislike pages");
             }
@@ -1001,19 +1014,15 @@ namespace lyren::qq {
                 param.pop_back();
                 std::format_to(std::back_inserter(param), R"(,"{}":{}}})", dislike_cursors[index], glz::write_json(glz::escape_bytes_t{cursor}).value());
             }
-            out = parse_dislikes(co_await client.call({{"music.feedback.FeedbackBlack", "GetDislikeList", std::move(param)}}), kind)
-                      .and_then([&](DislikesPage r) -> Result<std::vector<Dislike>> {
-                          if (r.items.empty()) {
-                              more = false;
-                              return std::move(*out);
-                          }
-                          if (r.cursor.empty() || r.cursor == cursor) {
-                              return std::unexpected("QQ Music returned a repeated dislike page");
-                          }
-                          cursor = std::move(r.cursor);
-                          out->insert(out->end(), std::make_move_iterator(r.items.begin()), std::make_move_iterator(r.items.end()));
-                          return std::move(*out);
-                      });
+            auto part = co_await ok(parse_dislikes(co_await client.call({{"music.feedback.FeedbackBlack", "GetDislikeList", std::move(param)}}), kind));
+            if (part.items.empty()) {
+                break;
+            }
+            if (part.cursor.empty() || part.cursor == cursor) {
+                co_return std::unexpected("QQ Music returned a repeated dislike page");
+            }
+            cursor = std::move(part.cursor);
+            out.append_range(std::views::as_rvalue(part.items));
         }
         co_return out;
     }
@@ -1027,6 +1036,9 @@ namespace lyren::qq {
     }
 
     Task<Result<Batch>> Qq::search(std::string query, SearchKind kind, int offset, int limit) {
+        if (!capabilities.supports_search(kind)) {
+            co_return std::unexpected("Unsupported search category");
+        }
         static constexpr std::array types = {0, 2, 1, 3}; // songs, albums, artists, playlists
         std::mt19937_64 rng{std::random_device{}()};
         std::string param = std::format(R"({{"query":{},"search_type":{},"page_num":{},"num_per_page":{},"searchid":"{}"}})", glz::write_json(glz::escape_bytes_t{query}).value(),
@@ -1035,6 +1047,9 @@ namespace lyren::qq {
     }
 
     Result<Batch> parse_search(const Reply &reply, SearchKind kind, int limit) {
+        if (!Capabilities{}.supports_search(kind)) {
+            return std::unexpected("Unsupported search category");
+        }
         return parse_data<QSearch>(reply).transform([&](auto d) -> Batch {
             Batch out{.total = d.meta ? d.meta->sum : 0, .next_offset = d.meta && d.meta->nextpage > 0 ? (d.meta->nextpage - 1) * limit : -1};
             if (!d.body) {
@@ -1221,18 +1236,16 @@ namespace lyren::qq {
 
     Task<Result<std::vector<Track>>> Qq::tracks(Card card) {
         if (card.id.starts_with("dir:")) {
-            Result<std::vector<Track>> out(std::in_place);
+            const auto directory = co_await ok(directory_id(card.id));
+            std::vector<Track> out;
             bool more = true;
-            for (int offset = 0; out && more;) {
-                out = parse_playlist(co_await client.call({{"music.musicasset.PlaylistDetailRead", "GetUniformSongDetailInfo",
-                                                            std::format(R"({{"uin":{},"dirid":{},"bPaged":true,"offset":{},"size":100}})",
-                                                                        glz::write_json(client.get("musicid")).value(), card.id.substr(4), offset)}}))
-                          .transform([&](PlaylistPage page) {
-                              more = !page.tracks.empty() && page.more;
-                              offset += static_cast<int>(page.tracks.size());
-                              out->insert(out->end(), std::make_move_iterator(page.tracks.begin()), std::make_move_iterator(page.tracks.end()));
-                              return std::move(*out);
-                          });
+            for (int offset = 0; more;) {
+                auto page = co_await ok(parse_playlist(co_await client.call(
+                    {{"music.musicasset.PlaylistDetailRead", "GetUniformSongDetailInfo",
+                      std::format(R"({{"uin":{},"dirid":{},"bPaged":true,"offset":{},"size":100}})", glz::write_json(client.get("musicid")).value(), directory, offset)}})));
+                more = !page.tracks.empty() && page.more;
+                offset += static_cast<int>(page.tracks.size());
+                out.append_range(std::views::as_rvalue(page.tracks));
             }
             co_return out;
         }
@@ -1253,18 +1266,16 @@ namespace lyren::qq {
                     return tracks_of(d.songInfoList);
                 });
         }
-        Result<std::vector<Track>> out(std::in_place);
+        std::vector<Track> out;
         bool more = true;
-        for (int begin = 0; out && more;) {
-            out = parse_data<QDiss>(co_await client.call({{"music.srfDissInfo.aiDissInfo", "uniform_get_Dissinfo",
-                                                           std::format(R"({{"disstid":{},"userinfo":1,"tag":1,"song_begin":{},"song_num":1000}})", card.id, begin)}}))
-                      .transform([&](const QDiss &d) {
-                          auto part = tracks_of(d.songlist);
-                          begin += static_cast<int>(part.size());
-                          more = !part.empty() && begin < d.total_song_num;
-                          out->insert(out->end(), std::make_move_iterator(part.begin()), std::make_move_iterator(part.end()));
-                          return std::move(*out);
-                      });
+        for (int begin = 0; more;) {
+            auto d =
+                co_await ok(parse_data<QDiss>(co_await client.call({{"music.srfDissInfo.aiDissInfo", "uniform_get_Dissinfo",
+                                                                     std::format(R"({{"disstid":{},"userinfo":1,"tag":1,"song_begin":{},"song_num":1000}})", card.id, begin)}})));
+            auto part = tracks_of(d.songlist);
+            begin += static_cast<int>(part.size());
+            more = !part.empty() && begin < d.total_song_num;
+            out.append_range(std::views::as_rvalue(part));
         }
         co_return out;
     }
@@ -1662,18 +1673,15 @@ namespace lyren::qq {
     }
 
     Task<Result<std::vector<Card>>> Qq::collected_playlists() {
-        Result<std::vector<Card>> out(std::in_place);
+        std::vector<Card> out;
         bool more = true;
-        for (int offset = 0; out && more;) {
-            out = parse_favorite_playlists(
-                      co_await client.call({{"music.musicasset.PlaylistFavRead", "GetPlaylistFavInfo_v2",
-                                             std::format(R"({{"uin":{},"offset":{},"size":100}})", glz::write_json(client.get("encrypt_uin")).value(), offset)}}))
-                      .transform([&](FavoritePlaylistsPage page) {
-                          offset += static_cast<int>(page.playlists.size());
-                          more = !page.playlists.empty() && page.more && offset < page.total;
-                          out->insert(out->end(), std::make_move_iterator(page.playlists.begin()), std::make_move_iterator(page.playlists.end()));
-                          return std::move(*out);
-                      });
+        for (int offset = 0; more;) {
+            auto page = co_await ok(parse_favorite_playlists(
+                co_await client.call({{"music.musicasset.PlaylistFavRead", "GetPlaylistFavInfo_v2",
+                                       std::format(R"({{"uin":{},"offset":{},"size":100}})", glz::write_json(client.get("encrypt_uin")).value(), offset)}})));
+            offset += static_cast<int>(page.playlists.size());
+            more = !page.playlists.empty() && page.more && offset < page.total;
+            out.append_range(std::views::as_rvalue(page.playlists));
         }
         co_return out;
     }
@@ -1699,7 +1707,8 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::edit_playlist(std::string id, std::vector<Track> tracks, bool add) {
-        std::string param = std::format(R"({{"dirId":{},"bFmtUtf8":true,"v_songInfo":[)", id.substr(4));
+        const auto directory = co_await ok(directory_id(id));
+        std::string param = std::format(R"({{"dirId":{},"bFmtUtf8":true,"v_songInfo":[)", directory);
         for (size_t i = 0; i < tracks.size(); ++i) {
             std::format_to(std::back_inserter(param), R"({}{{"songId":{},"songType":{}}})", i ? "," : "", tracks[i].id, tracks[i].type);
         }
@@ -1710,7 +1719,8 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::reorder_playlist(std::string id, std::vector<Track> tracks) {
-        std::string param = std::format(R"({{"dirId":{},"v_songPair":[)", id.substr(4));
+        const auto directory = co_await ok(directory_id(id));
+        std::string param = std::format(R"({{"dirId":{},"v_songPair":[)", directory);
         for (size_t i = 0; i < tracks.size(); ++i) {
             std::format_to(std::back_inserter(param), R"({}{{"songId":{},"songType":{}}})", i ? "," : "", tracks[i].id, tracks[i].type);
         }
@@ -1737,9 +1747,10 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::rename_playlist(std::string id, std::string name) {
+        const auto directory = co_await ok(directory_id(id));
         // EditPlaylist replaces all four fields; read and retain the cover, description and tags first.
         auto d = co_await ok(parse_data<QDiss>(co_await client.call(
-            {{"music.srfDissInfo.aiDissInfo", "uniform_get_Dissinfo", std::format(R"({{"dirid":{},"optype":3,"tag":1,"userinfo":0,"pic_dpi":300}})", id.substr(4))}})));
+            {{"music.srfDissInfo.aiDissInfo", "uniform_get_Dissinfo", std::format(R"({{"dirid":{},"optype":3,"tag":1,"userinfo":0,"pic_dpi":300}})", directory)}})));
         if (!d.dirinfo) {
             co_return std::unexpected("QQ Music returned no playlist details");
         }
@@ -1751,7 +1762,7 @@ namespace lyren::qq {
         }
         const std::string description = d.dirinfo->desc.value_or("");
         co_return written(co_await client.call({{"music.musicasset.PlaylistBaseWrite", "EditPlaylist",
-                                                 std::format(R"({{"dirId":{},"mask":15,"dirNewName":{},"dirNewDesc":{},"dirNewPicUrl":{},"dirNewtaglist":"{}"}})", id.substr(4),
+                                                 std::format(R"({{"dirId":{},"mask":15,"dirNewName":{},"dirNewDesc":{},"dirNewPicUrl":{},"dirNewtaglist":"{}"}})", directory,
                                                              glz::write_json(glz::escape_bytes_t{name}).value(), glz::write_json(glz::escape_bytes_t{description}).value(),
                                                              glz::write_json(d.dirinfo->picurl.value_or("")).value(), tags)}},
                                                Comm::app, net::Retry::never))
@@ -1759,8 +1770,8 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::delete_playlist(std::string id) {
-        co_return written(
-            co_await client.call({{"music.musicasset.PlaylistBaseWrite", "DelPlaylist", std::format(R"({{"dirId":{}}})", id.substr(4))}}, Comm::app, net::Retry::never))
+        const auto directory = co_await ok(directory_id(id));
+        co_return written(co_await client.call({{"music.musicasset.PlaylistBaseWrite", "DelPlaylist", std::format(R"({{"dirId":{}}})", directory)}}, Comm::app, net::Retry::never))
             .transform([](const QWrite &) {});
     }
 
@@ -1965,7 +1976,7 @@ namespace lyren::qq {
         }
         qr_cookies_ = std::move(cookies);
         js_version_ = std::move(js_version);
-        oauth_state_ = random_id();
+        oauth_state_ = crypto::random_hex(32);
         co_return QrCode{.image = std::move(qr.body)};
     }
 
@@ -2051,7 +2062,7 @@ namespace lyren::qq {
                                                                                {"openapi", "1010"},
                                                                                {"g_tk", std::to_string(hash33(p_skey, 5381))},
                                                                                {"auth_time", millis()},
-                                                                               {"ui", random_id()}}),
+                                                                               {"ui", crypto::random_hex(32)}}),
                                                .headers = {"Content-Type: application/x-www-form-urlencoded", "Referer: https://graph.qq.com/", "Origin: https://graph.qq.com"},
                                                .follow_redirects = false,
                                                .cookie_jar = std::move(checked.cookie_jar)}};
@@ -2073,7 +2084,6 @@ namespace lyren::qq {
         }
         client.session = co_await ok(login_session(reply));
         ++client.session_gen;
-        renewal_.reset();
         renew_after_ = Clock::now() + 30min;
         qr_cookies_ = {};
         if (client.on_session) {
@@ -2083,50 +2093,73 @@ namespace lyren::qq {
     }
 
     Task<Result<void>> Qq::renew(bool force) {
-        if (!renewal_ && !force && Clock::now() < renew_after_) {
-            co_return Result<void>{};
-        }
-        if (renewal_) {
-            auto renewal = renewal_;
+        const auto gen = client.session_gen;
+        for (;;) {
+            auto state = renewal_;
+            if (!state) {
+                if (!force && Clock::now() < renew_after_) {
+                    co_return Result<void>{};
+                }
+                state = renewal_ = std::make_shared<Renewal>(gen);
+                renewal_task_ = run_renewal(state);
+                renewal_task_.await_suspend({}).resume();
+            }
             struct Wait {
                 Renewal &state;
+                std::coroutine_handle<> handle{};
+                ~Wait() {
+                    if (handle) {
+                        std::erase(state.waiters, handle);
+                    }
+                }
                 bool await_ready() const {
-                    return false;
+                    return state.result.has_value();
                 }
                 void await_suspend(std::coroutine_handle<> h) {
-                    state.waiters.push_back(h);
+                    state.waiters.push_back(handle = h);
                 }
-                void await_resume() const {}
+                void await_resume() {
+                    handle = {};
+                }
             };
-            co_await Wait{*renewal};
-            co_return renewal->result;
+            co_await Wait{*state};
+            if (gen == state->generation && (gen == client.session_gen || !*state->result)) {
+                co_return *state->result;
+            }
+            if (gen != client.session_gen) {
+                co_return std::unexpected("QQ Music session changed; retry the action");
+            }
         }
-        auto renewal = renewal_ = std::make_shared<Renewal>();
-        uint64_t gen = client.session_gen;
-        auto result = co_await renew_once();
-        if (gen == client.session_gen) {
-            renew_after_ = Clock::now() + (result ? 30min : 30s);
+    }
+
+    Task<void> Qq::run_renewal(std::shared_ptr<Renewal> state) {
+        state->result = co_await renew_once();
+        if (state->generation == client.session_gen) {
+            renew_after_ = Clock::now() + (*state->result ? 30min : 30s);
         }
-        renewal->result = result;
-        if (renewal_ == renewal) {
-            renewal_.reset();
+        renewal_.reset();
+        // Resume after this worker has returned. A waiter may start another renewal or cancel a sibling.
+        if (!state->waiters.empty()) {
+            loop_.defer([state] {
+                std::ranges::reverse(state->waiters);
+                while (!state->waiters.empty()) {
+                    auto next = state->waiters.back();
+                    state->waiters.pop_back();
+                    next.resume();
+                }
+            });
         }
-        for (auto waiter : renewal->waiters) {
-            waiter.resume();
-        }
-        co_return result;
     }
 
     Task<Result<void>> Qq::renew_once() {
         if (!logged_in()) {
             co_return std::unexpected("QQ Music session expired; scan again");
         }
-        auto reply =
-            co_await client.call({{"QQConnectLogin.LoginServer", "QQLogin",
-                                   std::format(R"({{"openid":{},"access_token":{},"refresh_token":{},"musicid":{},"musickey":{},"onlyNeedAccessToken":0,"forceRefreshToken":0}})",
-                                               glz::write_json(client.get("openid")).value(), glz::write_json(client.get("access_token")).value(),
-                                               glz::write_json(client.get("refresh_token")).value(), client.get("musicid"), glz::write_json(client.get("musickey")).value())}},
-                                 Comm::linux, net::Retry::never);
+        const Credentials credentials{client.get("openid"), client.get("access_token"), client.get("refresh_token"), client.music_id(), client.get("musickey")};
+        if (!credentials.musicid) {
+            co_return std::unexpected("QQ Music returned incomplete credentials");
+        }
+        auto reply = co_await client.call({{"QQConnectLogin.LoginServer", "QQLogin", *glz::write_json(credentials)}}, Comm::linux, net::Retry::never);
         if (reply.needs_login) {
             co_await logout();
             co_return std::unexpected("QQ Music session expired; scan again");
@@ -2156,7 +2189,6 @@ namespace lyren::qq {
     Task<void> Qq::logout() {
         cancel_login();
         ++client.session_gen;
-        renewal_.reset();
         renew_after_ = {};
         client.session.clear();
         if (client.on_session) {

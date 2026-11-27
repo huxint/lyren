@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ranges>
 
 #include "core/i18n.hpp"
 
@@ -112,6 +113,9 @@ namespace lyren::ui {
         if (frame_ % 1024 == 0) {
             std::erase_if(scrolls_, [this](auto &kv) {
                 return now - kv.second.seen > 1800;
+            });
+            std::erase_if(edits_, [this](auto &kv) {
+                return kv.first != focus && kv.second.seen + 1024 < frame_;
             });
         }
     }
@@ -498,28 +502,34 @@ namespace lyren::ui {
     }
 
     void Ui::confirm(std::string title, std::string detail, std::string action, std::string icon, std::move_only_function<void()> on_confirm) {
-        open_modal(
-            400, 220,
-            [title = std::move(title), detail = std::move(detail), action = std::move(action), icon = std::move(icon), on_confirm = std::move(on_confirm)](Ui &u, Rect r) mutable {
-                const Theme &t = u.theme();
-                u.label({r.x, r.y, r.w - 40, 30}, title, t.style(type::title, t.text, text::semibold));
-                const TextStyle body = t.style(type::label, t.text_dim);
-                const auto lines = u.painter().wrap_lines(detail, body.size, r.w);
-                const size_t shown = std::min<size_t>(lines.size(), 3);
-                for (size_t i = 0; i < shown; ++i) {
-                    u.label({r.x, r.y + 44 + static_cast<float>(i) * 22, r.w, 22}, lines[i], body);
-                }
-                u.resize_modal(400, 48 + 44 + static_cast<float>(std::max<size_t>(shown, 1)) * 22 + 28 + control::large);
-                const float ok_w = std::max(96.f, u.button_width(action, !icon.empty())), cancel_w = std::max(84.f, u.button_width(tr("Cancel")));
-                const Rect ok{r.right() - ok_w, r.bottom() - control::large, ok_w, control::large};
-                if (u.button(u.id("confirm-cancel"), {ok.x - cancel_w - 8, ok.y, cancel_w, ok.h}, tr("Cancel"), ButtonKind::ghost)) {
-                    u.close_modal();
-                }
-                if (u.button(u.id("confirm-ok"), ok, action, ButtonKind::danger, icon)) {
-                    u.close_modal();
-                    on_confirm();
-                }
-            });
+        open_modal(400, 220,
+                   [title = std::move(title), detail = std::move(detail), action = std::move(action), icon = std::move(icon), on_confirm = std::move(on_confirm),
+                    lines = std::vector<std::string_view>{}](Ui &u, Rect r) mutable {
+                       const Theme &t = u.theme();
+                       u.label({r.x, r.y, r.w - 40, 30}, title, t.style(type::title, t.text, text::semibold));
+                       const TextStyle body = t.style(type::label, t.text_dim);
+                       lines.clear();
+                       for (auto part : std::views::split(std::string_view(detail), '\n')) {
+                           u.painter().wrap_into(lines, {part.begin(), part.end()}, body.size, r.w);
+                           if (lines.size() >= 3) {
+                               break;
+                           }
+                       }
+                       const size_t shown = std::min<size_t>(lines.size(), 3);
+                       for (size_t i = 0; i < shown; ++i) {
+                           u.label({r.x, r.y + 44 + static_cast<float>(i) * 22, r.w, 22}, lines[i], body);
+                       }
+                       u.resize_modal(400, 48 + 44 + static_cast<float>(std::max<size_t>(shown, 1)) * 22 + 28 + control::large);
+                       const float ok_w = std::max(96.f, u.button_width(action, !icon.empty())), cancel_w = std::max(84.f, u.button_width(tr("Cancel")));
+                       const Rect ok{r.right() - ok_w, r.bottom() - control::large, ok_w, control::large};
+                       if (u.button(u.id("confirm-cancel"), {ok.x - cancel_w - 8, ok.y, cancel_w, ok.h}, tr("Cancel"), ButtonKind::ghost)) {
+                           u.close_modal();
+                       }
+                       if (u.button(u.id("confirm-ok"), ok, action, ButtonKind::danger, icon)) {
+                           u.close_modal();
+                           on_confirm();
+                       }
+                   });
     }
 
     void Ui::toast(std::string text, std::string icon, bool error) {

@@ -86,7 +86,7 @@ namespace lyren {
                 const float w = ui.button_width(label, true);
                 ui::Enabled possible(ui, !picked.chosen.empty() && !busy);
                 if (ui.button(ui.id("remove-selected"), {right - w, bar.y + 5, w, control::medium}, label, ui::ButtonKind::secondary, "list-minus")) {
-                    browser_.remove_from_playlist(route.card, picked.of(tracks));
+                    spawn(library_.edit_playlist(route.card, picked.of(tracks), false, picked.revision));
                 }
                 right -= w + 8;
             }
@@ -95,7 +95,7 @@ namespace lyren {
             {
                 ui::Enabled possible(ui, !picked.chosen.empty());
                 if (ui.button(ui.id("add-selected"), {right - w, bar.y + 5, w, control::medium}, label, ui::ButtonKind::secondary, "folder-plus")) {
-                    shell_.dialogs.pick_playlist(ui, picked.of(tracks));
+                    shell_.dialogs.pick_playlist(ui, picked.of(tracks), picked.revision);
                 }
             }
             ui.label({bar.x + 4, bar.y, right - w - bar.x - 16, 44}, lyren::trf("{} selected", picked.chosen.size()), t.style(type::label, t.text_dim));
@@ -114,7 +114,7 @@ namespace lyren {
         // Rows glide to a new place when the list changes under them; a list that arrives anew starts in place.
         std::optional<Track> toggled_like;
         ui.push_id(ui::sub_id(id, std::bit_cast<uint64_t>(since)));
-        for (int i = first; i <= last && i < count && i < static_cast<int>(tracks.size()); ++i) {
+        for (int i = first; i <= last && i < count; ++i) {
             const float in = ui.cascade(since, i - first);
             Fade fade(p, in);
             const float y = ui.spring(ui::sub_id(item_id(ui, tracks[static_cast<size_t>(i)]), 0x70), static_cast<float>(i) * row_h, pace::glide);
@@ -266,14 +266,14 @@ namespace lyren {
             add("play", "Play selected", [this, songs] {
                 playback_.play(*songs, 0);
             });
-            add("folder-plus", "Add to playlist", [this, &ui, songs] {
-                shell_.dialogs.pick_playlist(ui, *songs);
+            add("folder-plus", "Add to playlist", [this, &ui, songs, tag = picked.revision] {
+                shell_.dialogs.pick_playlist(ui, *songs, tag);
             });
             if (removable) {
                 add(
                     "list-minus", "Remove from playlist",
-                    [this, playlist = route.card, songs] {
-                        browser_.remove_from_playlist(playlist, *songs);
+                    [this, playlist = route.card, songs, tag = picked.revision] {
+                        spawn(library_.edit_playlist(playlist, *songs, false, tag));
                     },
                     true);
             }
@@ -298,7 +298,7 @@ namespace lyren {
             });
         }
         if (caps.similar) {
-            add("sparkles", "Similar songs", [this, track] {
+            add("audio-lines", "Similar songs", [this, track] {
                 browser_.open(Page::similar, {.source = track.source, .id = track.id, .title = track.title, .subtitle = track.artist, .cover = track.cover});
             });
         }
@@ -348,7 +348,7 @@ namespace lyren {
             add(
                 "list-minus", "Remove from playlist",
                 [this, playlist = route.card, track] {
-                    browser_.remove_from_playlist(playlist, {track});
+                    spawn(library_.edit_playlist(playlist, {track}, false));
                 },
                 true);
         }

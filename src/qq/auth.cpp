@@ -1,8 +1,7 @@
 #include "qq/auth.hpp"
 
-#include <curl/curl.h>
+#include "core/encoding.hpp"
 #include <algorithm>
-#include <memory>
 
 namespace lyren::qq {
 
@@ -97,11 +96,7 @@ namespace lyren::qq {
             auto part = url.substr(0, amp);
             auto eq = part.find('=');
             if (part.substr(0, eq) == name && eq != part.npos) {
-                std::string value(part.substr(eq + 1));
-                std::ranges::replace(value, '+', ' ');
-                int n = 0;
-                std::unique_ptr<char, decltype(&curl_free)> p(curl_easy_unescape(nullptr, value.c_str(), static_cast<int>(value.size()), &n), curl_free);
-                return std::string(p.get(), static_cast<size_t>(n));
+                return encoding::url_decode(part.substr(eq + 1), encoding::UrlStyle::form);
             }
             if (amp == url.npos) {
                 break;

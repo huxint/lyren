@@ -140,7 +140,7 @@ namespace lyren {
                                }
                                window_->activate(std::string(token));
                            }},
-             saved_),
+             std::move(saved_)),
       script_(std::move(script)),
       main_(
           loop,
@@ -196,8 +196,7 @@ namespace lyren {
                     on_text_input(e);
                 },
         };
-        int w = saved_.width > 0 ? std::max(saved_.width, 720) : 1180, h = saved_.height > 0 ? std::max(saved_.height, 480) : 760;
-        saved_ = {};
+        int w = saved_w_ > 0 ? std::max(saved_w_, 720) : 1180, h = saved_h_ > 0 ? std::max(saved_h_, 480) : 760;
         window_ = std::make_unique<wl::Window>(display_, std::move(cb), w, h);
         window_->set_title("Lyren");
         main_.target = renderer_.create_target(display_.display, window_->surface());
@@ -666,7 +665,7 @@ namespace lyren {
     }
 
     void App::on_text_input(const wl::TextInputEvent &e) {
-        log::debug("text input: preedit \"{}\" cursor {}, commit \"{}\", delete {}/{}", e.preedit, e.preedit_cursor, e.commit, e.delete_before, e.delete_after);
+        log::debug("text input: preedit {}B cursor {}, commit {}B, delete {}/{}", e.preedit.size(), e.preedit_cursor, e.commit.size(), e.delete_before, e.delete_after);
         main_.input.preedit = e.preedit;
         main_.input.preedit_cursor = e.preedit_cursor;
         main_.input.commit += e.commit;

@@ -196,6 +196,7 @@ namespace lyren::ui {
     bool Ui::text_box(Id id, Rect r, std::string &text, std::string_view placeholder, std::string_view icon, std::string_view shortcut) {
         const Theme &t = *theme_;
         EditBox &box = edits_[id];
+        box.seen = frame_;
         box.edit.clamp(text);
         TextStyle st = t.style(type::label, t.text);
         constexpr float pad = 14;
@@ -335,6 +336,7 @@ namespace lyren::ui {
     void Ui::text_area(Id id, Rect r, std::string &text, std::string_view placeholder, bool framed) {
         const Theme &t = *theme_;
         EditBox &box = edits_[id];
+        box.seen = frame_;
         box.edit.clamp(text);
         TextStyle st = t.style(type::body, t.text);
         const float line_h = std::round(st.size * 1.55f);

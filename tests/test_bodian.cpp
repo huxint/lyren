@@ -7,28 +7,13 @@
 
 #include "bodian/bodian.hpp"
 #include "core/encoding.hpp"
+#include "async.hpp"
 #include "http_server.hpp"
 
 using namespace lyren;
 
 namespace {
-    template <class T>
-    Result<T> run(Loop &loop, Task<Result<T>> task) {
-        std::optional<Result<T>> result;
-        const auto timeout = loop.after(5s, [&loop] {
-            loop.quit();
-        });
-        spawn([](Loop *loop, Task<Result<T>> task, std::optional<Result<T>> *result) -> Task<void> {
-            *result = co_await std::move(task);
-            loop->quit();
-        }(&loop, std::move(task), &result));
-        if (!result) {
-            loop.run();
-        }
-        loop.cancel(timeout);
-        REQUIRE(result.has_value());
-        return std::move(*result);
-    }
+    using test::run;
 
     std::string_view body(std::string_view request) {
         return request.substr(request.find("\r\n\r\n") + 4);
@@ -86,24 +71,27 @@ TEST_CASE("Bodian playlist batches retain numeric IDs and never replay a lost wr
 }
 
 TEST_CASE("Bodian an old playlist read cannot trigger a write under a new account") {
+    Loop loop;
+    std::move_only_function<void()> switch_account;
     std::atomic<int> reads = 0, writes = 0;
     test::Server server([&](std::string_view request) {
         if (request.starts_with("GET /service/playlist/info/9?")) {
             ++reads;
-            std::this_thread::sleep_for(30ms);
+            loop.post([&] {
+                switch_account();
+            });
             return test::ok(R"({"code":200,"data":{"id":9,"name":"old","description":"keep","pic":"cover","categoryList":[]}})");
         }
         ++writes;
         return test::ok(R"({"code":200,"data":{}})");
     });
-    Loop loop;
     net::Http http;
     bodian::Bodian provider(loop, http, server.url() + '/');
     provider.session() = {{"uid", "42"}, {"token", "old-session"}, {"devid", "device"}};
-    loop.after(10ms, [&] {
+    switch_account = [&] {
         provider.session()["uid"] = "43";
         provider.session()["token"] = "new-session";
-    });
+    };
     auto result = run(loop, provider.rename_playlist("5:9", "new name"));
     REQUIRE_FALSE(result);
     CHECK(result.error() == "Bodian Music session changed; retry the action");
@@ -221,6 +209,12 @@ TEST_CASE("Bodian word lyrics decode octal coefficients and pair the following t
     CHECK(lines->front().words[1].start_ms == 10160);
     CHECK(lines->front().words[1].from == 3);
     CHECK(lines->front().words[1].to == 6);
+    auto reordered = lyren::parse_kuwo("[kuwo:127]\n[00:10.000]<2400,160>晴<1120,-1120>天");
+    REQUIRE(reordered.size() == 1);
+    REQUIRE(reordered.front().words.size() == 2);
+    const auto &first = reordered.front().words.front();
+    CHECK(first.start_ms == 10000);
+    CHECK(reordered.front().text.substr(first.from, first.to - first.from) == "天");
     auto invalid = bodian::parse_lyric(reply(R"({"content":"not-base64"})"));
     CHECK_FALSE(invalid);
     auto empty = bodian::parse_lyric(reply(R"({"content":""})"));
@@ -497,7 +491,7 @@ TEST_CASE("Bodian public profiles, other user playlists, and comment user IDs") 
     CHECK(comments->comments.front().user_id == "88");
     CHECK_FALSE(comments->comments.front().owned);
 
-    bool fetched_collected = false;
+    std::atomic<bool> fetched_collected = false;
     test::Server server([&](std::string_view request) {
         if (request.starts_with("GET /ucenter/users/pub/88?")) {
             return test::ok(R"({"code":200,"data":{"id":88,"nickname":"路人","headImg":"https://example/avatar.jpg","signature":"听歌","followCount":12,"fansCount":34,"vip":1}})");
@@ -510,7 +504,7 @@ TEST_CASE("Bodian public profiles, other user playlists, and comment user IDs") 
             CHECK(request.contains("userId=88"));
             return test::ok(R"({"code":200,"data":{"playLists":[{"id":501,"name":"公开歌单","musicCount":3}]}})");
         }
-        if (request.starts_with("GET /service/user/collection/list?")) {
+        if (request.starts_with("GET /service/collect/4/list?")) {
             fetched_collected = true;
         }
         return test::ok(R"({"code":200,"data":{}})");
@@ -537,4 +531,18 @@ TEST_CASE("Bodian public profiles, other user playlists, and comment user IDs") 
     REQUIRE(lists->second.size() == 1);
     CHECK(lists->second[0].id == "5:501");
     CHECK_FALSE(fetched_collected);
+}
+
+TEST_CASE("Bodian refuses missing and malformed profile data for the signed-in account") {
+    std::atomic<bool> malformed = false;
+    test::Server server([&](std::string_view) {
+        return test::ok(malformed ? R"({"code":200,"data":{"nickname":[]}})" : R"({"code":200,"data":null})");
+    });
+    Loop loop;
+    net::Http http;
+    bodian::Bodian provider(loop, http, server.url() + '/');
+    provider.session() = {{"uid", "42"}, {"token", "unit-token"}, {"nickname", "Old name"}};
+    CHECK_FALSE(run(loop, provider.account()));
+    malformed = true;
+    CHECK_FALSE(run(loop, provider.profile("42")));
 }

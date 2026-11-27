@@ -10,68 +10,8 @@
 
 namespace lyren::qishui {
 
-    namespace {
-        bool timing(std::string_view tag, uint32_t &start, uint32_t &duration) {
-            auto comma = tag.find(',');
-            if (comma == tag.npos) {
-                return false;
-            }
-            auto [first, error] = std::from_chars(tag.data(), tag.data() + comma, start);
-            auto [last, error2] = std::from_chars(tag.data() + comma + 1, tag.data() + tag.size(), duration);
-            return error == std::errc{} && error2 == std::errc{} && first == tag.data() + comma && last == tag.data() + tag.size();
-        }
-    } // namespace
-
     std::vector<LyricLine> parse_lyrics(std::string_view text, std::string_view format) {
-        if (format == "krc") {
-            return lyren::parse_krc(text);
-        }
-        auto result = lyren::parse_lyrics(text);
-        size_t next = 0;
-        while (next < text.size()) {
-            const size_t end = std::min(text.find('\n', next), text.size());
-            auto line = text.substr(next, end - next);
-            next = end + 1;
-            if (line.ends_with('\r')) {
-                line.remove_suffix(1);
-            }
-            if (!line.starts_with('[')) {
-                continue;
-            }
-            const size_t close = line.find(']');
-            uint32_t start = 0, duration = 0;
-            if (close == line.npos || !timing(line.substr(1, close - 1), start, duration)) {
-                continue;
-            }
-            LyricLine parsed{.time = start / 1000.0};
-            line.remove_prefix(close + 1);
-            size_t position = 0, segment = 0;
-            std::optional<std::pair<uint32_t, uint32_t>> word;
-            auto append = [&](std::string_view part) {
-                const auto from = static_cast<uint32_t>(parsed.text.size());
-                parsed.text += part;
-                if (word && !part.empty()) {
-                    parsed.words.push_back({word->first, word->second, from, static_cast<uint32_t>(parsed.text.size())});
-                }
-            };
-            while ((position = line.find('<', position)) != line.npos) {
-                const auto tag_end = line.find('>', position + 1);
-                uint32_t at = 0, length = 0;
-                if (tag_end == line.npos || !timing(line.substr(position + 1, tag_end - position - 1), at, length)) {
-                    ++position;
-                    continue;
-                }
-                append(line.substr(segment, position - segment));
-                word = std::pair{at, length};
-                position = segment = tag_end + 1;
-            }
-            append(line.substr(segment));
-            if (!parsed.text.empty()) {
-                result.push_back(std::move(parsed));
-            }
-        }
-        std::ranges::stable_sort(result, {}, &LyricLine::time);
-        return result;
+        return format == "krc" ? lyren::parse_krc(text) : lyren::parse_timed_lrc(text);
     }
 
     Result<crypto::Aes128Key> stream_key(std::string_view play_auth) {

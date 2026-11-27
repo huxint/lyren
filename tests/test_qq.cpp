@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "language_guard.hpp"
 #include <glaze/glaze.hpp>
 
 #include <atomic>
@@ -6,6 +7,7 @@
 
 #include "core/encoding.hpp"
 #include "core/i18n.hpp"
+#include "async.hpp"
 #include "http_server.hpp"
 #include "media/lyrics.hpp"
 #include "media/provider.hpp"
@@ -16,23 +18,7 @@
 using namespace lyren;
 
 namespace {
-    template <class T>
-    T run(Loop &loop, Task<T> task) {
-        std::optional<T> result;
-        const auto timeout = loop.after(5s, [&loop] {
-            loop.quit();
-        });
-        spawn([](Loop *loop, Task<T> task, std::optional<T> *result) -> Task<void> {
-            *result = co_await std::move(task);
-            loop->quit();
-        }(&loop, std::move(task), &result));
-        if (!result) {
-            loop.run();
-        }
-        loop.cancel(timeout);
-        REQUIRE(result.has_value());
-        return std::move(*result);
-    }
+    using test::run;
 
     std::string_view http_body(std::string_view request) {
         return request.substr(request.find("\r\n\r\n") + 4);
@@ -175,7 +161,6 @@ TEST_CASE("QQ favorite playlists parse pages and keep errors visible") {
 }
 
 TEST_CASE("qq request signature vectors") {
-    // docs/qqmusic-api.md 15.2.
     CHECK(qq::sign("") == "zzcf0e03e5gx4qeiq5cfgdyqwu7sdqfsb5fro3aa45059");
     CHECK(qq::sign("{}") == "zzcf8e26805gyafigxmxjehoe02mvsjjgtwzw6f1a05f1");
     CHECK(qq::sign(R"({"query":"周杰伦"})") == "zzcd01dd27o7bhc94y5rowjwmo133r17pred2357df9");
@@ -188,7 +173,6 @@ TEST_CASE("hash33 wraps at 32 bits and keeps 31") {
 }
 
 TEST_CASE("qrc block cipher") {
-    // docs/qqmusic-api.md 15.6: "QQMUSIC!" encrypts to 923dd8137d15fefa.
     CHECK(qq::qrc_block(0x923dd8137d15fefaull) == 0x51514d5553494321ull);
     // That block never reaches the two S-box entries that differ from standard DES; this one reaches both. From a
     // separate implementation that decodes real lyrics.
@@ -544,13 +528,12 @@ TEST_CASE("QQ comment pages keep service identities, pictures and failures") {
 }
 
 TEST_CASE("QQ comment errors follow the selected language and retain the service code") {
-    const Language before = language();
+    const lyren::test::LanguageGuard language_guard;
     const qq::Reply reply{.body = R"({"req_0":{"code":37}})"};
     set_language(Language::en);
     auto english = qq::parse_comment_like(reply);
     set_language(Language::zh);
     auto chinese = qq::parse_comment_like(reply);
-    set_language(before);
 
     REQUIRE_FALSE(english);
     REQUIRE_FALSE(chinese);
@@ -722,7 +705,6 @@ TEST_CASE("QQ own user_playlists surfaces favorites failure instead of clearing 
 
 TEST_CASE("QQ client retries single-part 2001 writes once, guards multipart/transport/session changes, and canonicalizes uin") {
     std::atomic<int> calls = 0;
-    std::string last_body;
     bool drop = false, multi_2001 = false, change_session = false;
     SUBCASE("single-part 2001 replays once after renewal") {}
     SUBCASE("multipart never-retry does not replay") {
@@ -737,7 +719,10 @@ TEST_CASE("QQ client retries single-part 2001 writes once, guards multipart/tran
 
     test::Server server([&](std::string_view request) {
         const int n = ++calls;
-        last_body = std::string(http_body(request));
+        glz::generic parsed;
+        const auto body = http_body(request);
+        CHECK_FALSE(glz::read_json(parsed, body));
+        CHECK(body.contains(R"("uin":1,)"));
         if (drop) {
             return std::string{};
         }
@@ -769,10 +754,6 @@ TEST_CASE("QQ client retries single-part 2001 writes once, guards multipart/tran
     }
     auto reply = run(loop, client.call(std::move(parts), qq::Comm::app, net::Retry::never));
 
-    glz::generic parsed;
-    CHECK_FALSE(glz::read_json(parsed, last_body));
-    CHECK(last_body.contains(R"("uin":1,)"));
-
     if (drop) {
         CHECK_FALSE(reply.error.empty());
         CHECK(calls == 1);
@@ -795,12 +776,12 @@ TEST_CASE("QQ client retries single-part 2001 writes once, guards multipart/tran
 
 TEST_CASE("QQ stream resolves missing media MID, skips empty sip entries, and maps anonymous login errors") {
     std::atomic<int> detail_calls = 0, vkey_calls = 0;
-    std::string vkey_body;
     test::Server server([&](std::string_view request) {
         const auto body = http_body(request);
         if (body.contains("UrlGetVkey")) {
             ++vkey_calls;
-            vkey_body = std::string(body);
+            CHECK(body.contains("M500real-media.mp3"));
+            CHECK_FALSE(body.contains("M500song-mid.mp3"));
             if (body.contains(R"("uin":"0")")) {
                 return test::ok(R"({"code":0,"req_0":{"code":104009,"data":{"sip":[],"midurlinfo":[]}}})");
             }
@@ -829,8 +810,6 @@ TEST_CASE("QQ stream resolves missing media MID, skips empty sip entries, and ma
     REQUIRE(resolved);
     CHECK(detail_calls == 1);
     CHECK(vkey_calls == 2);
-    CHECK(vkey_body.contains("M500real-media.mp3"));
-    CHECK_FALSE(vkey_body.contains("M500song-mid.mp3"));
     CHECK(resolved->url == "https://cdn.example.com/track.mp3?vkey=1");
     CHECK(resolved->highlight_from == doctest::Approx(10.0));
     CHECK(resolved->highlight_to == doctest::Approx(30.0));
@@ -859,8 +838,10 @@ TEST_CASE("QQ fm maps anonymous 1000 to sign-in while preserving authenticated 1
 }
 
 TEST_CASE("QQ album pagination advances by raw server positions across filtered entries") {
+    std::mutex mutex;
     std::vector<int> begins;
     test::Server server([&](std::string_view request) {
+        std::lock_guard lock(mutex);
         const auto body = http_body(request);
         if (body.contains("GetAlbumDetail")) {
             begins.push_back(0);
@@ -891,6 +872,7 @@ TEST_CASE("QQ album pagination advances by raw server positions across filtered 
 
     auto info = run(loop, provider.album("alb-mid"));
     REQUIRE(info);
+    std::lock_guard lock(mutex);
     CHECK(begins == std::vector<int>{0, 500, 501});
     CHECK(info->tracks.size() == 501);
     CHECK(info->tracks.front().id == "1");
@@ -931,4 +913,31 @@ TEST_CASE("QQ people rejects invalid pagination cursors without issuing a reques
     CHECK_FALSE(run(loop, provider.people("123", false, "not-a-number")));
     CHECK_FALSE(run(loop, provider.people("123", false, "-5")));
     CHECK(calls == 0);
+}
+
+TEST_CASE("QQ shares credential renewal across callers even when the initiator and another waiter cancel") {
+    std::atomic<int> requests = 0;
+    test::Server server([&](std::string_view request) {
+        ++requests;
+        CHECK(request.starts_with("POST /musicu.fcg "));
+        CHECK(http_body(request).contains(R"("musicid":123)"));
+        return test::ok(R"({"code":0,"req_0":{"code":0,"data":{"musicid":123,"musickey":"fresh","openid":"o","refresh_token":"r"}}})");
+    });
+    Loop loop;
+    net::Http http;
+    qq::Qq provider(loop, http, server.url() + '/');
+    provider.session() = {{"musicid", "00123"}, {"musickey", "old"}, {"openid", "o"}, {"refresh_token", "r"}};
+    auto first = provider.renew();
+    first.await_suspend({}).resume();
+    auto cancelled = provider.renew();
+    cancelled.await_suspend({}).resume();
+    first = {};
+    cancelled = {};
+    REQUIRE(run(loop, provider.renew()));
+    CHECK(provider.client.get("musickey") == "fresh");
+    CHECK(requests == 1);
+    CHECK(run(loop, provider.renew(false)));
+    CHECK(requests == 1);
+    CHECK(run(loop, provider.renew()));
+    CHECK(requests == 2);
 }

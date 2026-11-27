@@ -15,6 +15,9 @@ namespace lyren {
             if (event.kind == Library::Event::Kind::left) {
                 likes_.forget(event.source);
                 removals_.forget(event.source);
+                if (draft_.source == event.source) {
+                    draft_ = {};
+                }
                 feeds_[static_cast<size_t>(event.source)].reset();
                 own_pages_[static_cast<size_t>(event.source)].reset();
                 other_pages_.erase_if([&](const std::shared_ptr<Page> &page) {
@@ -152,12 +155,12 @@ namespace lyren {
         } else if (section == Section::chart) {
             load_chart(page, page->chart_tab);
         } else if (section == Section::collection && is_own(page->who)) {
-            const auto &shelf = library_.shelf(page->who.source);
-            const auto &res = shelf.collection[static_cast<size_t>(page->collection_tab)];
-            if (!res.loaded && !res.loading && env_.signed_in(page->who.source)) {
-                spawn(library_.load_collection(page->who.source, false));
+            const auto source = page->who.source;
+            const auto &tab = library_.shelf(source).collection[page->collection_tab];
+            if (!tab.loaded && !tab.loading && !tab.error.empty() && env_.signed_in(source)) {
+                spawn(library_.load_collection(source, false));
             } else {
-                library_.ensure_collection(page->who.source);
+                library_.ensure_collection(source);
             }
         }
         env_.redraw();
@@ -187,10 +190,7 @@ namespace lyren {
         }
         if (self && !reloading) {
             library_.ensure_recent_plays(who.source);
-            if ((caps.collect_albums || caps.follow_artists) && !shelf.collection[0].loaded && !shelf.collection[0].loading && shelf.collection[0].error.empty() &&
-                shelf.collection[1].error.empty() && env_.signed_in(who.source)) {
-                spawn(library_.load_collection(who.source, false));
-            }
+            library_.ensure_collection(who.source);
         }
         if (!self && caps.profile_playlists) {
             spawn(load_playlists(page));
@@ -201,12 +201,17 @@ namespace lyren {
             page->info = Profile{.id = who.id, .name = who.title, .avatar = who.cover};
             co_return;
         }
+        const uint64_t revision = shelf.preference_gen;
         auto r = co_await provider.profile(who.id);
         if (account_gen != shelf.account_gen) {
             co_return;
         }
         page->loading = false;
         if (r) {
+            if (!self) {
+                const std::string_view uid = r->id.empty() ? std::string_view(who.id) : std::string_view(r->id);
+                r->followed = library_.reconcile(who.source, Library::Preference::user, uid, r->followed, revision);
+            }
             env_.prefetch(r->avatar, 256);
             page->info = std::move(*r);
         } else {
@@ -221,21 +226,25 @@ namespace lyren {
             return;
         }
         list.loading = true;
-        spawn(fetch_people(std::move(page), fans, ++list.gen));
+        spawn(fetch_people(std::move(page), fans));
     }
 
-    Task<void> Social::fetch_people(std::shared_ptr<Page> page, bool fans, uint64_t gen) {
+    Task<void> Social::fetch_people(std::shared_ptr<Page> page, bool fans) {
+        const Source source = page->who.source;
+        const auto &shelf = library_.shelf(source);
+        const uint64_t account_gen = shelf.account_gen, revision = shelf.preference_gen;
         People &list = page->people[fans];
         auto r = co_await env_.provider(page->who).people(page->who.id, fans, list.cursor);
-        if (gen != list.gen) {
+        list.loading = false;
+        if (account_gen != shelf.account_gen) {
             co_return;
         }
-        list.loading = false;
         if (!r) {
             list.error = r.error();
             co_return env_.redraw();
         }
-        for (const auto &person : r->people) {
+        for (auto &person : r->people) {
+            person.followed = library_.reconcile(source, Library::Preference::user, person.id, person.followed, revision);
             env_.prefetch(person.avatar, 64);
         }
         list.append(std::move(r->people), std::move(r->cursor), r->more, env_.now(), r->total);
@@ -302,16 +311,42 @@ namespace lyren {
         env_.redraw();
     }
 
+    void Social::settle_likes(Source source, const std::vector<Post> &posts) {
+        for (const auto &post : posts) {
+            if (!likes_.echoed(source, post.id, post.liked)) {
+                continue;
+            }
+            auto update = [&](const std::shared_ptr<Posts> &list) {
+                if (!list) {
+                    return;
+                }
+                for (auto &cached : list->items) {
+                    if (cached.id == post.id) {
+                        cached.liked = post.liked;
+                        cached.likes = post.likes;
+                    }
+                }
+            };
+            each_page([&](const std::shared_ptr<Page> &page) {
+                if (page->who.source == source) {
+                    update(page->posts);
+                }
+            });
+            update(feeds_[static_cast<size_t>(source)]);
+        }
+    }
+
     void Social::load_posts(std::shared_ptr<Posts> list, Source source, std::string author) {
         if (!list->open()) {
             return;
         }
         list->loading = true;
-        const uint64_t gen = ++list->gen;
-        spawn(fetch_posts(std::move(list), source, std::move(author), gen));
+        spawn(fetch_posts(std::move(list), source, std::move(author)));
     }
 
-    Task<void> Social::fetch_posts(std::shared_ptr<Posts> list, Source source, std::string author, uint64_t gen) {
+    Task<void> Social::fetch_posts(std::shared_ptr<Posts> list, Source source, std::string author) {
+        const auto &shelf = library_.shelf(source);
+        const uint64_t account_gen = shelf.account_gen;
         // Not a ?: chain: GCC 16 would start both tasks.
         Result<PostPage> r;
         if (author.empty()) {
@@ -319,14 +354,15 @@ namespace lyren {
         } else {
             r = co_await env_.provider(source).posts(author, list->cursor);
         }
-        if (gen != list->gen) {
+        list->loading = false;
+        if (account_gen != shelf.account_gen) {
             co_return;
         }
-        list->loading = false;
         if (!r) {
             list->error = r.error();
             co_return env_.redraw();
         }
+        settle_likes(source, r->posts);
         for (const auto &post : r->posts) {
             env_.prefetch(post.author.avatar, 64);
             if (post.track) {
@@ -458,10 +494,10 @@ namespace lyren {
         } else {
             r = co_await env_.provider(source).share(draft.text, draft.track);
         }
-        draft.sending = false;
         if (account_gen != shelf.account_gen) {
             co_return;
         }
+        draft.sending = false;
         if (!r) {
             co_return env_.notify(lyren::trf("Could not post: {}", lyren::tr(r.error())), "triangle-alert", true);
         }
@@ -479,13 +515,16 @@ namespace lyren {
             }
             page->posts = std::make_shared<Posts>();
             load_posts(page->posts, source, page->who.id);
-            spawn([](Social *self, std::shared_ptr<Page> page) -> Task<void> {
+            spawn([](Social *self, std::shared_ptr<Page> page, uint64_t account_gen) -> Task<void> {
                 auto r = co_await self->env_.provider(page->who).profile(page->who.id);
+                if (account_gen != self->library_.shelf(page->who.source).account_gen) {
+                    co_return;
+                }
                 if (r) {
                     page->info = std::move(*r);
                     self->env_.redraw();
                 }
-            }(this, page));
+            }(this, page, library_.shelf(source).account_gen));
         });
         if (auto &feed = feeds_[static_cast<size_t>(source)]) {
             feed = std::make_shared<Posts>();

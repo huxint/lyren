@@ -3,7 +3,6 @@
 #include <linux/input-event-codes.h>
 #include <png.h>
 #include <spawn.h>
-#include <sys/wait.h>
 #include <xkbcommon/xkbcommon.h>
 
 #include <algorithm>
@@ -32,8 +31,6 @@ namespace lyren {
     }
 
     void App::run_script(size_t i) {
-        while (waitpid(-1, nullptr, WNOHANG) > 0) {
-        }
         float m = static_cast<float>(window_->margin());
         auto ms = [this] {
             return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start_).count());

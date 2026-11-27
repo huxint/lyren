@@ -1,4 +1,5 @@
 #include "app/model/playback.hpp"
+#include "app/model/library.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -36,7 +37,9 @@ namespace lyren {
       muted_(saved.muted),
       recent_(std::move(saved.recent)) {
         rng_ ^= static_cast<uint64_t>(std::time(nullptr));
-        audio::Spool::set_cache_limit(silent_ ? 0 : (static_cast<uint64_t>(std::max(0, env_.config.playback.cache_size)) << 20));
+        if (!silent_) {
+            audio::Spool::set_cache_limit(static_cast<uint64_t>(std::max(0, env_.config.playback.cache_size)) << 20);
+        }
         sort_history();
         env_.prefetch(queue_);
         player_.on_change = [this] {
@@ -51,6 +54,31 @@ namespace lyren {
     Playback::~Playback() {
         env_.loop.cancel(prefetch_timer_);
         player_.on_change = nullptr;
+    }
+
+    void Playback::connect(Library &library) {
+        // A radio has no queue to walk: its platform says what comes next.
+        on_radio_skip = [this, &library](Source source) {
+            if (library.advance_radio(source)) {
+                const auto &shelf = library.shelf(source);
+                play_radio(source, shelf.radio, shelf.radio_pos);
+            } else {
+                stop();
+            }
+        };
+        on_cloud_play = [&library](const Track &track, bool settled) {
+            library.note_cloud_play(track, settled);
+        };
+        library.subscribe([this, &library](const Library::Event &event) {
+            if (event.kind == Library::Event::Kind::left) {
+                forget(event.source);
+            } else if (event.kind == Library::Event::Kind::radio_ready && radio(event.source)) {
+                const auto &shelf = library.shelf(event.source);
+                if (shelf.radio_pos >= 0 && shelf.radio_pos < static_cast<int>(shelf.radio.size())) {
+                    play_radio(event.source, shelf.radio, shelf.radio_pos);
+                }
+            }
+        });
     }
 
     void Playback::connect(Bus &bus, std::move_only_function<void(std::string_view token)> raise) {
@@ -136,11 +164,22 @@ namespace lyren {
     }
 
     void Playback::config_changed() {
-        audio::Spool::set_cache_limit(silent_ ? 0 : (static_cast<uint64_t>(std::max(0, env_.config.playback.cache_size)) << 20));
+        if (!silent_) {
+            audio::Spool::set_cache_limit(static_cast<uint64_t>(std::max(0, env_.config.playback.cache_size)) << 20);
+        }
         apply_gain();
     }
 
     void Playback::forget(Source source) {
+        ++source_gen_[static_cast<size_t>(source)];
+        if (current() && current()->source == source) {
+            ++queue_gen_;
+        }
+        if (prefetch_.source == source) {
+            prefetch_ = {};
+        }
+        env_.loop.cancel(prefetch_timer_);
+        prefetch_timer_ = 0;
         if (radio_source_ == source) {
             radio_ = false;
         }
@@ -221,10 +260,12 @@ namespace lyren {
         failures_ = 0;
         failed_.clear();
         want_play_ = false;
+        lyrics_loading_ = false;
         publish();
     }
 
     void Playback::replace(const std::vector<Track> &list, int i) {
+        ++queue_gen_;
         set_current(i, true);
         queue_ = list;
         reset_shuffle();
@@ -263,6 +304,7 @@ namespace lyren {
         if (i < 0 || i >= static_cast<int>(queue_.size())) {
             return;
         }
+        ++queue_gen_;
         radio_ = false;
         set_current(i);
         shuffle_next_ = -1;
@@ -272,6 +314,7 @@ namespace lyren {
     }
 
     void Playback::play_now(Track track) {
+        ++queue_gen_;
         if (is_current(track)) {
             if (!playing()) {
                 toggle();
@@ -334,6 +377,7 @@ namespace lyren {
     }
 
     void Playback::clear() {
+        ++queue_gen_;
         if (queue_.empty()) {
             return;
         }
@@ -347,7 +391,12 @@ namespace lyren {
     }
 
     Task<void> Playback::heartbeat(Track seed, std::string liked_playlist) {
+        const uint64_t qgen = ++queue_gen_, generation = play_gen_;
+        const uint64_t sgen = source_gen_[static_cast<size_t>(seed.source)];
         auto r = co_await env_.provider(seed).features.heartbeat(seed.id, std::move(liked_playlist));
+        if (qgen != queue_gen_ || generation != play_gen_ || sgen != source_gen_[static_cast<size_t>(seed.source)]) {
+            co_return;
+        }
         if (!r) {
             co_return env_.notify(lyren::trf("Could not start Heartbeat mode: {}", r.error()), "triangle-alert", true);
         }
@@ -390,6 +439,7 @@ namespace lyren {
     }
 
     void Playback::stop() {
+        ++queue_gen_;
         if (!current()) {
             return;
         }
@@ -620,12 +670,15 @@ namespace lyren {
     Task<void> Playback::load_track(uint64_t gen, Track t) {
         std::shared_ptr<audio::Spool> spool;
         Stream s;
-        if (prefetch_.spool && prefetch_.key == key(t)) {
+        const Quality quality = env_.config.playback.quality;
+        if (prefetch_.spool && prefetch_.key == key(t) && prefetch_.source == t.source && prefetch_.source_gen == source_gen_[static_cast<size_t>(t.source)] &&
+            prefetch_.signed_in == env_.signed_in(t.source) && prefetch_.quality == quality && !(prefetch_.stream.trial && skip_trials())) {
             spool = std::move(prefetch_.spool);
             s = std::move(prefetch_.stream);
             prefetch_ = {};
         } else {
-            auto r = co_await env_.provider(t).stream(t, env_.config.playback.quality);
+            prefetch_ = {};
+            auto r = co_await env_.provider(t).stream(t, quality);
             if (gen != play_gen_) {
                 co_return;
             }
@@ -672,15 +725,25 @@ namespace lyren {
 
     Task<void> Playback::prefetch(Track t) {
         const uint64_t gen = play_gen_;
-        auto p = co_await env_.provider(t).stream(t, env_.config.playback.quality);
-        if (gen != play_gen_ || !p || (p->trial && skip_trials())) {
+        const uint64_t sgen = source_gen_[static_cast<size_t>(t.source)];
+        const bool signed_in = env_.signed_in(t.source);
+        const Quality quality = env_.config.playback.quality;
+        auto p = co_await env_.provider(t).stream(t, quality);
+        if (gen != play_gen_ || sgen != source_gen_[static_cast<size_t>(t.source)] || signed_in != env_.signed_in(t.source) || !p || (p->trial && skip_trials())) {
             co_return;
         }
         log::debug("prefetch: {}", t.title);
         const std::string cache_key = silent_ ? std::string{} : stream_cache_key(t, *p);
-        prefetch_.key = key(t);
-        prefetch_.spool = audio::Spool::url(env_.http, p->url, cache_key);
-        prefetch_.stream = std::move(*p);
+        prefetch_ = {
+            .key = key(t),
+            .source = t.source,
+            .source_gen = sgen,
+            .signed_in = signed_in,
+            .quality = quality,
+            .spool = audio::Spool::url(env_.http, p->url, cache_key),
+            .gen = gen,
+            .stream = std::move(*p),
+        };
     }
 
     // Shortly before the end, fetch the next track's URL and first bytes. On a timer rather than while drawing, so it
@@ -700,6 +763,7 @@ namespace lyren {
             }
             prefetch_.gen = play_gen_;
             if (int i = next_index(); i >= 0 && i != current_) {
+                prefetch_.source = queue_[static_cast<size_t>(i)].source;
                 spawn(prefetch(queue_[static_cast<size_t>(i)]));
             }
         });

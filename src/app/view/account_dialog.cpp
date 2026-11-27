@@ -161,8 +161,11 @@ namespace lyren {
         }
 
         const bool busy = sign_in.importing || sign_in.checking;
-        const auto snapshot = std::array<std::string, 6>{sign_in.signer_url, sign_in.signer_token, sign_in.cookie, sign_in.device_id, sign_in.iid, sign_in.fp};
-        sign_in.structured = true;
+        auto field_hashes = [&] {
+            const auto hash = std::hash<std::string_view>{};
+            return std::array{hash(sign_in.signer_url), hash(sign_in.signer_token), hash(sign_in.cookie), hash(sign_in.device_id), hash(sign_in.iid), hash(sign_in.fp)};
+        };
+        const auto snapshot = !busy && (sign_in.check || !sign_in.error.empty()) ? std::optional(field_hashes()) : std::nullopt;
         {
             ui::Enabled editable(ui, !busy, 0.6f);
 
@@ -216,8 +219,7 @@ namespace lyren {
             ui.text_box(ui.id("qs-fp"), {x + 20, y, w - 20, control::small}, sign_in.fp, "fp (optional)");
             y += control::small + 10;
         }
-        if (std::array<std::string_view, 6>{sign_in.signer_url, sign_in.signer_token, sign_in.cookie, sign_in.device_id, sign_in.iid, sign_in.fp} !=
-            std::array<std::string_view, 6>{snapshot[0], snapshot[1], snapshot[2], snapshot[3], snapshot[4], snapshot[5]}) {
+        if (snapshot && field_hashes() != *snapshot) {
             sign_in.error.clear();
             sign_in.check.reset();
         }
@@ -249,7 +251,8 @@ namespace lyren {
         // 6. Diagnostic 3-step result card.
         if (sign_in.checking || sign_in.check) {
             y += 4;
-            const SessionCheck check = sign_in.check.value_or(SessionCheck{});
+            static const SessionCheck pending;
+            const auto &check = sign_in.check ? *sign_in.check : pending;
             const std::array<std::pair<std::string_view, const SessionCheck::Step *>, 3> rows{{
                 {lyren::tr("Signing service"), &check.signer},
                 {lyren::tr("Device identity"), &check.identity},
@@ -301,7 +304,7 @@ namespace lyren {
         had_feedback_ = has_feedback;
         ui.end_scroll();
 
-        const bool has_input = sign_in.structured ? !sign_in.signer_url.empty() : !sign_in.settings.empty();
+        const bool has_input = !sign_in.signer_url.empty();
         const auto connect_lbl = lyren::tr("Connect");
         const auto test_lbl = lyren::tr("Test connection");
         const float connect_w = std::max(96.f, ui.button_width(connect_lbl, true));
@@ -317,7 +320,7 @@ namespace lyren {
         }
         {
             ui::Enabled can_test(ui, !busy && has_input);
-            if (ui.button(ui.id("account-test"), test_btn, test_lbl, ui::ButtonKind::secondary, "sparkles")) {
+            if (ui.button(ui.id("account-test"), test_btn, test_lbl, ui::ButtonKind::secondary, "link")) {
                 accounts_.test_settings();
             }
             if (ui.button(ui.id("account-connect"), connect_btn, connect_lbl, ui::ButtonKind::primary, "link")) {
@@ -402,7 +405,8 @@ namespace lyren {
             ui.spinner(ui::center(card, 28, 28), ink.with_alpha(0.6f), 2.5f);
         }
 
-        std::string headline, detail;
+        std::string_view headline;
+        std::string detail;
         bool busy = false;
         if (failed) {
             headline = sign_in.status ? lyren::tr("Sign-in incomplete") : lyren::tr("Could not get a QR code"), detail = lyren::tr(error_text);

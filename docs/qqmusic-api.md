@@ -36,7 +36,7 @@
 POST /cgi-bin/musicu.fcg HTTP/1.1
 Host: u.y.qq.com
 Content-Type: application/json
-Referer: https://y.qq.com/electron_music.html
+Referer: https://y.qq.com/
 Origin: https://y.qq.com
 ```
 
@@ -352,7 +352,7 @@ Cookie: <登录确认步骤设置的 Cookie>
 
 **RPC：** `music.search.SearchCgiService / DoSearchForQQMusicDesktop`
 
-**入口：** `musicu.fcg`
+**入口** `musics.fcg?sign=<签名>`
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -418,7 +418,7 @@ Cookie: <登录确认步骤设置的 Cookie>
 
 **RPC：** `music.musichallSong.PlayLyricInfo / GetPlayLyricInfo`
 
-**入口：** `musicu.fcg`
+**入口** `musics.fcg?sign=<签名>`
 
 支持普通 LRC、逐字时间轴、翻译和音译。内容是否存在取决于具体歌曲，空的伴随歌词字段表示该内容没有返回。
 
@@ -430,7 +430,7 @@ Cookie: <登录确认步骤设置的 Cookie>
 | `crypt` | integer | 是 | 内容编码选择；普通 LRC 可用 `0`，编码内容使用 `1` |
 | `qrc` | integer | 是 | `1` 请求逐字歌词，`0` 请求普通歌词 |
 | `trans` | integer | 是 | `1` 请求翻译 |
-| `roma` | integer | 是 | `1` 请求音译／罗马音 |
+| `roma` | integer | 是 | Lyren 传 `0`，省略音译请求 |
 | `lrc_t` | integer | 是 | LRC 版本时间戳，首次传 `0` |
 | `qrc_t` | integer | 是 | QRC 版本时间戳，首次传 `0` |
 | `trans_t` | integer | 是 | 翻译版本时间戳，首次传 `0` |
@@ -448,7 +448,7 @@ Cookie: <登录确认步骤设置的 Cookie>
       "crypt": 1,
       "qrc": 1,
       "trans": 1,
-      "roma": 1,
+      "roma": 0,
       "lrc_t": 0,
       "qrc_t": 0,
       "trans_t": 0,
@@ -500,7 +500,7 @@ QRC 内容包含行起点、行时长以及词起点、词时长，单位均为�
 
 **RPC：** `music.vkey.GetVkey / UrlGetVkey`
 
-**入口：** `musicu.fcg`
+**入口** `musics.fcg?sign=<签名>`
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
@@ -577,7 +577,9 @@ QRC 内容包含行起点、行时长以及词起点、词时长，单位均为�
 {
   "disstid": 7256912512,
   "userinfo": 1,
-  "tag": 1
+  "tag": 1,
+  "song_begin": 0,
+  "song_num": 1000
 }
 ```
 
@@ -589,19 +591,7 @@ QRC 内容包含行起点、行时长以及词起点、词时长，单位均为�
 | `data.hasmore` | 是否有更多歌曲 |
 | `data.code`, `data.subcode` | 歌单业务结果 |
 
-分页读取使用 `music.srfDissInfo.DissInfo / CgiGetDiss`：
-
-```json
-{
-  "optype": 0,
-  "disstid": 7256912512,
-  "onlysonglist": 1,
-  "song_begin": 0,
-  "song_num": 100
-}
-```
-
-`song_begin` 为歌曲偏移。公开可见性不授予修改权限；不可见、已删除和受限歌曲按返回状态呈现。
+同一接口按 `song_begin` 分页，每次请求 1000 首，按返回歌曲数推进偏移，直到达到 `total_song_num` 或收到空页。
 
 ### 7.2 账号歌单与收藏列表
 
@@ -782,7 +772,7 @@ QRC 内容包含行起点、行时长以及词起点、词时长，单位均为�
 优先使用响应中的图片 URL、`pmid` 和动态封面资料。普通专辑封面地址为：
 
 ```text
-https://y.qq.com/music/photo_new/T002R300x300M000<albumMid>.jpg?max_age=2592000
+https://y.gtimg.cn/music/photo_new/T002R300x300M000<albumMid>.jpg
 ```
 
 `basicInfo.color` 可用于主题主色；缺少颜色时由客户端根据封面取色。图片资源的缓存与音频临时地址分别管理。
@@ -796,9 +786,9 @@ https://y.qq.com/music/photo_new/T002R300x300M000<albumMid>.jpg?max_age=2592000
 | 方法 | 参数 | 返回 |
 | --- | --- | --- |
 | `GetAll` | `{}` | `data.group[*].toplist`，含榜单 ID 与期号 |
-| `GetDetail` | `topid, num, period` | 当期榜单资料和 `data.songInfoList` 等 |
+| `GetDetail` | `topId, num` | 当期榜单资料和 `data.songInfoList` 等 |
 
-使用 `GetAll` 返回的榜单 ID 和 `period` 请求详情。日榜、周榜等期号格式不同，不用本地日期生成所有榜单的期号。
+Lyren 将 `GetAll` 返回的榜单 ID 作为 `topId`，传 `num: 300` 读取当前榜单。
 
 ### 9.2 推荐、分类与新歌新碟
 
@@ -863,7 +853,7 @@ https://y.qq.com/music/photo_new/T002R300x300M000<albumMid>.jpg?max_age=2592000
 | `GetNewCommentList` | `BizType, BizId, LastCommentSeqNo, PageSize, PageNum, FromCommentId, WithHot` |
 | `GetReplyCommentList` | `RootCmId, LastCommentSeqNo, PageSize, LastRankScore, RankType, PageNum` |
 
-`PageNum` 从 0 开始。热评常用 `PageSize:25, HotType:1, WithAirborne:0`；最新评论可用 `WithHot:0`；回复列表可用 `PageSize:10`。后续页保留上页评论的序号及相应排序游标。
+`PageNum` 从 0 开始。热评常用 `PageSize:20, HotType:1, WithAirborne:0`；最新评论可用 `WithHot:0`；回复列表可用 `PageSize:10`。后续页保留上页评论的序号及相应排序游标。
 
 | 返回字段 | 说明 |
 | --- | --- |

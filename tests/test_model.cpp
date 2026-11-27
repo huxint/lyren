@@ -5,188 +5,75 @@
 #include <vector>
 
 #include "app/env.hpp"
+#include "async.hpp"
+#include "service.hpp"
 #include "app/model/browser.hpp"
 #include "app/model/fetch.hpp"
 #include "app/model/library.hpp"
 #include "app/model/playback.hpp"
 #include "app/model/social.hpp"
 #include "app/state.hpp"
-#include "bodian/bodian.hpp"
-#include "kugou/kugou.hpp"
-#include "ncm/netease.hpp"
-#include "qq/qq.hpp"
-#include "qishui/qishui.hpp"
 
 using namespace lyren;
 
 namespace {
 
-    class StubProvider : public Provider {
-    public:
-        explicit StubProvider(Loop &loop, Source source = Source::netease)
-        : loop_(loop),
-          source_(source) {
-            capabilities.likes = true;
-            capabilities.library = true;
-            capabilities.radio = true;
-            capabilities.collect_albums = true;
-            capabilities.follow_artists = true;
-            capabilities.playlist_edit = true;
-            capabilities.toplists = true;
-        }
+    struct LibraryService : test::Service {
+        Account current_account{.id = "u1", .name = "Alice"};
+        std::vector<Card> playlists;
+        test::Gate write;
+        bool fail_writes = false;
+        int like_calls = 0;
+        std::vector<std::string> deleted_playlists;
 
-        StringMap<std::string> &session() override {
-            return session_;
-        }
-        void on_session_changed(std::move_only_function<void()> cb) override {
-            changed_ = std::move(cb);
-        }
-        Task<Result<void>> initialize() override {
-            co_return Result<void>{};
-        }
-        Task<Result<Batch>> search(std::string, SearchKind, int, int) override {
-            co_return Batch{};
-        }
-        Task<Result<Stream>> stream(Track track, Quality) override {
-            if (on_stream) {
-                co_return co_await on_stream(std::move(track));
-            }
-            co_return std::unexpected("unavailable");
-        }
-        Task<Result<std::vector<LyricLine>>> lyrics(Track) override {
-            co_return std::vector<LyricLine>{};
-        }
-        Task<Result<std::vector<Track>>> tracks(Card) override {
-            co_return std::vector<Track>{};
-        }
-        bool logged_in() const override {
-            return signed_in;
-        }
         Task<Result<Account>> account() override {
-            if (account_delay > 0ms) {
-                co_await lyren::sleep{loop_, account_delay};
-            }
             co_return current_account;
         }
-        Task<void> logout() override {
-            signed_in = false;
-            co_return;
-        }
         Task<Result<std::pair<Card, std::vector<Card>>>> user_playlists(std::string) override {
-            co_return std::pair{Card{.kind = CardKind::playlist, .source = source_, .id = "liked", .title = "Liked", .owned = true}, playlists};
-        }
-        Task<Result<std::vector<std::string>>> liked_ids(std::string) override {
-            co_return liked;
+            co_return std::pair{Card{.id = "liked", .owned = true}, playlists};
         }
         Task<Result<void>> like(Track, bool) override {
             ++like_calls;
-            co_await lyren::sleep{loop_, 1ms};
+            co_await write;
             if (fail_writes) {
                 co_return std::unexpected("write rejected");
             }
             co_return Result<void>{};
-        }
-        Task<Result<void>> follow(std::string, bool) override {
-            if (fail_writes) {
-                co_return std::unexpected("write rejected");
-            }
-            co_return Result<void>{};
-        }
-        Task<Result<void>> collect(std::string, bool) override {
-            if (fail_writes) {
-                co_return std::unexpected("write rejected");
-            }
-            co_return Result<void>{};
-        }
-        Task<Result<std::vector<Card>>> collected_albums() override {
-            ++collected_albums_calls;
-            co_await lyren::sleep{loop_, 1ms};
-            co_return saved_albums;
-        }
-        Task<Result<std::vector<Card>>> followed_artists() override {
-            ++followed_artists_calls;
-            co_return saved_artists;
-        }
-        Task<Result<AlbumInfo>> album(std::string) override {
-            co_return AlbumInfo{.artist = "Artist"};
-        }
-        Task<Result<ArtistInfo>> artist(std::string) override {
-            co_return ArtistInfo{.name = "Artist"};
-        }
-        Task<Result<Batch>> artist_songs(std::string, int) override {
-            co_return Batch{};
-        }
-        Task<Result<std::vector<Track>>> fm() override {
-            ++fm_calls;
-            if (fm_delay > 0ms) {
-                co_await lyren::sleep{loop_, fm_delay};
-            }
-            co_return fm_batch;
         }
         Task<Result<void>> delete_playlist(std::string id) override {
             deleted_playlists.push_back(id);
-            std::erase_if(playlists, [&](const Card &c) {
-                return c.id == id;
+            co_await write;
+            if (fail_writes) {
+                co_return std::unexpected("write rejected");
+            }
+            std::erase_if(playlists, [&](const Card &card) {
+                return card.id == id;
             });
             co_return Result<void>{};
         }
-
-        Loop &loop_;
-        Source source_;
-        StringMap<std::string> session_;
-        std::move_only_function<void()> changed_;
-        bool signed_in = true;
-        bool fail_writes = false;
-        std::chrono::milliseconds account_delay{0};
-        std::chrono::milliseconds fm_delay{0};
-        Account current_account{.id = "u1", .name = "Alice"};
-        std::vector<Card> playlists;
-        std::vector<std::string> liked;
-        std::vector<Card> saved_albums;
-        std::vector<Card> saved_artists;
-        std::vector<Track> fm_batch;
-        std::vector<std::string> deleted_playlists;
-        int like_calls = 0;
-        int fm_calls = 0;
-        int collected_albums_calls = 0;
-        int followed_artists_calls = 0;
-        std::move_only_function<Task<Result<Stream>>(Track)> on_stream;
     };
 
+    template <class P = test::Service>
     struct ModelRig {
         Loop loop;
         net::Http http;
         Config config;
         double clock = 100.0;
-        int redraws = 0;
-        StubProvider p0{loop, Source::netease};
-        StubProvider p1{loop, Source::qq};
-        StubProvider p2{loop, Source::qishui};
-        StubProvider p3{loop, Source::kugou};
-        StubProvider p4{loop, Source::bodian};
+        P service;
+        test::Service other;
         Env env{.loop = loop,
                 .http = http,
-                .providers = {p0, p1, p2, p3, p4},
+                .providers = {service, other, other, other, other},
                 .config = config,
-                .redraw =
-                    [this] {
-                        ++redraws;
-                    },
+                .redraw = [] {},
                 .now =
                     [this] {
                         return clock;
                     }};
-
-        void run_for(std::chrono::milliseconds ms) {
-            loop.after(ms, [this] {
-                loop.quit();
-            });
-            loop.run();
-        }
     };
 
-    Track make_track(std::string id, Source source = Source::netease) {
-        return {.id = std::move(id), .title = "Song", .artist = "Artist", .duration = 180, .source = source};
+    Track make_track(std::string id) {
+        return {.id = std::move(id), .title = "Song", .artist = "Artist", .duration = 180};
     }
 
 } // namespace
@@ -257,22 +144,25 @@ TEST_CASE("Fetch, Paged, and LruCache maintain freshness, paging, and eviction")
 }
 
 TEST_CASE("Library radio_loading never strands when account changes mid-fetch") {
-    ModelRig rig;
+    ModelRig<LibraryService> rig;
     Library lib(rig.env);
-    rig.p0.fm_delay = 25ms;
-    rig.p0.fm_batch = {make_track("fm1"), make_track("fm2")};
-    rig.p0.current_account = {.id = "u1", .name = "Alice"};
+    test::Gate fm;
+    rig.service.on_fm = [&]() -> Task<Result<std::vector<Track>>> {
+        if (rig.service.current_account.id == "u1") {
+            co_await fm;
+        }
+        co_return std::vector{make_track("fm1"), make_track("fm2")};
+    };
     spawn(lib.load(Source::netease));
-    rig.run_for(5ms);
     REQUIRE(lib.shelf(Source::netease).account.has_value());
     CHECK(lib.shelf(Source::netease).account->id == "u1");
 
     // Start slow radio fetch, then switch account so Library::load triggers reset().
     spawn(lib.load_radio(Source::netease));
     CHECK(lib.shelf(Source::netease).radio_loading);
-    rig.p0.current_account = {.id = "u2", .name = "Bob"};
+    rig.service.current_account = {.id = "u2", .name = "Bob"};
     spawn(lib.load(Source::netease));
-    rig.run_for(40ms);
+    fm.release();
 
     // The old radio fetch belonged to u1 (old radio_gen) and was discarded; radio_loading must be false.
     CHECK(lib.shelf(Source::netease).account->id == "u2");
@@ -280,31 +170,28 @@ TEST_CASE("Library radio_loading never strands when account changes mid-fetch") 
     CHECK(lib.shelf(Source::netease).radio.empty());
 
     // A fresh radio fetch now succeeds cleanly.
-    rig.p0.fm_delay = 1ms;
     spawn(lib.load_radio(Source::netease));
-    rig.run_for(15ms);
     CHECK_FALSE(lib.shelf(Source::netease).radio_loading);
     CHECK(lib.shelf(Source::netease).radio.size() == 2);
 }
 
 TEST_CASE("Library optimistic likes roll back on failure and reconcile with server reads") {
-    ModelRig rig;
+    ModelRig<LibraryService> rig;
     Library lib(rig.env);
     const Track t = make_track("t1");
 
-    rig.p0.fail_writes = false;
     lib.toggle_like(t);
     CHECK(lib.liked(t));
     CHECK(lib.liked_at(t) == rig.clock);
-    rig.run_for(5ms);
+    rig.service.write.release();
     CHECK(lib.liked(t));
-    CHECK(rig.p0.like_calls == 1);
+    CHECK(rig.service.like_calls == 1);
 
     // Server write failure rolls back the optimistic unlike.
-    rig.p0.fail_writes = true;
+    rig.service.fail_writes = true;
     lib.toggle_like(t);
     CHECK_FALSE(lib.liked(t));
-    rig.run_for(5ms);
+    rig.service.write.release();
     CHECK(lib.liked(t));
 
     // Reconciling a stale read (older revision) does not overwrite a confirmed newer write.
@@ -323,10 +210,11 @@ TEST_CASE("Playback queue edits and skip-all-failed stop cleanly") {
     SavedState saved;
     Playback playback(rig.env, player, true, saved);
 
-    int stream_attempts = 0;
-    rig.p0.on_stream = [&](Track) -> Task<Result<Stream>> {
-        ++stream_attempts;
-        co_await lyren::sleep{rig.loop, 1ms};
+    std::vector<std::string> attempts;
+    test::Gate stream;
+    rig.service.on_stream = [&](Track track, Quality) -> Task<Result<Stream>> {
+        attempts.push_back(track.id);
+        co_await stream;
         co_return std::unexpected("geo-blocked");
     };
 
@@ -337,8 +225,10 @@ TEST_CASE("Playback queue edits and skip-all-failed stop cleanly") {
     CHECK(playback.playing());
 
     // All 3 tracks fail; playback must try each once and then stop instead of looping forever.
-    rig.run_for(30ms);
-    CHECK(stream_attempts == 3);
+    for (size_t i = 0; i < list.size(); ++i) {
+        stream.release();
+    }
+    CHECK(attempts == std::vector<std::string>{"a", "b", "c"});
     CHECK_FALSE(playback.playing());
 
     // Queue manipulation: play_next, remove before/current, clear.
@@ -357,31 +247,38 @@ TEST_CASE("Playback queue edits and skip-all-failed stop cleanly") {
 }
 
 TEST_CASE("Browser navigation, selection, playlist deletion, and async album collection") {
-    ModelRig rig;
+    ModelRig<LibraryService> rig;
     Library lib(rig.env);
     Social social(rig.env, lib);
     Browser browser(rig.env, lib, social, Source::netease);
 
     const Card pl{.kind = CardKind::playlist, .source = Source::netease, .id = "pl1", .title = "Mix", .owned = true};
     const Card alb{.kind = CardKind::album, .source = Source::netease, .id = "al1", .title = "Album"};
-    rig.p0.playlists = {pl};
-    rig.p0.saved_albums = {alb};
+    rig.service.playlists = {pl};
     spawn(lib.load(Source::netease));
-    rig.run_for(5ms);
 
     browser.open(pl);
     CHECK(browser.route().page == Page::playlist);
     CHECK(browser.can_go_back());
 
     // Opening album triggers async collection load without blocking album() itself.
+    test::Gate albums;
+    int collection_reads = 0;
+    rig.service.on_collected_albums = [&]() -> Task<Result<std::vector<Card>>> {
+        ++collection_reads;
+        co_await albums;
+        co_return std::vector{alb};
+    };
     browser.open(alb);
     CHECK(browser.route().page == Page::album);
     REQUIRE(browser.route().list != nullptr);
+    REQUIRE(browser.route().list->album.artist == "Mira Chen");
     const auto reported = browser.route().list->album.collected;
     CHECK_FALSE(reported.has_value());
     CHECK_FALSE(lib.kept(Source::netease, Library::Preference::album, "al1", reported).has_value());
-    rig.run_for(10ms);
-    CHECK(rig.p0.collected_albums_calls == 1);
+    albums.release();
+    rig.service.on_collected_albums = nullptr;
+    CHECK(collection_reads == 1);
     CHECK(lib.kept(Source::netease, Library::Preference::album, "al1", reported) == true);
     CHECK(lib.kept(Source::netease, Library::Preference::album, "other", std::nullopt) == false);
 
@@ -394,10 +291,21 @@ TEST_CASE("Browser navigation, selection, playlist deletion, and async album col
     // Deleting a playlist purges it from history and forwards.
     CHECK(browser.back());
     CHECK(browser.route().page == Page::playlist);
+    rig.service.fail_writes = true;
     browser.delete_playlist(pl);
+    CHECK(browser.route().page == Page::playlist);
+    rig.service.write.release();
+    CHECK(browser.route().page == Page::playlist);
+    CHECK(browser.can_go_forward());
+    rig.service.fail_writes = false;
+    browser.delete_playlist(pl);
+    CHECK(browser.route().page == Page::playlist);
+    rig.service.write.release();
     CHECK(browser.route().page == Page::recommend);
-    rig.run_for(10ms);
-    CHECK(rig.p0.deleted_playlists == std::vector<std::string>{"pl1"});
+    REQUIRE(browser.forward());
+    CHECK(browser.route().card.id == alb.id);
+    CHECK_FALSE(browser.forward());
+    CHECK(rig.service.deleted_playlists == std::vector<std::string>{"pl1", "pl1"});
 
     // Selection range & choose_all.
     const std::vector<Track> tracks{make_track("1"), make_track("2"), make_track("3"), make_track("4")};
@@ -412,37 +320,308 @@ TEST_CASE("Browser navigation, selection, playlist deletion, and async album col
     CHECK(browser.selection().chosen.size() == 4);
 }
 
-TEST_CASE("All five providers expose coherent capabilities") {
-    Loop loop;
-    net::Http http;
-    ncm::Netease ncm(loop, http);
-    qq::Qq qq(loop, http);
-    qishui::Qishui qishui(loop, http);
-    kugou::Kugou kugou(loop, http);
-    bodian::Bodian bodian(loop, http);
-    const std::array<const Provider *, 5> all{&ncm, &qq, &qishui, &kugou, &bodian};
-
-    for (const Provider *p : all) {
-        const auto &c = p->capabilities;
-        CHECK(c.search[0]); // every platform searches songs
-        CHECK_FALSE((c.qr_login && c.session_import));
-        if (c.playlist_edit) {
-            CHECK(c.library);
-        }
-        if (c.playlist_order) {
-            CHECK(c.playlist_edit);
-        }
-        if (c.comment_sort || c.comment_replies || c.comment_likes || c.comment_post || c.comment_delete) {
-            CHECK(std::ranges::any_of(c.comments, std::identity{}));
-        }
-        if (c.radio_dislike) {
-            CHECK(c.radio);
-        }
+TEST_CASE("shuffle skips unplayable tracks without repeating failed picks") {
+    ModelRig rig;
+    audio::Player player(rig.loop, rig.http);
+    SavedState saved;
+    Playback playback(rig.env, player, true, saved);
+    std::vector<Track> tracks;
+    for (int i = 0; i < 8; ++i) {
+        Track t = test::Service::song(i);
+        t.id = i == 5 ? "playable" : std::format("bad-{}", i);
+        tracks.push_back(std::move(t));
     }
-    // Qishui uses session import; the other four use QR login.
-    CHECK(qishui.capabilities.session_import);
-    CHECK(ncm.capabilities.qr_login);
-    CHECK(qq.capabilities.qr_login);
-    CHECK(kugou.capabilities.qr_login);
-    CHECK(bodian.capabilities.qr_login);
+    std::vector<std::string> attempted;
+    test::Gate pending;
+    rig.service.on_stream = [&](Track track, Quality) -> Task<Result<Stream>> {
+        attempted.push_back(track.id);
+        if (track.id == "playable") {
+            co_await pending;
+            co_return std::unexpected("Stopped");
+        }
+        co_return std::unexpected("Unavailable");
+    };
+    playback.set_mode(PlayMode::shuffle);
+    playback.play(tracks, 0);
+    REQUIRE(playback.current() != nullptr);
+    CHECK(playback.current()->id == "playable");
+    // Every failed track is tried at most once before reaching the playable one.
+    std::unordered_set<std::string> unique(attempted.begin(), attempted.end());
+    CHECK(unique.size() == attempted.size());
+    REQUIRE(pending.waiter);
+    playback.stop();
+    pending.release();
+}
+
+TEST_CASE("radio waits for the next batch instead of replaying its last track") {
+    ModelRig rig;
+    audio::Player player(rig.loop, rig.http);
+    SavedState saved;
+    Playback playback(rig.env, player, true, saved);
+    int fm_calls = 0;
+    test::Gate pending_fm;
+    rig.service.on_fm = [&]() -> Task<Result<std::vector<Track>>> {
+        const int batch = ++fm_calls;
+        if (batch == 1) {
+            Track first = test::Service::song(0);
+            first.id = "radio-0";
+            co_return std::vector<Track>{std::move(first)};
+        }
+        co_await pending_fm;
+        Track second = test::Service::song(1);
+        second.id = "radio-1";
+        co_return std::vector<Track>{std::move(second)};
+    };
+    std::vector<std::string> started;
+    std::array<test::Gate, 2> streams;
+    rig.service.on_stream = [&](Track track, Quality) -> Task<Result<Stream>> {
+        started.push_back(track.id);
+        REQUIRE(started.size() <= streams.size());
+        co_await streams[started.size() - 1];
+        co_return std::unexpected("Stopped");
+    };
+
+    Library library(rig.env);
+    playback.connect(library);
+    spawn(library.load(Source::netease));
+    spawn(library.load_radio(Source::netease));
+    auto &shelf = library.shelf(Source::netease);
+    REQUIRE(shelf.radio.size() == 1);
+    playback.play_radio(Source::netease, shelf.radio, 0);
+    REQUIRE(started.size() == 1);
+    CHECK(started.back() == "radio-0");
+
+    // Skipping at the end of the batch must not replay radio-0 while batch 2 is still in flight.
+    playback.skip(1);
+    CHECK(fm_calls == 2);
+    CHECK(shelf.radio_pos == 0);
+    CHECK(shelf.radio_pending);
+    CHECK(started.size() == 1);
+    CHECK_FALSE(playback.playing());
+
+    // Once batch 2 arrives, the radio moves on and starts playing the new track automatically.
+    pending_fm.release();
+    CHECK(shelf.radio_pos == 1);
+    CHECK_FALSE(shelf.radio_pending);
+    REQUIRE(playback.current() != nullptr);
+    CHECK(playback.current()->id == "radio-1");
+    REQUIRE(started.size() == 2);
+    CHECK(started.back() == "radio-1");
+    playback.stop();
+    for (auto &gate : streams) {
+        gate.release();
+    }
+}
+
+TEST_CASE("route and shelf caches reuse data, preserve stale reads and retry after backoff") {
+    ModelRig rig;
+    Library library(rig.env);
+    Social social(rig.env, library);
+    Browser browser(rig.env, library, social, Source::netease);
+    spawn(library.load(Source::netease));
+    int track_fetches = 0, daily_fetches = 0, radar_fetches = 0, album_fetches = 0, artist_fetches = 0, profile_fetches = 0, collection_fetches = 0, recent_fetches = 0;
+    bool fail_tracks = false, fail_collection = false;
+    rig.service.on_tracks = [&](Card card) -> Task<Result<std::vector<Track>>> {
+        ++track_fetches;
+        if (fail_tracks) {
+            co_return std::unexpected("Temporary error");
+        }
+        std::vector<Track> out;
+        for (int i = 0; i < 24; ++i) {
+            Track t = test::Service::song(i);
+            t.id = card.id + "-s" + std::to_string(i);
+            out.push_back(std::move(t));
+        }
+        co_return out;
+    };
+    rig.service.features.daily.songs = [&]() -> Task<Result<std::vector<Track>>> {
+        ++daily_fetches;
+        co_return std::vector<Track>{test::Service::song(0), test::Service::song(1), test::Service::song(2)};
+    };
+    rig.service.features.radar = [&]() -> Task<Result<std::vector<Track>>> {
+        ++radar_fetches;
+        co_return std::vector<Track>{test::Service::song(2), test::Service::song(3)};
+    };
+    rig.service.features.recent_plays = [&]() -> Task<Result<std::vector<Track>>> {
+        ++recent_fetches;
+        co_return std::vector<Track>{test::Service::song(4), test::Service::song(1)};
+    };
+    rig.service.on_album = [&](std::string) -> Task<Result<AlbumInfo>> {
+        ++album_fetches;
+        co_return AlbumInfo{.artist = "Mira Chen", .artist_id = "art-1", .date = "2026-01-01", .collected = false, .tracks = {test::Service::song(0), test::Service::song(1)}};
+    };
+    rig.service.on_artist = [&](std::string id) -> Task<Result<ArtistInfo>> {
+        ++artist_fetches;
+        co_return ArtistInfo{.name = "Artist " + id, .songs = 10, .albums = 2};
+    };
+    rig.service.on_profile = [&](std::string uid) -> Task<Result<Profile>> {
+        ++profile_fetches;
+        co_return Profile{.id = uid, .name = uid == test::Service::self ? "Mira Chen" : "Ada Lovelace", .follows = 10, .fans = 20};
+    };
+    rig.service.on_collected_albums = [&]() -> Task<Result<std::vector<Card>>> {
+        ++collection_fetches;
+        if (fail_collection) {
+            co_return std::unexpected("Collection down");
+        }
+        co_return std::vector<Card>{
+            {.kind = CardKind::album, .id = "alb-1", .title = "Harbour Tapes", .subtitle = "Mira Chen", .count = 10, .count_kind = Card::Count::songs},
+        };
+    };
+
+    // 1. Built-in pages (liked, daily, radar), dynamic playlists, albums, artists, and profiles reuse caches via open().
+    browser.open(Page::liked);
+    const auto liked_list = browser.route().list;
+    REQUIRE(liked_list != nullptr);
+    CHECK(track_fetches == 1);
+    browser.open(Page::daily);
+    CHECK(daily_fetches == 1);
+    REQUIRE(browser.back());
+    CHECK(browser.route().list == liked_list);
+    CHECK(track_fetches == 1);
+
+    // Re-opening Liked songs via open() (sidebar) or via its playlist card reuses the exact cached TrackList.
+    browser.open(Page::radar);
+    CHECK(radar_fetches == 1);
+    browser.open(Page::liked);
+    CHECK(browser.route().list == liked_list);
+    CHECK(track_fetches == 1);
+    browser.open(Page::recommend);
+    browser.open(Page::playlist, library.shelf(Source::netease).liked);
+    CHECK(browser.route().page == Page::liked);
+    CHECK(browser.route().list == liked_list);
+    CHECK(track_fetches == 1);
+
+    // Dynamic playlists, albums, and artists reuse LRU cache entries across open().
+    const Card pl1{.kind = CardKind::playlist, .source = Source::netease, .id = "pl-1", .title = "Evening Mix"};
+    const Card alb1{.kind = CardKind::album, .source = Source::netease, .id = "alb-1", .title = "Harbour Tapes"};
+    const Card art1{.kind = CardKind::artist, .source = Source::netease, .id = "art-1", .title = "Mira Chen"};
+    browser.open(pl1);
+    const auto pl1_list = browser.route().list;
+    CHECK(track_fetches == 2);
+    browser.open(alb1);
+    CHECK(album_fetches == 1);
+    browser.open(art1);
+    const auto art1_ptr = browser.route().artist;
+    CHECK(artist_fetches == 1);
+    browser.open(pl1);
+    CHECK(browser.route().list == pl1_list);
+    CHECK(track_fetches == 2);
+    browser.open(alb1);
+    CHECK(album_fetches == 1);
+    browser.open(art1);
+    CHECK(browser.route().artist == art1_ptr);
+    CHECK(artist_fetches == 1);
+
+    // 2. Collection 60s SWR keeps cached cards on transient refresh failure and Library::kept consults loaded collection.
+    browser.open(Page::collection);
+    CHECK(collection_fetches == 1);
+    CHECK(library.kept(Source::netease, Library::Preference::album, "alb-1", false) == true);
+    browser.open(Page::recommend);
+    browser.open(Page::collection);
+    CHECK(collection_fetches == 1);
+
+    rig.clock += 65.0;
+    fail_collection = true;
+    browser.open(Page::recommend);
+    browser.open(Page::collection);
+    CHECK(collection_fetches == 2);
+    // Transient background failure keeps previously cached album cards intact and backs off for 15s.
+    CHECK(library.shelf(Source::netease).collection[0].cards.size() == 1);
+    browser.open(Page::recommend);
+    browser.open(Page::collection);
+    CHECK(collection_fetches == 2);
+    fail_collection = false;
+
+    // 3. Cloud recent plays are shared between Page::recent (Cloud) and Own Profile, and note_cloud_play prepends optimistically.
+    library.shelf(Source::netease).recent_tab = 1;
+    browser.open(Page::recent);
+    CHECK(recent_fetches == 1);
+    browser.open_own_profile();
+    const auto own_prof = browser.route().profile;
+    CHECK(profile_fetches == 1);
+    CHECK(recent_fetches == 1);
+    browser.open(Page::recommend);
+    browser.open_own_profile();
+    CHECK(browser.route().profile == own_prof);
+    CHECK(profile_fetches == 1);
+    // Profile More -> Refresh creates a fresh Social::Page while preserving the active section tab.
+    social.show(own_prof, Social::Section::collection);
+    browser.reload_profile();
+    CHECK(browser.route().profile != own_prof);
+    CHECK(browser.route().profile->section == Social::Section::collection);
+    CHECK(profile_fetches == 2);
+    library.note_cloud_play(test::Service::song(0), false);
+    REQUIRE_FALSE(library.shelf(Source::netease).recent_plays.tracks.empty());
+    CHECK(library.shelf(Source::netease).recent_plays.tracks.front().id == "song-0");
+
+    // 4. Playlist SWR after 300s preserves since & tracks on silent failure with 15s backoff, then refreshes calmly.
+    const double pl1_since = pl1_list->since;
+    rig.clock += 310.0;
+    fail_tracks = true;
+    browser.open(pl1);
+    CHECK(track_fetches == 3);
+    CHECK(pl1_list->tracks.size() == 24);
+    CHECK(pl1_list->error.empty());
+    CHECK(pl1_list->since == doctest::Approx(pl1_since));
+    // Backoff prevents immediate retry on rapid switch-back.
+    browser.open(Page::recommend);
+    browser.open(pl1);
+    CHECK(track_fetches == 3);
+    // After 15s backoff, silent SWR succeeds without changing since.
+    rig.clock += 20.0;
+    fail_tracks = false;
+    browser.open(Page::recommend);
+    browser.open(pl1);
+    CHECK(track_fetches == 4);
+    CHECK(pl1_list->since == doctest::Approx(pl1_since));
+
+    browser.reload_list();
+    CHECK(track_fetches == 5);
+
+    // 5. Off-screen Kind::liked + reload_after_edit marks cached Liked songs stale and updates tracks immediately.
+    rig.service.reload_after_edit = true;
+    browser.open(Page::recommend);
+    Track added = test::Service::song(4);
+    added.id = "brand-new-like";
+    library.toggle_like(added);
+    CHECK(liked_list->tracks.front().id == "brand-new-like");
+    CHECK(liked_list->stale);
+    browser.open(Page::liked);
+    CHECK(track_fetches == 6);
+    CHECK_FALSE(liked_list->stale);
+
+    // 6. Failed initial load retries automatically on re-entry.
+    const Card pl_err{.kind = CardKind::playlist, .source = Source::netease, .id = "pl-err", .title = "Flaky"};
+    fail_tracks = true;
+    browser.open(pl_err);
+    CHECK(track_fetches == 7);
+    CHECK_FALSE(browser.route().list->error.empty());
+    fail_tracks = false;
+    browser.open(Page::recommend);
+    browser.open(pl_err);
+    CHECK(track_fetches == 8);
+    CHECK(browser.route().list->error.empty());
+    CHECK(browser.route().list->tracks.size() == 24);
+
+    // 8. Sign-out / account reset (Kind::left) flushes all cached lists, artists, and profiles.
+    library.reset(Source::netease);
+    browser.open(art1);
+    CHECK(artist_fetches == 2);
+}
+
+TEST_CASE("a heartbeat response arriving after the listener chooses a song preserves their queue") {
+    ModelRig rig;
+    audio::Player player(rig.loop, rig.http);
+    SavedState saved;
+    Playback playback(rig.env, player, true, saved);
+    test::Gate mix;
+    rig.service.features.heartbeat = [&](std::string, std::string) -> Task<Result<std::vector<Track>>> {
+        co_await mix;
+        co_return std::vector{make_track("late")};
+    };
+    spawn(playback.heartbeat(make_track("seed"), "liked"));
+    playback.play({make_track("chosen")}, 0);
+    mix.release();
+    REQUIRE(playback.queue().size() == 1);
+    CHECK(playback.queue().front().id == "chosen");
 }

@@ -12,6 +12,7 @@
 
 #include "core/encoding.hpp"
 #include "core/log.hpp"
+#include "core/i18n.hpp"
 #include "ncm/crypto.hpp"
 #include "net/fetch.hpp"
 
@@ -95,15 +96,6 @@ namespace lyren::ncm {
         if (eq == first.npos) {
             return;
         }
-        auto trim = [](std::string_view v) {
-            while (!v.empty() && v.front() == ' ') {
-                v.remove_prefix(1);
-            }
-            while (!v.empty() && v.back() == ' ') {
-                v.remove_suffix(1);
-            }
-            return v;
-        };
         std::string_view key = trim(first.substr(0, eq)), value = trim(first.substr(eq + 1));
         std::string lower(raw);
         for (auto &ch : lower) {
@@ -124,7 +116,14 @@ namespace lyren::ncm {
         };
     } // namespace
 
-    Task<Reply> Client::call(std::string uri, std::string fields, Api api, net::Retry retry) {
+    std::string Client::endpoint(std::string url) const {
+        if (!base_url_.empty()) {
+            url.replace(0, url.find('/', url.find("://") + 3), base_url_);
+        }
+        return url;
+    }
+
+    Task<Reply> Client::call(std::string uri, std::string fields, Api api, net::Retry retry, std::span<const int> accepted) {
         std::string sep = fields.empty() ? "" : ",";
         net::Request req;
         if (api != Api::weapi) {
@@ -166,7 +165,7 @@ namespace lyren::ncm {
             req.headers = {ua_weapi, "Referer: https://music.163.com", cookie_header(all), form};
         }
 
-        co_return co_await exchange(std::move(uri), std::move(req), retry);
+        co_return co_await exchange(std::move(uri), std::move(req), retry, false, accepted);
     }
 
     Task<Reply> Client::call_xeapi(std::string uri, Pairs fields) {
@@ -177,7 +176,7 @@ namespace lyren::ncm {
                 digit += static_cast<char>(random() % 10);
             }
             const std::string timestamp = std::to_string(now_ms());
-            net::Request req{.url = "https://interface.music.163.com/api/bsr/sk/get",
+            net::Request req{.url = endpoint("https://interface.music.163.com/api/bsr/sk/get"),
                              .body = form_body({{"appVersion", "9.5.61"},
                                                 {"currentKeyVersion", ""},
                                                 {"deviceId", get("deviceId")},
@@ -221,7 +220,8 @@ namespace lyren::ncm {
         co_return co_await exchange(std::move(uri), std::move(req), net::Retry::network, true);
     }
 
-    Task<Reply> Client::exchange(std::string uri, net::Request req, net::Retry retry, bool encrypted) {
+    Task<Reply> Client::exchange(std::string uri, net::Request req, net::Retry retry, bool encrypted, std::span<const int> accepted) {
+        req.url = endpoint(std::move(req.url));
         const std::string login = get("MUSIC_U");
         auto res = co_await net::fetch_retry(loop_, http_, std::move(req), retry);
         if (login != get("MUSIC_U")) {
@@ -256,18 +256,26 @@ namespace lyren::ncm {
             log::warn("ncm {}: HTTP {}, {} bytes not JSON", uri, res.status, res.body.size());
             co_return r;
         }
-        std::string_view code = st.code.str;
-        if (code.starts_with('"')) {
-            code = code.substr(1, code.size() - 2);
+        r.body = std::move(res.body);
+        r.code = res.status;
+        r.has_code = !st.code.str.empty();
+        if (r.has_code) {
+            std::string_view code = st.code.str;
+            if (code.starts_with('"')) {
+                code = code.substr(1, code.size() - 2);
+            }
+            const auto [end, ec] = std::from_chars(code.data(), code.data() + code.size(), r.code);
+            if (ec != std::errc{} || end != code.data() + code.size()) {
+                r.code = 0;
+                r.error = "Could not parse server response";
+                co_return r;
+            }
         }
-        if (code.empty()) {
-            r.code = res.status;
-        } else {
-            std::from_chars(code.data(), code.data() + code.size(), r.code);
-        }
-        static constexpr std::array ok = {200, 201, 302, 400, 502, 800, 801, 802, 803};
-        if (!std::ranges::contains(ok, r.code)) {
-            r.error = st.message.value_or(st.msg.value_or("Request failed (" + std::to_string(r.code) + ')'));
+        if (res.status < 200 || res.status >= 300 || (r.code != 200 && !std::ranges::contains(accepted, r.code))) {
+            r.error = st.message.value_or(st.msg.value_or(""));
+            if (r.error.empty()) {
+                r.error = lyren::trf("NetEase Music refused the request ({})", r.code);
+            }
             if (r.code == 301) {
                 r.error = "Session expired; scan again to sign in";
             }
@@ -278,7 +286,6 @@ namespace lyren::ncm {
                 log::warn("ncm {}: code {} {}", uri, r.code, r.error);
             }
         }
-        r.body = std::move(res.body);
         co_return r;
     }
 
