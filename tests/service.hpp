@@ -20,10 +20,14 @@ namespace lyren::test {
         std::move_only_function<Task<Result<Batch>>(std::string, int)> on_artist_songs;
         std::move_only_function<Task<Result<Profile>>(std::string)> on_profile;
         std::move_only_function<Task<Result<PostPage>>(std::string, std::string)> on_posts;
+        std::move_only_function<Task<Result<Batch>>(std::string, SearchKind, int, int)> on_search;
+        std::move_only_function<Task<Result<std::vector<LyricLine>>>(Track)> on_lyrics;
+        std::move_only_function<Task<Result<CommentPage>>(Subject, std::string, bool, int, std::string)> on_comments;
         std::move_only_function<Task<Result<void>>(std::string)> on_import_session;
         std::move_only_function<Task<SessionCheck>(std::string)> on_check_session;
 
         Service() {
+            capabilities.search[4] = true;
             capabilities.library = capabilities.likes = capabilities.playlist_edit = true;
             capabilities.collect_albums = capabilities.follow_artists = true;
             capabilities.profiles = capabilities.people = capabilities.follow_users = true;
@@ -121,7 +125,10 @@ namespace lyren::test {
             signed_in = false;
             co_return;
         }
-        Task<Result<Batch>> search(std::string q, SearchKind kind, int, int) override {
+        Task<Result<Batch>> search(std::string q, SearchKind kind, int offset, int limit) override {
+            if (on_search) {
+                co_return co_await on_search(std::move(q), kind, offset, limit);
+            }
             if (kind == SearchKind::tracks) {
                 Track t = song(0);
                 t.id = "search-" + q;
@@ -167,7 +174,10 @@ namespace lyren::test {
             }
             co_return std::vector<Track>{song(0), song(1), song(2)};
         }
-        Task<Result<std::vector<LyricLine>>> lyrics(Track) override {
+        Task<Result<std::vector<LyricLine>>> lyrics(Track track) override {
+            if (on_lyrics) {
+                co_return co_await on_lyrics(std::move(track));
+            }
             co_return std::vector<LyricLine>{};
         }
         Task<Result<Stream>> stream(Track track, Quality quality) override {
@@ -287,7 +297,10 @@ namespace lyren::test {
             }
             co_return ranking;
         }
-        Task<Result<CommentPage>> comments(Subject, std::string, bool, int, std::string) override {
+        Task<Result<CommentPage>> comments(Subject subject, std::string id, bool newest, int page_no, std::string cursor) override {
+            if (on_comments) {
+                co_return co_await on_comments(subject, std::move(id), newest, page_no, std::move(cursor));
+            }
             CommentPage page{.total = 3};
             page.comments.push_back({.id = "c1",
                                      .user_id = std::string(friend_id),

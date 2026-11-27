@@ -6,6 +6,8 @@
 language = "zh"
 # wave | line: wave ripples through the played part, line keeps it flat
 progress = "wave"
+# Keep playing in the background when the window is closed; relaunching brings it back.
+close_to_background = false
 
 [gpu]
 # integrated: lower power use; discrete: dedicated GPU. Requires a restart.

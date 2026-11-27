@@ -525,4 +525,37 @@ namespace lyren {
         return static_cast<int>(std::ranges::upper_bound(line.words, t, {}, &LyricWord::time) - line.words.begin()) - 1;
     }
 
+    std::string format_lyrics_text(std::span<const LyricLine> lines, bool include_translation) {
+        std::string out;
+        for (const auto &line : lines) {
+            if (!out.empty()) {
+                out += '\n';
+            }
+            out += line.text;
+            if (include_translation && !line.translation.empty()) {
+                out += '\n';
+                out += line.translation;
+            }
+        }
+        return out;
+    }
+
+    std::string format_lrc(std::span<const LyricLine> lines, bool include_translation) {
+        std::string out;
+        auto append_line = [&](double time, std::string_view text) {
+            if (!out.empty()) {
+                out += '\n';
+            }
+            const auto cs = static_cast<uint64_t>(std::llround(std::max(0.0, time) * 100.0));
+            std::format_to(std::back_inserter(out), "[{:02}:{:02}.{:02}]{}", cs / 6000, (cs / 100) % 60, cs % 100, text);
+        };
+        for (const auto &line : lines) {
+            append_line(line.time, line.text);
+            if (include_translation && !line.translation.empty()) {
+                append_line(line.time, line.translation);
+            }
+        }
+        return out;
+    }
+
 } // namespace lyren

@@ -509,20 +509,24 @@ TEST_CASE("Player reports the position after a load failure and Spool reuses per
             std::string out(audio_bytes.size(), '\0');
             REQUIRE(spool->read_exact(0, out.data(), out.size()));
             CHECK(out == audio_bytes);
+            return spool;
         };
 
-        fetch_all("test:cache:song-1");
+        auto s1 = fetch_all("test:cache:song-1");
         CHECK(hits == 1);
+        CHECK_FALSE(s1->cache_hit());
         // A replay also reuses the bytes while the worker is still publishing them.
-        fetch_all("test:cache:song-1");
+        auto s1_again = fetch_all("test:cache:song-1");
         CHECK(hits == 1);
+        CHECK(s1_again->cache_hit());
 
         // Shrink budget to hold only 1 file and cache song-2, evicting song-1.
         Spool::set_cache_limit(static_cast<uint64_t>(audio_bytes.size()) + 512);
         fetch_all("test:cache:song-2");
         CHECK(hits == 2);
-        fetch_all("test:cache:song-2");
+        auto s2_again = fetch_all("test:cache:song-2");
         CHECK(hits == 2);
+        CHECK(s2_again->cache_hit());
         const auto cache = lyren::paths::cache_dir() / "audio";
         const auto first = cache / lyren::crypto::md5_hex("test:cache:song-1"), second = cache / lyren::crypto::md5_hex("test:cache:song-2");
         const auto evicted = [&] {
@@ -533,6 +537,9 @@ TEST_CASE("Player reports the position after a load failure and Spool reuses per
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         REQUIRE(evicted());
+        CHECK(Spool::cache_usage() >= audio_bytes.size());
+        CHECK(Spool::clear_cache() >= audio_bytes.size());
+        CHECK(Spool::cache_usage() == 0);
         fetch_all("test:cache:song-1");
         CHECK(hits == 3);
         Spool::set_cache_limit(0);

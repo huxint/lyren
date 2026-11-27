@@ -118,6 +118,14 @@ namespace lyren::test {
         std::span<const ui::Painter::Run> click(const ui::Painter::Run &run, float w = 1180, float h = 760) {
             return click(run.box.x + run.box.w / 2, run.box.y + run.box.h / 2, w, h);
         }
+        // A key press delivered to the window, followed by a frame for the resulting state to show.
+        std::span<const ui::Painter::Run> key(uint32_t keysym, uint32_t mods = 0, float w = 1180, float h = 760) {
+            ui::FrameInput input = pointer_;
+            input.mods = mods;
+            input.keys.push_back({.keysym = keysym, .mods = mods, .pressed = true, .repeat = false});
+            draw(w, h, input);
+            return draw(w, h);
+        }
         // The first thing drawn last frame with this text, or this icon's name.
         const ui::Painter::Run *find(std::string_view text, bool icon = false) const {
             const auto runs = painter.runs();

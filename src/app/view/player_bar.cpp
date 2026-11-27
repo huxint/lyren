@@ -85,6 +85,29 @@ namespace lyren {
         const auto [from, to] = clock.playable_span();
         const float sx = r.x + r.w * from, width = r.w * (to - from), cy = r.y + r.h / 2;
 
+        const auto [chorus_from, chorus_to] = playback_.highlight();
+        const bool has_chorus = chorus_to > chorus_from && duration > 0;
+        const float chorus_left = has_chorus ? std::clamp(r.x + r.w * clock.fraction(chorus_from), sx, sx + width) : 0.f;
+        const float chorus_right = has_chorus ? std::clamp(r.x + r.w * clock.fraction(chorus_to), chorus_left, sx + width) : 0.f;
+        const Rect chorus_hit{chorus_left - 2, cy + 4, std::max(chorus_right - chorus_left, 10.f) + 4, 10};
+        const ui::Id chorus_id = ui.id("chorus");
+        ui::Interaction chorus_it;
+        if (has_chorus && seekable && !dragging_) {
+            chorus_it = ui.interact(chorus_id, chorus_hit);
+            if (chorus_it.hovered) {
+                ui.cursor = wl::Cursor::pointer;
+                if (!chorus_it.held) {
+                    ui.tooltip(chorus_id, chorus_hit, lyren::trf("Chorus · {}", std::string_view(mmss(chorus_from))));
+                }
+            }
+            if (chorus_it.clicked) {
+                const double target = std::clamp(chorus_from, static_cast<double>(from) * duration, static_cast<double>(to) * duration);
+                pluck_time_ = ui.now;
+                pluck_at_ = static_cast<float>(target / duration);
+                playback_.seek(target);
+            }
+        }
+
         const ui::Id id = ui.id("progress");
         ui::Interaction it;
         {
@@ -107,7 +130,7 @@ namespace lyren {
             pluck_time_ = ui.now, pluck_at_ = drag_v_;
             playback_.seek(drag_v_ * duration);
         }
-        const bool reaching = it.hovered || it.held;
+        const bool reaching = (it.hovered && !chorus_it.hovered) || it.held;
         if (reaching) {
             ui.cursor = wl::Cursor::pointer;
         }
@@ -158,10 +181,12 @@ namespace lyren {
                 }
             }
         }
-        // The chorus, marked under the string.
-        if (const auto [chorus_from, chorus_to] = playback_.highlight(); chorus_to > chorus_from && duration > 0) {
-            const float left = r.x + r.w * clock.fraction(chorus_from), right = r.x + r.w * clock.fraction(chorus_to);
-            p.rect({left, cy + 4, std::max(right - left, 2.f), 2}, t.accent.with_alpha(0.3f + 0.15f * hot_clamped), 1);
+        // The chorus, marked under the string; clicking it jumps to the chorus start.
+        if (has_chorus && chorus_right > chorus_left) {
+            const float chorus_hot = ui.anim(chorus_id, chorus_it.hovered ? 1.f : 0.f, pace::quick);
+            const float ch = 2.f + 1.5f * chorus_hot;
+            p.rect({chorus_left, cy + 5 - 0.5f * chorus_hot, std::max(chorus_right - chorus_left, 2.f), ch}, t.accent.with_alpha(0.32f + 0.53f * chorus_hot + 0.12f * hot_clamped),
+                   ch / 2);
         }
         if (seekable) {
             // An elastic bead rides the string where the song stands, swelling under the pointer and rebounding on release.

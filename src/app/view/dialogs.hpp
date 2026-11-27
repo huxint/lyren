@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,11 +21,16 @@ namespace lyren {
         void link_menu(ui::Ui &ui, float x, float y, const Card &card);
         // A picture shown large over the window; aspect is width over height.
         void show_picture(ui::Ui &ui, std::string url, float aspect);
+        // Right-click menu to copy or save an image.
+        void picture_menu(ui::Ui &ui, float x, float y, std::string url);
+        void copy_image(std::string url);
+        void save_image(std::string url);
 
     private:
         void editor(ui::Ui &ui, ui::Rect r, const Card &card, std::vector<Track> &tracks);
         void picker(ui::Ui &ui, ui::Rect r, Source source, std::string_view sub, std::vector<Track> &tracks, uint64_t selection_tag);
 
+        std::shared_ptr<int> life_ = std::make_shared<int>(0);
         std::string edit_name_;
         bool edit_hidden_ = false, edit_focus_ = false;
         Source edit_source_ = Source::netease;

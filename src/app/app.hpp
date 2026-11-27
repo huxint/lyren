@@ -70,6 +70,10 @@ namespace lyren {
         double now() const {
             return elapsed(Clock::now());
         }
+        void create_window();
+        void handle_close();
+        void hide_window();
+        void show_window(std::string_view token);
         void request_redraw();
         template <class Prepare>
         void present(Surface &surf, uint32_t bw, uint32_t bh, bool force, Prepare &&prepare);

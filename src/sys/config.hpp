@@ -37,6 +37,7 @@ namespace lyren {
         struct Interface {
             Language language = Language::zh;
             ProgressStyle progress = ProgressStyle::wave;
+            bool close_to_background = false;
         } interface;
         struct Gpu {
             GpuChoice device = GpuChoice::integrated;

@@ -209,6 +209,17 @@ namespace lyren {
         // The album and the stream's format belong to the stage and come in as the text arrives there.
         const float detail = smooth01((f - 0.6f) / 0.4f);
         float text_w = 0;
+        const auto &player = playback_.player();
+        const bool has_audio_info = !player.codec().empty() || !playback_.level().empty();
+        auto upper_codec = [](std::string_view raw) {
+            std::string out(raw);
+            for (char &ch : out) {
+                if (ch >= 'a' && ch <= 'z') {
+                    ch = static_cast<char>(ch - 'a' + 'A');
+                }
+            }
+            return out;
+        };
         auto caption = [&](const Track &song, float alpha, float dy, bool live) {
             Fade fade(p, alpha);
             const float y = cap.y + dy, k = cap.sub / t.fs(type::lead);
@@ -222,17 +233,58 @@ namespace lyren {
                 Fade more(p, detail * under);
                 line(cap.x + artist_w, y + cap.gap, " · " + song.album, cap.sub, t.fs(type::lead), t.text_dim, cap.w - artist_w);
             }
-            if (const auto &player = playback_.player(); detail > 0 && live && !player.codec().empty()) {
+            if (detail > 0 && live && has_audio_info) {
                 Fade more(p, detail);
-                std::string format = std::format("{} · {:.1f} kHz", player.codec(), player.format().rate / 1000.0);
+                std::string format;
                 if (!playback_.level().empty()) {
-                    format = std::string(quality_name(playback_.level())) + " · " + format;
+                    format = std::string(quality_name(playback_.level()));
+                }
+                if (!player.codec().empty()) {
+                    if (!format.empty()) {
+                        format += " · ";
+                    }
+                    const std::string codec = upper_codec(player.codec());
+                    if (player.format().rate > 0) {
+                        format += std::format("{} · {:.1f} kHz", codec, player.format().rate / 1000.0);
+                    } else {
+                        format += codec;
+                    }
                 }
                 if (playback_.trial()) {
                     format += " · ";
                     format += lyren::tr("Preview");
                 }
-                line(cap.x, y + cap.gap + 24 * k, format, t.fs(type::caption) * k, t.fs(type::caption), t.faint(), cap.w);
+                const float format_y = y + cap.gap + 24 * k;
+                const float fs = t.fs(type::caption) * k;
+                const float max_w = cap.w > 40 ? cap.w - 18 : cap.w;
+                const float est_w = std::min(p.measure(format, {.size = fs}), max_w);
+                const bool show_icon = est_w > 0 && est_w + 17 <= cap.w;
+                const float chip_w = est_w + (show_icon ? 17.f : 0.f);
+                float fhot = 0;
+                if (settled && np >= 1 && chip_w > 0) {
+                    const ui::Id fid = ui.id("stage-audio-info");
+                    const Rect fr{cap.x - 6, std::round(format_y - p.ascent(fs) - 4), chip_w + 12, std::round(fs + 10)};
+                    const auto fit = ui.interact(fid, fr);
+                    fhot = ui.anim(fid, fit.hovered ? 1.f : 0.f, ui::pace::quick);
+                    if (fit.hovered) {
+                        ui.cursor = wl::Cursor::pointer;
+                        if (!fit.held) {
+                            ui.tooltip(fid, fr, lyren::tr("Audio info"));
+                        }
+                    }
+                    if (fhot > 0.01f) {
+                        p.rect(fr, t.fill(fhot), t.radius_s());
+                    }
+                    if (fit.clicked) {
+                        show_audio_info(ui);
+                    }
+                }
+                const ui::Color ink = t.faint().mix(t.text.with_alpha(0.86f), fhot);
+                const float format_w = line(cap.x, format_y, format, fs, t.fs(type::caption), ink, max_w);
+                if (format_w > 0 && format_w + 17 <= cap.w) {
+                    const float icon_y = std::round(format_y - p.ascent(fs) * 0.46f - 6.f);
+                    p.icon("info", {cap.x + format_w + 5, icon_y, 12, 12}, ink.with_alpha(0.75f + 0.25f * fhot));
+                }
             }
             // The heart follows the title.
             if (!likes) {
@@ -581,6 +633,57 @@ namespace lyren {
                     playback_.seek(l.time);
                 }
                 manual_until_ = 0;
+            } else if (it.right_clicked) {
+                std::vector<ui::MenuItem> items;
+                auto add = [&](std::string_view icon, std::string_view label, std::move_only_function<void()> action) {
+                    items.push_back({std::string(icon), std::string(lyren::tr(label)), std::move(action)});
+                };
+                std::string text = l.text;
+                std::string trans = l.translation;
+                add("copy", "Copy line", [&ui, text] {
+                    ui.copy = text;
+                    ui.toast(std::string(lyren::tr("Copied to clipboard")), "copy");
+                });
+                if (!trans.empty()) {
+                    add("languages", "Copy line with translation", [&ui, both = text + "\n" + trans] {
+                        ui.copy = both;
+                        ui.toast(std::string(lyren::tr("Copied to clipboard")), "copy");
+                    });
+                }
+                items.push_back({});
+                add("file-text", "Copy all lyrics", [this, &ui] {
+                    ui.copy = format_lyrics_text(playback_.lyrics(), translation_);
+                    ui.toast(std::string(lyren::tr("Copied to clipboard")), "copy");
+                });
+                add("captions", "Copy LRC", [this, &ui] {
+                    ui.copy = format_lrc(playback_.lyrics(), translation_);
+                    ui.toast(std::string(lyren::tr("Copied to clipboard")), "copy");
+                });
+                const Track *track = playback_.current();
+                const bool can_comment = track && provider(*track).capabilities.comments[0] && provider(*track).capabilities.comment_post;
+                const bool can_post = track && provider(*track).capabilities.post_write;
+                if (can_comment || can_post) {
+                    items.push_back({});
+                    const Track song = *track;
+                    const std::string quoted = "\"" + text + "\"";
+                    if (can_comment) {
+                        add("message-square", "Quote in comment", [this, song, quoted] {
+                            shell_.open_comments(song.source, Subject::song, song.id, song.title + " · " + song.artist, song.cover, true);
+                            if (env_.signed_in(song.source)) {
+                                auto draft = comments_.thread().draft;
+                                draft->expanded = true;
+                                draft->focus = true;
+                                draft->insert = quoted;
+                            }
+                        });
+                    }
+                    if (can_post) {
+                        add("square-pen", "Quote in post", [this, &ui, song, quoted] {
+                            shell_.feed.compose(ui, song.source, song, {}, quoted);
+                        });
+                    }
+                }
+                ui.open_menu(it.px, it.py, std::move(items));
             }
         }
         ui.pop_id();
@@ -595,6 +698,95 @@ namespace lyren {
         } else if (const auto next = static_cast<size_t>(current + 1); next < lines.size()) {
             ui.wake(ui.now + (lines[next].time - lyric_lead - now));
         }
+    }
+
+    void Stage::show_audio_info(ui::Ui &ui) {
+        ui.open_modal(440, 366, [this](ui::Ui &u, Rect r) {
+            auto &p = u.painter();
+            const auto &t = u.theme();
+            const Track *track = playback_.current();
+            const std::string sub = track ? track->title + " · " + track->artist : std::string(lyren::tr("Nothing playing"));
+            dialog_title(u, r, lyren::tr("Audio info"), sub);
+            p.rect({r.x, r.y + 58, r.w, 1}, t.line(0.8f));
+
+            const auto &player = playback_.player();
+            const auto fmt = player.format();
+            std::string quality = playback_.level().empty() ? "—" : std::string(quality_name(playback_.level()));
+            if (playback_.trial()) {
+                quality += " · ";
+                quality += lyren::tr("Preview");
+            }
+            std::string codec = player.codec().empty() ? "—" : std::string(player.codec());
+            for (char &ch : codec) {
+                if (ch >= 'a' && ch <= 'z') {
+                    ch = static_cast<char>(ch - 'a' + 'A');
+                }
+            }
+            const int kbps = player.bitrate_kbps();
+            const std::string bitrate = kbps > 0 ? std::format("{} kbps", kbps) : "—";
+            const std::string sample_rate = fmt.rate > 0 ? std::format("{:.1f} kHz · {} ch", fmt.rate / 1000.0, fmt.channels) : "—";
+            const double lat = playback_.latency_ms();
+            const std::string latency = lat >= 0 ? std::format("{:.1f} ms", lat) : "—";
+            std::string loudness = "—";
+            if (playback_.track_gain() != 0 || playback_.track_peak() > 0) {
+                loudness = std::format("{:+.2f} dB", playback_.track_gain());
+                if (playback_.track_peak() > 0) {
+                    loudness += std::format(" · peak {:.3f}", playback_.track_peak());
+                }
+                if (!env_.config.playback.normalize) {
+                    loudness += " · ";
+                    loudness += lyren::tr("Off");
+                } else if (std::abs(playback_.applied_gain() - playback_.track_gain()) > 0.05f) {
+                    loudness += std::format(" ({:+.2f} dB)", playback_.applied_gain());
+                }
+            }
+            std::string cache = "—";
+            if (const audio::Spool *spool = player.spool()) {
+                const auto [done, total] = spool->progress();
+                const bool complete = total > 0 && done >= total;
+                if (spool->cache_hit()) {
+                    cache = std::string(lyren::tr("Cache hit"));
+                } else if (complete && spool->cacheable()) {
+                    cache = std::string(lyren::tr("Cached"));
+                } else if (complete) {
+                    cache = std::string(lyren::tr("Buffered"));
+                } else if (total > 0) {
+                    cache = lyren::trf("Streaming ({}%)", static_cast<int>(done * 100 / total));
+                } else {
+                    cache = std::string(lyren::tr("Streaming"));
+                }
+                if (total > 0) {
+                    cache += std::format(" · {}", std::string_view(format_bytes(total)));
+                } else if (done > 0) {
+                    cache += std::format(" · {}", std::string_view(format_bytes(done)));
+                }
+            }
+
+            const std::array<std::pair<std::string_view, std::string_view>, 7> rows{{
+                {lyren::tr("Audio quality"), quality},
+                {lyren::tr("Codec"), codec},
+                {lyren::tr("Bitrate"), bitrate},
+                {lyren::tr("Sample rate"), sample_rate},
+                {lyren::tr("Output latency"), latency},
+                {lyren::tr("Loudness"), loudness},
+                {lyren::tr("Cache"), cache},
+            }};
+            constexpr float row_h = 36, top = 66;
+            u.resize_modal(std::min(440.f, u.width - 40), top + static_cast<float>(rows.size()) * row_h + 48);
+            const auto key_st = t.style(type::label, t.text_dim);
+            const auto val_st = t.style(type::label, t.text, text::medium | text::tabular_nums);
+            const auto empty_st = t.style(type::label, t.faint());
+            float y = r.y + top;
+            for (size_t i = 0; i < rows.size(); ++i) {
+                const float kw = std::min(r.w * 0.44f, std::ceil(p.measure(rows[i].first, key_st)) + 8);
+                u.label({r.x, y, kw, row_h}, rows[i].first, key_st);
+                u.label({r.x + kw + 8, y, std::max(0.f, r.w - kw - 8), row_h}, rows[i].second, rows[i].second == "—" ? empty_st : val_st, Align::right);
+                if (i + 1 < rows.size()) {
+                    p.rect({r.x, y + row_h - 1, r.w, 1}, t.line(0.5f));
+                }
+                y += row_h;
+            }
+        });
     }
 
 } // namespace lyren

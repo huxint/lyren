@@ -97,6 +97,10 @@ namespace lyren {
         void desktop_changed() {
             desktop_changed_();
         }
+        // Opens the keyboard shortcut reference sheet modal.
+        void show_shortcuts(ui::Ui &ui);
+        // Binary clipboard payload queued from async completions, flushed into ui.copy_data on the next frame.
+        std::optional<ui::Ui::CopyData> pending_copy_data;
 
         Env env;
         Images &images;

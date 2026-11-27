@@ -281,6 +281,119 @@ TEST_CASE("Playback queue edits and skip-all-failed stop cleanly") {
     CHECK(playback.current() == nullptr);
 }
 
+TEST_CASE("Playback queue enqueue, batch play_next, move, keep_only_current, and undo snapshot") {
+    ModelRig rig;
+    audio::Player player(rig.loop, rig.http);
+    SavedState saved;
+    saved.queue = {make_track("a"), make_track("b"), make_track("c")};
+    saved.current = 1;
+    Playback playback(rig.env, player, true, saved);
+    REQUIRE(playback.index() == 1);
+
+    // Enqueue single and batch append to the end without disturbing the current track.
+    playback.enqueue(make_track("d"));
+    const std::array extra{make_track("e"), make_track("f")};
+    playback.enqueue(extra);
+    REQUIRE(playback.queue().size() == 6);
+    CHECK(playback.queue()[3].id == "d");
+    CHECK(playback.queue()[4].id == "e");
+    CHECK(playback.queue()[5].id == "f");
+    CHECK(playback.index() == 1);
+
+    // Batch play_next inserts in order right after current.
+    const std::array next_batch{make_track("n1"), make_track("n2")};
+    playback.play_next(next_batch);
+    REQUIRE(playback.queue().size() == 8);
+    CHECK(playback.queue()[1].id == "b");
+    CHECK(playback.queue()[2].id == "n1");
+    CHECK(playback.queue()[3].id == "n2");
+    CHECK(playback.queue()[4].id == "c");
+
+    // Move tracks across the current index: current_ tracks the same song.
+    playback.move(4, 0); // move "c" from after current to top
+    CHECK(playback.queue()[0].id == "c");
+    CHECK(playback.index() == 2);
+    CHECK(playback.current()->id == "b");
+    playback.move(2, 7); // move current "b" to bottom
+    CHECK(playback.index() == 7);
+    CHECK(playback.current()->id == "b");
+    playback.move(0, 7); // move "c" from before current to bottom
+    CHECK(playback.index() == 6);
+    CHECK(playback.current()->id == "b");
+
+    // Snapshot before keep_only_current / clear and restore cleanly.
+    auto snap = playback.snapshot();
+    playback.keep_only_current();
+    REQUIRE(playback.queue().size() == 1);
+    CHECK(playback.index() == 0);
+    CHECK(playback.current()->id == "b");
+
+    playback.clear();
+    CHECK(playback.queue().empty());
+    CHECK(playback.index() == -1);
+
+    playback.restore(std::move(snap));
+    REQUIRE(playback.queue().size() == 8);
+    CHECK(playback.index() == 6);
+    CHECK(playback.current()->id == "b");
+}
+
+TEST_CASE("Browser search_on and open_mention resolve profiles, fall back to search, and cancel stale lookups") {
+    ModelRig rig;
+    Library lib(rig.env);
+    Social social(rig.env, lib);
+    Browser browser(rig.env, lib, social, Source::netease);
+
+    test::Gate gate;
+    bool delay = false;
+    std::vector<Card> users;
+    rig.service.on_search = [&](std::string, SearchKind kind, int, int) -> Task<Result<Batch>> {
+        if (delay) {
+            co_await gate;
+        }
+        if (kind == SearchKind::users) {
+            co_return Batch{.cards = users, .total = static_cast<int>(users.size())};
+        }
+        co_return Batch{};
+    };
+
+    // Exact case-insensitive match opens the user's profile directly.
+    users = {
+        {.kind = CardKind::user, .source = Source::netease, .id = "u-1", .title = "Other"},
+        {.kind = CardKind::user, .source = Source::netease, .id = "u-ada", .title = "Ada"},
+    };
+    browser.open_mention(Source::netease, "ada");
+    CHECK(browser.route().page == Page::profile);
+    CHECK(browser.route().card.id == "u-ada");
+
+    // Ambiguous non-exact results fall back to Search on the Users tab.
+    users = {
+        {.kind = CardKind::user, .source = Source::netease, .id = "u-1", .title = "Ada One"},
+        {.kind = CardKind::user, .source = Source::netease, .id = "u-2", .title = "Ada Two"},
+    };
+    browser.open_mention(Source::netease, "Ada");
+    CHECK(browser.route().page == Page::search);
+    CHECK(browser.searched() == "Ada");
+    REQUIRE(browser.route().search != nullptr);
+    CHECK(browser.route().search->tab == 4);
+
+    // Navigating away while a mention lookup is in flight cancels the stale navigation.
+    delay = true;
+    users = {{.kind = CardKind::user, .source = Source::netease, .id = "u-late", .title = "Late"}};
+    browser.open_mention(Source::netease, "Late");
+    browser.open(Page::settings);
+    gate.release();
+    CHECK(browser.route().page == Page::settings);
+
+    // search_on switches platform and sets query + tab.
+    delay = false;
+    browser.search_on(Source::netease, "NightTrain", 0);
+    CHECK(browser.route().page == Page::search);
+    CHECK(browser.searched() == "NightTrain");
+    REQUIRE(browser.route().search != nullptr);
+    CHECK(browser.route().search->tab == 0);
+}
+
 TEST_CASE("Browser navigation, selection, playlist deletion, and async album collection") {
     ModelRig<LibraryService> rig;
     Library lib(rig.env);

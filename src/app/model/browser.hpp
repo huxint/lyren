@@ -150,6 +150,9 @@ namespace lyren {
             return route_.search ? route_.search->results[static_cast<size_t>(active_)][static_cast<size_t>(tab)] : empty_listing_;
         }
         void search();
+        void search_on(Source source, std::string term, int tab = 0);
+        // Resolves an @mention on source: opens the matching listener profile if found, otherwise opens search.
+        void open_mention(Source source, std::string name);
         void load_results(int tab, bool retry = false);
 
         // The songs, artist and listener of the page on show.
@@ -228,6 +231,7 @@ namespace lyren {
         template <class F>
         void each_route(F &&visit);
         Task<void> fetch_results(std::shared_ptr<Search> session, uint64_t serial, int tab, Source source, int offset);
+        Task<void> resolve_mention(uint64_t gen, Source source, std::string name);
         Task<void> load_artist(std::shared_ptr<Artist> page, Card card);
         Task<void> fetch_artist(std::shared_ptr<Artist> page, Card card, int tab, int offset);
         Task<void> reorder(std::shared_ptr<TrackList> list, Card playlist, std::vector<Track> order, int selected, uint64_t account_gen);
@@ -244,7 +248,7 @@ namespace lyren {
         uint64_t serial_ = 0, navigations_ = 0;
         std::string today_;
         int daily_slot_ = -1;
-        uint64_t search_gen_ = 0;
+        uint64_t search_gen_ = 0, mention_gen_ = 0;
         std::string empty_query_;
         int empty_tab_ = 0;
         Listing empty_listing_;

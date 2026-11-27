@@ -220,12 +220,16 @@ namespace lyren {
         publish();
     }
 
+    float Playback::applied_gain() const {
+        if (!env_.config.playback.normalize) {
+            return 1.f;
+        }
+        return std::min(std::pow(10.f, track_gain_ / 20), track_peak_ > 0 ? 1 / track_peak_ : 1.f);
+    }
+
     void Playback::apply_gain() {
         // The track gain is in dB; the peak caps it so nothing clips, and without a peak it only ever lowers.
-        float g = 1;
-        if (env_.config.playback.normalize) {
-            g = std::min(std::pow(10.f, track_gain_ / 20), track_peak_ > 0 ? 1 / track_peak_ : 1.f);
-        }
+        const float g = applied_gain();
         log::debug("loudness: {:+.2f} dB, peak {:.3f}: x{:.3f}", track_gain_, track_peak_, g);
         player_.set_gain(g);
     }
@@ -346,21 +350,137 @@ namespace lyren {
     }
 
     void Playback::play_next(Track track) {
+        play_next(std::span{&track, 1});
+    }
+
+    void Playback::play_next(std::span<const Track> tracks) {
+        if (tracks.empty()) {
+            return;
+        }
         reset_shuffle(false);
         if (!current()) {
-            // Nothing is on: the song becomes the current one, ready to play.
-            queue_.insert(queue_.begin(), std::move(track));
+            // Nothing is on: the first song becomes the current one, ready to play.
+            queue_.insert(queue_.begin(), tracks.begin(), tracks.end());
             set_current(0);
             halt();
             drop_lyrics();
             spawn(load_lyrics(*current()));
         } else {
-            queue_.insert(queue_.begin() + (current_ + 1), std::move(track));
+            queue_.insert(queue_.begin() + (current_ + 1), tracks.begin(), tracks.end());
             if (mode_ == Mode::shuffle) {
                 shuffle_next_ = current_ + 1;
             }
         }
         touch();
+    }
+
+    void Playback::enqueue(Track track) {
+        enqueue(std::span{&track, 1});
+    }
+
+    void Playback::enqueue(std::span<const Track> tracks) {
+        if (tracks.empty()) {
+            return;
+        }
+        reset_shuffle(false);
+        const bool empty_before = !current();
+        queue_.insert(queue_.end(), tracks.begin(), tracks.end());
+        if (empty_before) {
+            set_current(0);
+            halt();
+            drop_lyrics();
+            spawn(load_lyrics(*current()));
+        }
+        touch();
+    }
+
+    void Playback::move(int from, int to) {
+        const int n = static_cast<int>(queue_.size());
+        if (from < 0 || from >= n || to < 0 || to >= n || from == to) {
+            return;
+        }
+        auto first = queue_.begin();
+        if (from < to) {
+            std::rotate(first + from, first + from + 1, first + to + 1);
+        } else {
+            std::rotate(first + to, first + from, first + from + 1);
+        }
+        auto remap = [from, to](int idx) {
+            if (idx == from) {
+                return to;
+            }
+            if (from < to && idx > from && idx <= to) {
+                return idx - 1;
+            }
+            if (to < from && idx >= to && idx < from) {
+                return idx + 1;
+            }
+            return idx;
+        };
+        if (current_ >= 0) {
+            current_ = remap(current_);
+        }
+        if (shuffle_next_ >= 0) {
+            shuffle_next_ = remap(shuffle_next_);
+        }
+        for (int &idx : shuffle_history_) {
+            idx = remap(idx);
+        }
+        for (int &idx : failed_) {
+            idx = remap(idx);
+        }
+        touch();
+        env_.redraw();
+    }
+
+    void Playback::keep_only_current() {
+        if (!current() || queue_.size() <= 1) {
+            return;
+        }
+        Track cur = std::move(queue_[static_cast<size_t>(current_)]);
+        queue_.clear();
+        queue_.push_back(std::move(cur));
+        current_ = 0;
+        radio_ = false;
+        reset_shuffle(false);
+        touch();
+        env_.redraw();
+    }
+
+    Playback::Snapshot Playback::snapshot() {
+        const auto state = player_.state();
+        const double pos = state == State::playing || state == State::paused ? player_.position() : resume_at_ > 0 ? resume_at_ : last_pos_;
+        return {.queue = queue_, .current = current_, .position = pos, .playing = playing(), .radio = radio_, .radio_source = radio_source_};
+    }
+
+    void Playback::restore(Snapshot snap) {
+        if (snap.queue.empty()) {
+            clear();
+            return;
+        }
+        ++queue_gen_;
+        const int idx = snap.current >= 0 && snap.current < static_cast<int>(snap.queue.size()) ? snap.current : -1;
+        set_current(idx, true);
+        queue_ = std::move(snap.queue);
+        radio_ = snap.radio;
+        radio_source_ = snap.radio_source;
+        reset_shuffle();
+        if (current()) {
+            if (snap.playing) {
+                start(snap.position, true);
+            } else {
+                halt();
+                resume_at_ = last_pos_ = snap.position;
+                drop_lyrics();
+                spawn(load_lyrics(*current()));
+                touch();
+            }
+        } else {
+            halt();
+            drop_lyrics();
+            touch();
+        }
+        env_.redraw();
     }
 
     void Playback::remove(int i) {
@@ -493,6 +613,9 @@ namespace lyren {
             }
         } else {
             player_.seek(at);
+            if (state == State::loading) {
+                last_pos_ = at;
+            }
         }
         schedule_prefetch();
         touch();

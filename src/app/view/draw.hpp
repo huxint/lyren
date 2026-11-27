@@ -57,6 +57,21 @@ namespace lyren {
         return out;
     }
 
+    inline SmallText<24> format_bytes(uint64_t bytes) {
+        if (bytes < 1024) {
+            return small_format<24>("{} B", bytes);
+        }
+        const double kb = static_cast<double>(bytes) / 1024.0;
+        if (kb < 1024.0) {
+            return small_format<24>("{:.1f} KB", kb);
+        }
+        const double mb = kb / 1024.0;
+        if (mb < 1024.0) {
+            return small_format<24>("{:.1f} MB", mb);
+        }
+        return small_format<24>("{:.2f} GB", mb / 1024.0);
+    }
+
     // Multiplies the painter's alpha for one scope.
     struct Fade {
         ui::Painter &p;
@@ -285,6 +300,45 @@ namespace lyren {
         if (at < to) {
             p.text(x, baseline, s.substr(at, to - at), style);
         }
+    }
+
+    // One wrapped line of s with clickable #topic# / @mention highlights; returns the full clicked token in s.
+    inline std::string_view rich_line_hit(ui::Ui &ui, ui::Id line_id, float x, float y, float lh, std::string_view s, std::string_view line,
+                                          const std::vector<std::pair<size_t, size_t>> &marks, ui::TextStyle style, ui::Color mark) {
+        auto &p = ui.painter();
+        const float baseline = y + lh * 0.72f;
+        const auto from = static_cast<size_t>(line.data() - s.data()), to = from + line.size();
+        size_t at = from;
+        std::string_view clicked;
+        for (size_t mi = 0; mi < marks.size(); ++mi) {
+            const auto [ma, mb] = marks[mi];
+            if (mb <= at || ma >= to) {
+                continue;
+            }
+            const size_t a = std::max(ma, at), b = std::min(mb, to);
+            if (a > at) {
+                x += p.text(x, baseline, s.substr(at, a - at), style);
+            }
+            ui::TextStyle lit = style;
+            lit.color = mark;
+            const float w = p.text(x, baseline, s.substr(a, b - a), lit);
+            if (w > 0) {
+                const auto it = ui.interact(ui::sub_id(line_id, mi + 1), {x, y, w, lh});
+                if (it.hovered) {
+                    ui.cursor = wl::Cursor::pointer;
+                    p.rect({x, baseline + 2, w, 1}, mark.with_alpha(0.65f));
+                }
+                if (it.clicked) {
+                    clicked = s.substr(ma, mb - ma);
+                }
+            }
+            x += w;
+            at = b;
+        }
+        if (at < to) {
+            p.text(x, baseline, s.substr(at, to - at), style);
+        }
+        return clicked;
     }
 
     // The columns of a track row, and of the header above the rows.

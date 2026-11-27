@@ -151,6 +151,20 @@ namespace lyren::wl {
         wl_data_device_set_selection(device_, source_, serial);
     }
 
+    void Clipboard::set_data(std::string data, std::string mime, uint32_t serial) {
+        if (!device_ || mime.empty()) {
+            return;
+        }
+        if (source_) {
+            wl_data_source_destroy(source_);
+        }
+        text_ = std::move(data);
+        source_ = wl_data_device_manager_create_data_source(display_.data_device_manager);
+        wl_data_source_add_listener(source_, &source_listener, this);
+        wl_data_source_offer(source_, mime.c_str());
+        wl_data_device_set_selection(device_, source_, serial);
+    }
+
     void Clipboard::send(int fd) {
         const int flags = fcntl(fd, F_GETFL, 0);
         if (flags >= 0) {

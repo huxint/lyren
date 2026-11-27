@@ -406,7 +406,7 @@ namespace lyren {
             } else {
                 p.rect(well, t.fill(0.85f), t.radius);
             }
-            if (!draft->insert.empty() && editing) {
+            if (!draft->insert.empty() && live) {
                 ui.focus = field;
                 ui.input().commit.insert(0, std::exchange(draft->insert, {}));
             }
@@ -670,6 +670,10 @@ namespace lyren {
         const std::string n = count > 0 ? short_number(count) : "";
 
         ui.push_id(ui::sub_id(ui.id(c.id), std::to_underlying(source)));
+        float ctx_x = 0, ctx_y = 0;
+        const bool pic_ctx = pic.h > 0 && ui.context_click(pic, &ctx_x, &ctx_y);
+        const bool row_ctx = !pic_ctx && ui.context_click({x, y, w, h}, &ctx_x, &ctx_y);
+
         cover(ui, {x, top + 1, C::avatar, C::avatar}, c.avatar, C::avatar / 2, "user");
 
         // Like sits quietly at the top-right of the author row.
@@ -714,22 +718,83 @@ namespace lyren {
             }
         }
 
+        auto open_token = [&](std::string_view token) {
+            if (token.size() > 2 && token.front() == '#' && token.back() == '#') {
+                browser_.search_on(source, std::string(token.substr(1, token.size() - 2)), 0);
+            } else if (token.size() > 1 && token.front() == '@') {
+                browser_.open_mention(source, std::string(token.substr(1)));
+            }
+        };
+        const auto marks = c.text.find_first_of("#@") != std::string::npos ? highlights(c.text) : std::vector<std::pair<size_t, size_t>>{};
         float ly = body_y;
-        for (auto line : lines) {
-            ui.label({tx, ly, tw, lh}, line, body);
+        for (size_t li = 0; li < lines.size(); ++li) {
+            if (marks.empty()) {
+                ui.label({tx, ly, tw, lh}, lines[li], body);
+            } else if (const auto hit = rich_line_hit(ui, ui::sub_id(ui.id("body-line"), li), tx, ly, lh, c.text, lines[li], marks, body, t.accent); !hit.empty()) {
+                open_token(hit);
+            }
             ly += lh;
         }
         if (!quoted.empty()) {
             const Rect q{tx, quote_y, tw, quote_h};
             p.rect(q, t.fill(0.72f), t.radius_s());
+            const auto qmarks = highlights(replied);
             float qy = q.y + 7;
-            for (auto line : quoted) {
-                ui.label({q.x + 10, qy, q_inner, qh}, line, quote);
+            for (size_t li = 0; li < quoted.size(); ++li) {
+                if (qmarks.empty()) {
+                    ui.label({q.x + 10, qy, q_inner, qh}, quoted[li], quote);
+                } else if (const auto hit = rich_line_hit(ui, ui::sub_id(ui.id("quote-line"), li), q.x + 10, qy, qh, replied, quoted[li], qmarks, quote, t.accent); !hit.empty()) {
+                    open_token(hit);
+                }
                 qy += qh;
             }
         }
         if (pic.h > 0) {
             picture(ui, c, pic);
+        }
+        if (pic_ctx || row_ctx) {
+            std::vector<ui::MenuItem> items;
+            if (pic_ctx && !c.image.empty()) {
+                items.push_back({"copy", std::string(lyren::tr("Copy image")), [this, url = c.image] {
+                                     shell_.dialogs.copy_image(url);
+                                 }});
+                items.push_back({"download", std::string(lyren::tr("Save image")), [this, url = c.image] {
+                                     shell_.dialogs.save_image(url);
+                                 }});
+                if (!c.text.empty()) {
+                    items.push_back({});
+                    items.push_back({"copy", std::string(lyren::tr("Copy comment")), [&ui, text = c.text] {
+                                         ui.copy = text;
+                                         ui.toast(std::string(lyren::tr("Copied to clipboard")), "copy");
+                                     }});
+                }
+            } else if (row_ctx) {
+                if (!c.text.empty()) {
+                    items.push_back({"copy", std::string(lyren::tr("Copy comment")), [&ui, text = c.text] {
+                                         ui.copy = text;
+                                         ui.toast(std::string(lyren::tr("Copied to clipboard")), "copy");
+                                     }});
+                }
+                if (!c.user_id.empty() && caps.profiles) {
+                    items.push_back({"user", std::string(lyren::tr("View profile")), [this, source, id = c.user_id, name = c.user, avatar = c.avatar] {
+                                         browser_.open_profile(source, id, name, avatar);
+                                     }});
+                }
+                if (!c.image.empty()) {
+                    if (!items.empty()) {
+                        items.push_back({});
+                    }
+                    items.push_back({"copy", std::string(lyren::tr("Copy image")), [this, url = c.image] {
+                                         shell_.dialogs.copy_image(url);
+                                     }});
+                    items.push_back({"download", std::string(lyren::tr("Save image")), [this, url = c.image] {
+                                         shell_.dialogs.save_image(url);
+                                     }});
+                }
+            }
+            if (!items.empty()) {
+                ui.open_menu(ctx_x, ctx_y, std::move(items));
+            }
         }
 
         // Quiet action row: Reply, understated inline replies link, and Delete for own comments.

@@ -798,4 +798,46 @@ namespace lyren::gfx {
         return static_cast<float>(h < 0 ? h + 1 : h);
     }
 
+    std::string encode_png(const Image &img) {
+        if (!img.w || !img.h || img.px.size() < static_cast<size_t>(img.w) * img.h * 4) {
+            return {};
+        }
+        std::vector<uint8_t> rgba(img.px.begin(), img.px.begin() + static_cast<ptrdiff_t>(static_cast<size_t>(img.w) * img.h * 4));
+        for (size_t i = 0; i < rgba.size(); i += 4) {
+            if (const uint32_t a = rgba[i + 3]; a > 0 && a < 255) {
+                for (int c = 0; c < 3; ++c) {
+                    rgba[i + c] = static_cast<uint8_t>(std::min<uint32_t>(255, (rgba[i + c] * 255 + a / 2) / a));
+                }
+            }
+        }
+        png_image out{};
+        out.version = PNG_IMAGE_VERSION;
+        out.width = img.w;
+        out.height = img.h;
+        out.format = PNG_FORMAT_RGBA;
+        png_alloc_size_t bytes = 0;
+        if (!png_image_write_to_memory(&out, nullptr, &bytes, 0, rgba.data(), 0, nullptr) || !bytes) {
+            return {};
+        }
+        std::string png(bytes, '\0');
+        if (!png_image_write_to_memory(&out, png.data(), &bytes, 0, rgba.data(), 0, nullptr)) {
+            return {};
+        }
+        png.resize(bytes);
+        return png;
+    }
+
+    std::string_view image_extension(std::span<const uint8_t> data) {
+        if (data.size() >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') {
+            return "png";
+        }
+        if (data.size() >= 12 && std::equal(data.begin(), data.begin() + 4, "RIFF") && std::equal(data.begin() + 8, data.begin() + 12, "WEBP")) {
+            return "webp";
+        }
+        if (data.size() >= 6 && std::equal(data.begin(), data.begin() + 3, "GIF")) {
+            return "gif";
+        }
+        return "jpg";
+    }
+
 } // namespace lyren::gfx

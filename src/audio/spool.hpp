@@ -39,6 +39,8 @@ namespace lyren::audio {
 
         static void set_cache_limit(uint64_t bytes);
         static uint64_t cache_limit();
+        static uint64_t cache_usage(); // bytes currently used in the persistent audio cache directory
+        static uint64_t clear_cache(); // removes cached tracks on disk; returns freed bytes
         static std::shared_ptr<Spool> file(const std::string &path);
         static std::shared_ptr<Spool> url(net::Http &http, std::string url, std::string cache_key = {});
         ~Spool();
@@ -54,6 +56,8 @@ namespace lyren::audio {
         std::string error() const;
         long status() const; // HTTP status of a failed download, 0 for network errors
         bool waiting() const;
+        bool cache_hit() const; // opened directly from an already-cached file on disk
+        bool cacheable() const; // backed by a persistent cache path
         // Bytes present and known size. The optional snapshot contains ranges only during a partial download.
         std::pair<uint64_t, uint64_t> progress(std::vector<Ranges::Span> *partial = nullptr) const;
 
@@ -73,7 +77,7 @@ namespace lyren::audio {
         std::condition_variable cv_;
         Ranges have_;
         uint64_t size_ = unknown;
-        bool closed_ = false, waiting_ = false, no_ranges_ = false, progressed_ = false;
+        bool closed_ = false, waiting_ = false, no_ranges_ = false, progressed_ = false, cache_hit_ = false;
         std::string error_;
         net::Http::Id http_id_ = 0; // running request, numbered req_
         uint64_t req_ = 0;

@@ -1,17 +1,65 @@
 #include "app/view/dialogs.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <format>
+#include <fstream>
 #include <optional>
+#include <span>
 
 #include "app/view/draw.hpp"
 #include "app/view/shell.hpp"
 #include "core/i18n.hpp"
+#include "gfx/image.hpp"
+#include "sys/paths.hpp"
 
 namespace lyren {
 
     using ui::Rect;
     namespace type = ui::type;
     namespace pace = ui::pace;
+
+    namespace {
+        std::filesystem::path pictures_dir() {
+            const char *home = std::getenv("HOME");
+            if (const char *env = std::getenv("XDG_PICTURES_DIR"); env && env[0] == '/') {
+                return std::filesystem::path(env) / "Lyren";
+            }
+            std::filesystem::path user_dirs;
+            if (const char *cfg = std::getenv("XDG_CONFIG_HOME"); cfg && cfg[0] == '/') {
+                user_dirs = std::filesystem::path(cfg) / "user-dirs.dirs";
+            } else if (home && home[0]) {
+                user_dirs = std::filesystem::path(home) / ".config" / "user-dirs.dirs";
+            }
+            if (!user_dirs.empty()) {
+                std::ifstream in(user_dirs);
+                std::string line;
+                while (std::getline(in, line)) {
+                    const std::string_view sv = trim(line);
+                    constexpr std::string_view prefix = "XDG_PICTURES_DIR=";
+                    if (!sv.starts_with(prefix)) {
+                        continue;
+                    }
+                    std::string_view val = sv.substr(prefix.size());
+                    if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
+                        val = val.substr(1, val.size() - 2);
+                    }
+                    if (val.starts_with("$HOME/") && home && home[0]) {
+                        return std::filesystem::path(home) / std::string(val.substr(6)) / "Lyren";
+                    }
+                    if (!val.empty() && val.front() == '/') {
+                        return std::filesystem::path(val) / "Lyren";
+                    }
+                }
+            }
+            if (home && home[0]) {
+                return std::filesystem::path(home) / "Pictures" / "Lyren";
+            }
+            return paths::cache_dir() / "pictures";
+        }
+    } // namespace
 
     void Dialogs::edit_playlist(ui::Ui &ui, Card card, std::vector<Track> tracks) {
         edit_name_ = card.title;
@@ -147,9 +195,9 @@ namespace lyren {
             return;
         }
         std::vector<ui::MenuItem> items;
-        items.push_back({"copy", std::string(lyren::tr("Copy link")), [&ui, link = std::move(link)] {
+        items.push_back({"link", std::string(lyren::tr("Copy link")), [&ui, link = std::move(link)] {
                              ui.copy = link;
-                             ui.toast(std::string(lyren::tr("Link copied")), "copy");
+                             ui.toast(std::string(lyren::tr("Link copied")), "link");
                          }});
         ui.open_menu(x, y, std::move(items));
     }
@@ -176,6 +224,10 @@ namespace lyren {
                     p.rect(r, t.elevated, t.radius_l());
                     u.spinner(ui::center(r, 24, 24), t.text_dim, 2);
                 }
+                float rx = 0, ry = 0;
+                if (u.context_click(r, &rx, &ry)) {
+                    picture_menu(u, rx, ry, url);
+                }
                 const auto it = u.interact(u.id("picture-view"), r);
                 if (it.hovered) {
                     u.cursor = wl::Cursor::pointer;
@@ -185,6 +237,97 @@ namespace lyren {
                 }
             },
             true);
+    }
+
+    void Dialogs::picture_menu(ui::Ui &ui, float x, float y, std::string url) {
+        if (url.empty()) {
+            return;
+        }
+        std::vector<ui::MenuItem> items;
+        items.push_back({"copy", std::string(lyren::tr("Copy image")), [this, url] {
+                             copy_image(url);
+                         }});
+        items.push_back({"download", std::string(lyren::tr("Save image")), [this, url = std::move(url)] {
+                             save_image(std::move(url));
+                         }});
+        ui.open_menu(x, y, std::move(items));
+    }
+
+    void Dialogs::copy_image(std::string url) {
+        if (url.empty()) {
+            return;
+        }
+        Loop *loop = &env_.loop;
+        std::weak_ptr<int> alive = life_;
+        env_.http.request({.url = std::move(url)}, [this, loop, alive = std::move(alive)](net::Response r) {
+            std::string png;
+            if (r.error.empty() && r.status >= 200 && r.status < 300 && !r.body.empty()) {
+                const auto raw = std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(r.body.data()), r.body.size());
+                if (gfx::image_extension(raw) == "png") {
+                    png = std::move(r.body);
+                } else {
+                    std::string err;
+                    if (const gfx::Image img = gfx::decode_fit(raw, 4096, err); img.w > 0 && img.h > 0 && !img.px.empty()) {
+                        png = gfx::encode_png(img);
+                    }
+                }
+            }
+            loop->post([this, alive, png = std::move(png)]() mutable {
+                if (alive.expired()) {
+                    return;
+                }
+                if (png.empty()) {
+                    env_.notify(std::string(lyren::tr("Could not copy image")), "triangle-alert", true);
+                    return;
+                }
+                shell_.pending_copy_data = ui::Ui::CopyData{std::move(png), "image/png"};
+                env_.notify(std::string(lyren::tr("Image copied")), "copy");
+                env_.redraw();
+            });
+        });
+    }
+
+    void Dialogs::save_image(std::string url) {
+        if (url.empty()) {
+            return;
+        }
+        Loop *loop = &env_.loop;
+        std::weak_ptr<int> alive = life_;
+        env_.http.request({.url = std::move(url)}, [this, loop, alive = std::move(alive)](net::Response r) {
+            std::string saved_name;
+            if (r.error.empty() && r.status >= 200 && r.status < 300 && !r.body.empty()) {
+                const auto raw = std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(r.body.data()), r.body.size());
+                const std::string_view ext = gfx::image_extension(raw);
+                const auto dir = pictures_dir();
+                std::error_code ec;
+                std::filesystem::create_directories(dir, ec);
+                if (!ec) {
+                    const std::time_t now = std::time(nullptr);
+                    std::tm local{};
+                    localtime_r(&now, &local);
+                    const std::string stem =
+                        std::format("lyren-{:04}{:02}{:02}-{:02}{:02}{:02}", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec);
+                    std::filesystem::path target = dir / std::format("{}.{}", stem, ext);
+                    for (int n = 1; std::filesystem::exists(target, ec) && n < 100; ++n) {
+                        target = dir / std::format("{}-{}.{}", stem, n, ext);
+                    }
+                    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+                    if (out.write(r.body.data(), static_cast<std::streamsize>(r.body.size())) && out.good()) {
+                        saved_name = target.filename().string();
+                    }
+                }
+            }
+            loop->post([this, alive, saved_name = std::move(saved_name)]() mutable {
+                if (alive.expired()) {
+                    return;
+                }
+                if (saved_name.empty()) {
+                    env_.notify(std::string(lyren::tr("Could not save image")), "triangle-alert", true);
+                    return;
+                }
+                env_.notify(lyren::trf("Image saved: {}", saved_name), "download");
+            });
+        });
     }
 
 } // namespace lyren

@@ -27,6 +27,13 @@ namespace lyren::ui {
         }
     }
 
+    void Frames::reset() {
+        dirty_ = false;
+        loop_.cancel(pace_timer_);
+        loop_.cancel(wake_timer_);
+        pace_timer_ = wake_timer_ = 0;
+    }
+
     void Frames::schedule() {
         scheduled_ = true;
         loop_.defer([this] {

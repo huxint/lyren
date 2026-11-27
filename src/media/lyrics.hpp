@@ -51,5 +51,8 @@ namespace lyren {
             return !line.translation.empty();
         });
     }
+    // Plain text or LRC export of parsed lyrics.
+    std::string format_lyrics_text(std::span<const LyricLine> lines, bool include_translation = false);
+    std::string format_lrc(std::span<const LyricLine> lines, bool include_translation = false);
 
 } // namespace lyren

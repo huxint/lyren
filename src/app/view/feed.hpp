@@ -26,7 +26,7 @@ namespace lyren {
         // height.
         float prompt(ui::Ui &ui, ui::Rect r, Source source);
         // Opens the composer for a post that shares the song or passes the post on.
-        void compose(ui::Ui &ui, Source source, std::optional<Track> track = {}, std::optional<Post> forward = {});
+        void compose(ui::Ui &ui, Source source, std::optional<Track> track = {}, std::optional<Post> forward = {}, std::string quote = {});
 
     private:
         struct YearGroup {

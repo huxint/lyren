@@ -25,4 +25,9 @@ namespace lyren::gfx {
     // The cover's most prominent hue (0..1), or a negative value for a colourless image.
     float dominant_hue(const Image &img);
 
+    // Encodes a premultiplied RGBA8 image to PNG bytes in memory (empty on error).
+    std::string encode_png(const Image &img);
+    // File extension (without dot) inferred from raw image magic bytes ("png", "jpg", "webp", "gif").
+    std::string_view image_extension(std::span<const uint8_t> data);
+
 } // namespace lyren::gfx

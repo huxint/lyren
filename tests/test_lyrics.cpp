@@ -151,3 +151,23 @@ TEST_CASE("adjacent lyric lines reserve a translation for its exact timestamp") 
     CHECK(lines.front().translation.empty());
     CHECK(lines.back().translation == "translation");
 }
+
+TEST_CASE("format_lyrics_text and format_lrc preserve text, translations, and rounded timestamps") {
+    const std::vector<LyricLine> lines{
+        {.time = 0.0, .text = "Intro"},
+        {.time = 59.996, .text = "Bridge line", .translation = "副歌之前"},
+        {.time = 125.4, .text = "Chorus", .translation = "副歌"},
+    };
+    CHECK(format_lyrics_text(lines, false) == "Intro\nBridge line\nChorus");
+    CHECK(format_lyrics_text(lines, true) == "Intro\nBridge line\n副歌之前\nChorus\n副歌");
+
+    const std::string lrc = format_lrc(lines, false);
+    CHECK(lrc == "[00:00.00]Intro\n[01:00.00]Bridge line\n[02:05.40]Chorus");
+    const auto roundtrip = parse_lyrics(lrc);
+    REQUIRE(roundtrip.size() == 3);
+    CHECK(roundtrip[1].time == doctest::Approx(60.0));
+    CHECK(roundtrip[2].text == "Chorus");
+
+    const std::string lrc_trans = format_lrc(lines, true);
+    CHECK(lrc_trans == "[00:00.00]Intro\n[01:00.00]Bridge line\n[01:00.00]副歌之前\n[02:05.40]Chorus\n[02:05.40]副歌");
+}

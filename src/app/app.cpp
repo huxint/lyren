@@ -135,17 +135,14 @@ namespace lyren {
                        .bus = bus,
                        .raise =
                            [this](std::string_view token) {
-                               if (!script_.empty()) {
-                                   return log::info("raise requested ({})", token.empty() ? "no token" : token);
-                               }
-                               window_->activate(std::string(token));
+                               show_window(token);
                            }},
              std::move(saved_)),
       script_(std::move(script)),
       main_(
           loop,
           [this] {
-              return window_->frame_pending();
+              return window_ && window_->frame_pending();
           },
           [this] {
               render();
@@ -161,7 +158,23 @@ namespace lyren {
         std::string errors;
         theme_ = ui::Theme::from(config_.config, errors);
         load_text(config_.config.theme.font);
+        create_window();
+        apply_config(true);
+        if (!config_.error.empty()) {
+            toast(describe_config_error(config_.error));
+        } else if (!errors.empty()) {
+            toast(errors.substr(0, errors.find('\n')));
+        }
+        note_input();
+        request_redraw();
+        if (!script_.empty()) {
+            loop_.after(500ms, [this] {
+                run_script(0);
+            });
+        }
+    }
 
+    void App::create_window() {
         wl::Window::Callbacks cb{
             .configure =
                 [this] {
@@ -173,7 +186,7 @@ namespace lyren {
                 },
             .close =
                 [this] {
-                    loop_.quit();
+                    handle_close();
                 },
             .frame =
                 [this] {
@@ -196,31 +209,72 @@ namespace lyren {
                     on_text_input(e);
                 },
         };
-        int w = saved_w_ > 0 ? std::max(saved_w_, 720) : 1180, h = saved_h_ > 0 ? std::max(saved_h_, 480) : 760;
+        const int w = saved_w_ > 0 ? std::max(saved_w_, 720) : 1180, h = saved_h_ > 0 ? std::max(saved_h_, 480) : 760;
         window_ = std::make_unique<wl::Window>(display_, std::move(cb), w, h);
         window_->set_title("Lyren");
+        window_->set_shadow(shadow_margin, resize_border);
         main_.target = renderer_.create_target(display_.display, window_->surface());
-        apply_config(true);
-        if (!config_.error.empty()) {
-            toast(describe_config_error(config_.error));
-        } else if (!errors.empty()) {
-            toast(errors.substr(0, errors.find('\n')));
-        }
-        note_input();
-        request_redraw();
-        if (!script_.empty()) {
-            loop_.after(500ms, [this] {
-                run_script(0);
+        main_.hash = 0;
+    }
+
+    void App::handle_close() {
+        if (config_.config.interface.close_to_background && script_.empty()) {
+            loop_.defer([this] {
+                hide_window();
             });
+            return;
         }
+        loop_.quit();
+    }
+
+    void App::hide_window() {
+        if (!window_) {
+            return;
+        }
+        if (!window_->maximized()) {
+            saved_w_ = window_->width();
+            saved_h_ = window_->height();
+            shell_.save(std::pair{saved_w_, saved_h_}, false);
+        } else {
+            shell_.save(std::nullopt, false);
+        }
+        main_.frames.reset();
+        renderer_.destroy_target(main_.target);
+        main_.target = nullptr;
+        window_.reset();
+        main_.input = {};
+        main_.hash = 0;
+        resize_edges_ = 0;
+        display_.input->set_text_input({});
+        text_->shaper.release_surface(text::Shaper::Surface::window);
+        log::info("window hidden to background");
+    }
+
+    void App::show_window(std::string_view token) {
+        if (!script_.empty()) {
+            return log::info("raise requested ({})", token.empty() ? "no token" : token);
+        }
+        if (!window_) {
+            create_window();
+            note_input();
+            request_redraw();
+            log::info("window restored from background");
+        }
+        window_->activate(std::string(token));
     }
 
     App::~App() {
-        shell_.save(window_->maximized() ? std::nullopt : std::optional{std::pair{window_->width(), window_->height()}}, true);
+        if (window_) {
+            shell_.save(window_->maximized() ? std::nullopt : std::optional{std::pair{window_->width(), window_->height()}}, true);
+        } else {
+            shell_.save(saved_w_ > 0 && saved_h_ > 0 ? std::optional{std::pair{saved_w_, saved_h_}} : std::nullopt, true);
+        }
         if (lyrics_) {
             close_desktop_lyrics();
         }
-        renderer_.destroy_target(main_.target);
+        if (main_.target) {
+            renderer_.destroy_target(main_.target);
+        }
         loop_.cancel(idle_timer_);
     }
 
@@ -237,7 +291,9 @@ namespace lyren {
         if (!initial && !errors.empty()) {
             toast(errors.substr(0, errors.find('\n')));
         }
-        window_->set_shadow(shadow_margin, resize_border);
+        if (window_) {
+            window_->set_shadow(shadow_margin, resize_border);
+        }
         sync_desktop_lyrics();
         request_redraw();
     }
@@ -277,12 +333,12 @@ namespace lyren {
     }
 
     void App::request_redraw() {
-        // Async results can arrive while the window is still being set up.
-        if (!window_) {
-            return;
+        if (window_) {
+            main_.frames.request();
         }
-        main_.frames.request();
-        overlay_.frames.request();
+        if (lyrics_) {
+            overlay_.frames.request();
+        }
     }
 
     template <class Prepare>
@@ -318,7 +374,7 @@ namespace lyren {
     }
 
     void App::render() {
-        if (!main_.frames.begin()) {
+        if (!window_ || !main_.frames.begin()) {
             return;
         }
         auto start = Clock::now();
@@ -402,7 +458,7 @@ namespace lyren {
                 window_->toggle_maximize();
             }
             if (window_button(ui.id("win-close"), {x + 80, y, 36, 28}, "x", 16, true)) {
-                loop_.quit();
+                handle_close();
             }
             const float shown = 1 - stage;
             const auto brand_style = t.style(ui::type::lead, (window_->activated() ? t.text : t.text_dim).with_alpha(shown), text::semibold);
@@ -467,6 +523,10 @@ namespace lyren {
         if (ui.copy) {
             display_.clipboard->set_text(std::move(*ui.copy), display_.input->serial());
             ui.copy.reset();
+        }
+        if (ui.copy_data) {
+            display_.clipboard->set_data(std::move(ui.copy_data->bytes), std::move(ui.copy_data->mime), display_.input->serial());
+            ui.copy_data.reset();
         }
         if (std::exchange(ui.want_paste, false)) {
             display_.clipboard->get_text([this](std::string s) {
@@ -602,6 +662,9 @@ namespace lyren {
     }
 
     void App::on_pointer(const wl::PointerEvent &e) {
+        if (!window_) {
+            return;
+        }
         auto &in = main_.input;
         float m = static_cast<float>(window_->margin()), w = static_cast<float>(window_->width()), h = static_cast<float>(window_->height());
         float x = e.x - m, y = e.y - m;

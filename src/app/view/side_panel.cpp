@@ -69,23 +69,82 @@ namespace lyren {
         const auto title = t.style(type::heading, t.text, text::semibold);
         const float title_w = p.measure(lyren::tr("Queue"), title);
         ui.label({r.x + 20, r.y + 16, title_w + 1, 28}, lyren::tr("Queue"), title);
+        constexpr float row_h = 54;
+        const Rect view{r.x + 8, r.y + 58, r.w - 16, r.h - 66};
+        const ui::Id scroll = ui.id("queue");
         if (!songs.empty()) {
-            ui.label({r.x + 28 + title_w, r.y + 17, 80, 28}, int_text(songs.size()), t.style(type::label, t.faint(), text::tabular_nums));
+            ui.label({r.x + 28 + title_w, r.y + 17, 48, 28}, int_text(songs.size()), t.style(type::label, t.faint(), text::tabular_nums));
             const std::string_view clear = lyren::tr("Clear");
-            const float w = ui.button_width(clear);
-            if (ui.button(ui.id("queue-clear"), {r.right() - 14 - w, r.y + 16, w, ui::control::small}, clear, ui::ButtonKind::ghost)) {
+            const float clear_w = ui.button_width(clear);
+            float right = r.right() - 14;
+            if (ui.button(ui.id("queue-clear"), {right - clear_w, r.y + 16, clear_w, ui::control::small}, clear, ui::ButtonKind::ghost)) {
+                auto snap = playback_.snapshot();
                 playback_.clear();
-                ui.toast(std::string(lyren::tr("Queue cleared")), "trash");
+                ui.toast(std::string(lyren::tr("Queue cleared")), "trash", false, std::string(lyren::tr("Undo")), [this, snap = std::move(snap)]() mutable {
+                    playback_.restore(std::move(snap));
+                });
                 return;
+            }
+            right -= clear_w + 6;
+            p.rect({right - 1, r.y + 23, 1, 14}, t.line(0.85f));
+            right -= 7;
+            {
+                ui::Enabled can_trim(ui, current >= 0 && songs.size() > 1, 0.35f);
+                if (ui.icon_button(ui.id("queue-keep-current"), {right - 28, r.y + 16, 28, 28}, "list-minus", 15, false, lyren::tr("Keep only current"))) {
+                    auto snap = playback_.snapshot();
+                    playback_.keep_only_current();
+                    ui.toast(std::string(lyren::tr("Kept current song")), "list-minus", false, std::string(lyren::tr("Undo")), [this, snap = std::move(snap)]() mutable {
+                        playback_.restore(std::move(snap));
+                    });
+                }
+            }
+            right -= 30;
+            if (ui.icon_button(ui.id("queue-save-playlist"), {right - 28, r.y + 16, 28, 28}, "folder-plus", 15, false, lyren::tr("Save queue as playlist"))) {
+                std::optional<Source> target;
+                auto has_source = [&](Source s) {
+                    return provider(s).capabilities.playlist_edit && std::ranges::any_of(songs, [&](const Track &tr) {
+                               return tr.source == s;
+                           });
+                };
+                if (has_source(browser_.active())) {
+                    target = browser_.active();
+                } else if (const Track *cur = playback_.current(); cur && has_source(cur->source)) {
+                    target = cur->source;
+                } else {
+                    for (const auto &tr : songs) {
+                        if (provider(tr).capabilities.playlist_edit) {
+                            target = tr.source;
+                            break;
+                        }
+                    }
+                }
+                if (!target) {
+                    ui.toast(std::string(lyren::tr("This feature is not available on this platform")), "folder-plus");
+                } else if (!env_.signed_in(*target)) {
+                    ui.toast(lyren::trf("Sign in to {} to edit playlists", lyren::tr(platform(*target).name)), "user");
+                } else {
+                    std::vector<Track> matching;
+                    matching.reserve(songs.size());
+                    for (const auto &tr : songs) {
+                        if (tr.source == *target) {
+                            matching.push_back(tr);
+                        }
+                    }
+                    shell_.dialogs.edit_playlist(ui, {}, std::move(matching));
+                }
+            }
+            right -= 30;
+            {
+                ui::Enabled has_cur(ui, current >= 0, 0.35f);
+                if (ui.icon_button(ui.id("queue-locate"), {right - 28, r.y + 16, 28, 28}, "locate", 15, false, lyren::tr("Locate current song"))) {
+                    ui.scroll_to(scroll, std::max(0.f, static_cast<float>(current) * row_h - (view.h - row_h) / 2), true);
+                }
             }
         }
         p.rect({r.x + 20, r.y + 52, r.w - 40, 1}, t.line());
-        constexpr float row_h = 54;
-        const Rect view{r.x + 8, r.y + 58, r.w - 16, r.h - 66};
         if (songs.empty()) {
             return empty(ui, view, "list-music", lyren::tr("Nothing queued"), lyren::tr("Songs you play line up here"));
         }
-        const ui::Id scroll = ui.id("queue");
         const float off = ui.begin_scroll(scroll, view, static_cast<float>(songs.size()) * row_h);
         int remove = -1, jump = -1;
         // One highlight glides to the playing row.
@@ -126,7 +185,7 @@ namespace lyren {
             if (row_it.double_clicked) {
                 jump = i;
             } else if (row_it.right_clicked) {
-                shell_.tracks.menu(ui, row_it.px, row_it.py, songs, i);
+                shell_.tracks.menu(ui, row_it.px, row_it.py, songs, i, true);
             }
             ui.pop_id();
         }

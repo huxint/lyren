@@ -221,6 +221,40 @@ namespace lyren::audio {
         return max_cache_bytes.load(std::memory_order_relaxed);
     }
 
+    uint64_t Spool::cache_usage() {
+        std::error_code ec;
+        const auto dir = paths::cache_dir() / "audio";
+        if (!std::filesystem::exists(dir, ec)) {
+            return 0;
+        }
+        uint64_t total = 0;
+        for (const auto &de : std::filesystem::directory_iterator(dir, ec)) {
+            if (!de.is_regular_file(ec)) {
+                continue;
+            }
+            const auto name = de.path().filename().string();
+            if (name.starts_with(".tmp.")) {
+                continue;
+            }
+            const uint64_t sz = de.file_size(ec);
+            if (!ec) {
+                total += sz;
+            }
+        }
+        return total;
+    }
+
+    uint64_t Spool::clear_cache() {
+        {
+            std::lock_guard lock(cache_files_mutex);
+            pending_files.clear();
+        }
+        const uint64_t before = cache_usage();
+        prune_audio_cache(audio_cache_dir(), 0);
+        const uint64_t after = cache_usage();
+        return before > after ? before - after : 0;
+    }
+
     void Ranges::add(uint64_t b, uint64_t e) {
         if (b >= e) {
             return;
@@ -296,6 +330,7 @@ namespace lyren::audio {
                 s->fd_ = cfd;
                 s->size_ = static_cast<uint64_t>(st.st_size);
                 s->have_.add(0, s->size_);
+                s->cache_hit_ = true;
                 log::debug("audio cache hit: {} ({} bytes)", cache_key, s->size_);
                 return s;
             }
@@ -575,6 +610,16 @@ namespace lyren::audio {
     bool Spool::waiting() const {
         std::lock_guard lk(m_);
         return waiting_;
+    }
+
+    bool Spool::cache_hit() const {
+        std::lock_guard lk(m_);
+        return cache_hit_;
+    }
+
+    bool Spool::cacheable() const {
+        std::lock_guard lk(m_);
+        return !cache_path_.empty();
     }
 
     std::pair<uint64_t, uint64_t> Spool::progress(std::vector<Ranges::Span> *partial) const {

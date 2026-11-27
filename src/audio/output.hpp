@@ -57,6 +57,7 @@ namespace lyren::audio {
         } // loudness, from the next cycle
         void set_name(std::string name); // media.name, what mixers show for the stream
         uint64_t position();             // frames played out of the speaker, also used by the decoder for seek recovery
+        double latency_ms();             // current PipeWire output latency in ms, negative when unavailable
         size_t queued() const;           // frames in the ring
         // Cumulative audio sent to PipeWire; seeks and silence inserted during underruns do not count.
         double played_seconds() const {

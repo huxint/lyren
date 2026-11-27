@@ -11,7 +11,7 @@ namespace lyren::wl {
 
     class Display;
 
-    // The regular clipboard (Ctrl+C / Ctrl+V), plain text only.
+    // The regular clipboard (Ctrl+C / Ctrl+V): plain text, plus binary payloads such as images.
     class Clipboard {
     public:
         explicit Clipboard(Display &display);
@@ -20,6 +20,7 @@ namespace lyren::wl {
         Clipboard &operator=(const Clipboard &) = delete;
 
         void set_text(std::string text, uint32_t serial);
+        void set_data(std::string data, std::string mime, uint32_t serial);
         // Reads the selection without blocking; fn receives "" when it holds no text.
         void get_text(std::move_only_function<void(std::string)> fn);
 

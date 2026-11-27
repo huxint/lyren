@@ -1,6 +1,7 @@
 #pragma once
-#include <cstdint>
 #include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -88,6 +89,16 @@ namespace lyren::audio {
         }
         const Spool *spool() const {
             return spool_.get();
+        }
+        double latency_ms() {
+            return state_ == State::playing || state_ == State::paused ? out_.latency_ms() : -1.0;
+        }
+        int bitrate_kbps() const {
+            if (!spool_ || duration_ <= 0) {
+                return 0;
+            }
+            const uint64_t total = spool_->progress().second;
+            return total > 0 ? static_cast<int>(std::llround(static_cast<double>(total) * 8.0 / (duration_ * 1000.0))) : 0;
         }
 
     private:

@@ -353,4 +353,18 @@ namespace lyren::audio {
         return static_cast<uint64_t>(std::max(static_cast<double>(base_.load()), std::min(audible, played)));
     }
 
+    double Output::latency_ms() {
+        pw_thread_loop_lock(loop_);
+        pw_time t{};
+        const bool ok = stream_ && pw_stream_get_time_n(stream_, &t, sizeof t) == 0 && t.rate.denom > 0 && fmt_.rate > 0;
+        const double rate = fmt_.rate;
+        pw_thread_loop_unlock(loop_);
+        if (!ok) {
+            return -1.0;
+        }
+        const double graph_delay_s = static_cast<double>(std::max<int64_t>(t.delay, 0)) * t.rate.num / t.rate.denom;
+        const double stream_buf_s = static_cast<double>(t.queued + t.buffered) / rate;
+        return (graph_delay_s + stream_buf_s) * 1000.0;
+    }
+
 } // namespace lyren::audio

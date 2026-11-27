@@ -95,11 +95,12 @@ namespace lyren::ui {
         }
     };
 
-    // Popups sit above the modal so a menu can open inside it.
+    // Popups sit above the modal so a menu can open inside it; interactive toasts sit above popups.
     enum class Layer : uint8_t {
         base,
         modal,
-        popup
+        popup,
+        toast
     };
     enum class ButtonKind : uint8_t {
         primary,
@@ -195,7 +196,7 @@ namespace lyren::ui {
         }
         // A right press on r, taken ahead of the widget drawn there: for a menu on something a click also works. Call it
         // before that widget.
-        bool context_click(Rect r);
+        bool context_click(Rect r, float *px = nullptr, float *py = nullptr);
         FrameInput &input() {
             return *in_;
         }
@@ -235,9 +236,14 @@ namespace lyren::ui {
         }
 
         // Results the platform layer applies after the frame. copy and want_paste stay set until the app takes them.
+        struct CopyData {
+            std::string bytes;
+            std::string mime;
+        };
         wl::Cursor cursor = wl::Cursor::arrow;
         wl::TextInputState text_input; // caret in window geometry coordinates
         std::optional<std::string> copy;
+        std::optional<CopyData> copy_data;
         bool want_paste = false;
 
         // Widgets.
@@ -311,7 +317,7 @@ namespace lyren::ui {
         // A question before something that cannot be undone: a title, what it is about (up to three lines), and the
         // button that goes ahead; on_confirm runs once it is pressed.
         void confirm(std::string title, std::string detail, std::string action, std::string icon, std::move_only_function<void()> on_confirm);
-        void toast(std::string text, std::string icon = "info", bool error = false);
+        void toast(std::string text, std::string icon = "info", bool error = false, std::string action_label = {}, std::move_only_function<void()> on_action = {});
 
     private:
         struct Anim {
@@ -351,8 +357,11 @@ namespace lyren::ui {
             float cached_size = -1, cached_width = -1;
         };
         struct Toast {
+            uint64_t serial = 0;
             std::string text, icon;
-            bool error;
+            bool error = false;
+            std::string action_label;
+            std::move_only_function<void()> on_action;
             double start = -1, until = 0;
         };
         struct Tip {
@@ -400,6 +409,7 @@ namespace lyren::ui {
         double modal_time_ = 0, modal_closed_ = -1;
         bool modal_bare_ = false, modal_running_ = false;
         std::vector<Toast> toasts_;
+        uint64_t toast_serial_ = 0;
         Tip tip_, tip_shown_; // the one asked for this frame, and the one on show (which may be fading out)
         bool tip_asked_ = false;
         double tip_seen_ = -10; // when one was last visible: the next one along needs no wait

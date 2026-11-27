@@ -829,11 +829,31 @@ namespace lyren {
         }
         const std::array gpus{lyren::tr("Integrated"), lyren::tr("Dedicated")};
         int gpu = static_cast<int>(env_.config.gpu.device);
-        if (rows.segmented("gpu", lyren::tr("Graphics"), lyren::tr("Takes effect after a restart"), gpus, gpu, false, true)) {
+        if (rows.segmented("gpu", lyren::tr("Graphics"), lyren::tr("Takes effect after a restart"), gpus, gpu, false, false)) {
             shell_.set_setting("gpu", "device", gpu == 0 ? "\"integrated\"" : "\"discrete\"");
         }
+        bool close_bg = env_.config.interface.close_to_background;
+        if (rows.toggle("close-to-background", lyren::tr("Close to background"), lyren::tr("Keep playing in the background when the window closes"), close_bg, false, true)) {
+            shell_.set_setting("interface", "close_to_background", close_bg ? "true" : "false");
+        }
 
-        if (rows.button("config-file", lyren::tr("Config file"), lyren::tr("Fonts, corner radius and individual colors live here"), lyren::tr("Open"), "file-cog", true, true)) {
+        if (cache_checked_ < 0 || ui.now - cache_checked_ >= 5.0) {
+            audio_cache_bytes_ = audio::Spool::cache_usage();
+            cache_checked_ = ui.now;
+        }
+        const std::string cache_hint = lyren::trf("Audio {} · Images {}", std::string_view(format_bytes(audio_cache_bytes_)), std::string_view(format_bytes(images_.bytes())));
+        if (rows.button("clear-cache", lyren::tr("Cache"), cache_hint, lyren::tr("Clear"), "trash", true, false)) {
+            audio::Spool::clear_cache();
+            images_.clear();
+            audio_cache_bytes_ = audio::Spool::cache_usage();
+            cache_checked_ = ui.now;
+            ui.toast(std::string(lyren::tr("Cache cleared")), "trash");
+            ui.redraw();
+        }
+        if (rows.button("shortcuts", lyren::tr("Keyboard shortcuts"), lyren::tr("Press ? anywhere to view shortcuts"), lyren::tr("Open"), "keyboard", false, false)) {
+            shell_.show_shortcuts(ui);
+        }
+        if (rows.button("config-file", lyren::tr("Config file"), lyren::tr("Fonts, corner radius and individual colors live here"), lyren::tr("Open"), "file-cog", false, true)) {
             shell_.open_config();
         }
     }

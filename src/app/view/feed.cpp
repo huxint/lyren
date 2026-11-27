@@ -137,9 +137,16 @@ namespace lyren {
         }
     } // namespace
 
-    void PostFeed::compose(ui::Ui &ui, Source source, std::optional<Track> track, std::optional<Post> forward) {
+    void PostFeed::compose(ui::Ui &ui, Source source, std::optional<Track> track, std::optional<Post> forward, std::string quote) {
         if (!social_.compose(source, std::move(track), std::move(forward))) {
             return;
+        }
+        if (!quote.empty()) {
+            auto &text = social_.draft().text;
+            if (!text.empty() && !text.ends_with('\n')) {
+                text.push_back('\n');
+            }
+            text += quote;
         }
         ui.open_modal(540, composer_height(), [this](ui::Ui &u, Rect r) {
             composer(u, r);
@@ -363,6 +370,8 @@ namespace lyren {
                     }
                     if (it.clicked) {
                         shell_.dialogs.show_picture(ui, picture.url, aspect);
+                    } else if (it.right_clicked) {
+                        shell_.dialogs.picture_menu(ui, it.px, it.py, picture.url);
                     }
                 }
                 ui.pop_id();
@@ -393,8 +402,14 @@ namespace lyren {
                 }
                 const auto marks = highlights(text);
                 float line_y = block.y + inset;
-                for (auto line : lines) {
-                    rich_line(p, block.x + inset, line_y + lh * 0.72f, text, line, marks, body, t.accent);
+                for (size_t li = 0; li < lines.size(); ++li) {
+                    if (const auto hit = rich_line_hit(ui, ui::sub_id(ui.id("fwd-line"), li), block.x + inset, line_y, lh, text, lines[li], marks, body, t.accent); !hit.empty()) {
+                        if (hit.size() > 2 && hit.front() == '#' && hit.back() == '#') {
+                            browser_.search_on(source, std::string(hit.substr(1, hit.size() - 2)), 0);
+                        } else if (hit.size() > 1 && hit.front() == '@') {
+                            browser_.open_mention(source, std::string(hit.substr(1)));
+                        }
+                    }
                     line_y += lh;
                 }
                 if (carried > 0) {
@@ -514,8 +529,14 @@ namespace lyren {
         }
         const auto marks = highlights(post.text);
         float line_y = text_y;
-        for (auto line : lines) {
-            rich_line(p, cx, line_y + lh * 0.72f, post.text, line, marks, body, t.accent);
+        for (size_t li = 0; li < lines.size(); ++li) {
+            if (const auto hit = rich_line_hit(ui, ui::sub_id(ui.id("post-line"), li), cx, line_y, lh, post.text, lines[li], marks, body, t.accent); !hit.empty()) {
+                if (hit.size() > 2 && hit.front() == '#' && hit.back() == '#') {
+                    browser_.search_on(source, std::string(hit.substr(1, hit.size() - 2)), 0);
+                } else if (hit.size() > 1 && hit.front() == '@') {
+                    browser_.open_mention(source, std::string(hit.substr(1)));
+                }
+            }
             line_y += lh;
         }
         const float action_y = attach_y + attachments(ui, source, post, cx, attach_y, inner, true);

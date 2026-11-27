@@ -51,6 +51,10 @@ namespace lyren {
         void prefetch(std::string_view url, uint32_t px, bool blurred = false);
         void put(std::string_view key, uint32_t px, const gfx::Image &image); // generated images, such as the login QR code
         void erase(std::string_view key);
+        size_t bytes() const {
+            return bytes_;
+        }
+        void clear();
         void end_frame();
 
     private:
@@ -72,6 +76,7 @@ namespace lyren {
         // A sharper or a softer tier of the same image that is ready, or nullptr. flags mark pictures in the key.
         const Entry *other_tier(std::string_view url, uint32_t px, uint32_t flags, bool larger);
         void erase(CacheMap<Cached>::iterator it);
+        void clear_now();
         void pump();
         void schedule_evict();
         size_t budget() const;
@@ -88,7 +93,7 @@ namespace lyren {
         std::deque<CacheKey> preloads_;
         std::shared_ptr<Loader> loader_;
         int in_flight_ = 0, background_in_flight_ = 0;
-        bool pump_scheduled_ = false;
+        bool pump_scheduled_ = false, clear_scheduled_ = false;
         Loop::TimerId evict_timer_ = 0;
         uint64_t ticket_ = 0;
         uint64_t frame_ = 1;

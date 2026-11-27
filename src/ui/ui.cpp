@@ -185,7 +185,7 @@ namespace lyren::ui {
         return it;
     }
 
-    bool Ui::context_click(Rect r) {
+    bool Ui::context_click(Rect r, float *px, float *py) {
         if (disabled) {
             return false;
         }
@@ -193,6 +193,12 @@ namespace lyren::ui {
         for (auto &a : in_->actions) {
             if (!a.consumed && a.press && a.button == BTN_RIGHT && hit.contains(a.x, a.y) && layer_at(a.x, a.y) == layer_) {
                 a.consumed = consumed_ = true;
+                if (px) {
+                    *px = a.x;
+                }
+                if (py) {
+                    *py = a.y;
+                }
                 return true;
             }
         }
@@ -532,8 +538,8 @@ namespace lyren::ui {
                    });
     }
 
-    void Ui::toast(std::string text, std::string icon, bool error) {
-        toasts_.push_back({std::move(text), std::move(icon), error});
+    void Ui::toast(std::string text, std::string icon, bool error, std::string action_label, std::move_only_function<void()> on_action) {
+        toasts_.push_back({++toast_serial_, std::move(text), std::move(icon), error, std::move(action_label), std::move(on_action)});
         if (toasts_.size() > 3) {
             toasts_.erase(toasts_.begin());
         }
@@ -547,10 +553,13 @@ namespace lyren::ui {
         const Theme &t = *theme_;
         const TextStyle st = t.style(type::label, t.text);
         float y = height - toast_bottom;
+        std::move_only_function<void()> chosen_action;
+        uint64_t dismissed_serial = 0;
         for (auto it = toasts_.rbegin(); it != toasts_.rend(); ++it) {
             Toast &ts = *it;
+            const bool has_action = !ts.action_label.empty() && bool(ts.on_action);
             if (ts.start < 0) {
-                ts.start = now, ts.until = now + (ts.error ? 6 : 3);
+                ts.start = now, ts.until = now + (ts.error ? 6 : has_action ? 5 : 3);
             }
             constexpr double fade = 0.22;
             float in = progress(ts.start, 320);
@@ -560,16 +569,41 @@ namespace lyren::ui {
             } else {
                 out = 1 - progress(ts.until - fade, static_cast<float>(fade * 1000), ease::exit);
             }
-            float tw = std::min(p_->measure(ts.text, st), width - 160);
-            Rect r{(width - tw - 56) / 2, y - 40 + (1 - in) * 16, tw + 56, 40};
+            const float action_w = has_action ? std::max(52.f, button_width(ts.action_label)) : 0.f;
+            const float extra = has_action ? action_w + 4.f : 0.f;
+            const float max_tw = std::max(80.f, width - 160 - extra);
+            const float tw = std::min(p_->measure(ts.text, st), max_tw);
+            const float total_w = tw + 56 + extra;
+            Rect r{(width - total_w) / 2, y - 40 + (1 - in) * 16, total_w, 40};
             p_->set_alpha(in * out);
             p_->shadow({r.x, r.y + 6, r.w, r.h}, t.round(r.h), 24, t.shadow.with_alpha(t.shadow.a * 0.8f));
             p_->rect(r, t.elevated, t.round(r.h), t.surface_edge(1.3f), 1);
             p_->icon(ts.icon, {r.x + 16, r.y + 12, 16, 16}, ts.error ? t.danger : t.accent);
             p_->text_in({r.x + 40, r.y, tw + 1, r.h}, ts.text, st);
+            if (has_action) {
+                layer_ = Layer::toast;
+                layer_rects_.push_back({Layer::toast, r});
+                const Rect btn{r.right() - action_w - 6, r.y + 6, action_w, 28};
+                if (button(sub_id(id("toast-action"), ts.serial), btn, ts.action_label, ButtonKind::tonal)) {
+                    chosen_action = std::move(ts.on_action);
+                    dismissed_serial = ts.serial;
+                }
+                interact(sub_id(id("toast-box"), ts.serial), r);
+                layer_ = Layer::base;
+            }
             y -= 48 * in * out;
         }
         p_->set_alpha(1);
+        if (dismissed_serial) {
+            std::erase_if(toasts_, [&](const Toast &ts) {
+                return ts.serial == dismissed_serial;
+            });
+            redraw_ = true;
+        }
+        if (chosen_action) {
+            chosen_action();
+            redraw_ = true;
+        }
     }
 
     void Ui::tooltip(Id id, Rect anchor, std::string_view text) {

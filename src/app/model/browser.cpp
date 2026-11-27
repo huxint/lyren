@@ -424,23 +424,88 @@ namespace lyren {
     }
 
     void Browser::search() {
-        if (query.empty()) {
+        search_on(active_, std::string(query), 0);
+    }
+
+    void Browser::search_on(Source source, std::string term, int tab) {
+        if (term.empty()) {
             return;
         }
+        query = std::move(term);
         reset_selection();
-        if (route_.page == Page::search && route_.search && route_.search->query == query) {
+        const int safe_tab = tab >= 0 && tab < 5 && env_.provider(source).capabilities.search[static_cast<size_t>(tab)] ? tab : 0;
+        if (route_.page == Page::search && route_.search && route_.search->query == query && active_ == source) {
             route_.search->results = {};
-            route_.search->tab = 0;
+            route_.search->tab = safe_tab;
             route_.search->serial = ++search_gen_;
             ++navigations_;
-            load_results(0);
+            load_results(safe_tab);
             return env_.redraw();
         }
         forward_.clear();
         history_.push_back(route_);
         trim_history(history_);
-        auto session = std::make_shared<Search>(Search{.query = query, .serial = ++search_gen_});
-        enter({.page = Page::search, .card = {.source = active_}, .search = std::move(session)}, 1);
+        auto session = std::make_shared<Search>(Search{.query = query, .tab = safe_tab, .serial = ++search_gen_});
+        enter({.page = Page::search, .card = {.source = source}, .search = std::move(session)}, 1);
+    }
+
+    void Browser::open_mention(Source source, std::string name) {
+        std::string_view sv = trim(name);
+        if (sv.starts_with('@')) {
+            sv.remove_prefix(1);
+        }
+        sv = trim(sv);
+        if (sv.empty()) {
+            return;
+        }
+        std::string clean(sv);
+        const auto &caps = env_.provider(source).capabilities;
+        if (caps.profiles && caps.supports_search(SearchKind::users)) {
+            spawn(resolve_mention(++mention_gen_, source, std::move(clean)));
+            return;
+        }
+        search_on(source, std::move(clean), 0);
+    }
+
+    Task<void> Browser::resolve_mention(uint64_t gen, Source source, std::string name) {
+        const uint64_t nav = navigations_;
+        auto r = co_await env_.provider(source).search(name, SearchKind::users, 0, 10);
+        if (gen != mention_gen_ || nav != navigations_) {
+            co_return;
+        }
+        auto fold_eq = [](std::string_view a, std::string_view b) {
+            if (a.size() != b.size()) {
+                return false;
+            }
+            for (size_t i = 0; i < a.size(); ++i) {
+                auto ca = static_cast<unsigned char>(a[i]), cb = static_cast<unsigned char>(b[i]);
+                if (ca >= 'A' && ca <= 'Z') {
+                    ca = static_cast<unsigned char>(ca - 'A' + 'a');
+                }
+                if (cb >= 'A' && cb <= 'Z') {
+                    cb = static_cast<unsigned char>(cb - 'A' + 'a');
+                }
+                if (ca != cb) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (r && !r->cards.empty()) {
+            auto exact = std::ranges::find_if(r->cards, [&](const Card &c) {
+                return c.kind == CardKind::user && fold_eq(c.title, name);
+            });
+            if (exact != r->cards.end()) {
+                open_profile(source, exact->id, exact->title, exact->cover);
+                co_return;
+            }
+            if (r->cards.size() == 1 && r->cards.front().kind == CardKind::user) {
+                const auto &c = r->cards.front();
+                open_profile(source, c.id, c.title, c.cover);
+                co_return;
+            }
+        }
+        search_on(source, std::move(name), static_cast<int>(SearchKind::users));
     }
 
     void Browser::load_results(int tab, bool retry) {

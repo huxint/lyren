@@ -943,3 +943,77 @@ TEST_CASE("cover prefetch reuses a ready larger tier without starting another do
     wait_ping();
     CHECK(hits.load() == 1);
 }
+
+TEST_CASE("clearing image cache mid-frame defers Vulkan texture destruction until after present") {
+    gfx::select_driver(GpuChoice::integrated);
+    Graphics g;
+    net::Http http;
+    bool redrawn = false;
+    Images images(
+        g.loop, http, g.renderer,
+        [&] {
+            redrawn = true;
+        },
+        [] {
+            return 1.;
+        });
+
+    bool configured = false;
+    wl::Window window(g.display,
+                      wl::Window::Callbacks{
+                          .configure =
+                              [&] {
+                                  configured = true;
+                                  g.loop.quit();
+                              },
+                      },
+                      320, 240);
+    auto timeout = g.loop.after(2s, [&] {
+        g.loop.quit();
+    });
+    g.loop.run();
+    g.loop.cancel(timeout);
+    REQUIRE(configured);
+
+    std::vector<uint8_t> green(64 * 64 * 4);
+    for (size_t i = 0; i < green.size(); i += 4) {
+        green[i] = 0, green[i + 1] = 255, green[i + 2] = 0, green[i + 3] = 255;
+    }
+    images.put("mid-frame-art", 64, {64, 64, std::move(green)});
+    const auto &entry = images.get("mid-frame-art", 64);
+    REQUIRE(entry.ready);
+    REQUIRE(images.bytes() == 64 * 64 * 4);
+
+    // Emit a primitive using the cached texture, then clear the cache mid-frame before Renderer::draw().
+    auto *target = g.renderer.create_target(g.display.display, window.surface());
+    g.renderer.resize(*target, window.buffer_width(), window.buffer_height());
+    gfx::Prim prim{
+        .rect = {0, 0, 64, 64},
+        .clip = {0, 0, 320, 240},
+        .uv = {0, 0, 1, 1},
+        .color = {1, 1, 1, 1},
+        .info = {static_cast<uint32_t>(gfx::Kind::image), entry.tex, 0, 0},
+    };
+    images.clear();
+
+    bool captured = false;
+    g.renderer.capture_next(*target, [&](const uint8_t *bgra, uint32_t width, uint32_t) {
+        const uint8_t *px = bgra + (16 * width + 16) * 4;
+        CHECK(px[1] > 240);
+        CHECK(px[2] < 15);
+        captured = true;
+    });
+    g.renderer.draw(*target, {&prim, 1}, {}, [&] {
+        window.prepare_present();
+    });
+    CHECK(captured);
+
+    // Running deferred loop callbacks completes the cache clear safely after submission.
+    g.loop.defer([&] {
+        g.loop.quit();
+    });
+    g.loop.run();
+    CHECK(redrawn);
+    CHECK(images.bytes() == 0);
+    g.renderer.destroy_target(target);
+}

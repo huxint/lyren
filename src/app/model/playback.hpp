@@ -79,8 +79,27 @@ namespace lyren {
         void play_now(Track track);
         // After the one playing.
         void play_next(Track track);
+        void play_next(std::span<const Track> tracks);
+        // At the end of the queue.
+        void enqueue(Track track);
+        void enqueue(std::span<const Track> tracks);
+        // Reorders one entry within the queue without interrupting playback.
+        void move(int from, int to);
+        // Drops every queued track except the current one.
+        void keep_only_current();
         void remove(int i);
         void clear();
+        // Queue state captured before a destructive operation so it can be restored on undo.
+        struct Snapshot {
+            std::vector<Track> queue;
+            int current = -1;
+            double position = 0;
+            bool playing = false;
+            bool radio = false;
+            Source radio_source = Source::netease;
+        };
+        Snapshot snapshot();
+        void restore(Snapshot snap);
         // seed, then the songs the service mixes with it from the liked playlist.
         Task<void> heartbeat(Track seed, std::string liked_playlist);
 
@@ -121,6 +140,16 @@ namespace lyren {
         const audio::Player &player() const {
             return player_;
         }
+        double latency_ms() {
+            return player_.latency_ms();
+        }
+        float track_gain() const {
+            return track_gain_;
+        }
+        float track_peak() const {
+            return track_peak_;
+        }
+        float applied_gain() const;
         bool trial() const {
             return trial_;
         }

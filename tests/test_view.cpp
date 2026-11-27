@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 
 #include "scene.hpp"
 
@@ -130,9 +131,13 @@ TEST_CASE("player bar context menu ignores page multi-selection") {
 
     // Right-click the player bar cover (bottom-left of the window).
     const auto menu = scene.click(40, 760 - 40, 1180, 760, BTN_RIGHT);
+    CHECK(drew(menu, "Play"));
     CHECK(drew(menu, "Play next"));
     CHECK(drew(menu, "Copy title and artist"));
-    CHECK_FALSE(drew(menu, "Play selected"));
+    // The page's multi-select bar at the top draws "Play selected", but the player bar popup menu must not.
+    CHECK(std::ranges::none_of(menu, [](const ui::Painter::Run &run) {
+        return !run.icon && run.text == "Play selected" && run.box.y > 400;
+    }));
 }
 
 TEST_CASE("browser history restores previous search query and results") {
@@ -223,7 +228,10 @@ TEST_CASE("settings switches categories cleanly across narrow, medium and ultraw
         REQUIRE(general_tab != nullptr);
         const auto general = scene.click(*general_tab, w, h);
         CHECK(drew(general, "Language"));
-        CHECK(drew(general, "Config file"));
+        CHECK(drew(general, "Close to background"));
+        if (h >= 760) {
+            CHECK(drew(general, "Config file"));
+        }
 
         // Return to Appearance for the next viewport size.
         const auto *back_tab = scene.find("Appearance");
@@ -1404,4 +1412,285 @@ TEST_CASE("playlist picker culls off-screen rows and stays valid through modal f
     scene.draw_dt(1180, 760, 0.05);
     const auto after_cancel = scene.draw_dt(1180, 760, 0.3);
     CHECK_FALSE(drew_in_modal(after_cancel, "Create"));
+}
+
+TEST_CASE("global shortcuts, keyboard list navigation, multi-select without playlist_edit, filter, sort, and VIP badge") {
+    gfx::select_driver(GpuChoice::integrated);
+    Track paid = test::Service::song(0);
+    paid.paid = true;
+    Scene scene({.queue = {paid, test::Service::song(1)}, .current = 0});
+    scene.service.capabilities.playlist_edit = false;
+    scene.service.features.daily.songs = []() -> Task<Result<std::vector<Track>>> {
+        std::vector<Track> out;
+        for (int i = 0; i < 16; ++i) {
+            Track t = test::Service::song(i);
+            t.id = std::format("track-{:02}", i);
+            t.title = i == 0 ? "Zeta Song" : i == 1 ? "Alpha Song" : std::format("Track {:02}", i);
+            t.duration = 100 + static_cast<uint32_t>(i * 15);
+            t.paid = i == 0;
+            out.push_back(std::move(t));
+        }
+        co_return out;
+    };
+    scene.shell.browser.open(Page::daily);
+    scene.draw();
+    const auto list_runs = scene.draw();
+
+    // Long lists (>= 15) auto-show the keyword filter; paid tracks render a quiet VIP badge.
+    CHECK(drew(list_runs, "Filter songs"));
+    CHECK(drew(list_runs, "VIP"));
+
+    // Global shortcuts: M mute, L stage, Q queue, C comments, D desktop lyrics, ? shortcuts modal, Up/Down volume when no row selected.
+    const float vol0 = scene.shell.playback.volume();
+    scene.key(XKB_KEY_Down);
+    CHECK(scene.shell.playback.volume() == doctest::Approx(vol0 - 0.05f));
+    scene.key(XKB_KEY_m);
+    CHECK(scene.shell.playback.muted());
+    scene.key(XKB_KEY_m);
+    CHECK_FALSE(scene.shell.playback.muted());
+
+    scene.key(XKB_KEY_q);
+    CHECK(scene.shell.panel.kind() == SidePanel::Kind::queue);
+    scene.key(XKB_KEY_q);
+    CHECK(scene.shell.panel.kind() == SidePanel::Kind::none);
+
+    scene.key(XKB_KEY_c);
+    CHECK(scene.shell.panel.kind() == SidePanel::Kind::comments);
+    scene.key(XKB_KEY_c);
+    CHECK(scene.shell.panel.kind() == SidePanel::Kind::none);
+
+    scene.key(XKB_KEY_d);
+    CHECK(scene.shell.desktop.enabled());
+    scene.key(XKB_KEY_d);
+    CHECK_FALSE(scene.shell.desktop.enabled());
+
+    scene.key(XKB_KEY_l);
+    CHECK(scene.shell.stage.open());
+    scene.key(XKB_KEY_l);
+    CHECK_FALSE(scene.shell.stage.open());
+
+    const auto sheet = scene.key(XKB_KEY_question);
+    CHECK(scene.ui.modal_open());
+    CHECK(drew(sheet, "Keyboard shortcuts"));
+    scene.ui.close_modal();
+    scene.draw();
+
+    // Selecting a row switches Up/Down to row navigation and Enter plays the selected row.
+    std::vector<std::string> played;
+    scene.service.on_stream = [&](Track track, Quality) -> Task<Result<Stream>> {
+        played.push_back(track.title);
+        co_return std::unexpected("Stopped");
+    };
+    const auto *zeta = scene.find("Zeta Song");
+    REQUIRE(zeta != nullptr);
+    scene.click(*zeta);
+    CHECK(scene.shell.browser.selection().selected == 0);
+    const float vol_before = scene.shell.playback.volume();
+    scene.key(XKB_KEY_Down);
+    CHECK(scene.shell.browser.selection().selected == 1);
+    CHECK(scene.shell.playback.volume() == doctest::Approx(vol_before));
+    scene.key(XKB_KEY_Return);
+    REQUIRE_FALSE(played.empty());
+    CHECK(played.front() == "Alpha Song");
+
+    // Ctrl+A works even when playlist_edit is false; playlist actions stay hidden while queue actions show.
+    const auto multi = scene.key(XKB_KEY_a, wl::mod_ctrl);
+    CHECK(scene.shell.browser.selection().choosing);
+    CHECK(scene.shell.browser.selection().chosen.size() == 16);
+    CHECK(drew(multi, "Play selected"));
+    CHECK(drew(multi, "Play next"));
+    CHECK(drew(multi, "Add to queue"));
+    CHECK_FALSE(drew(multi, "Add to playlist"));
+
+    // Exit selection via Escape, then test header sort (Title asc -> desc -> default).
+    scene.key(XKB_KEY_Escape);
+    CHECK_FALSE(scene.shell.browser.selection().choosing);
+    const auto *title_hdr = scene.find("Title");
+    REQUIRE(title_hdr != nullptr);
+    scene.click(*title_hdr);
+    const auto *alpha_asc = scene.find("Alpha Song");
+    const auto *zeta_asc = scene.find("Zeta Song");
+    REQUIRE(alpha_asc != nullptr);
+    CHECK((zeta_asc == nullptr || alpha_asc->box.y < zeta_asc->box.y));
+
+    title_hdr = scene.find("Title");
+    REQUIRE(title_hdr != nullptr);
+    scene.click(*title_hdr);
+    const auto *zeta_desc = scene.find("Zeta Song");
+    const auto *alpha_desc = scene.find("Alpha Song");
+    REQUIRE(zeta_desc != nullptr);
+    CHECK((alpha_desc == nullptr || zeta_desc->box.y < alpha_desc->box.y));
+}
+
+TEST_CASE("queue panel reorders rows, trims to current, and restores cleared queue via Undo toast") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene({.queue = {test::Service::song(0), test::Service::song(1), test::Service::song(2)}, .current = 1});
+    scene.shell.panel.show(SidePanel::Kind::queue);
+    scene.draw();
+    const auto qruns = scene.draw();
+    CHECK(drew(qruns, "Queue"));
+
+    // Right-click the third row ("Paper Planes...") and move it to top.
+    const auto *third = scene.find("Paper Planes Over the Harbour at Dawn");
+    REQUIRE(third != nullptr);
+    const auto qmenu = scene.click(third->box.x + 10, third->box.y + 8, 1180, 760, BTN_RIGHT);
+    CHECK(drew(qmenu, "Move to top"));
+    const auto *to_top = scene.find("Move to top");
+    REQUIRE(to_top != nullptr);
+    scene.click(*to_top);
+    REQUIRE(scene.shell.playback.queue().size() == 3);
+    CHECK(scene.shell.playback.queue()[0].id == "song-2");
+    CHECK(scene.shell.playback.index() == 2);
+
+    // Clear queue shows an actionable Undo toast; clicking Undo restores the snapshot.
+    const auto *clear_btn = scene.find("Clear");
+    REQUIRE(clear_btn != nullptr);
+    const auto after_clear = scene.click(*clear_btn);
+    CHECK(scene.shell.playback.queue().empty());
+    CHECK(drew(after_clear, "Queue cleared"));
+    const auto *undo_btn = scene.find("Undo");
+    REQUIRE(undo_btn != nullptr);
+    scene.click(*undo_btn);
+    REQUIRE(scene.shell.playback.queue().size() == 3);
+    CHECK(scene.shell.playback.queue()[0].id == "song-2");
+    CHECK(scene.shell.playback.index() == 2);
+}
+
+TEST_CASE("stage lyric menu, audio info modal, comment mentions/copy, and settings cache controls") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene({.queue = {test::Service::song(0)}, .current = 0});
+    scene.service.on_stream = [](Track, Quality) -> Task<Result<Stream>> {
+        co_return Stream{.url = "", .level = "lossless", .highlight_from = 60.0, .highlight_to = 90.0, .gain = -3.2f, .peak = 0.91f};
+    };
+    scene.service.on_lyrics = [](Track) -> Task<Result<std::vector<LyricLine>>> {
+        co_return std::vector<LyricLine>{
+            {.time = 10.0, .text = "Midnight platform lights", .translation = "午夜站台灯光"},
+            {.time = 25.0, .text = "Train pulls into rain"},
+        };
+    };
+    scene.service.on_comments = [](Subject, std::string, bool, int, std::string) -> Task<Result<CommentPage>> {
+        CommentPage page{.total = 1};
+        page.comments.push_back({.id = "c1",
+                                 .user_id = "ada",
+                                 .user = "Ada Lovelace",
+                                 .text = "Love #NightTrain# with @Ada",
+                                 .time = "just now",
+                                 .image = "https://example.invalid/pic.png",
+                                 .image_w = 200,
+                                 .image_h = 150});
+        co_return page;
+    };
+    scene.service.on_search = [](std::string q, SearchKind kind, int, int) -> Task<Result<Batch>> {
+        if (kind == SearchKind::users) {
+            co_return Batch{.cards = {{.kind = CardKind::user, .source = Source::netease, .id = "ada", .title = "Ada"}}, .total = 1};
+        }
+        Track t = test::Service::song(0);
+        t.title = "Found " + q;
+        co_return Batch{.tracks = {std::move(t)}, .total = 1};
+    };
+
+    scene.shell.playback.jump(0);
+    scene.shell.stage.show(true);
+    scene.draw();
+    const auto stage_runs = scene.draw();
+    CHECK(drew(stage_runs, "Midnight platform lights"));
+    CHECK(drew(stage_runs, "Lossless"));
+
+    // Click audio format line on Stage to open Audio info modal.
+    const auto *fmt = scene.find("Lossless");
+    REQUIRE(fmt != nullptr);
+    const auto info_runs = scene.click(*fmt);
+    CHECK(scene.ui.modal_open());
+    CHECK(drew(info_runs, "Audio info"));
+    CHECK(drew(info_runs, "Output latency"));
+    scene.ui.close_modal();
+    scene.draw();
+
+    // Right-click a lyric line to copy LRC, then quote in comment (verifying composer opens and inserts quote).
+    const auto *lyric = scene.find("Midnight platform lights");
+    REQUIRE(lyric != nullptr);
+    const auto lmenu = scene.click(lyric->box.x + 10, lyric->box.y + 8, 1180, 760, BTN_RIGHT);
+    CHECK(drew(lmenu, "Copy line"));
+    CHECK(drew(lmenu, "Copy line with translation"));
+    CHECK(drew(lmenu, "Copy all lyrics"));
+    CHECK(drew(lmenu, "Copy LRC"));
+    CHECK(drew(lmenu, "Quote in comment"));
+    const auto *copy_lrc = scene.find("Copy LRC");
+    REQUIRE(copy_lrc != nullptr);
+    scene.click(*copy_lrc);
+    REQUIRE(scene.ui.copy.has_value());
+    CHECK(scene.ui.copy->contains("[00:10.00]Midnight platform lights"));
+    scene.ui.copy.reset();
+
+    lyric = scene.find("Midnight platform lights");
+    REQUIRE(lyric != nullptr);
+    scene.click(lyric->box.x + 10, lyric->box.y + 8, 1180, 760, BTN_RIGHT);
+    const auto *quote_comment = scene.find("Quote in comment");
+    REQUIRE(quote_comment != nullptr);
+    scene.click(*quote_comment);
+    scene.draw();
+    CHECK(scene.shell.panel.kind() == SidePanel::Kind::comments);
+    CHECK(scene.shell.comments.thread().draft->expanded);
+    CHECK(scene.shell.comments.thread().draft->text == "\"Midnight platform lights\"");
+
+    // Comment right-click copies comment text; clicking #NightTrain# searches and @Ada opens profile.
+    const auto *topic = scene.find("#NightTrain#");
+    REQUIRE(topic != nullptr);
+    const auto cmenu = scene.click(topic->box.x + 10, topic->box.y + 6, 1180, 760, BTN_RIGHT);
+    CHECK(drew(cmenu, "Copy comment"));
+    CHECK(drew(cmenu, "Copy image"));
+    CHECK(drew(cmenu, "Save image"));
+    const auto *copy_comment = scene.find("Copy comment");
+    REQUIRE(copy_comment != nullptr);
+    scene.click(*copy_comment);
+    REQUIRE(scene.ui.copy.has_value());
+    CHECK(*scene.ui.copy == "Love #NightTrain# with @Ada");
+    scene.ui.copy.reset();
+
+    topic = scene.find("#NightTrain#");
+    REQUIRE(topic != nullptr);
+    scene.click(*topic);
+    CHECK(scene.shell.browser.route().page == Page::search);
+    CHECK(scene.shell.browser.searched() == "NightTrain");
+
+    // Re-open comments and click @Ada to jump directly to Ada's profile.
+    scene.shell.open_comments(Source::netease, Subject::song, "song-0", "Night Train · Mira Chen", "");
+    scene.draw();
+    scene.draw();
+    const auto *mention = scene.find("@Ada");
+    REQUIRE(mention != nullptr);
+    scene.click(*mention);
+    CHECK(scene.shell.browser.route().page == Page::profile);
+    CHECK(scene.shell.browser.route().card.id == "ada");
+
+    // Click chorus highlight marker under the progress bar to seek to chorus start (60s).
+    scene.draw();
+    {
+        const ui::Rect strip{0, 760 - PlayerBar::height, 1180, PlayerBar::height};
+        const auto bar_l = PlayerBar::layout(strip);
+        const ui::Rect centre = ui::center(bar_l.centre, std::min(bar_l.centre.w, 600.f), bar_l.centre.h);
+        const float cy = bar_l.card.y + 46 + 10;
+        // 60..90s out of 200s sits around 30%..45% of the progress string.
+        const float cx = centre.x + centre.w * 0.375f;
+        scene.click(cx, cy + 5);
+        CHECK(scene.shell.playback.song_time() == doctest::Approx(60.0));
+    }
+
+    // Settings -> General shows Close to background, Cache, Keyboard shortcuts, and settles idle.
+    scene.shell.playback.stop();
+    scene.shell.panel.show(SidePanel::Kind::none);
+    scene.shell.browser.open(Page::settings);
+    scene.draw();
+    const auto *gen_tab = scene.find("General");
+    REQUIRE(gen_tab != nullptr);
+    const auto gen = scene.click(*gen_tab);
+    CHECK(drew(gen, "Close to background"));
+    CHECK(drew(gen, "Cache"));
+    CHECK(drew(gen, "Keyboard shortcuts"));
+    const auto *clear_cache = scene.find("Clear");
+    REQUIRE(clear_cache != nullptr);
+    const auto cleared = scene.click(*clear_cache);
+    CHECK(drew(cleared, "Cache cleared"));
+    scene.draw();
+    CHECK_FALSE(scene.ui.animating());
 }

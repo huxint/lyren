@@ -48,6 +48,8 @@ namespace lyren {
         Config::Theme::Colors preview_colors_;
         audio::Follower meter_{};
         double meter_time_ = 0;
+        uint64_t audio_cache_bytes_ = 0;
+        double cache_checked_ = -100;
     };
 
 } // namespace lyren

@@ -197,6 +197,34 @@ namespace lyren {
         }
     }
 
+    void Images::clear() {
+        queue_.clear();
+        preloads_.clear();
+        if (clear_scheduled_) {
+            return;
+        }
+        clear_scheduled_ = true;
+        // Defer texture destruction until after the current frame submits so primitives emitted earlier in the frame
+        // never sample a destroyed VkImage.
+        loop_.defer([loader = loader_] {
+            if (loader->owner) {
+                loader->owner->clear_now();
+            }
+        });
+    }
+
+    void Images::clear_now() {
+        clear_scheduled_ = false;
+        queue_.clear();
+        preloads_.clear();
+        for (auto it = entries_.begin(); it != entries_.end();) {
+            // Leave any in-flight HTTP request running so complete() decrements in_flight_, but remove the entry so
+            // its stale ticket is ignored and bytes_ drops to 0 cleanly.
+            erase(it++);
+        }
+        redraw_();
+    }
+
     void Images::put(std::string_view key, uint32_t px, const gfx::Image &img) {
         const CacheKey::View lookup{key, px};
         if (auto it = entries_.find(lookup); it != entries_.end()) {

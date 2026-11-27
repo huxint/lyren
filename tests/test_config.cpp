@@ -13,6 +13,7 @@ TEST_CASE("embedded default config parses to the built-in defaults") {
     REQUIRE(c.has_value());
     Config d;
     CHECK(c->interface.language == Language::zh);
+    CHECK_FALSE(c->interface.close_to_background);
     CHECK(c->render.max_fps == d.render.max_fps);
     CHECK(c->playback.quality == Quality::lossless);
     CHECK(c->theme.font == "sans-serif");
@@ -59,11 +60,13 @@ TEST_CASE("settings are written into the config text in place") {
     d = set_config_value(d, "playback", "quality", "\"exhigh\"");
     d = set_config_value(d, "playback", "normalize", "true");
     d = set_config_value(d, "desktop_lyrics", "font_size", "36");
+    d = set_config_value(d, "interface", "close_to_background", "true");
     auto c = parse_config(d);
     REQUIRE(c.has_value());
     CHECK(c->playback.quality == Quality::exhigh);
     CHECK(c->playback.normalize);
     CHECK(c->desktop_lyrics.font_size == 36);
+    CHECK(c->interface.close_to_background);
     CHECK(d.find("# Match track loudness") != std::string::npos);
 
     // Inline comments, quoting and whitespace around the value survive.

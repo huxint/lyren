@@ -17,6 +17,7 @@ namespace lyren::ui {
 
         void request();
         void frame_done();
+        void reset();
         // At the start of render: false when there is nothing to draw or the last frame is still on its way.
         bool begin();
         // At the end of render: schedules the next frame from what the UI asked for.

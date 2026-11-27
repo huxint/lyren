@@ -48,6 +48,7 @@ namespace lyren {
 
         // centered: 0 lines start at the left, 1 they are centred.
         void lyrics(ui::Ui &ui, ui::Rect r, float centered);
+        void show_audio_info(ui::Ui &ui);
 
         bool open_ = false, wide_ = true, translation_ = true;
         float cover_px_ = 64;
