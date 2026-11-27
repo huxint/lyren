@@ -268,7 +268,7 @@ namespace lyren {
         }
         if (route_.page == Page::search && route_.search) {
             query = route_.search->query;
-            if (!env_.provider(active_.source, active_.instance).capabilities.search[static_cast<size_t>(route_.search->tab)]) {
+            if (!route_.search->aggregate && !env_.provider(active_.source, active_.instance).capabilities.search[static_cast<size_t>(route_.search->tab)]) {
                 route_.search->tab = 0;
             }
         }
@@ -291,7 +291,13 @@ namespace lyren {
 
     void Browser::switch_platform(Source source, std::string instance) {
         const SourceKey target{source, std::move(instance)};
-        if (target == active_ || !env_.providers.contains(target.source, target.instance)) {
+        if (!env_.providers.contains(target.source, target.instance)) {
+            return;
+        }
+        if (target == active_) {
+            if (route_.page == Page::search && search_aggregated()) {
+                set_search_aggregated(false);
+            }
             return;
         }
         // Search keeps each platform's cached results and scroll positions; settings, stats and pinned are cross-platform.
@@ -300,8 +306,11 @@ namespace lyren {
             active_ = target;
             route_.card.source = active_.source;
             route_.card.instance = active_.instance;
-            if (route_.search && !env_.provider(active_.source, active_.instance).capabilities.search[static_cast<size_t>(route_.search->tab)]) {
-                route_.search->tab = 0;
+            if (route_.search) {
+                route_.search->aggregate = false;
+                if (!env_.provider(active_.source, active_.instance).capabilities.search[static_cast<size_t>(route_.search->tab)]) {
+                    route_.search->tab = 0;
+                }
             }
             reset_selection();
             tab_since = env_.now();
@@ -328,8 +337,12 @@ namespace lyren {
         const Page page = route_.page;
         auto &lib = shelf();
         const bool signed_in = env_.signed_in(active_.source, active_.instance);
-        if (page == Page::search && route_.search && !results(route_.search->tab).loaded) {
-            load_results(route_.search->tab);
+        if (page == Page::search && route_.search) {
+            if (route_.search->aggregate) {
+                load_all_results(route_.search->tab);
+            } else if (!results(route_.search->tab).loaded) {
+                load_results(route_.search->tab);
+            }
         }
         if (page == Page::recent && lib.recent_tab == 1 && signed_in) {
             library_.ensure_recent_plays(active_.source);
@@ -444,10 +457,10 @@ namespace lyren {
     }
 
     void Browser::search() {
-        search_on(active_.source, std::string(query), 0);
+        search_on(active_.source, std::string(query), 0, route_.page == Page::search && search_aggregated());
     }
 
-    void Browser::search_on(Source source, std::string term, int tab) {
+    void Browser::search_on(Source source, std::string term, int tab, bool aggregate) {
         const std::string_view clean = trim(term);
         if (clean.empty()) {
             return;
@@ -458,20 +471,57 @@ namespace lyren {
         }
         reset_selection();
         const std::string inst = source == active_.source ? active_.instance : std::string{};
-        const int safe_tab = tab >= 0 && tab < 5 && env_.provider(source, inst).capabilities.search[static_cast<size_t>(tab)] ? tab : 0;
+        const bool agg = aggregate && env_.providers.entries().size() > 1;
+        auto tab_ok = [&](int k) {
+            if (k < 0 || k >= 5) {
+                return false;
+            }
+            if (!agg) {
+                return env_.provider(source, inst).capabilities.search[static_cast<size_t>(k)];
+            }
+            return std::ranges::any_of(env_.providers.entries(), [&](const auto &e) {
+                return e.provider->capabilities.search[static_cast<size_t>(k)];
+            });
+        };
+        const int safe_tab = tab_ok(tab) ? tab : 0;
         if (route_.page == Page::search && route_.search && route_.search->query == query && active_.source == source && active_.instance == inst) {
             route_.search->results.clear();
             route_.search->tab = safe_tab;
+            route_.search->aggregate = agg;
             route_.search->serial = ++search_gen_;
+            ++route_.search->version;
             ++navigations_;
-            load_results(safe_tab);
+            if (agg) {
+                load_all_results(safe_tab);
+            } else {
+                load_results(safe_tab);
+            }
             return env_.redraw();
         }
         forward_.clear();
         history_.push_back(route_);
         trim_history(history_);
-        auto session = std::make_shared<Search>(Search{.query = query, .tab = safe_tab, .serial = ++search_gen_});
+        auto session = std::make_shared<Search>(Search{.query = query, .tab = safe_tab, .serial = ++search_gen_, .version = 1, .aggregate = agg});
         enter({.page = Page::search, .card = {.source = source, .instance = inst}, .search = std::move(session)}, 1);
+    }
+
+    void Browser::set_search_aggregated(bool on) {
+        if (!route_.search || (on && env_.providers.entries().size() <= 1)) {
+            return;
+        }
+        if (route_.search->aggregate == on) {
+            return;
+        }
+        route_.search->aggregate = on;
+        ++route_.search->version;
+        tab_direction = on ? -1 : 1;
+        if (!on && !env_.provider(active_.source, active_.instance).capabilities.search[static_cast<size_t>(route_.search->tab)]) {
+            route_.search->tab = 0;
+        }
+        reset_selection();
+        tab_since = env_.now();
+        ensure();
+        env_.redraw();
     }
 
     void Browser::rebuild_suggestions(std::string_view input) {
@@ -637,6 +687,39 @@ namespace lyren {
         spawn(fetch_results(route_.search, route_.search->serial, tab, active_, listing.next_offset));
     }
 
+    void Browser::load_all_results(int tab, bool retry) {
+        if (!route_.search || route_.search->query.empty()) {
+            return;
+        }
+        for (const auto &entry : env_.providers.entries()) {
+            if (!entry.provider->capabilities.search[static_cast<size_t>(tab)]) {
+                continue;
+            }
+            Listing &listing = route_.search->results[source_id(entry.source, entry.instance)][static_cast<size_t>(tab)];
+            if (listing.loaded && !retry) {
+                continue;
+            }
+            if (!listing.open(retry)) {
+                continue;
+            }
+            listing.loading = true;
+            listing.error.clear();
+            spawn(fetch_results(route_.search, route_.search->serial, tab, {entry.source, entry.instance}, listing.next_offset));
+        }
+    }
+
+    void Browser::reset_all_results(int tab) {
+        if (!route_.search) {
+            return;
+        }
+        for (const auto &entry : env_.providers.entries()) {
+            route_.search->results[source_id(entry.source, entry.instance)][static_cast<size_t>(tab)] = {};
+        }
+        ++route_.search->version;
+        reset_selection();
+        load_all_results(tab, true);
+    }
+
     Task<void> Browser::fetch_results(std::shared_ptr<Search> session, uint64_t serial, int tab, SourceKey source, int offset) {
         const auto &lib = library_.shelf(source.source, source.instance);
         const uint64_t account_gen = lib.account_gen;
@@ -649,6 +732,7 @@ namespace lyren {
         if (!listing.more()) {
             listing.total = static_cast<int>(listing.size());
         }
+        ++session->version;
         env_.redraw();
     }
 

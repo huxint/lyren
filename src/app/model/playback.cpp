@@ -1,5 +1,6 @@
 #include "app/model/playback.hpp"
 #include "app/model/library.hpp"
+#include "app/model/matcher.hpp"
 #include "app/model/pins.hpp"
 
 #include <algorithm>
@@ -92,12 +93,13 @@ namespace lyren {
         pins_ = &pins;
     }
 
-    void Playback::connect(Bus &bus, std::move_only_function<void(std::string_view token)> raise) {
+    void Playback::connect(Bus &bus, std::move_only_function<void(std::string_view token)> raise, std::move_only_function<void(std::string_view uri)> open_uri) {
         if (!bus.get()) {
             return;
         }
         Mpris::Handlers h{
             .raise = std::move(raise),
+            .open_uri = std::move(open_uri),
             .quit =
                 [this] {
                     env_.loop.quit();
@@ -571,6 +573,7 @@ namespace lyren {
         resume_at_ = last_pos_ = 0;
         trial_ = false, clip_start_ = 0, highlight_from_ = highlight_to_ = 0;
         stream_level_.clear();
+        fallback_source_.reset();
         stop_player();
     }
 
@@ -802,6 +805,7 @@ namespace lyren {
         // The old stream's window no longer applies until the new one arrives.
         trial_ = false, clip_start_ = 0, highlight_from_ = highlight_to_ = 0;
         stream_level_.clear();
+        fallback_source_.reset();
         last_pos_ = at;
         pending_song_seek_.reset();
         resume_at_ = 0;
@@ -837,6 +841,22 @@ namespace lyren {
                 if (pins_) {
                     if (auto hash = pins_->cached_hash(t)) {
                         spool = audio::Spool::cached_file(*hash);
+                    }
+                }
+                // Cross-platform fallback: match and play from another platform while preserving original track identity.
+                if (!spool && env_.config.playback.auto_fallback) {
+                    auto fallback = co_await find_fallback_stream(env_, t, quality, skip_trials());
+                    if (gen != play_gen_) {
+                        co_return;
+                    }
+                    if (fallback) {
+                        fallback_source_ = SourceKey{fallback->track.source, fallback->track.instance};
+                        s = std::move(fallback->stream);
+                        const std::string cache_key = silent_ ? std::string{} : stream_cache_key(fallback->track, s);
+                        spool = audio::Spool::url(env_.http, s.url, cache_key);
+                        const auto *entry = env_.providers.entry(fallback->track.source, fallback->track.instance);
+                        const std::string_view name = entry ? lyren::tr(entry->short_name) : lyren::tr(platform(fallback->track.source).short_name);
+                        env_.notify(lyren::trf("Playing from {}", name), "arrow-left-right");
                     }
                 }
                 if (!spool) {

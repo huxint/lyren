@@ -78,8 +78,17 @@ namespace lyren {
             return sd_bus_reply_method_return(m, "");
         }
 
-        static int open_uri(sd_bus_message *, void *, sd_bus_error *e) {
-            return sd_bus_error_set(e, SD_BUS_ERROR_NOT_SUPPORTED, "Lyren does not open URIs");
+        static int open_uri(sd_bus_message *m, void *u, sd_bus_error *e) {
+            const char *uri = nullptr;
+            if (int r = sd_bus_message_read(m, "s", &uri); r < 0) {
+                return r;
+            }
+            Mpris &s = self(u);
+            if (!s.h_.open_uri) {
+                return sd_bus_error_set(e, SD_BUS_ERROR_NOT_SUPPORTED, "Lyren does not open URIs");
+            }
+            s.h_.open_uri(uri ? uri : "");
+            return sd_bus_reply_method_return(m, "");
         }
 
         static int metadata(sd_bus_message *m, const MprisState &s) {
@@ -151,7 +160,10 @@ namespace lyren {
             if (p == "Identity" || p == "DesktopEntry") {
                 return sd_bus_message_append(m, "s", p == "Identity" ? "Lyren" : "lyren");
             }
-            return sd_bus_message_append(m, "as", 0); // SupportedUriSchemes, SupportedMimeTypes
+            if (p == "SupportedUriSchemes") {
+                return sd_bus_message_append(m, "as", 2, "http", "https");
+            }
+            return sd_bus_message_append(m, "as", 0); // SupportedMimeTypes
         }
 
         static int set(sd_bus *, const char *, const char *, const char *property, sd_bus_message *m, void *u, sd_bus_error *) {
@@ -289,10 +301,17 @@ namespace lyren {
         bus_.arm();
     }
 
-    bool hand_over_to_running(Bus &bus) {
+    bool hand_over_to_running(Bus &bus, std::string_view uri) {
         const char *token = std::getenv("XDG_ACTIVATION_TOKEN");
         sd_bus_set_method_call_timeout(bus.get(), 2'000'000);
-        return sd_bus_call_method(bus.get(), name, path, instance_iface, "Activate", nullptr, nullptr, "s", token ? token : "") >= 0;
+        if (sd_bus_call_method(bus.get(), name, path, instance_iface, "Activate", nullptr, nullptr, "s", token ? token : "") < 0) {
+            return false;
+        }
+        if (!uri.empty()) {
+            const std::string owned(uri);
+            sd_bus_call_method(bus.get(), name, path, player_iface, "OpenUri", nullptr, nullptr, "s", owned.c_str());
+        }
+        return true;
     }
 
 } // namespace lyren

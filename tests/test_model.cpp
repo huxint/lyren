@@ -13,6 +13,7 @@
 #include "app/model/browser.hpp"
 #include "app/model/fetch.hpp"
 #include "app/model/library.hpp"
+#include "app/model/matcher.hpp"
 #include "app/model/pins.hpp"
 #include "app/model/playback.hpp"
 #include "app/model/social.hpp"
@@ -1079,4 +1080,176 @@ TEST_CASE("Browser merges search history with debounced provider suggestions and
     CHECK(browser.suggestions()[0].from_history);
     CHECK(browser.suggestions()[1].text == "Nightfall");
     CHECK_FALSE(browser.suggestions()[1].from_history);
+}
+
+TEST_CASE("score_match enforces duration tolerance and rejects live, remix, or instrumental mismatches") {
+    const Track studio{.id = "s1", .title = "晴天", .artist = "周杰伦", .album = "叶惠美", .duration = 269, .source = Source::netease};
+
+    // Clean match with small duration difference (<= 6s).
+    const Track good{.id = "q1", .title = "晴天", .artist = "周杰伦", .album = "叶惠美", .duration = 271, .source = Source::qq};
+    const auto m_good = score_match(studio, good);
+    CHECK(m_good.acceptable);
+    CHECK(m_good.duration_diff == 2);
+
+    // Duration delta > 6s is strictly rejected.
+    Track too_long = good;
+    too_long.duration = 280;
+    CHECK_FALSE(score_match(studio, too_long).acceptable);
+
+    // Live / Remix / Instrumental / Cover variants do not match a studio track.
+    for (std::string_view variant : {"晴天 (Live)", "晴天（现场版）", "晴天 (DJ Remix)", "晴天 (伴奏)", "晴天 (Instrumental)", "晴天 (翻唱)"}) {
+        Track bad = good;
+        bad.title = std::string(variant);
+        CHECK_FALSE(score_match(studio, bad).acceptable);
+    }
+
+    // Live track matches another live track cleanly.
+    Track live_target = studio;
+    live_target.title = "晴天 (Live)";
+    Track live_cand = good;
+    live_cand.title = "晴天（现场）";
+    CHECK(score_match(live_target, live_cand).acceptable);
+
+    // Collaborator artist overlap succeeds; completely unrelated artist fails.
+    const Track duet{.id = "d1", .title = "千里之外", .artist = "周杰伦 / 费玉清", .duration = 256, .source = Source::netease, .artists = {{"1", "周杰伦"}, {"2", "费玉清"}}};
+    const Track duet_cand{.id = "d2", .title = "千里之外", .artist = "周杰伦", .duration = 257, .source = Source::qq};
+    CHECK(score_match(duet, duet_cand).acceptable);
+
+    Track wrong_artist = good;
+    wrong_artist.artist = "林俊杰";
+    CHECK_FALSE(score_match(studio, wrong_artist).acceptable);
+
+    // Word boundary guard: "Alive" must not be misclassified as "Live".
+    const Track alive_target{.id = "a1", .title = "Stay Alive", .artist = "Mira Chen", .duration = 200};
+    const Track alive_cand{.id = "a2", .title = "Stay Alive", .artist = "Mira Chen", .duration = 200};
+    CHECK(score_match(alive_target, alive_cand).acceptable);
+}
+
+TEST_CASE("Playback auto_fallback switches only the audio stream while preserving track identity") {
+    Loop loop;
+    net::Http http;
+    Config config;
+    config.playback.trial = TrialMode::skip;
+    config.playback.auto_fallback = true;
+    double clock = 100.0;
+
+    test::Service ncm;
+    test::Service qq;
+
+    // Primary NetEase track only returns a preview clip (skipped under TrialMode::skip).
+    ncm.on_stream = [](Track, Quality) -> Task<Result<Stream>> {
+        co_return Stream{.url = "http://127.0.0.1:1/preview.mp3", .level = "standard", .trial = true};
+    };
+
+    // QQ Music returns a bad live variant and a valid studio match; only the valid studio match should be streamed.
+    int qq_stream_calls = 0;
+    std::string streamed_qq_id;
+    qq.on_search = [](std::string, SearchKind, int, int) -> Task<Result<Batch>> {
+        Track live{.id = "qq-live", .title = "Night Train (Live)", .artist = "Mira Chen", .duration = 200, .source = Source::qq};
+        Track match{.id = "qq-studio", .title = "Night Train", .artist = "Mira Chen", .duration = 201, .source = Source::qq};
+        co_return Batch{.tracks = {std::move(live), std::move(match)}, .total = 2};
+    };
+    qq.on_stream = [&](Track t, Quality) -> Task<Result<Stream>> {
+        ++qq_stream_calls;
+        streamed_qq_id = t.id;
+        co_return Stream{.url = "http://127.0.0.1:1/full.flac", .level = "lossless", .trial = false};
+    };
+
+    ProviderRegistry reg;
+    reg.add(Source::netease, ncm);
+    reg.add(Source::qq, qq);
+
+    Env env{.loop = loop,
+            .http = http,
+            .providers = std::move(reg),
+            .config = config,
+            .redraw = [] {},
+            .now =
+                [&] {
+                    return clock;
+                }};
+
+    audio::Player player(loop, http);
+    SavedState saved;
+    Playback playback(env, player, true, saved);
+
+    const Track target{.id = "ncm-1", .title = "Night Train", .artist = "Mira Chen", .duration = 200, .source = Source::netease};
+    playback.play({target}, 0);
+
+    // Original track identity in the queue stays NetEase, while fallback_source() records QQ Music.
+    REQUIRE(playback.current() != nullptr);
+    CHECK(playback.current()->source == Source::netease);
+    CHECK(playback.current()->id == "ncm-1");
+    REQUIRE(playback.fallback_source().has_value());
+    CHECK(playback.fallback_source()->source == Source::qq);
+    CHECK(qq_stream_calls == 1);
+    CHECK(streamed_qq_id == "qq-studio");
+    CHECK(playback.level() == "lossless");
+    CHECK_FALSE(playback.trial());
+
+    // When auto_fallback is off, no cross-platform search/stream happens and playback stops on preview skip.
+    playback.stop();
+    qq_stream_calls = 0;
+    config.playback.auto_fallback = false;
+    playback.play({target}, 0);
+    CHECK(qq_stream_calls == 0);
+    CHECK_FALSE(playback.fallback_source().has_value());
+}
+
+TEST_CASE("Browser aggregated search fans out across providers and cancels stale responses") {
+    Loop loop;
+    net::Http http;
+    Config config;
+    double clock = 100.0;
+
+    test::Service ncm, qq;
+    test::Gate qq_gate;
+    ncm.on_search = [](std::string q, SearchKind, int, int) -> Task<Result<Batch>> {
+        Track t{.id = "n-" + q, .title = "NCM " + q, .artist = "Artist", .duration = 200, .source = Source::netease};
+        co_return Batch{.tracks = {std::move(t)}, .total = 1};
+    };
+    qq.on_search = [&](std::string q, SearchKind, int, int) -> Task<Result<Batch>> {
+        if (q == "first") {
+            co_await qq_gate;
+        }
+        Track t{.id = "q-" + q, .title = "QQ " + q, .artist = "Artist", .duration = 200, .source = Source::qq};
+        co_return Batch{.tracks = {std::move(t)}, .total = 1};
+    };
+
+    ProviderRegistry reg;
+    reg.add(Source::netease, ncm);
+    reg.add(Source::qq, qq);
+
+    Env env{.loop = loop,
+            .http = http,
+            .providers = std::move(reg),
+            .config = config,
+            .redraw = [] {},
+            .now =
+                [&] {
+                    return clock;
+                }};
+
+    Library library(env);
+    Social social(env, library);
+    Browser browser(env, library, social, Source::netease);
+
+    browser.query = "first";
+    browser.search();
+    CHECK_FALSE(browser.search_aggregated());
+    browser.set_search_aggregated(true);
+    CHECK(browser.search_aggregated());
+    CHECK(browser.results(Source::netease, "", 0).tracks.size() == 1);
+    CHECK(browser.results(Source::qq, "", 0).loading);
+
+    // Submitting a new search while aggregated preserves aggregated mode and discards late results from the first search.
+    browser.query = "second";
+    browser.search();
+    CHECK(browser.search_aggregated());
+    qq_gate.release();
+
+    REQUIRE(browser.results(Source::netease, "", 0).tracks.size() == 1);
+    CHECK(browser.results(Source::netease, "", 0).tracks[0].id == "n-second");
+    REQUIRE(browser.results(Source::qq, "", 0).tracks.size() == 1);
+    CHECK(browser.results(Source::qq, "", 0).tracks[0].id == "q-second");
 }

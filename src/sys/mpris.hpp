@@ -32,6 +32,7 @@ namespace lyren {
     public:
         struct Handlers {
             std::move_only_function<void(std::string_view token)> raise; // empty token: MPRIS Raise, nothing to hand over
+            std::move_only_function<void(std::string_view uri)> open_uri;
             std::move_only_function<void()> quit, play, pause, toggle, stop, next, previous;
             std::move_only_function<void(double)> seek; // absolute, s
             std::move_only_function<void(double)> volume;
@@ -61,8 +62,8 @@ namespace lyren {
         sd_bus_slot *slots_[3]{};
     };
 
-    // A second launch hands the launcher's activation token to the running lyren, which comes forward. True when one
+    // A second launch hands the launcher's activation token (and optional URI) to the running lyren. True when one
     // answered.
-    bool hand_over_to_running(Bus &bus);
+    bool hand_over_to_running(Bus &bus, std::string_view uri = {});
 
 } // namespace lyren

@@ -79,6 +79,14 @@ namespace lyren::kugou {
             track.artist = joined_names(field(row, "Singers"), "name");
             if (auto singers = array(field(row, "Singers")); !singers.empty()) {
                 track.artist_id = text(singers.front(), "id");
+                track.artists.reserve(singers.size());
+                for (const auto &singer : singers) {
+                    auto sid = text(singer, "id");
+                    auto sname = text(singer, "name");
+                    if (!sid.empty() || !sname.empty()) {
+                        track.artists.push_back({std::move(sid), std::move(sname)});
+                    }
+                }
             }
             track.album = text(row, "AlbumName");
             track.album_id = text(row, "AlbumID");
@@ -556,6 +564,10 @@ namespace lyren::kugou {
         co_return result;
     }
 
+    Task<Result<Track>> Kugou::track_detail(std::string id) {
+        co_return co_await song_detail(std::move(id));
+    }
+
     Task<Result<Track>> Kugou::song_detail(std::string hash) {
         hash = hash_id(std::move(hash));
         if (hash.empty()) {
@@ -721,6 +733,15 @@ namespace lyren::kugou {
             const auto authors = array(field(row, "authors"));
             if (!authors.empty()) {
                 track.artist_id = text(authors.front(), "author_id");
+                track.artists.clear();
+                track.artists.reserve(authors.size());
+                for (const auto &author : authors) {
+                    auto aid = text(author, "author_id");
+                    auto aname = text(author, "author_name");
+                    if (!aid.empty() || !aname.empty()) {
+                        track.artists.push_back({std::move(aid), std::move(aname)});
+                    }
+                }
             }
         }
         co_return batch;

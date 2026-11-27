@@ -37,7 +37,7 @@ namespace lyren {
     public:
         // select_driver() must already have run for config.gpu. script: lines for run_script(), may be empty; a scripted
         // run never makes a sound and never takes focus.
-        App(Loop &loop, Bus &bus, ConfigFile config, std::vector<std::string> script);
+        App(Loop &loop, Bus &bus, ConfigFile config, std::vector<std::string> script, std::string initial_uri = {});
         ~App();
 
     private:

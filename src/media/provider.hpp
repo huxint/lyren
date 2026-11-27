@@ -118,6 +118,7 @@ namespace lyren {
         virtual Task<Result<Categories>> categories();
         virtual Task<Result<Batch>> square(std::string category, int offset);
         virtual Task<Result<std::vector<Track>>> similar(std::string id);
+        virtual Task<Result<Track>> track_detail(std::string id);
         virtual Task<Result<AlbumInfo>> album(std::string id);
         virtual Task<Result<ArtistInfo>> artist(std::string id);
         virtual Task<Result<Batch>> artist_songs(std::string id, int offset);

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <inplace_vector>
 #include <numbers>
 #include <utility>
 
@@ -210,7 +211,7 @@ namespace lyren {
         const float detail = smooth01((f - 0.6f) / 0.4f);
         float text_w = 0;
         const auto &player = playback_.player();
-        const bool has_audio_info = !player.codec().empty() || !playback_.level().empty();
+        const bool has_audio_info = !player.codec().empty() || !playback_.level().empty() || playback_.fallback_source().has_value();
         auto upper_codec = [](std::string_view raw) {
             std::string out(raw);
             for (char &ch : out) {
@@ -251,8 +252,18 @@ namespace lyren {
                     }
                 }
                 if (playback_.trial()) {
-                    format += " · ";
+                    if (!format.empty()) {
+                        format += " · ";
+                    }
                     format += lyren::tr("Preview");
+                }
+                if (const auto &fb = playback_.fallback_source()) {
+                    if (!format.empty()) {
+                        format += " · ";
+                    }
+                    const auto *entry = env_.providers.entry(fb->source, fb->instance);
+                    const std::string_view fb_name = entry ? lyren::tr(entry->short_name) : lyren::tr(platform(fb->source).short_name);
+                    format += lyren::trf("via {}", fb_name);
                 }
                 const float format_y = y + cap.gap + 24 * k;
                 const float fs = t.fs(type::caption) * k;
@@ -313,17 +324,36 @@ namespace lyren {
             if (const auto cov_it = ui.interact(ui.id("stage-cover"), cover); cov_it.right_clicked && playback_.index() >= 0) {
                 shell_.tracks.menu(ui, cov_it.px, cov_it.py, playback_.queue(), playback_.index());
             }
-            if (!track->artist_id.empty()) {
-                const float aw = std::min(p.measure(track->artist, {.size = cap.sub}), cap.w);
-                const Rect ar{cap.x, cap.y + cap.gap - p.ascent(cap.sub) - 2, aw, cap.sub + 6};
-                const auto ait = ui.interact(ui.id("stage-artist"), ar);
-                if (ait.hovered) {
-                    ui.cursor = wl::Cursor::pointer;
-                    p.rect({ar.x, cap.y + cap.gap + 3, aw, 1}, t.text_dim.with_alpha(0.6f));
+            {
+                std::inplace_vector<ArtistRef, 8> linked;
+                for (const auto &a : track_artists(*track)) {
+                    if (!a.id.empty() && linked.size() < linked.capacity()) {
+                        linked.push_back(a);
+                    }
                 }
-                if (ait.clicked) {
-                    browser_.open(Page::artist,
-                                  {.kind = CardKind::artist, .source = track->source, .id = track->artist_id, .title = track->artist.substr(0, track->artist.find(" / "))});
+                if (!linked.empty()) {
+                    const float aw = std::min(p.measure(track->artist, {.size = cap.sub}), cap.w);
+                    const Rect ar{cap.x, cap.y + cap.gap - p.ascent(cap.sub) - 2, aw, cap.sub + 6};
+                    const auto ait = ui.interact(ui.id("stage-artist"), ar);
+                    if (ait.hovered) {
+                        ui.cursor = wl::Cursor::pointer;
+                        p.rect({ar.x, cap.y + cap.gap + 3, aw, 1}, t.text_dim.with_alpha(0.6f));
+                    }
+                    if (ait.clicked) {
+                        if (linked.size() == 1) {
+                            browser_.open(Page::artist,
+                                          {.kind = CardKind::artist, .source = track->source, .instance = track->instance, .id = linked[0].id, .title = linked[0].name});
+                        } else {
+                            std::vector<ui::MenuItem> items;
+                            items.reserve(linked.size());
+                            for (const auto &a : linked) {
+                                items.push_back({"mic-vocal", a.name, [this, source = track->source, inst = track->instance, a] {
+                                                     browser_.open(Page::artist, {.kind = CardKind::artist, .source = source, .instance = inst, .id = a.id, .title = a.name});
+                                                 }});
+                            }
+                            ui.open_menu(ait.px, ait.py, std::move(items));
+                        }
+                    }
                 }
             }
             if (under > 0.5f && !track->album.empty() && !track->album_id.empty()) {
@@ -762,7 +792,18 @@ namespace lyren {
                 }
             }
 
-            const std::array<std::pair<std::string_view, std::string_view>, 7> rows{{
+            std::string audio_source = "—";
+            if (const auto &fb = playback_.fallback_source()) {
+                const auto *entry = env_.providers.entry(fb->source, fb->instance);
+                const std::string_view name = entry ? lyren::tr(entry->name) : lyren::tr(platform(fb->source).name);
+                audio_source = lyren::trf("{} (fallback)", name);
+            } else if (track) {
+                const auto *entry = env_.providers.entry(track->source, track->instance);
+                audio_source = std::string(entry ? lyren::tr(entry->name) : lyren::tr(platform(track->source).name));
+            }
+
+            const std::array<std::pair<std::string_view, std::string_view>, 8> rows{{
+                {lyren::tr("Audio source"), audio_source},
                 {lyren::tr("Audio quality"), quality},
                 {lyren::tr("Codec"), codec},
                 {lyren::tr("Bitrate"), bitrate},

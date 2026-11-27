@@ -1316,24 +1316,208 @@ namespace lyren {
 
     // Each search starts its lists from the top; a platform's tabs keep their own places.
     ui::Id Pages::search_scroll_id(ui::Ui &ui, int tab) const {
-        const uint64_t source_hash = std::hash<std::string_view>{}(browser_.active_id());
+        const uint64_t source_hash = browser_.search_aggregated() ? 0x9e3779b97f4a7c15ull : std::hash<std::string_view>{}(browser_.active_id());
         return ui::sub_id(ui::sub_id(ui.id("search-results"), browser_.search_serial()), source_hash * 5 + static_cast<uint64_t>(tab));
     }
 
     void Pages::search_page(ui::Ui &ui, Rect r) {
+        auto &p = ui.painter();
         const auto &t = ui.theme();
         const Rect body = page_frame(r);
+        const auto &entries = env_.providers.entries();
+        const bool multi_provider = entries.size() > 1;
+        const bool aggregated = multi_provider && browser_.search_aggregated();
+        const auto *active_entry = env_.providers.entry(browser_.active(), browser_.active_key().instance);
+        const std::string_view source_short = active_entry ? lyren::tr(active_entry->short_name) : lyren::tr(platform(browser_.active()).short_name);
         const std::array<std::string_view, 5> tabs = {lyren::tr("Tracks"), lyren::tr("Albums"), lyren::tr("Artists"), lyren::tr("Playlists"), lyren::tr("Users")};
-        const Rect tab_bar{body.x, r.y + 96, body.w, 38};
-        ui.painter().rect({tab_bar.x, tab_bar.bottom() - 1, tab_bar.w, 1}, t.line());
+        const std::array kinds = {lyren::tr("songs"), lyren::tr("albums"), lyren::tr("artists"), lyren::tr("playlists"), lyren::tr("users")};
+
+        const Rect tab_bar{body.x, r.y + 96.f, body.w, 38};
+        p.rect({tab_bar.x, tab_bar.bottom() - 1, tab_bar.w, 1}, t.line());
         int &tab = browser_.search_tab();
-        Listing &shown = browser_.results(tab);
-        const float action_w = shown.error.empty() ? control::medium : ui.button_width(lyren::tr("Retry"), true);
-        if (page_tabs(ui, ui.id("search-tabs"), {tab_bar.x, tab_bar.y, tab_bar.w - action_w - 12, tab_bar.h}, tabs, tab, provider().capabilities.search)) {
-            browser_.ensure();
+        std::array<bool, 5> tab_enabled{};
+        if (aggregated) {
+            for (const auto &entry : entries) {
+                for (size_t k = 0; k < 5; ++k) {
+                    tab_enabled[k] |= entry.provider->capabilities.search[k];
+                }
+            }
+        } else {
+            tab_enabled = provider().capabilities.search;
         }
         const ui::Id scroll = search_scroll_id(ui, tab);
-        const Rect action_r{tab_bar.right() - action_w, tab_bar.y + (tab_bar.h - control::medium) / 2 - 2, action_w, control::medium};
+
+        // Compact right-aligned scope toggle on the same row as the content tabs: no extra stacked chrome.
+        float right_edge = tab_bar.right();
+        const std::array<std::string_view, 2> scope_labels{source_short, lyren::tr("All platforms")};
+        float scope_w = 0;
+        if (multi_provider && body.w >= 540) {
+            const auto seg_st = t.style(type::label, {}, text::medium);
+            const float widest = std::max(p.measure(scope_labels[0], seg_st), p.measure(scope_labels[1], seg_st));
+            scope_w = std::min(210.f, std::ceil((widest + 24) * 2));
+        }
+
+        if (aggregated) {
+            bool any_loading = false, any_loaded = false, any_error = false;
+            int total_found = 0;
+            double newest_since = browser_.entered;
+            for (const auto &entry : entries) {
+                if (!entry.provider->capabilities.search[static_cast<size_t>(tab)]) {
+                    continue;
+                }
+                Listing &l = browser_.results(entry.source, entry.instance, tab);
+                if (!l.loaded && !l.loading && l.error.empty()) {
+                    browser_.load_all_results(tab);
+                }
+                any_loading |= l.loading;
+                any_loaded |= l.loaded;
+                any_error |= !l.error.empty();
+                if (l.loaded) {
+                    total_found += static_cast<int>(l.size());
+                    newest_since = std::max(newest_since, l.since);
+                }
+            }
+            const float action_w = any_error && !any_loaded ? ui.button_width(lyren::tr("Retry"), true) : control::medium;
+            const Rect action_r{right_edge - action_w, tab_bar.y + (tab_bar.h - control::medium) / 2 - 2, action_w, control::medium};
+            if (any_loading) {
+                ui.spinner(ui::center({right_edge - control::medium, action_r.y, control::medium, control::medium}, 16, 16), t.text_dim, 2);
+            } else if (any_error && !any_loaded) {
+                if (ui.button(ui.id("search-refresh"), action_r, lyren::tr("Retry"), ui::ButtonKind::secondary, "refresh-cw")) {
+                    browser_.load_all_results(tab, true);
+                }
+            } else if (ui.icon_button(ui.id("search-refresh"), action_r, "refresh-cw", 16, false, lyren::tr("Refresh"))) {
+                ui.scroll_to(scroll, 0);
+                browser_.reset_all_results(tab);
+            }
+            right_edge = action_r.x - 10;
+            if (scope_w > 0) {
+                int scope = 1;
+                if (ui.segmented(ui.id("search-scope"), {right_edge - scope_w, tab_bar.y + (tab_bar.h - 28) / 2 - 2, scope_w, 28}, scope_labels, scope)) {
+                    browser_.set_search_aggregated(scope == 1);
+                }
+                right_edge -= scope_w + 16;
+            }
+            if (page_tabs(ui, ui.id("search-tabs"), {tab_bar.x, tab_bar.y, std::max(0.f, right_edge - tab_bar.x), tab_bar.h}, tabs, tab, tab_enabled)) {
+                browser_.ensure();
+            }
+
+            page_title(ui, body, r.y + 28, '"' + browser_.searched() + '"',
+                       any_loaded ? lyren::trf("{} {} across platforms", total_found, kinds[tab]) : std::string(lyren::tr("Searching all platforms")));
+
+            Rect content{body.x - 12, tab_bar.bottom() + 10, body.w + 24, r.bottom() - tab_bar.bottom() - 18};
+            Fade fade(p, tab_enter(ui, content));
+            const double since = std::max({browser_.entered, browser_.tab_since, newest_since});
+            const std::array looks{Placeholder::rows, Placeholder::cards, Placeholder::faces, Placeholder::cards, Placeholder::faces};
+
+            if (tab == 0) {
+                if (agg_serial_ != browser_.search_serial() || agg_version_ != browser_.search_version()) {
+                    agg_serial_ = browser_.search_serial();
+                    agg_version_ = browser_.search_version();
+                    agg_tracks_.clear();
+                    std::vector<const std::vector<Track> *> buckets;
+                    buckets.reserve(entries.size());
+                    for (bool want_signed_in : {true, false}) {
+                        for (const auto &entry : entries) {
+                            if (env_.signed_in(entry.source, entry.instance) != want_signed_in) {
+                                continue;
+                            }
+                            if (!entry.provider->capabilities.search[0]) {
+                                continue;
+                            }
+                            const auto &list = browser_.results(entry.source, entry.instance, 0).tracks;
+                            if (!list.empty()) {
+                                buckets.push_back(&list);
+                            }
+                        }
+                    }
+                    size_t max_len = 0, sum_len = 0;
+                    for (const auto *b : buckets) {
+                        max_len = std::max(max_len, b->size());
+                        sum_len += b->size();
+                    }
+                    agg_tracks_.reserve(sum_len);
+                    for (size_t idx = 0; idx < max_len; ++idx) {
+                        for (const auto *b : buckets) {
+                            if (idx < b->size()) {
+                                agg_tracks_.push_back((*b)[idx]);
+                            }
+                        }
+                    }
+                }
+                if (agg_tracks_.empty()) {
+                    if (page_status(ui, content, any_loading, any_error && !any_loaded ? lyren::tr("Could not search all platforms") : std::string_view{}, false,
+                                    Placeholder::rows)) {
+                        return;
+                    }
+                    return empty(ui, content, "search", lyren::tr("No results found"));
+                }
+                shell_.tracks.list(ui, content, scroll, agg_tracks_, since, true);
+                return;
+            }
+
+            // Aggregated cards (albums, artists, playlists, users): grouped cleanly by platform.
+            struct Group {
+                std::string_view name;
+                const std::vector<Card> *cards;
+                double since;
+            };
+            std::vector<Group> groups;
+            groups.reserve(entries.size());
+            for (const auto &entry : entries) {
+                if (!entry.provider->capabilities.search[static_cast<size_t>(tab)]) {
+                    continue;
+                }
+                const Listing &l = browser_.results(entry.source, entry.instance, tab);
+                if (!l.cards.empty()) {
+                    groups.push_back({lyren::tr(entry.name), &l.cards, l.since});
+                }
+            }
+            if (groups.empty()) {
+                if (page_status(ui, content.inset(12, 12), any_loading, any_error && !any_loaded ? lyren::tr("Could not search all platforms") : std::string_view{}, false,
+                                looks[static_cast<size_t>(tab)])) {
+                    return;
+                }
+                return empty(ui, content, "search", lyren::tr("No results found"));
+            }
+            const bool round = tab == 2 || tab == 4;
+            const Rect inner = content.inset(12, 0);
+            const CardGrid g(ui, scroll, inner.w, round ? 130 : 150);
+            float total_h = 12.f;
+            for (size_t gi = 0; gi < groups.size(); ++gi) {
+                if (gi > 0) {
+                    total_h += 24.f;
+                }
+                total_h += 42.f + g.height(groups[gi].cards->size());
+            }
+            total_h += any_loading ? 56.f : 20.f;
+            const float off = ui.begin_scroll(scroll, content, total_h);
+            float y = content.y + 12.f - off;
+            std::optional<Card> opened;
+            for (size_t gi = 0; gi < groups.size(); ++gi) {
+                if (gi > 0) {
+                    y += 24.f;
+                }
+                section_heading(ui, inner.x, y, inner.w, groups[gi].name, int_text(groups[gi].cards->size()));
+                y += 42.f;
+                const ui::Id gid = ui::sub_id(scroll, static_cast<uint64_t>(gi) + 1);
+                if (int picked = card_grid(ui, {inner.x, y, inner.w, 0}, gid, *groups[gi].cards, round, std::max(since, groups[gi].since)); picked >= 0) {
+                    opened = (*groups[gi].cards)[static_cast<size_t>(picked)];
+                }
+                y += g.height(groups[gi].cards->size());
+            }
+            if (any_loading) {
+                ui.spinner(ui::center({inner.x, y, inner.w, 48}, 18, 18), t.text_dim, 2);
+            }
+            ui.end_scroll();
+            if (opened) {
+                browser_.open(*opened);
+            }
+            return;
+        }
+
+        Listing &shown = browser_.results(tab);
+        const float action_w = shown.error.empty() ? control::medium : ui.button_width(lyren::tr("Retry"), true);
+        const Rect action_r{right_edge - action_w, tab_bar.y + (tab_bar.h - control::medium) / 2 - 2, action_w, control::medium};
         auto reload = [&] {
             if (shown.error.empty()) {
                 shown = {};
@@ -1343,7 +1527,7 @@ namespace lyren {
             browser_.load_results(tab, true);
         };
         if (shown.loading) {
-            ui.spinner(ui::center({tab_bar.right() - control::medium, action_r.y, control::medium, control::medium}, 16, 16), t.text_dim, 2);
+            ui.spinner(ui::center({right_edge - control::medium, action_r.y, control::medium, control::medium}, 16, 16), t.text_dim, 2);
         } else if (shown.error.empty()) {
             if (ui.icon_button(ui.id("search-refresh"), action_r, "refresh-cw", 16, false, lyren::tr("Refresh"))) {
                 reload();
@@ -1351,14 +1535,22 @@ namespace lyren {
         } else if (ui.button(ui.id("search-refresh"), action_r, lyren::tr("Retry"), ui::ButtonKind::secondary, "refresh-cw")) {
             reload();
         }
-        const auto *active_entry = env_.providers.entry(browser_.active(), browser_.active_key().instance);
-        const std::string_view source_short = active_entry ? lyren::tr(active_entry->short_name) : lyren::tr(platform(browser_.active()).short_name);
-        const std::array kinds = {lyren::tr("songs"), lyren::tr("albums"), lyren::tr("artists"), lyren::tr("playlists"), lyren::tr("users")};
+        right_edge = action_r.x - 10;
+        if (scope_w > 0) {
+            int scope = 0;
+            if (ui.segmented(ui.id("search-scope"), {right_edge - scope_w, tab_bar.y + (tab_bar.h - 28) / 2 - 2, scope_w, 28}, scope_labels, scope)) {
+                browser_.set_search_aggregated(scope == 1);
+            }
+            right_edge -= scope_w + 16;
+        }
+        if (page_tabs(ui, ui.id("search-tabs"), {tab_bar.x, tab_bar.y, std::max(0.f, right_edge - tab_bar.x), tab_bar.h}, tabs, tab, tab_enabled)) {
+            browser_.ensure();
+        }
         page_title(ui, body, r.y + 28, '"' + browser_.searched() + '"',
                    shown.loaded ? lyren::trf("{}{} {} found", shown.more() ? lyren::tr("About ") : "", shown.total, kinds[tab]) : lyren::trf("Searching {}", source_short));
         // Tab content slides toward the tab that was picked.
         Rect content{body.x - 12, tab_bar.bottom() + 10, body.w + 24, r.bottom() - tab_bar.bottom() - 18};
-        Fade fade(ui.painter(), tab_enter(ui, content));
+        Fade fade(p, tab_enter(ui, content));
         const double since = std::max({browser_.entered, browser_.tab_since, shown.since});
         const bool is_empty = shown.size() == 0;
         if (is_empty && shown.more() && shown.error.empty()) {
@@ -1439,17 +1631,19 @@ namespace lyren {
             }
             default:
                 custom_cover = true;
-                cover(ui, cov, c.cover, t.radius_l(), page == Page::album ? "disc-album" : "list-music");
+                const std::string_view art_url = !c.cover.empty() ? std::string_view(c.cover) : !tracks.empty() ? std::string_view(tracks.front().cover) : std::string_view{};
+                cover(ui, cov, art_url, t.radius_l(), page == Page::album ? "disc-album" : "list-music");
         }
         if (custom_cover) {
+            const std::string_view art_url = !c.cover.empty() ? std::string_view(c.cover) : !tracks.empty() ? std::string_view(tracks.front().cover) : std::string_view{};
             const auto it = ui.interact(ui.id("list-link"), cov);
-            if (it.hovered && !c.cover.empty()) {
+            if (it.hovered && !art_url.empty()) {
                 ui.cursor = wl::Cursor::pointer;
             }
             if (it.right_clicked && (page == Page::playlist || page == Page::album)) {
                 shell_.dialogs.link_menu(ui, it.px, it.py, c);
-            } else if (it.clicked && !c.cover.empty()) {
-                shell_.dialogs.show_picture(ui, c.cover, 1);
+            } else if (it.clicked && !art_url.empty()) {
+                shell_.dialogs.show_picture(ui, std::string(art_url), 1);
             }
         }
 
@@ -1463,7 +1657,12 @@ namespace lyren {
         const bool built_in = page == Page::daily || page == Page::radar || page == Page::cloud || page == Page::liked || page == Page::recent || page == Page::pinned;
         const float title_y = head.y + (has_eyebrow ? 20.f : 12.f);
         const float title_h = compact ? 30.f : 38.f;
-        ui.label({tx, title_y, tw, title_h}, built_in ? lyren::tr(c.title) : std::string_view(c.title), t.style(compact ? type::title : type::display, t.text, text::semibold));
+        const std::string_view display_title = built_in                                                                  ? lyren::tr(c.title)
+                                               : !c.title.empty()                                                        ? std::string_view(c.title)
+                                               : page == Page::album && !tracks.empty() && !tracks.front().album.empty() ? std::string_view(tracks.front().album)
+                                               : page == Page::album                                                     ? lyren::tr("Album")
+                                                                                                                         : lyren::tr("Playlist");
+        ui.label({tx, title_y, tw, title_h}, display_title, t.style(compact ? type::title : type::display, t.text, text::semibold));
         const float sub_y = title_y + title_h + 4;
         const AlbumInfo *album = page == Page::album && browser_.route().list && browser_.route().list->loaded ? &browser_.route().list->album : nullptr;
         if (album && !album->artist.empty()) {

@@ -36,6 +36,7 @@ namespace lyren::bodian {
         Task<void> logout() override;
 
         Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) override;
+        Task<Result<Track>> track_detail(std::string id) override;
         Task<Result<Track>> song_detail(std::string id);
         Task<Result<Stream>> stream(Track track, Quality quality) override;
         Task<Result<std::vector<LyricLine>>> lyrics(Track track) override;

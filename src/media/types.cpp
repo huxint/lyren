@@ -1,6 +1,8 @@
 #include "media/types.hpp"
 #include "core/i18n.hpp"
+#include "core/string_map.hpp"
 
+#include <algorithm>
 #include <format>
 #include <utility>
 
@@ -128,6 +130,300 @@ namespace lyren {
                 break;
         }
         return id.empty() || path.empty() ? "" : std::format("https://y.qq.com/n/ryqq/{}/{}", path, id);
+    }
+
+    std::vector<ArtistRef> track_artists(const Track &track) {
+        if (!track.artists.empty()) {
+            return track.artists;
+        }
+        std::vector<ArtistRef> out;
+        std::string_view raw = trim(track.artist);
+        size_t pos = 0;
+        while (pos < raw.size()) {
+            const size_t sep = raw.find(" / ", pos);
+            const std::string_view part = trim(sep == raw.npos ? raw.substr(pos) : raw.substr(pos, sep - pos));
+            if (!part.empty()) {
+                out.push_back({out.empty() ? track.artist_id : std::string{}, std::string(part)});
+            }
+            if (sep == raw.npos) {
+                break;
+            }
+            pos = sep + 3;
+        }
+        return out;
+    }
+
+    namespace {
+        std::string ascii_lower_str(std::string_view s) {
+            std::string out(s);
+            for (char &ch : out) {
+                if (ch >= 'A' && ch <= 'Z') {
+                    ch = static_cast<char>(ch - 'A' + 'a');
+                }
+            }
+            return out;
+        }
+
+        std::string_view extract_url(std::string_view input) {
+            size_t pos = input.find("https://");
+            if (pos == input.npos) {
+                pos = input.find("http://");
+            }
+            if (pos == input.npos) {
+                return {};
+            }
+            size_t end = pos;
+            while (end < input.size()) {
+                const unsigned char c = static_cast<unsigned char>(input[end]);
+                if (c <= 0x20 || c == '"' || c == '\'' || c == '<' || c == '>' || c == ')' || c == ']') {
+                    break;
+                }
+                ++end;
+            }
+            std::string_view url = input.substr(pos, end - pos);
+            while (!url.empty() && (url.back() == '.' || url.back() == ',' || url.back() == ';')) {
+                url.remove_suffix(1);
+            }
+            return url;
+        }
+
+        std::string_view query_param(std::string_view query, std::string_view key) {
+            size_t pos = 0;
+            while (pos < query.size()) {
+                const size_t amp = query.find('&', pos);
+                const std::string_view pair = amp == query.npos ? query.substr(pos) : query.substr(pos, amp - pos);
+                if (const size_t eq = pair.find('='); eq != pair.npos) {
+                    const std::string_view k = pair.substr(0, eq);
+                    if (k.size() == key.size() && std::ranges::equal(k, key, [](char a, char b) {
+                            auto lo = [](char c) {
+                                return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+                            };
+                            return lo(a) == lo(b);
+                        })) {
+                        return pair.substr(eq + 1);
+                    }
+                }
+                if (amp == query.npos) {
+                    break;
+                }
+                pos = amp + 1;
+            }
+            return {};
+        }
+
+        bool valid_token(std::string_view s) {
+            return !s.empty() && std::ranges::all_of(s, [](unsigned char c) {
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '-' || c == ':';
+            });
+        }
+
+        std::string_view strip_html(std::string_view seg) {
+            if (seg.ends_with(".html")) {
+                seg.remove_suffix(5);
+            }
+            return seg;
+        }
+
+        std::string_view segment_after(std::string_view path, std::string_view prefix) {
+            const size_t at = path.find(prefix);
+            if (at == path.npos) {
+                return {};
+            }
+            std::string_view rest = path.substr(at + prefix.size());
+            const size_t slash = rest.find('/');
+            if (slash != rest.npos) {
+                rest = rest.substr(0, slash);
+            }
+            return strip_html(rest);
+        }
+    } // namespace
+
+    std::optional<ShareLink> parse_share_url(std::string_view input) {
+        const std::string_view url = extract_url(input);
+        const size_t scheme = url.find("://");
+        if (scheme == url.npos) {
+            return std::nullopt;
+        }
+        std::string_view rest = url.substr(scheme + 3);
+        const size_t path_pos = rest.find_first_of("/?#");
+        std::string host = ascii_lower_str(path_pos == rest.npos ? rest : rest.substr(0, path_pos));
+        if (const size_t colon = host.find(':'); colon != host.npos) {
+            host.resize(colon);
+        }
+        std::string_view tail = path_pos == rest.npos ? std::string_view{} : rest.substr(path_pos);
+
+        // NetEase frequently puts the actual route inside a hash fragment: music.163.com/#/song?id=123
+        std::string_view path, query, fragment;
+        if (const size_t hash = tail.find('#'); hash != tail.npos) {
+            const std::string_view before_hash = tail.substr(0, hash);
+            const std::string_view frag = tail.substr(hash + 1);
+            fragment = frag;
+            if (frag.starts_with('/')) {
+                const size_t q = frag.find('?');
+                path = q == frag.npos ? frag : frag.substr(0, q);
+                query = q == frag.npos ? std::string_view{} : frag.substr(q + 1);
+            } else {
+                const size_t q = before_hash.find('?');
+                path = q == before_hash.npos ? before_hash : before_hash.substr(0, q);
+                query = q == before_hash.npos ? std::string_view{} : before_hash.substr(q + 1);
+            }
+        } else {
+            const size_t q = tail.find('?');
+            path = q == tail.npos ? tail : tail.substr(0, q);
+            query = q == tail.npos ? std::string_view{} : tail.substr(q + 1);
+        }
+        const std::string lpath = ascii_lower_str(path);
+
+        using Kind = ShareLink::Kind;
+        auto make = [](Source src, Kind kind, std::string_view id) -> std::optional<ShareLink> {
+            if (!valid_token(id)) {
+                return std::nullopt;
+            }
+            return ShareLink{src, kind, std::string(id)};
+        };
+
+        // NetEase Music
+        if (host == "music.163.com" || host == "y.music.163.com") {
+            const std::string_view id = query_param(query, "id");
+            if (lpath == "/song" || lpath == "/m/song") {
+                return make(Source::netease, Kind::song, id);
+            }
+            if (lpath == "/playlist" || lpath == "/m/playlist") {
+                return make(Source::netease, Kind::playlist, id);
+            }
+            if (lpath == "/album" || lpath == "/m/album") {
+                return make(Source::netease, Kind::album, id);
+            }
+            if (lpath == "/artist" || lpath == "/m/artist") {
+                return make(Source::netease, Kind::artist, id);
+            }
+            if (lpath == "/user/home" || lpath == "/m/user/home") {
+                return make(Source::netease, Kind::user, id);
+            }
+            return std::nullopt;
+        }
+
+        // QQ Music
+        if (host == "y.qq.com" || host == "i.y.qq.com" || host == "c.y.qq.com" || host == "c6.y.qq.com") {
+            if (lpath.contains("playsong")) {
+                if (auto mid = query_param(query, "songmid"); valid_token(mid)) {
+                    return ShareLink{Source::qq, Kind::song, std::string(mid)};
+                }
+                return make(Source::qq, Kind::song, query_param(query, "songid"));
+            }
+            if (auto seg = segment_after(path, "/songDetail/"); !seg.empty()) {
+                return make(Source::qq, Kind::song, seg);
+            }
+            if (auto seg = segment_after(path, "/songdetail/"); !seg.empty()) {
+                return make(Source::qq, Kind::song, seg);
+            }
+            if (auto seg = segment_after(path, "/playlist/"); !seg.empty()) {
+                return make(Source::qq, Kind::playlist, seg);
+            }
+            if (auto seg = segment_after(path, "/toplist/"); valid_token(seg)) {
+                return ShareLink{Source::qq, Kind::playlist, "top:" + std::string(seg)};
+            }
+            if (auto seg = segment_after(path, "/albumDetail/"); !seg.empty()) {
+                return make(Source::qq, Kind::album, seg);
+            }
+            if (auto seg = segment_after(path, "/albumdetail/"); !seg.empty()) {
+                return make(Source::qq, Kind::album, seg);
+            }
+            if (auto seg = segment_after(path, "/singer/"); !seg.empty()) {
+                return make(Source::qq, Kind::artist, seg);
+            }
+            if (lpath.contains("taoge")) {
+                return make(Source::qq, Kind::playlist, query_param(query, "id"));
+            }
+            if (lpath.contains("/details/album")) {
+                if (auto mid = query_param(query, "albummid"); valid_token(mid)) {
+                    return ShareLink{Source::qq, Kind::album, std::string(mid)};
+                }
+                return make(Source::qq, Kind::album, query_param(query, "id"));
+            }
+            if (lpath.contains("/details/singer")) {
+                if (auto mid = query_param(query, "singermid"); valid_token(mid)) {
+                    return ShareLink{Source::qq, Kind::artist, std::string(mid)};
+                }
+                return make(Source::qq, Kind::artist, query_param(query, "id"));
+            }
+            return std::nullopt;
+        }
+
+        // Qishui Music
+        if (host == "qishui.com" || host == "www.qishui.com" || host == "music.douyin.com" || host == "qishui.douyin.com") {
+            if (auto seg = segment_after(path, "/track/"); !seg.empty()) {
+                return make(Source::qishui, Kind::song, seg);
+            }
+            if (auto id = query_param(query, "track_id"); !id.empty()) {
+                return make(Source::qishui, Kind::song, id);
+            }
+            if (auto seg = segment_after(path, "/playlist/"); !seg.empty()) {
+                return make(Source::qishui, Kind::playlist, seg);
+            }
+            if (auto id = query_param(query, "playlist_id"); !id.empty()) {
+                return make(Source::qishui, Kind::playlist, id);
+            }
+            if (auto seg = segment_after(path, "/album/"); !seg.empty()) {
+                return make(Source::qishui, Kind::album, seg);
+            }
+            if (auto id = query_param(query, "album_id"); !id.empty()) {
+                return make(Source::qishui, Kind::album, id);
+            }
+            if (auto seg = segment_after(path, "/artist/"); !seg.empty()) {
+                return make(Source::qishui, Kind::artist, seg);
+            }
+            if (auto id = query_param(query, "artist_id"); !id.empty()) {
+                return make(Source::qishui, Kind::artist, id);
+            }
+            return std::nullopt;
+        }
+
+        // Kugou Music
+        if (host == "kugou.com" || host == "www.kugou.com" || host == "m.kugou.com") {
+            if (auto seg = segment_after(path, "/yy/special/single/"); !seg.empty()) {
+                return make(Source::kugou, Kind::playlist, seg);
+            }
+            if (auto seg = segment_after(path, "/yy/album/single/"); !seg.empty()) {
+                return make(Source::kugou, Kind::album, seg);
+            }
+            if (auto seg = segment_after(path, "/yy/singer/home/"); !seg.empty()) {
+                return make(Source::kugou, Kind::artist, seg);
+            }
+            if (auto hash = query_param(query, "hash"); hash.size() == 32 && valid_token(hash)) {
+                return ShareLink{Source::kugou, Kind::song, std::string(hash)};
+            }
+            if (auto hash = query_param(fragment, "hash"); hash.size() == 32 && valid_token(hash)) {
+                return ShareLink{Source::kugou, Kind::song, std::string(hash)};
+            }
+            return std::nullopt;
+        }
+
+        // Bodian Music
+        if ((host == "h5app.kuwo.cn" && lpath.starts_with("/m/bodian/")) || host == "bodian.kuwo.cn") {
+            if (lpath.contains("playmusic")) {
+                return make(Source::bodian, Kind::song, query_param(query, "musicId"));
+            }
+            if (lpath.contains("album")) {
+                return make(Source::bodian, Kind::album, query_param(query, "albumid"));
+            }
+            if (lpath.contains("singer")) {
+                return make(Source::bodian, Kind::artist, query_param(query, "singerId"));
+            }
+            if (lpath.contains("collection")) {
+                const std::string_view pid = query_param(query, "playlistId");
+                std::string_view src = query_param(query, "source");
+                if (src.empty()) {
+                    src = "4";
+                }
+                if (valid_token(pid) && valid_token(src)) {
+                    return ShareLink{Source::bodian, Kind::playlist, std::format("{}:{}", src, pid)};
+                }
+            }
+            return std::nullopt;
+        }
+
+        return std::nullopt;
     }
 
     std::string card_subtitle(const Card &card) {

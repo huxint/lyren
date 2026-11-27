@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 
+#include "app/model/matcher.hpp"
 #include "app/view/draw.hpp"
 #include "app/view/shell.hpp"
 #include "core/i18n.hpp"
@@ -328,6 +329,219 @@ namespace lyren {
                 env_.notify(lyren::trf("Image saved: {}", saved_name), "download");
             });
         });
+    }
+
+    struct Dialogs::Alternatives {
+        struct Row {
+            SourceKey key;
+            std::string name;
+            bool searching = true;
+            bool probing = false;
+            std::optional<Track> match;
+            std::optional<Stream> stream;
+            std::string error;
+        };
+        Track target;
+        std::vector<Row> rows;
+    };
+
+    void Dialogs::find_alternatives(ui::Ui &ui, Track track) {
+        auto state = std::make_shared<Alternatives>();
+        state->target = std::move(track);
+        for (const auto &entry : env_.providers.entries()) {
+            if (entry.source == state->target.source && entry.instance == state->target.instance) {
+                continue;
+            }
+            if (!entry.provider->capabilities.supports_search(SearchKind::tracks)) {
+                continue;
+            }
+            state->rows.push_back({.key = {entry.source, entry.instance}, .name = std::string(lyren::tr(entry.name))});
+        }
+        if (state->rows.empty()) {
+            ui.toast(std::string(lyren::tr("No other platforms available")), "arrow-left-right");
+            return;
+        }
+        const Quality quality = env_.config.playback.quality;
+        for (size_t i = 0; i < state->rows.size(); ++i) {
+            spawn(probe_alternative(state, i, state->target, state->rows[i].key, quality));
+        }
+        ui.open_modal(520, 360, [this, state](ui::Ui &u, Rect r) {
+            alternatives_modal(u, r, state);
+        });
+    }
+
+    Task<void> Dialogs::probe_alternative(std::weak_ptr<Alternatives> weak, size_t index, Track target, SourceKey source, Quality quality) {
+        const std::weak_ptr<int> alive = life_;
+        const std::string q = match_query(target);
+        if (q.empty()) {
+            if (auto st = weak.lock(); st && !alive.expired()) {
+                st->rows[index].searching = false;
+                st->rows[index].error = "No matching song found";
+                env_.redraw();
+            }
+            co_return;
+        }
+        Provider &prov = env_.provider(source.source, source.instance);
+        auto res = co_await prov.search(q, SearchKind::tracks, 0, 10);
+        if (alive.expired() || weak.expired()) {
+            co_return;
+        }
+        std::optional<Track> best;
+        int best_score = -1;
+        if (res) {
+            for (const auto &cand : res->tracks) {
+                if (const auto m = score_match(target, cand); m.acceptable && m.score > best_score) {
+                    best_score = m.score;
+                    best = cand;
+                }
+            }
+        }
+        if (!best) {
+            if (auto st = weak.lock()) {
+                st->rows[index].searching = false;
+                st->rows[index].error = res ? "No matching song found" : "Currently unavailable";
+                env_.redraw();
+            }
+            co_return;
+        }
+        if (auto st = weak.lock()) {
+            st->rows[index].match = *best;
+            st->rows[index].searching = false;
+            st->rows[index].probing = true;
+            env_.redraw();
+        }
+        auto stream = co_await prov.stream(*best, quality);
+        if (alive.expired()) {
+            co_return;
+        }
+        if (auto st = weak.lock()) {
+            auto &row = st->rows[index];
+            row.probing = false;
+            if (stream) {
+                row.stream = std::move(*stream);
+            } else {
+                row.error = "Currently unavailable";
+            }
+            env_.redraw();
+        }
+    }
+
+    void Dialogs::alternatives_modal(ui::Ui &ui, Rect r, const std::shared_ptr<Alternatives> &state) {
+        auto &p = ui.painter();
+        const auto &t = ui.theme();
+        const std::string sub = state->target.title + (state->target.artist.empty() ? "" : " · " + state->target.artist);
+        dialog_title(ui, r, lyren::tr("Find on other platforms"), sub);
+        constexpr float top = 66.f, row_h = 64.f;
+        p.rect({r.x, r.y + top - 6, r.w, 1}, t.line(0.8f));
+        const float list_h = static_cast<float>(state->rows.size()) * row_h;
+        ui.resize_modal(std::min(520.f, ui.width - 40), std::min(ui.height - 96, top + list_h + 44));
+
+        const Rect view{r.x - 6, r.y + top, r.w + 12, std::max(0.f, r.h - top)};
+        const bool scrolls = list_h > view.h + 1;
+        const float content_w = view.w - (scrolls ? 10.f : 0.f);
+        const float off = ui.begin_scroll(ui.id("alternatives-scroll"), view, list_h);
+        const auto play_label = lyren::tr("Play");
+        const float play_w = ui.button_width(play_label, true);
+
+        std::optional<Track> play_now_track, play_next_track;
+        ui.push_id(ui.id("alternatives-rows"));
+        for (size_t i = 0; i < state->rows.size(); ++i) {
+            const auto &row = state->rows[i];
+            const Rect rr{view.x, view.y + static_cast<float>(i) * row_h - off, content_w, row_h};
+            const bool active = row.searching || row.probing;
+            const bool playable = !active && row.match && row.stream;
+            const ui::Id rid = ui.id(static_cast<uint64_t>(i));
+            if (playable) {
+                const float hot = ui.anim(rid, ui.hovering(rr) ? 1.f : 0.f, pace::quick);
+                if (hot > 0) {
+                    p.rect(rr.inset(0, 2), t.fill(0.7f * hot), t.radius_s());
+                }
+            }
+
+            const Rect art{rr.x + 6, rr.y + (rr.h - 40) / 2, 40, 40};
+            if (row.match) {
+                Fade f(p, playable || active ? 1.f : 0.55f);
+                cover(ui, art, row.match->cover, t.radius_s());
+            } else {
+                p.rect(art, t.fill(0.65f), t.radius_s());
+                p.icon("music", ui::center(art, 16, 16), t.faint());
+            }
+
+            float right_x = rr.right() - 6;
+            if (active) {
+                ui.spinner(ui::center({right_x - 28, rr.y, 28, rr.h}, 16, 16), t.text_dim, 2);
+                right_x -= 36;
+            } else if (playable) {
+                const Rect next_r{right_x - ui::control::small, rr.y + (rr.h - ui::control::small) / 2, ui::control::small, ui::control::small};
+                if (ui.icon_button(ui::sub_id(rid, 0x2), next_r, "list-start", 15, false, lyren::tr("Play next"))) {
+                    play_next_track = *row.match;
+                }
+                const Rect play_r{next_r.x - 6 - play_w, rr.y + (rr.h - ui::control::small) / 2, play_w, ui::control::small};
+                if (ui.button(ui::sub_id(rid, 0x1), play_r, play_label, ui::ButtonKind::secondary, "play-fill")) {
+                    play_now_track = *row.match;
+                }
+                right_x = play_r.x - 10;
+            }
+
+            const float tx = art.right() + 12;
+            const float tw = std::max(0.f, right_x - tx);
+            const auto name_st = t.style(type::body, playable || active ? t.text : t.text_dim, playable ? text::medium : 0);
+            const auto sub_st = t.style(type::caption, playable || active ? t.text_dim : t.faint());
+
+            std::string_view tag;
+            bool high_quality = false;
+            if (!active) {
+                if (row.stream) {
+                    tag = row.stream->trial ? lyren::tr("Preview") : !row.stream->level.empty() ? quality_name(row.stream->level) : lyren::tr("Playable");
+                    high_quality =
+                        !row.stream->trial && (row.stream->level == "lossless" || row.stream->level == "hires" || row.stream->level == "jyeffect" || row.stream->level == "sky" ||
+                                               row.stream->level == "jymaster" || row.stream->level == "flac" || row.stream->level == "high");
+                } else if (row.match) {
+                    tag = lyren::tr("Unavailable");
+                }
+            }
+            const float nw = p.text(tx, rr.y + 27, row.name, name_st, tw);
+            if (!tag.empty() && nw + 16 < tw) {
+                const float bx = tx + nw;
+                const auto sep_st = t.style(type::caption, t.faint());
+                const auto tag_st = t.style(type::caption, high_quality ? t.accent : row.stream && !row.stream->trial ? t.text_dim : t.faint(), high_quality ? text::medium : 0);
+                const float sw = p.text(bx, rr.y + 27, " · ", sep_st, tw - nw);
+                p.text(bx + sw, rr.y + 27, tag, tag_st, std::max(0.f, tw - nw - sw));
+            }
+
+            std::string detail;
+            if (row.searching) {
+                detail = std::string(lyren::tr("Searching..."));
+            } else if (row.probing && row.match) {
+                detail = std::format("{} · {}", row.match->title, lyren::tr("Checking playback..."));
+            } else if (row.match) {
+                detail = row.match->title;
+                if (!row.match->artist.empty()) {
+                    detail += " · " + row.match->artist;
+                }
+                if (row.match->duration > 0) {
+                    detail += " · ";
+                    detail += std::string_view(mmss(row.match->duration));
+                }
+            } else {
+                detail = std::string(lyren::tr(row.error.empty() ? "No matching song found" : row.error));
+            }
+            p.text(tx, rr.y + 47, detail, sub_st, tw);
+
+            if (i + 1 < state->rows.size()) {
+                p.rect({tx, rr.bottom() - 1, std::max(0.f, rr.right() - 6 - tx), 1}, t.line(0.45f));
+            }
+        }
+        ui.pop_id();
+        ui.end_scroll();
+
+        if (play_now_track) {
+            playback_.play_now(std::move(*play_now_track));
+            ui.close_modal();
+        } else if (play_next_track) {
+            playback_.play_next(std::move(*play_next_track));
+            ui.toast(std::string(lyren::tr("Added to play next")), "list-start");
+        }
     }
 
 } // namespace lyren

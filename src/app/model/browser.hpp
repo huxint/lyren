@@ -63,6 +63,8 @@ namespace lyren {
             std::string query;
             int tab = 0;
             uint64_t serial = 0;
+            uint64_t version = 0;
+            bool aggregate = false;
             StringMap<std::array<Listing, 5>> results;
         };
         struct Suggestion {
@@ -159,11 +161,21 @@ namespace lyren {
         uint64_t search_serial() const {
             return route_.search ? route_.search->serial : 0;
         }
+        uint64_t search_version() const {
+            return route_.search ? route_.search->version : 0;
+        }
+        bool search_aggregated() const {
+            return route_.search && route_.search->aggregate;
+        }
+        void set_search_aggregated(bool on);
         Listing &results(int tab) {
             return route_.search ? route_.search->results[active_.id()][static_cast<size_t>(tab)] : empty_listing_;
         }
+        Listing &results(Source source, std::string_view instance, int tab) {
+            return route_.search ? route_.search->results[source_id(source, instance)][static_cast<size_t>(tab)] : empty_listing_;
+        }
         void search();
-        void search_on(Source source, std::string term, int tab = 0);
+        void search_on(Source source, std::string term, int tab = 0, bool aggregate = false);
         // Search history and debounced live suggestions for the top search box.
         void update_suggestions(std::string_view input);
         const std::vector<Suggestion> &suggestions() const {
@@ -174,6 +186,8 @@ namespace lyren {
         // Resolves an @mention on source: opens the matching listener profile if found, otherwise opens search.
         void open_mention(Source source, std::string name);
         void load_results(int tab, bool retry = false);
+        void load_all_results(int tab, bool retry = false);
+        void reset_all_results(int tab);
 
         // The songs, artist and listener of the page on show.
         Task<void> load_list(std::shared_ptr<TrackList> list, Page page, Card card, bool background = false);

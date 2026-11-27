@@ -180,3 +180,70 @@ TEST_CASE("credentials round-trip every platform") {
     CHECK(restored->at("extension") == c.at("extension"));
     CHECK_FALSE(creds::from_json(R"({"netease":{"MUSIC_U":"test-cookie"},"qq":)"));
 }
+
+TEST_CASE("parse_share_url reverse-parses share links across all five platforms and surrounding share text") {
+    auto check = [](std::string_view input, Source source, ShareLink::Kind kind, std::string_view id) {
+        const auto parsed = parse_share_url(input);
+        REQUIRE(parsed.has_value());
+        CHECK(parsed->source == source);
+        CHECK(parsed->kind == kind);
+        CHECK(parsed->id == id);
+    };
+
+    // NetEase Cloud Music (direct, hash fragment, mobile, user, embedded in share text).
+    check(share_url(Track{.id = "186016", .source = Source::netease}), Source::netease, ShareLink::Kind::song, "186016");
+    check("https://music.163.com/#/playlist?id=24381616", Source::netease, ShareLink::Kind::playlist, "24381616");
+    check("https://y.music.163.com/m/album?id=18907", Source::netease, ShareLink::Kind::album, "18907");
+    check("https://music.163.com/artist?id=6452", Source::netease, ShareLink::Kind::artist, "6452");
+    check("https://music.163.com/#/user/home?id=32953014", Source::netease, ShareLink::Kind::user, "32953014");
+    check("分享单曲 https://music.163.com/song?id=186016&userid=1 (@网易云音乐)", Source::netease, ShareLink::Kind::song, "186016");
+
+    // QQ Music (ryqq paths, playsong songid/songmid, toplist prefix, legacy taoge).
+    check(share_url(Track{.id = "97773", .source = Source::qq}), Source::qq, ShareLink::Kind::song, "97773");
+    check("https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV", Source::qq, ShareLink::Kind::song, "0039MnYb0qxYhV");
+    check("https://y.qq.com/n/ryqq/playlist/7532145678", Source::qq, ShareLink::Kind::playlist, "7532145678");
+    check("https://y.qq.com/n/ryqq/toplist/26", Source::qq, ShareLink::Kind::playlist, "top:26");
+    check("https://y.qq.com/n/ryqq/albumDetail/000MkMni19ClKG", Source::qq, ShareLink::Kind::album, "000MkMni19ClKG");
+    check("https://y.qq.com/n/ryqq/singer/0025NhlN2yWrP4", Source::qq, ShareLink::Kind::artist, "0025NhlN2yWrP4");
+    check("https://i.y.qq.com/n2/m/share/details/taoge.html?id=123456789", Source::qq, ShareLink::Kind::playlist, "123456789");
+
+    // Qishui Music.
+    check(share_url(Track{.id = "71234567890", .source = Source::qishui}), Source::qishui, ShareLink::Kind::song, "71234567890");
+    check("https://www.qishui.com/playlist/700112233", Source::qishui, ShareLink::Kind::playlist, "700112233");
+    check("https://www.qishui.com/share/album?album_id=889900", Source::qishui, ShareLink::Kind::album, "889900");
+    check("https://music.douyin.com/qishui/share/track?track_id=998877", Source::qishui, ShareLink::Kind::song, "998877");
+
+    // Kugou Music.
+    check(share_url(Card{.source = Source::kugou, .id = "554433"}), Source::kugou, ShareLink::Kind::playlist, "554433");
+    check("https://www.kugou.com/yy/album/single/98765.html", Source::kugou, ShareLink::Kind::album, "98765");
+    check("https://www.kugou.com/yy/singer/home/3520.html", Source::kugou, ShareLink::Kind::artist, "3520");
+    check("https://www.kugou.com/song/#hash=ABCDEF0123456789ABCDEF0123456789", Source::kugou, ShareLink::Kind::song, "ABCDEF0123456789ABCDEF0123456789");
+
+    // Bodian Music.
+    check(share_url(Track{.id = "228908", .source = Source::bodian}), Source::bodian, ShareLink::Kind::song, "228908");
+    check(share_url(Card{.source = Source::bodian, .id = "13:123"}), Source::bodian, ShareLink::Kind::playlist, "13:123");
+    check(share_url(Card{.kind = CardKind::album, .source = Source::bodian, .id = "7788"}), Source::bodian, ShareLink::Kind::album, "7788");
+    check(share_url(Card{.kind = CardKind::artist, .source = Source::bodian, .id = "336"}), Source::bodian, ShareLink::Kind::artist, "336");
+
+    // Unrecognized / invalid inputs.
+    CHECK_FALSE(parse_share_url("Night Train").has_value());
+    CHECK_FALSE(parse_share_url("https://example.com/song?id=1").has_value());
+    CHECK_FALSE(parse_share_url("https://music.163.com/song").has_value());
+}
+
+TEST_CASE("track_artists preserves structured collaborators and falls back to splitting Track::artist") {
+    Track structured{.id = "1", .title = "Duet", .artist = "Jay Chou / Fei Yu-ching", .artist_id = "a1", .artists = {{"a1", "Jay Chou"}, {"a2", "Fei Yu-ching"}}};
+    const auto s = track_artists(structured);
+    REQUIRE(s.size() == 2);
+    CHECK(s[0].id == "a1");
+    CHECK(s[1].id == "a2");
+    CHECK(s[1].name == "Fei Yu-ching");
+
+    Track legacy{.id = "2", .title = "Legacy", .artist = "Mira Chen / YOASOBI", .artist_id = "m1"};
+    const auto l = track_artists(legacy);
+    REQUIRE(l.size() == 2);
+    CHECK(l[0].id == "m1");
+    CHECK(l[0].name == "Mira Chen");
+    CHECK(l[1].id.empty());
+    CHECK(l[1].name == "YOASOBI");
+}

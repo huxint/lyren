@@ -526,6 +526,11 @@ namespace lyren {
         if (rows.toggle("trial", lyren::tr("Skip previews"), lyren::tr("Pass over songs that only play a short clip"), skip, true, false)) {
             shell_.set_setting("playback", "trial", skip ? "\"skip\"" : "\"play\"");
         }
+        bool auto_fallback = env_.config.playback.auto_fallback;
+        if (rows.toggle("auto-fallback", lyren::tr("Auto source fallback"), lyren::tr("Match and play from another platform when a song is unavailable"), auto_fallback, false,
+                        false)) {
+            shell_.set_setting("playback", "auto_fallback", auto_fallback ? "true" : "false");
+        }
         bool normalize = norm_now;
         if (rows.toggle("normalize", lyren::tr("Volume normalization"), lyren::tr("Even out loudness between songs"), normalize, false, true)) {
             shell_.set_setting("playback", "normalize", normalize ? "true" : "false");

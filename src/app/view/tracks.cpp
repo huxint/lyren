@@ -6,6 +6,7 @@
 #include <bit>
 #include <cmath>
 #include <functional>
+#include <inplace_vector>
 
 #include "app/view/draw.hpp"
 #include "app/view/shell.hpp"
@@ -195,7 +196,7 @@ namespace lyren {
         env_.redraw();
     }
 
-    bool Tracks::list(ui::Ui &ui, Rect r, ui::Id id, const std::vector<Track> &tracks, double since) {
+    bool Tracks::list(ui::Ui &ui, Rect r, ui::Id id, const std::vector<Track> &tracks, double since, bool show_source) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto &picked = browser_.selection();
@@ -230,8 +231,10 @@ namespace lyren {
         if (picked.selected >= static_cast<int>(shown.size())) {
             picked.selected = shown.empty() ? -1 : static_cast<int>(shown.size()) - 1;
         }
-        const bool can_edit_playlist = !tracks.empty() && provider(tracks.front()).capabilities.playlist_edit;
-        const bool show_toolbar = !ordering && !tracks.empty() && (tracks.size() >= auto_filter_threshold || filter_open_ || !filter_.empty());
+        const bool can_edit_playlist = !tracks.empty() && !show_source && provider(tracks.front()).capabilities.playlist_edit;
+        // On search results the global search bar sits right above; keep filter tucked in the header icon unless opened.
+        const bool auto_toolbar = route.page != Page::search && tracks.size() >= auto_filter_threshold;
+        const bool show_toolbar = !ordering && !tracks.empty() && (auto_toolbar || filter_open_ || !filter_.empty());
 
         auto toggle_selecting = [&] {
             if (picked.choosing) {
@@ -273,7 +276,7 @@ namespace lyren {
         }
 
         const Rect head = ui::cut_top(r, 34);
-        const TrackColumns c = track_columns(head);
+        const TrackColumns c = track_columns(head, show_source);
         const auto caption = t.style(type::caption, t.faint());
         if (picked.choosing) {
             const bool all = !shown.empty() && std::ranges::all_of(shown, [&](const Track &track) {
@@ -343,6 +346,9 @@ namespace lyren {
         sort_header("sort-title", c.title, lyren::tr("Title"), SortKey::title, Align::left);
         if (c.album.w > 0) {
             sort_header("sort-album", c.album, lyren::tr("Album"), SortKey::album, Align::left);
+        }
+        if (c.source.w > 0) {
+            ui.label(c.source, lyren::tr("Source"), caption);
         }
         if (!show_toolbar && !ordering && !tracks.empty()) {
             const float bx = c.duration.x - 6;
@@ -434,7 +440,7 @@ namespace lyren {
             const float in = ui.cascade(since, i - first);
             Fade fade(p, in);
             const float y = ui.spring(ui::sub_id(item_id(ui, shown[static_cast<size_t>(i)]), 0x70), static_cast<float>(i) * track_row_h, pace::glide);
-            row(ui, {r.x, r.y + y - off + (1 - in) * 12, r.w, track_row_h}, shown, i, toggled_like);
+            row(ui, {r.x, r.y + y - off + (1 - in) * 12, r.w, track_row_h}, shown, i, toggled_like, show_source);
         }
         ui.pop_id();
         if (off > 0.5f && t.surface.a > 0.9f) {
@@ -447,7 +453,7 @@ namespace lyren {
         return trim(filter_).empty() && sort_key_ == SortKey::none && last + 10 >= count;
     }
 
-    void Tracks::row(ui::Ui &ui, Rect r, const std::vector<Track> &tracks, int i, std::optional<Track> &toggled_like) {
+    void Tracks::row(ui::Ui &ui, Rect r, const std::vector<Track> &tracks, int i, std::optional<Track> &toggled_like, bool show_source) {
         auto &p = ui.painter();
         const auto &t = ui.theme();
         auto &picked = browser_.selection();
@@ -469,7 +475,7 @@ namespace lyren {
             }
         }
 
-        const TrackColumns c = track_columns(r);
+        const TrackColumns c = track_columns(r, show_source);
         const auto number = t.style(type::label, t.faint(), text::tabular_nums);
         const bool ordering = route.page == Page::playlist && route.list && &tracks == &route.list->tracks && route.list->ordering;
         // Ctrl and Shift pick rows on every platform, as the checkboxes do.
@@ -524,14 +530,27 @@ namespace lyren {
                 p.text(ax, r.y + 25, track.alias, alias_style, rem - open_w);
             }
         }
+        const auto *source_entry = show_source ? env_.providers.entry(track.source, track.instance) : nullptr;
+        const std::string_view source_tag = show_source ? (source_entry ? lyren::tr(source_entry->short_name) : lyren::tr(platform(track.source).short_name)) : std::string_view{};
+        float sub_x = tx;
         if (pins_.is_pinned(track)) {
-            p.icon("pin", {tx, r.y + 33, 11, 11}, pins_.is_cached(track) ? t.accent.with_alpha(0.85f) : t.faint());
-            p.text(tx + 15, r.y + 43, track.artist, t.style(type::caption, t.text_dim), std::max(0.f, tw - 15));
-        } else {
-            p.text(tx, r.y + 43, track.artist, t.style(type::caption, t.text_dim), tw);
+            p.icon("pin", {sub_x, r.y + 33, 11, 11}, pins_.is_cached(track) ? t.accent.with_alpha(0.85f) : t.faint());
+            sub_x += 15;
+        }
+        const float sub_max = std::max(0.f, tx + tw - sub_x);
+        const float artist_w = p.text(sub_x, r.y + 43, track.artist, t.style(type::caption, t.text_dim), sub_max);
+        // When the dedicated Source column is hidden on narrow windows, append a quiet muted tag after the artist.
+        if (show_source && c.source.w == 0 && !source_tag.empty() && artist_w + 24 < sub_max) {
+            const float sx = sub_x + artist_w;
+            const auto sep_st = t.style(type::caption, t.faint());
+            const float sep_w = p.text(sx, r.y + 43, " · ", sep_st, sub_max - artist_w);
+            p.text(sx + sep_w, r.y + 43, source_tag, sep_st, std::max(0.f, sub_max - artist_w - sep_w));
         }
         if (c.album.w > 0) {
             ui.label(c.album, track.album, t.style(type::label, t.text_dim));
+        }
+        if (c.source.w > 0) {
+            ui.label(c.source, source_tag, t.style(type::caption, t.faint()));
         }
         if (ordering) {
             const auto &list = *route.list;
@@ -660,15 +679,48 @@ namespace lyren {
                 ui.toast(std::string(lyren::tr("Added to queue")), "list-plus");
             });
         }
+        items.push_back({});
         if (!track.album_id.empty()) {
             add("disc-album", "View album", [this, track] {
-                browser_.open(Page::album,
-                              {.kind = CardKind::album, .source = track.source, .id = track.album_id, .title = track.album, .subtitle = track.artist, .cover = track.cover});
+                browser_.open(Page::album, {.kind = CardKind::album,
+                                            .source = track.source,
+                                            .instance = track.instance,
+                                            .id = track.album_id,
+                                            .title = track.album,
+                                            .subtitle = track.artist,
+                                            .cover = track.cover});
             });
         }
-        if (!track.artist_id.empty()) {
-            add("mic-vocal", "View artist", [this, track] {
-                browser_.open(Page::artist, {.kind = CardKind::artist, .source = track.source, .id = track.artist_id, .title = track.artist.substr(0, track.artist.find(" / "))});
+        {
+            std::inplace_vector<ArtistRef, 6> linked;
+            for (const auto &a : track_artists(track)) {
+                if (!a.id.empty() && linked.size() < linked.capacity()) {
+                    linked.push_back(a);
+                }
+            }
+            if (linked.size() == 1) {
+                const auto a = linked.front();
+                add("mic-vocal", "View artist", [this, source = track.source, inst = track.instance, a] {
+                    browser_.open(Page::artist, {.kind = CardKind::artist, .source = source, .instance = inst, .id = a.id, .title = a.name});
+                });
+            } else if (linked.size() > 1) {
+                // Keep the main menu compact: one "View artist" row opens a focused collaborator picker.
+                std::vector<ArtistRef> list(linked.begin(), linked.end());
+                add("mic-vocal", "View artist", [this, &ui, x, y, source = track.source, inst = track.instance, list = std::move(list)] {
+                    std::vector<ui::MenuItem> pick;
+                    pick.reserve(list.size());
+                    for (const auto &a : list) {
+                        pick.push_back({"mic-vocal", a.name, [this, source, inst, a] {
+                                            browser_.open(Page::artist, {.kind = CardKind::artist, .source = source, .instance = inst, .id = a.id, .title = a.name});
+                                        }});
+                    }
+                    ui.open_menu(x, y, std::move(pick));
+                });
+            }
+        }
+        if (env_.providers.entries().size() > 1) {
+            add("arrow-left-right", "Find on other platforms", [this, &ui, track] {
+                shell_.dialogs.find_alternatives(ui, track);
             });
         }
         if (caps.similar) {

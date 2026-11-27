@@ -41,6 +41,7 @@ namespace lyren::ncm {
 
         Task<Result<Batch>> search(std::string query, SearchKind kind, int offset, int limit) override;
         Task<Result<std::vector<std::string>>> search_suggest(std::string query) override;
+        Task<Result<Track>> track_detail(std::string id) override;
         Task<Result<Stream>> stream(Track track, Quality quality) override;
         Task<Result<std::vector<LyricLine>>> lyrics(Track track) override;
         Task<Result<std::vector<Track>>> tracks(Card card) override;

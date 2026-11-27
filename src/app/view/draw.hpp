@@ -343,16 +343,20 @@ namespace lyren {
 
     // The columns of a track row, and of the header above the rows.
     struct TrackColumns {
-        ui::Rect index, title, album, like, duration;
+        ui::Rect index, title, album, source, like, duration;
     };
 
-    inline TrackColumns track_columns(ui::Rect r) {
+    inline TrackColumns track_columns(ui::Rect r, bool show_source = false) {
         TrackColumns c;
         r = r.inset(12, 0);
         c.index = ui::cut_left(r, 40);
         ui::cut_left(r, 4);
         c.duration = ui::cut_right(r, 48);
         c.like = ui::cut_right(r, 44);
+        if (show_source && r.w > 540) {
+            c.source = ui::cut_right(r, 76);
+            ui::cut_right(r, 12);
+        }
         if (r.w > 460) {
             c.album = ui::cut_right(r, std::round(r.w * 0.36f));
             ui::cut_right(r, 16);

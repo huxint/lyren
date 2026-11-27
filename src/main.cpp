@@ -13,6 +13,7 @@
 #include "app/app.hpp"
 #include "core/log.hpp"
 #include "gfx/context.hpp"
+#include "media/types.hpp"
 #include "sys/mpris.hpp"
 
 // --debug     debug logging
@@ -22,11 +23,12 @@
 //             exec SHELL-COMMAND | resize W H | quit; "lyrics move|click|press|release|shot …" targets the desktop lyrics
 int main(int argc, char **argv) {
     std::vector<std::string> script;
+    std::string initial_uri;
     bool scripted = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a = argv[i];
         if (a == "--help" || a == "-h") {
-            std::println("Usage: lyren [--debug] [--script FILE]");
+            std::println("Usage: lyren [--debug] [--script FILE] [URL]");
             return 0;
         }
         if (a == "--debug") {
@@ -46,6 +48,8 @@ int main(int argc, char **argv) {
             for (std::string line; std::getline(in, line);) {
                 script.push_back(std::move(line));
             }
+        } else if (!a.starts_with('-') && (a.starts_with("http://") || a.starts_with("https://") || lyren::parse_share_url(a).has_value())) {
+            initial_uri = std::string(a);
         } else {
             std::println(stderr, "lyren: unknown option: {}", a);
             return 2;
@@ -72,7 +76,7 @@ int main(int argc, char **argv) {
     lyren::Loop loop;
     lyren::Bus bus(loop);
     // One Lyren per session: a second launch brings the running one forward and leaves. Scripted runs never do.
-    if (!scripted && bus.get() && lyren::hand_over_to_running(bus)) {
+    if (!scripted && bus.get() && lyren::hand_over_to_running(bus, initial_uri)) {
         lyren::log::info("Lyren is already running; brought it forward");
         return 0;
     }
@@ -84,7 +88,7 @@ int main(int argc, char **argv) {
         read(sfd, &info, sizeof info);
         loop.quit();
     });
-    lyren::App app(loop, bus, std::move(config), std::move(script));
+    lyren::App app(loop, bus, std::move(config), std::move(script), std::move(initial_uri));
     loop.run();
     return 0;
 }

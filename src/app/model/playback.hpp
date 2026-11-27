@@ -40,7 +40,7 @@ namespace lyren {
         // Answers the desktop's media controls from now on. raise brings the window forward.
         void connect(Library &library);
         void connect(Pins &pins);
-        void connect(Bus &bus, std::move_only_function<void(std::string_view token)> raise);
+        void connect(Bus &bus, std::move_only_function<void(std::string_view token)> raise, std::move_only_function<void(std::string_view uri)> open_uri = {});
         void save(SavedStateView &to);
         void config_changed();
         // An account left: its radio and the listen being counted for it end.
@@ -159,6 +159,10 @@ namespace lyren {
         std::string_view level() const {
             return stream_level_;
         }
+        // When automatic source fallback supplied the current stream, names the platform providing the audio.
+        const std::optional<SourceKey> &fallback_source() const {
+            return fallback_source_;
+        }
         // The chorus, s in the song; empty unless the end is after the start.
         std::pair<double, double> highlight() const {
             return {highlight_from_, highlight_to_};
@@ -265,6 +269,7 @@ namespace lyren {
         float track_gain_ = 0, track_peak_ = 0;        // loudness of the current stream
         bool trial_ = false;                           // the current stream is a preview clip
         std::string stream_level_;                     // the quality actually granted by the service
+        std::optional<SourceKey> fallback_source_;     // set when audio is streamed from another platform via auto_fallback
         double clip_start_ = 0;                        // where a trial clip sits in the song the lyrics are timed for
         double highlight_from_ = 0, highlight_to_ = 0; // the stream's chorus window, s in song time
         std::optional<Track> listen_;                  // the track whose listen is reported to the account

@@ -82,6 +82,11 @@ namespace lyren {
     std::optional<Source> parse_source(std::string_view id);
     std::optional<SourceKey> parse_source_key(std::string_view id);
 
+    struct ArtistRef {
+        std::string id;
+        std::string name;
+    };
+
     struct Track {
         std::string id;           // QQ Music: the numeric song id
         std::string mid, media;   // QQ Music: the song's mid and its audio file's
@@ -93,10 +98,14 @@ namespace lyren {
         uint32_t duration = 0;           // whole seconds; zero when the service supplies no duration
         int type = 0;                    // QQ Music's song type, also used when editing a playlist
         Source source = Source::netease;
-        std::string instance; // non-empty for multi-instance sources (e.g. Subsonic servers)
-        bool cloud = false;   // uploaded to the user's NetEase cloud drive
-        bool paid = false;    // the listing says more than a preview takes a membership or a purchase
+        std::string instance;           // non-empty for multi-instance sources (e.g. Subsonic servers)
+        bool cloud = false;             // uploaded to the user's NetEase cloud drive
+        bool paid = false;              // the listing says more than a preview takes a membership or a purchase
+        std::vector<ArtistRef> artists; // full artist list when provided by the service
     };
+
+    // Returns the track's artists (falling back to splitting Track::artist on " / " when Track::artists is empty).
+    std::vector<ArtistRef> track_artists(const Track &track);
 
     inline bool same(const Track &a, const Track &b) {
         return a.source == b.source && a.instance == b.instance && a.id == b.id;
@@ -147,6 +156,22 @@ namespace lyren {
     // Counts as "1.2k", or "1.2万" in Chinese.
     std::string short_number(int n);
     std::string share_url(const Card &card);
+
+    struct ShareLink {
+        enum class Kind : uint8_t {
+            song,
+            playlist,
+            album,
+            artist,
+            user
+        };
+        Source source = Source::netease;
+        Kind kind = Kind::song;
+        std::string id;
+    };
+
+    // Reverse-parses share URLs from the five built-in music platforms (also extracts a URL from surrounding share text).
+    std::optional<ShareLink> parse_share_url(std::string_view input);
 
     inline bool same(const Card &a, const Card &b) {
         return a.source == b.source && a.instance == b.instance && a.kind == b.kind && a.id == b.id;

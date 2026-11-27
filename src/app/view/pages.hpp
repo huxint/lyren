@@ -58,7 +58,7 @@ namespace lyren {
         static float special_hue(Page page);
         ui::Id search_scroll_id(ui::Ui &ui, int tab) const;
 
-        // Cached listening stats and pinned cache size so idle frames perform no disk or SQLite I/O.
+        // Cached listening stats, pinned cache size, and aggregated search tracks to avoid per-frame work.
         int stats_range_ = 0;
         int stats_cached_range_ = -1;
         uint64_t stats_serial_ = 0;
@@ -68,6 +68,9 @@ namespace lyren {
         double pinned_cache_checked_ = -100;
         size_t pinned_cache_count_ = 0;
         bool pinned_was_caching_ = false;
+        uint64_t agg_serial_ = 0;
+        uint64_t agg_version_ = 0;
+        std::vector<Track> agg_tracks_;
     };
 
 } // namespace lyren

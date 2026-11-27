@@ -25,10 +25,15 @@ namespace lyren {
         void picture_menu(ui::Ui &ui, float x, float y, std::string url);
         void copy_image(std::string url);
         void save_image(std::string url);
+        // Searches other registered platforms for matching tracks and probes playback availability.
+        void find_alternatives(ui::Ui &ui, Track track);
 
     private:
+        struct Alternatives;
         void editor(ui::Ui &ui, ui::Rect r, const Card &card, std::vector<Track> &tracks);
         void picker(ui::Ui &ui, ui::Rect r, Source source, std::string_view sub, std::vector<Track> &tracks, uint64_t selection_tag);
+        void alternatives_modal(ui::Ui &ui, ui::Rect r, const std::shared_ptr<Alternatives> &state);
+        Task<void> probe_alternative(std::weak_ptr<Alternatives> state, size_t index, Track target, SourceKey source, Quality quality);
 
         std::shared_ptr<int> life_ = std::make_shared<int>(0);
         std::string edit_name_;

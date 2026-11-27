@@ -18,7 +18,8 @@ namespace lyren {
             active_tracks_ = nullptr;
         }
         // since: when the list appeared, for the staggered entrance. Returns true when the last rows are visible.
-        bool list(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Track> &tracks, double since);
+        // show_source: show a quiet platform badge on each row (e.g. cross-platform aggregated search).
+        bool list(ui::Ui &ui, ui::Rect r, ui::Id id, const std::vector<Track> &tracks, double since, bool show_source = false);
         // What can be done with the i-th song, or with the picked ones when it is among them.
         void menu(ui::Ui &ui, float x, float y, const std::vector<Track> &tracks, int i, bool in_queue = false);
 
@@ -41,7 +42,7 @@ namespace lyren {
 
         bool is_picked_list(const std::vector<Track> &tracks) const;
         const std::vector<Track> &displayed_tracks(const std::vector<Track> &tracks);
-        void row(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, int i, std::optional<Track> &toggled_like);
+        void row(ui::Ui &ui, ui::Rect r, const std::vector<Track> &tracks, int i, std::optional<Track> &toggled_like, bool show_source);
 
         ui::Id view_id_ = 0;
         const std::vector<Track> *view_source_ = nullptr;

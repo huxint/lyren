@@ -1796,3 +1796,128 @@ TEST_CASE("search history popover, listening stats page, offline pinning UI, and
     CHECK(drew(svc_runs, "Local library"));
     CHECK(drew(svc_runs, "Ready · No sign-in required"));
 }
+
+TEST_CASE("Batch 3A: share URL redirect, aggregated search, alternatives modal, multi-artist navigation, and fallback UI") {
+    gfx::select_driver(GpuChoice::integrated);
+    Scene scene;
+
+    // Register a second platform (QQ Music) on the live registry.
+    test::Service qq;
+    qq.on_search = [](std::string q, SearchKind kind, int, int) -> Task<Result<Batch>> {
+        if (kind == SearchKind::tracks) {
+            Track t{.id = "qq-1", .title = "Night Train", .artist = "Mira Chen", .album = "Tapes", .duration = 200, .source = Source::qq};
+            co_return Batch{.tracks = {std::move(t)}, .total = 1};
+        }
+        co_return Batch{.cards = {{.kind = CardKind::album, .source = Source::qq, .id = "qq-alb-1", .title = "QQ Album " + q}}, .total = 1};
+    };
+    qq.on_stream = [](Track, Quality) -> Task<Result<Stream>> {
+        co_return Stream{.url = "http://127.0.0.1:1/qq.flac", .level = "lossless", .trial = false};
+    };
+    scene.shell.env.providers.add(Source::qq, qq);
+
+    // 1. Pasting a share URL into the top search box opens the resource directly without polluting search history.
+    scene.shell.browser.query = "https://music.163.com/album?id=alb-url-1";
+    scene.ui.focus = scene.ui.id("search");
+    scene.draw();
+    scene.key(XKB_KEY_Return);
+    CHECK(scene.shell.browser.route().page == Page::album);
+    CHECK(scene.shell.browser.route().card.id == "alb-url-1");
+    CHECK(scene.shell.browser.query.empty());
+    CHECK(scene.shell.env.store->search_history().empty());
+
+    // Song share URL fetches track_detail and plays it.
+    std::string opened_song_id;
+    scene.service.on_track_detail = [&](std::string id) -> Task<Result<Track>> {
+        opened_song_id = id;
+        Track t = test::Service::song(0);
+        t.id = id;
+        t.artists = {{"art-1", "Mira Chen"}, {"art-2", "YOASOBI"}};
+        t.artist = "Mira Chen / YOASOBI";
+        t.artist_id = "art-1";
+        co_return t;
+    };
+    REQUIRE(scene.shell.open_uri("https://music.163.com/#/song?id=424242"));
+    CHECK(opened_song_id == "424242");
+    REQUIRE(scene.shell.playback.current() != nullptr);
+    CHECK(scene.shell.playback.current()->id == "424242");
+
+    // 2. Multi-artist navigation on Stage opens a collaborator menu when clicking the artist line.
+    scene.shell.stage.show(true);
+    scene.draw();
+    scene.draw();
+    const auto *artist_run = scene.find("Mira Chen / YOASOBI");
+    REQUIRE(artist_run != nullptr);
+    const auto artist_menu = scene.click(*artist_run);
+    CHECK(drew(artist_menu, "Mira Chen"));
+    CHECK(drew(artist_menu, "YOASOBI"));
+    const auto *second_artist = scene.find("YOASOBI");
+    REQUIRE(second_artist != nullptr);
+    scene.click(*second_artist);
+    CHECK(scene.shell.browser.route().page == Page::artist);
+    CHECK(scene.shell.browser.route().card.id == "art-2");
+
+    // 3. Aggregated search quick-switch bar + source badges + "Find on other platforms" modal.
+    scene.service.on_search = [](std::string q, SearchKind kind, int, int) -> Task<Result<Batch>> {
+        if (kind == SearchKind::tracks) {
+            Track t = test::Service::song(0);
+            t.id = "ncm-s1";
+            t.artist = "Mira Chen / YOASOBI";
+            t.artist_id = "art-1";
+            t.artists = {{"art-1", "Mira Chen"}, {"art-2", "YOASOBI"}};
+            co_return Batch{.tracks = {std::move(t)}, .total = 1};
+        }
+        co_return Batch{.cards = {{.kind = CardKind::album, .source = Source::netease, .id = "ncm-alb-1", .title = "NCM Album " + q}}, .total = 1};
+    };
+    scene.shell.browser.query = "Night Train";
+    scene.shell.browser.search();
+    const auto search_runs = scene.draw();
+    CHECK(drew(search_runs, "All platforms"));
+    const auto *all_chip = scene.find("All platforms");
+    REQUIRE(all_chip != nullptr);
+    const auto agg_runs = scene.click(*all_chip);
+    CHECK(scene.shell.browser.search_aggregated());
+    CHECK(drew(agg_runs, "NetEase"));
+    CHECK(drew(agg_runs, "QQ Music"));
+
+    // Right-clicking a multi-artist track row shows compact "View artist" (which opens a collaborator picker) and "Find on other platforms".
+    const ui::Painter::Run *row = nullptr;
+    for (const auto &run : agg_runs) {
+        if (!run.icon && run.text == "Night Train" && run.box.x > 260.f && run.box.y > 160.f && run.box.y < 600.f) {
+            row = &run;
+            break;
+        }
+    }
+    REQUIRE(row != nullptr);
+    const auto tmenu = scene.click(row->box.x + 12, row->box.y + 8, 1180, 760, BTN_RIGHT);
+    CHECK(drew(tmenu, "View artist"));
+    CHECK(drew(tmenu, "Find on other platforms"));
+
+    // Clicking "View artist" opens the collaborator picker.
+    const auto *view_art = scene.find("View artist");
+    REQUIRE(view_art != nullptr);
+    const auto collab_menu = scene.click(*view_art);
+    CHECK(drew(collab_menu, "Mira Chen"));
+    CHECK(drew(collab_menu, "YOASOBI"));
+    scene.key(XKB_KEY_Escape);
+    scene.draw();
+
+    // Re-open menu and launch "Find on other platforms" modal.
+    scene.click(row->box.x + 12, row->box.y + 8, 1180, 760, BTN_RIGHT);
+    const auto *find_alt = scene.find("Find on other platforms");
+    REQUIRE(find_alt != nullptr);
+    const auto alt_modal = scene.click(*find_alt);
+    CHECK(drew(alt_modal, "Find on other platforms"));
+    CHECK(drew(alt_modal, "QQ Music"));
+    CHECK(drew(alt_modal, "Lossless"));
+    CHECK(drew(alt_modal, "Play"));
+    scene.ui.close_modal();
+    scene.draw();
+
+    // 4. Settings -> Playback exposes Auto source fallback toggle.
+    scene.shell.browser.open(Page::settings);
+    scene.draw();
+    const auto *pb_tab = scene.find("Playback");
+    REQUIRE(pb_tab != nullptr);
+    const auto pb_runs = scene.click(*pb_tab);
+    CHECK(drew(pb_runs, "Auto source fallback"));
+}

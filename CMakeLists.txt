@@ -161,6 +161,7 @@ add_library(
     src/app/state.cpp
     src/app/store.cpp
     src/app/model/playback.cpp
+    src/app/model/matcher.cpp
     src/app/model/pins.cpp
     src/app/model/library.cpp
     src/app/model/catalog.cpp

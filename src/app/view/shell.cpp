@@ -61,7 +61,9 @@ namespace lyren {
         browser.on_change = [this] {
             changed();
         };
-        playback.connect(d.bus, std::move(d.raise));
+        playback.connect(d.bus, std::move(d.raise), [this](std::string_view uri) {
+            open_uri(uri);
+        });
     }
 
     void Shell::changed() {
@@ -141,6 +143,53 @@ namespace lyren {
         if (!stage.open()) {
             browser.forward();
         }
+    }
+
+    bool Shell::open_uri(std::string_view input) {
+        auto link = parse_share_url(input);
+        if (!link) {
+            return false;
+        }
+        if (!env.providers.contains(link->source)) {
+            env.notify(lyren::trf("{} is not available", lyren::tr(platform(link->source).name)), "circle-alert", true);
+            return true;
+        }
+        switch (link->kind) {
+            case ShareLink::Kind::playlist:
+                browser.open(Page::playlist, {.kind = CardKind::playlist, .source = link->source, .id = std::move(link->id)});
+                return true;
+            case ShareLink::Kind::album:
+                browser.open(Page::album, {.kind = CardKind::album, .source = link->source, .id = std::move(link->id)});
+                return true;
+            case ShareLink::Kind::artist:
+                browser.open(Page::artist, {.kind = CardKind::artist, .source = link->source, .id = std::move(link->id)});
+                return true;
+            case ShareLink::Kind::user:
+                if (env.provider(link->source).capabilities.profiles) {
+                    browser.open_profile(link->source, std::move(link->id), {}, {});
+                } else {
+                    env.notify(std::string(lyren::tr("No profile content available on this service")), "circle-alert", true);
+                }
+                return true;
+            case ShareLink::Kind::song:
+                spawn(open_song_link(++uri_gen_, link->source, std::move(link->id)));
+                return true;
+        }
+        return false;
+    }
+
+    Task<void> Shell::open_song_link(uint64_t gen, Source source, std::string id) {
+        const std::weak_ptr<int> alive = life_;
+        auto result = co_await env.provider(source).track_detail(std::move(id));
+        if (alive.expired() || gen != uri_gen_) {
+            co_return;
+        }
+        if (!result) {
+            env.notify(lyren::trf("Could not open link: {}", lyren::tr(result.error())), "circle-alert", true);
+            co_return;
+        }
+        playback.play({std::move(*result)}, 0);
+        env.redraw();
     }
 
     void Shell::open_comments(Source source, Subject subject, std::string id, std::string title, std::string cover, bool follows) {

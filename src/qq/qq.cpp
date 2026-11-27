@@ -496,8 +496,17 @@ namespace lyren::qq {
                 t.media = s.file->media_mid.value_or("");
             }
             if (s.singer) {
+                t.artists.reserve(s.singer->size());
                 for (const auto &a : *s.singer) {
-                    t.artist += (t.artist.empty() ? "" : " / ") + a.name.value_or("");
+                    const std::string_view name = a.name ? std::string_view(*a.name) : std::string_view{};
+                    const std::string_view mid = a.mid ? std::string_view(*a.mid) : std::string_view{};
+                    if (!t.artist.empty()) {
+                        t.artist += " / ";
+                    }
+                    t.artist += name;
+                    if (!name.empty() || !mid.empty()) {
+                        t.artists.push_back({std::string(mid), std::string(name)});
+                    }
                 }
                 if (!s.singer->empty()) {
                     t.artist_id = s.singer->front().mid.value_or("");
@@ -1207,6 +1216,25 @@ namespace lyren::qq {
                 return std::unexpected("This song is unavailable (membership or licensing restriction)");
             });
         });
+    }
+
+    Task<Result<Track>> Qq::track_detail(std::string id) {
+        if (id.empty()) {
+            co_return std::unexpected("Invalid song ID");
+        }
+        const bool numeric = std::ranges::all_of(id, [](unsigned char c) {
+            return c >= '0' && c <= '9';
+        });
+        if (!numeric) {
+            co_return co_await song_detail(std::move(id));
+        }
+        co_return parse_data<QDetail>(co_await client.call({{"music.pf_song_detail_svr", "get_song_detail", std::format(R"({{"song_id":{}}})", id)}}))
+            .and_then([&](auto d) -> Result<Track> {
+                if (!d.track_info) {
+                    return std::unexpected("QQ Music returned no details for this song");
+                }
+                return track(*d.track_info);
+            });
     }
 
     Task<Result<Track>> Qq::song_detail(std::string mid) {

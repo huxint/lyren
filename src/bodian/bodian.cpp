@@ -319,11 +319,16 @@ namespace lyren::bodian {
                       .paid = song.isPay != 0 || song.bodianPayAlbum != 0};
             if (song.artists && !song.artists->empty()) {
                 out.artist.clear();
+                out.artists.reserve(song.artists->size());
                 for (const auto &artist : *song.artists) {
+                    const std::string_view name = view(artist.name);
                     if (!out.artist.empty()) {
                         out.artist += " / ";
                     }
-                    out.artist += view(artist.name);
+                    out.artist += name;
+                    if (!name.empty() || artist.id) {
+                        out.artists.push_back({artist.id ? std::to_string(artist.id) : std::string{}, std::string(name)});
+                    }
                 }
                 if (song.artists->front().id) {
                     out.artist_id = std::to_string(song.artists->front().id);
@@ -628,6 +633,10 @@ namespace lyren::bodian {
             call.query.emplace_back("correct", "1");
         }
         co_return parse_search(co_await client.call(std::move(call)), kind, offset, limit);
+    }
+
+    Task<Result<Track>> Bodian::track_detail(std::string id) {
+        co_return co_await song_detail(std::move(id));
     }
 
     Task<Result<Track>> Bodian::song_detail(std::string id) {

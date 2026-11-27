@@ -63,7 +63,7 @@ namespace lyren {
         return std::hash<std::string_view>{}({reinterpret_cast<const char *>(prims.data()), prims.size_bytes()}) ^ (static_cast<uint64_t>(w) << 32 | h) ^ textures;
     }
 
-    App::App(Loop &loop, Bus &bus, ConfigFile config, std::vector<std::string> script)
+    App::App(Loop &loop, Bus &bus, ConfigFile config, std::vector<std::string> script, std::string initial_uri)
     : loop_(loop),
       config_(std::move(config)),
       display_(loop),
@@ -170,6 +170,11 @@ namespace lyren {
         }
         note_input();
         request_redraw();
+        if (!initial_uri.empty()) {
+            loop_.defer([this, uri = std::move(initial_uri)] {
+                shell_.open_uri(uri);
+            });
+        }
         if (!script_.empty()) {
             loop_.after(500ms, [this] {
                 run_script(0);

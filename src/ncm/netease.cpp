@@ -381,11 +381,16 @@ namespace lyren::ncm {
             Track t{.id = std::to_string(s.id), .title = s.name.value_or("")};
             const auto &ar = s.ar ? s.ar : s.artists;
             if (ar) {
+                t.artists.reserve(ar->size());
                 for (const auto &a : *ar) {
+                    const std::string_view name = a.name ? std::string_view(*a.name) : std::string_view{};
                     if (!t.artist.empty()) {
                         t.artist += " / ";
                     }
-                    t.artist += a.name.value_or("");
+                    t.artist += name;
+                    if (!name.empty() || a.id) {
+                        t.artists.push_back({a.id ? std::to_string(a.id) : std::string{}, std::string(name)});
+                    }
                 }
                 if (!ar->empty()) {
                     t.artist_id = std::to_string(ar->front().id);
@@ -791,6 +796,19 @@ namespace lyren::ncm {
             out.insert(out.end(), std::make_move_iterator(more.begin()), std::make_move_iterator(more.end()));
         }
         co_return out;
+    }
+
+    Task<Result<Track>> Netease::track_detail(std::string id) {
+        if (id.empty() || !std::ranges::all_of(id, [](unsigned char c) {
+                return c >= '0' && c <= '9';
+            })) {
+            co_return std::unexpected("Invalid song ID");
+        }
+        auto songs = co_await ok(co_await song_detail({std::move(id)}));
+        if (songs.empty()) {
+            co_return std::unexpected("NetEase Cloud Music returned no details for this song");
+        }
+        co_return std::move(songs.front());
     }
 
     Task<Result<std::vector<Track>>> Netease::song_detail(std::vector<std::string> ids) {

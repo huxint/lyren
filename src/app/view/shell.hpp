@@ -100,6 +100,8 @@ namespace lyren {
         void desktop_changed() {
             desktop_changed_();
         }
+        // Opens a supported share URL directly (song, playlist, album, artist, or user). Returns false if unrecognized.
+        bool open_uri(std::string_view input);
         // Opens the keyboard shortcut reference sheet modal.
         void show_shortcuts(ui::Ui &ui);
         // Binary clipboard payload queued from async completions, flushed into ui.copy_data on the next frame.
@@ -131,9 +133,12 @@ namespace lyren {
 
     private:
         void sync_stage_comments();
+        Task<void> open_song_link(uint64_t gen, Source source, std::string id);
         void page(ui::Ui &ui, ui::Rect area);
         void keys(ui::Ui &ui);
 
+        std::shared_ptr<int> life_ = std::make_shared<int>(0);
+        uint64_t uri_gen_ = 0;
         std::move_only_function<void(std::span<const SettingChange>)> set_settings_;
         std::move_only_function<void()> open_config_, desktop_changed_;
         const ui::Theme *stage_theme_ = nullptr;

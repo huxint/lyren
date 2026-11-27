@@ -27,6 +27,8 @@ trial = "skip"
 normalize = false
 # Persistent audio cache limit in MiB; 0 disables keeping tracks on disk.
 cache_size = 512
+# Automatically match and play from another platform when a song is unavailable.
+auto_fallback = false
 
 [theme]
 # dark | light

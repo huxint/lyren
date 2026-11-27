@@ -48,8 +48,9 @@ namespace lyren {
         struct Playback {
             Quality quality = Quality::lossless;
             TrialMode trial = TrialMode::skip;
-            bool normalize = false; // apply the loudness gain the service reports for each track
-            int cache_size = 512;   // persistent audio cache limit in MiB; 0 disables keeping tracks on disk
+            bool normalize = false;     // apply the loudness gain the service reports for each track
+            int cache_size = 512;       // persistent audio cache limit in MiB; 0 disables keeping tracks on disk
+            bool auto_fallback = false; // match and play from another platform when unavailable
         } playback;
         struct Theme {
             ThemeMode mode = ThemeMode::dark;

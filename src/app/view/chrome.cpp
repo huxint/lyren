@@ -163,7 +163,11 @@ namespace lyren {
                 if (search_sel_ >= 0 && search_sel_ < static_cast<int>(suggestions.size())) {
                     browser_.query = suggestions[static_cast<size_t>(search_sel_)].text;
                 }
-                browser_.search();
+                if (shell_.open_uri(browser_.query)) {
+                    browser_.query.clear();
+                } else {
+                    browser_.search();
+                }
                 ui.focus = 0;
                 search_sel_ = -1;
             }

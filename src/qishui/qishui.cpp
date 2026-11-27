@@ -62,6 +62,14 @@ namespace lyren::qishui {
             result.cover = image(json::field(album, "url_cover"));
             result.artist = artists(json::field(value, "artists"));
             const auto people = json::array(json::field(value, "artists"));
+            result.artists.reserve(people.size());
+            for (const auto &artist : people) {
+                auto aid = json::text(artist, "id");
+                auto name = json::text(artist, "name");
+                if (!aid.empty() || !name.empty()) {
+                    result.artists.push_back({std::move(aid), std::move(name)});
+                }
+            }
             if (!people.empty()) {
                 result.artist_id = json::text(people.front(), "id");
             }
@@ -687,6 +695,11 @@ namespace lyren::qishui {
             response["track"] = std::move(response["track_info"]);
         }
         co_return response;
+    }
+
+    Task<Result<Track>> Qishui::track_detail(std::string id) {
+        auto response = co_await ok(co_await track_data(std::move(id)));
+        co_return track(json::field(response, "track"));
     }
 
     Task<Result<Stream>> Qishui::stream(Track track, Quality quality) {

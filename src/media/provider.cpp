@@ -67,6 +67,9 @@ namespace lyren {
     Task<Result<std::vector<Track>>> Provider::similar(std::string) {
         return unavailable<std::vector<Track>>();
     }
+    Task<Result<Track>> Provider::track_detail(std::string) {
+        return unavailable<Track>();
+    }
     Task<Result<AlbumInfo>> Provider::album(std::string) {
         return unavailable<AlbumInfo>();
     }
